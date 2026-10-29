@@ -1,263 +1,218 @@
-# dsh-agent-team-browser
+# dsh-agent-team-ui-testing
 
-<img src="banner.png" alt="dsh-agent-team-browser — a shared browser workspace for DeepSeekHarness" width="100%">
+**AI-native, cross-platform UI testing for DeepSeekHarness.**  
+Help AI agents operate, inspect, test, and verify Web, desktop, and Android interfaces—with evidence humans can review.
 
-**English** | [中文](README_zh.md)
+**English** | [简体中文](README_zh.md)
 
-> **Status: architecture / pre-release.** This repository is being designed and implemented. The banner is conceptual artwork, not a screenshot of a released plugin. Features described as *planned* below are **not claims of working functionality**. Installation instructions, a tested compatibility range, and a release tag will be published **after** implementation and acceptance testing. Do not install a similarly named community package assuming it is this project.
+> [!IMPORTANT]
+> **Project status: architecture / pre-release.** This repository currently documents a proposed design, not a released or verified plugin. All capabilities below are **planned** unless explicitly marked otherwise. There is no verified installation command, compatibility matrix, or published release yet. This README describes intended behavior, not completed tests.
 
-## Summary
+## What is this?
 
-**dsh-agent-team-browser** is a planned native **shared browser workspace for DeepSeekHarness (DSH)**. It is designed to integrate with DSH's official right sidebar and support **individual agents, Agent Teams, and human operators**—without requiring an external browser window to take foreground focus.
+**dsh-agent-team-ui-testing** is a proposed UI testing infrastructure plugin for [DeepSeekHarness (DSH)](https://github.com/deepseek-ai/deepseek-harness). Its purpose is to let an AI agent—or a coordinated Agent Team—interact with a real application, inspect its state, verify expected behavior, capture evidence, and report actionable failures.
 
-One persistent browser workspace can contain multiple tabs. Authorized agents can work in different tabs concurrently, share an intentionally selected login context, and hand the **same tab** to another agent or a human through explicit control leases. The sidebar works like a monitor: switching the viewed tab does not switch, pause, or recreate the agents' background browser tasks.
+The project evolves from the earlier **`dsh-agent-team-browser`** concept, whose original focus was shared Chromium workspaces. **The browser workspace remains part of the plan**, but becomes one adapter within a broader UI testing runtime.
 
-**Design principle:** **The team lead decides *who should do what*; the plugin enforces *who may do what, when, and on which browser resource*.**
+**Primary targets:** Web (Chromium), Windows/Linux desktop applications, and Android applications. Other platforms may be evaluated later.
 
-<a id="project-introduction"></a>
-## Project introduction
+The `dsh-agent-team-*` name denotes the project family. **Agent Team and [`dsh-agent-team-presets`](https://github.com/bloodarea/dsh-agent-team-presets) are optional:** a single agent should be able to use the testing runtime independently.
 
-> One browser workspace. Multiple agents. Human control when it matters.
+## Why build it?
 
-This project continues the `dsh-agent-team-*` naming family started by [bloodarea/dsh-agent-team-presets](https://github.com/bloodarea/dsh-agent-team-presets). The name emphasizes Agent Team collaboration, **not** an Agent Team-only dependency: it must also work for a single agent and for a person using the sidebar directly.
+Coding agents can create UI code without being able to reliably answer the question: **“Does the finished application actually work and look right?”** A working API response, a successfully launched process, or one screenshot is not sufficient evidence of a working user journey.
 
-The design deliberately separates three things that are often coupled together:
+This project aims to provide:
 
-| Layer | Responsibility | Lifetime |
+- **Real UI feedback:** exercise user journeys on actual rendered interfaces, not only inspect source code.
+- **Structured-first automation:** use application and accessibility/DOM interfaces when appropriate; use visual reasoning when necessary.
+- **Cross-platform test sessions:** present a consistent testing contract while retaining platform-specific capabilities and limitations.
+- **Evidence-based results:** record what was executed, what was observed, what passed, what failed, and what remains unverified.
+- **Agent collaboration with human control:** coordinate authorized access across agents and let a human observe or take over where supported.
+- **Low disruption:** avoid stealing foreground input when the target and OS allow it; disclose and explicitly coordinate any operation that requires focus.
+
+## Planned scope
+
+| Target | Candidate integration approach | Intended coverage |
 | --- | --- | --- |
-| **DSH Agent Session** | Who invokes a tool, including lead and teammates | Owned by DSH |
-| **Browser Workspace** | Browser contexts, tabs, permissions, retained state | Owned by this plugin |
-| **Sidebar Viewer** | Which tab a user is watching or controlling | Owned by the DSH UI |
+| **Web** | Chromium, Chrome DevTools Protocol (CDP), DOM/accessibility APIs | Navigation, forms, responsive layouts, console/network inspection, screenshots and interactions |
+| **Windows desktop** | Windows UI Automation (UIA) and platform-approved input/capture mechanisms | Native controls, window state, user journeys, screenshots |
+| **Linux desktop** | Accessibility interfaces and compositor/desktop-specific automation | Native controls and GUI workflows; actual coverage depends on X11/Wayland and permissions |
+| **Android** | ADB, UI hierarchy/UiAutomator-style capabilities, device screenshots/input | Activities, navigation, controls, permission-aware device workflows |
 
-Closing the sidebar **must not** close a browser tab. Opening a teammate's distinct DSH Session **must not** create another browser just because its Session ID changed. When a team finishes, workspace retention and access revocation follow the workspace's explicit policy rather than the lifespan of the team chat.
+These technologies are **candidates, not selected dependencies or verified integrations**. An adapter must report its available operations instead of pretending every platform supports the same functions.
 
-<a id="why-this-plugin"></a>
-## Why this plugin?
+**Not included in the initial commitment:** macOS/iOS automation, unrestricted OS control, bypassing CAPTCHA or application security restrictions, or guarantees of background input on every native platform.
 
-Conventional browser MCPs, wrappers, and desktop automators often optimize for one agent controlling one visible browser. This project addresses six gaps:
+## Key design principles
 
-1. **Host focus disruption.** Browser automation should not hijack the operating system's foreground mouse, keyboard, or active window.
-2. **No coherent multi-agent ownership.** Multiple agents need one authorized workspace, not accidental duplication or concurrent navigation of the same tab.
-3. **Sidebar-size-dependent viewport.** A narrow sidebar must not silently turn a `1920 × 1080` desktop test into a mobile layout.
-4. **Weak human-in-the-loop control.** A person must be able to watch, take over one tab, resolve a difficult interaction, then return control to an agent.
-5. **Insufficient developer visibility.** Network requests, responses, console messages, and cookies need inspectable, permission-aware tooling.
-6. **Wrong lifecycle boundary.** Browser tabs should not disappear because a teammate's DSH Session was disposed or a sidebar pane was hidden.
+1. **Test outcomes are first-class.** Operating the UI is a means to verify an expected behavior. The result must include evidence and explicit limits.
+2. **Prefer structured information.** Use supported application, event, DOM, or accessibility interfaces before relying on fragile screen coordinates.
+3. **Do not claim an unperformed test passed.** API-only checks cannot by themselves prove visual appearance or end-to-end UI behavior.
+4. **Separate execution from presentation.** Closing a DSH sidebar viewer must not implicitly destroy its test target or abort a permitted background test session.
+5. **Isolation by default.** A browser context, native desktop session, or Android device belongs to an authorized testing scope; identities and access are checked by the runtime.
+6. **Keep human-facing complexity low.** Agents may use detailed adapters and evidence internally; humans should receive concise findings, failure locations, and reviewable artifacts.
 
-**Design principle:** the official DSH sidebar owns presentation; this plugin owns browser resources, identity-aware access, and concurrency safety. Browser execution remains independent from the presentation surface.
-
-<a id="key-capabilities"></a>
 ## Planned capabilities
 
-The following describes the **target specification**, not a completed feature list.
+The following list is a **target specification**, not an implemented feature list.
 
-| Capability | Intended behavior |
+| Area | Planned behavior |
 | --- | --- |
-| **Native sidebar workspace** | Register a new Browser Workspace tab in the official DSH right sidebar, without replacing the built-in browser. |
-| **Silent browser runtime** | Headless Chromium + Chrome DevTools Protocol (CDP); automation does not manipulate the host OS pointer or foreground window. |
-| **Multi-agent access** | Different DSH Sessions can bind to one authorized Browser Workspace by trusted Team/member identity. |
-| **Shared login state** | Tabs inside the same authorized `BrowserContext` share applicable cookies and same-origin storage. |
-| **Tab-level collaboration** | Separate tabs execute concurrently; one tab's multi-step writes require an exclusive lease. |
-| **Human takeover** | Observe the same page as an agent, request control, and return it without spawning a second page. |
-| **Independent viewport** | Per-tab CSS viewport, DPR, touch/mobile emulation; sidebar width only changes rendering scale. |
-| **Developer tools** | Inspect Fetch/XHR, response status/body (opt-in), Console, runtime errors, and governed cookie access. |
-| **Persistent workspaces** | Hide panes and switch agent chats without losing tabs; restore recoverable state after restart. |
-| **Solo mode** | Run without an Agent Team or `dsh-agent-team-presets` installed. |
+| **Test session management** | Create, select, resume where feasible, and terminate scoped target sessions; distinguish them from DSH conversation sessions |
+| **Action and observation tools** | Provide small, typed operations for launching, finding, clicking, typing, inspecting, waiting, and capturing evidence |
+| **Assertions and reports** | Link expected state, actual observation, pass/fail/blocked/unverified status, and supporting artifacts |
+| **Multi-agent coordination** | Allow parallel work on independent targets; serialize conflicting mutations with scoped ownership/leases |
+| **Human observation/takeover** | Display target state through an authorized DSH viewer; hand control between an agent and a human where supported |
+| **Browser workspace** | Retain shared Chromium context/tab design, optional cookie-sharing within one authorized context, and per-tab ownership |
+| **Responsive testing** | Set a browser tab's CSS viewport and DPR independently from the sidebar width |
+| **Debugging** | Inspect permitted console, runtime, network, and application errors; protect secret-bearing data |
+| **Visual verification** | Compare UI states or screenshots under controlled conditions, with uncertainty reported instead of concealed |
+| **Animation verification** | Sample state and frames over time, check transitions/timing/layout stability against explicit acceptance criteria |
+| **Reproducibility** | Record environment metadata, steps, test artifacts, failure evidence, and replay limitations |
 
-### The sidebar is a viewer, not the browser process
+## T0–T3: capability-aware interaction and observation
 
-Think of the sidebar as a television and Chromium tabs as independent channels. Selecting another channel changes only the **viewed tab**. All other tabs continue running in the background; their pages, viewport sizes, and active agents remain unchanged. A human can take control of the channel being watched when permitted.
+The intended hierarchy favors efficient, reliable, structured interfaces. It is a **selection and fallback strategy**, not a requirement to execute all four levels on every step.
 
-### Shared state does not mean shared page state
+| Level | Technique | Examples | Caveat |
+| --- | --- | --- | --- |
+| **T0** | Application or test API | Health, test fixtures, app-specific state/query interfaces | Useful for setup and validation, but does not prove the UI was rendered or usable |
+| **T1** | Supported event / automation interface | OS or runtime interaction commands, app events, platform controls | Must confirm that an action actually reached its intended target |
+| **T2** | Structured UI tree | Web DOM, accessibility tree, Android UI hierarchy | Prefer stable identities/semantics; structures can be incomplete or stale |
+| **T3** | Visual perception and coordinate input | Screenshots, multimodal model, visual target localization | More variable; require uncertainty reporting and post-action confirmation |
 
-Multiple tabs in one `BrowserContext` normally share cookies and, for the same origin, `localStorage` / IndexedDB. Each tab has its **own** DOM, URL, scroll state, and usually `sessionStorage`. Sites may impose additional authentication constraints; shared cookies do **not** guarantee universal single sign-on. Separate workspaces/teams are isolated by default unless sharing is explicitly authorized.
+An adapter advertises its capabilities. The agent selects the **lowest-cost dependable method suitable for the assertion** and can escalate when a method is unavailable or inconclusive. UI-specific acceptance criteria still require UI-level observations; a successful T0 call is never silently treated as a visual test pass.
 
-### Viewport is independent of sidebar dimensions
+## From a test request to verifiable evidence
 
-For example, set the real page to `1920 × 1080` and display it inside a `420px` sidebar. The browser still reports approximately `window.innerWidth === 1920` CSS pixels (subject to page/environment specifics). The sidebar only fits or pans the rendered image. A human click is mapped back into browser coordinates before CDP receives it.
+A typical intended flow:
 
-Planned presets include `390 × 844`, `768 × 1024`, `1280 × 720`, and `1920 × 1080`; custom viewport sizes and DPR are separate controls. A resize of the DSH sidebar must **never** implicitly invoke a CDP viewport change.
+1. **Specify:** describe the target, user journey, expected behavior, environment, and acceptance criteria.
+2. **Prepare:** start or attach to an authorized browser, desktop, or Android test session.
+3. **Execute:** use the best supported structured action path, falling back as needed.
+4. **Observe:** capture UI state, accessibility/DOM data, logs, screenshots, or timed frames relevant to the assertion.
+5. **Assert:** prefer deterministic checks; for subjective visual judgments, include tolerance, uncertainty, and review requirements.
+6. **Report:** produce passed/failed/blocked/unverified outcomes and a reproducible failure summary.
+7. **Retest:** after the development agent changes the application, rerun affected test cases and report regressions.
 
-<a id="use-this-package"></a>
-## Use this package
+**Example goal (illustrative, not a published tool/API syntax):**
 
-### Availability and installation
+> Launch the application. Open Settings, switch to dark mode, verify the persisted preference and the rendered interface, then navigate away and back. Report the actual checks run, screenshots, relevant logs, any mismatch, and any check that could not be performed.
 
-**There is no verified public install command or released version yet.** The proposed repository identity is `bloodarea/dsh-agent-team-browser`; availability of GitHub releases, npm packages, and plugin compatibility will be confirmed when a tested build exists.
+### Evidence and verdicts
 
-When the first release is published, this section will document:
+Planned test records should carry a target/environment identity, test case and step, action source, timestamp, expected result, observed result, status, and references to relevant artifacts. Sensitive captures are disabled or redacted by default.
 
-1. Supported DSH release/commit or compatibility range and required Chromium runtime.
-2. The exact **pinned release** installation command and which DSH profile to select.
-3. Required Host/Client plugin configuration, startup procedure, and uninstall/migration steps.
-4. How to verify the loaded plugin identity, version, sidebar entry, and browser runtime health.
+A visual model may offer a finding or confidence estimate, but **a confidence score alone is not proof**. Deterministic assertions, reviewed evidence, and platform limitations must remain distinguishable.
 
-**Do not copy installation commands from `dsh-agent-team-presets`**: it is a distinct plugin with a separate release cycle.
+### Animation and visual behavior
 
-### Intended workflow: a single agent
+A single static screenshot cannot establish that an animation is correct. Where the platform permits, the runtime should capture a bounded sequence of frames or state observations, along with timestamps and defined criteria (e.g., duration range, start/end state, unexpected layout shift, or missing transition). Rendering variability, reduced-motion settings, frame capture gaps, and device performance must be documented. Ambiguous results should be marked **unverified/review needed** instead of passed.
 
-1. Open the planned **Browser Workspace** entry in the official right sidebar.
-2. Create or select a workspace and open a browser tab.
-3. Choose a viewport preset or enter a custom viewport. Resize the sidebar to observe that the page viewport stays unchanged.
-4. Let the agent browse and test while you continue using the desktop normally.
-5. Watch the tab, take over if necessary, then hand control back.
-
-### Intended workflow: an Agent Team
-
-Suppose a lead delegates responsive testing, login testing, and API diagnostics:
-
-| Actor | Browser resource | Task |
-| --- | --- | --- |
-| Frontend agent | Tab A, `390 × 844` | Verify mobile layout |
-| Test agent | Tab B, `1920 × 1080` | Exercise sign-in flow |
-| Backend agent | Tab C, `1280 × 720` | Inspect Fetch/XHR behavior |
-| Human operator | Sidebar viewer | Switch watched tabs; take over a selected tab if needed |
-
-All three tabs may use the same authorized `BrowserContext` to reuse compatible login state. Each agent has a different DSH Session but resolves to the same workspace through **server-verified** membership and grants. The lead does not need to approve every click: it grants a scope of work, and the plugin enforces that scope.
-
-To transfer **the same tab**, the current lease must be released or revoked before another actor obtains a write lease. A lease covers a coherent multi-step operation, not just a single click.
-
-### Intended workflow: human intervention
-
-If an agent encounters a CAPTCHA, sensitive confirmation, or an unsupported browser interaction, it pauses the affected task and requests user intervention. The user takes over **inside the sidebar**, completes the allowed step, and returns the tab. The plugin must not silently switch host windows, reveal credentials to other agents, or bypass site protections.
-
-<a id="understand-the-implementation"></a>
-## Understand the implementation
-
-### High-level architecture
+## Architecture (planned)
 
 ```mermaid
 flowchart TD
-  Lead[Agent Team lead] --> Identity[Trusted identity & grants]
-  Mate[Team members / solo agents] --> Identity
-  Viewer[DSH official right sidebar] --> Gateway[Authorized browser gateway]
-  Identity --> Gateway
-  Gateway --> Workspace[Workspace manager]
-  Workspace --> Lease[Tab lease coordinator]
-  Lease --> Runtime[Background Chromium / CDP]
-  Runtime --> Context[Authorized BrowserContext]
-  Context --> A[Tab A]
-  Context --> B[Tab B]
-  Context --> C[Tab C]
-  Runtime --> Stream[Frame & event stream]
-  Stream --> Viewer
-  Gateway --> Debug[Network / Console / Cookie inspector]
-  Debug --> Runtime
+    A[DSH Agent / Agent Team] --> G[Authorized UI Testing Gateway]
+    H[Human reviewer / takeover] --> G
+    G --> M[Test session manager and leases]
+    G --> V[DSH sidebar viewer]
+    M --> P[Capability selection: T0 / T1 / T2 / T3]
+    P --> B[Web adapter: Chromium / CDP]
+    P --> D[Desktop adapter: Windows / Linux]
+    P --> R[Android adapter: device / emulator]
+    B --> E[Observations and evidence]
+    D --> E
+    R --> E
+    E --> X[Assertions and test report]
+    X --> A
+    X --> H
 ```
 
-**One browser resource manager, one permission boundary.** All browser-control channels—including agent tools, sidebar input, debugging, and takeover—must pass through the same authorization gateway. The architecture does not combine three independently running browser plugins.
+### Preserve the shared-browser foundation
 
-### Runtime ownership and lifecycle
+The initial browser design remains important:
 
-- `WorkspaceId` is generated by the plugin and **does not equal** a DSH `SessionId`, `TeamId`, or sidebar tab identifier.
-- DSH Team membership binds eligible lead/teammate Sessions to authorized workspaces; plain subagents do not automatically inherit access.
-- A workspace can have multiple Chromium tabs and multiple sidebar viewers; each viewer independently chooses which tab to watch.
-- Hiding a sidebar or navigating to a teammate's chat disconnects/rebinds viewers, **not** Chromium pages.
-- Task completion revokes leases; team shutdown revokes team grants. Neither event automatically destroys a retained personal workspace.
-- DSH restart can restore **recoverable** state, such as saved URLs, viewports, and permitted persisted authentication data. It cannot guarantee restoration of arbitrary JavaScript heap state or unfinished form inputs.
+- An authorized **Browser Workspace** can contain multiple tabs, with explicit per-tab access and write leases.
+- Tabs within one chosen `BrowserContext` can share applicable cookies and same-origin storage; separate contexts remain isolated by default. Sharing cookies never guarantees universal sign-in.
+- An agent's DSH Session, the browser runtime, and the sidebar viewer have **different lifecycles**. Switching the viewed tab must not switch or recreate background browser tasks.
+- Each tab owns its logical viewport; shrinking the DSH sidebar must not unexpectedly change a `1920 × 1080` page into a mobile viewport. The viewer scales/crops the output and maps human input back to the actual target coordinates.
+- Browser automation should use background CDP operations rather than hijack the desktop's foreground pointer or keyboard.
 
-### Concurrency model
+Desktop and Android adapters follow the same **authorized session and evidence principles**, but do not pretend to share Chromium-specific cookies, DOM capabilities, or focus guarantees.
 
-| Operation | Coordination rule |
+### Multi-agent ownership and permissions
+
+- Read-only observations may run concurrently when authorized.
+- Independent targets can be tested concurrently subject to machine/device capacity.
+- Mutating operations on the **same target** require a coordinated write owner/lease; expired actors must not keep writing.
+- A human takeover pauses or revokes conflicting agent control before granting a bounded human operation scope.
+- Agent or team identity comes from trusted DSH runtime context, not user-supplied `agentId` strings.
+- Tool availability does not override resource authorization. An Agent Team preset can permit a tool, while this runtime must still verify access to a specific target.
+
+## Security and privacy
+
+The testing runtime may encounter authenticated pages, private screens, developer tools, or device data. It should follow least privilege, explicit target authorization, bounded collection, and safe defaults:
+
+- Do not export cookies, access tokens, authorization headers, passwords, or private request bodies by default.
+- Require clear authorization for sensitive application/device actions or intrusive debugging.
+- Redact test logs and screenshots where feasible; describe redaction gaps.
+- Do not silently bypass OS protections, application security checks, CAPTCHA, or consent prompts.
+- Avoid recording unrelated host windows or cross-team data.
+- Keep replay and recovery capabilities bounded; never promise to recreate arbitrary in-memory state.
+
+## Roadmap
+
+These are **planned work items**, not claims of completion. Ordering may change after DSH and platform feasibility audits.
+
+- [ ] **R0 — Feasibility:** audit DSH plugin/sidebar interfaces, upstream licenses, test target capabilities, and security boundaries.
+- [ ] **R1 — Web foundation:** retain workspace/context/tab management, background Chromium execution, and viewer independence.
+- [ ] **R2 — Test core:** add typed test sessions, T0–T3 capability selection, actions, observations, assertions, and evidence reports.
+- [ ] **R3 — Collaboration:** implement agent/team authorization, target ownership, human takeover, and concurrent test scheduling.
+- [ ] **R4 — Desktop:** validate Windows/Linux adapters, accessibility/input/capture options, permissions, and focus constraints.
+- [ ] **R5 — Android:** validate device/emulator lifecycle, UI hierarchy, interaction, screenshots, and failure reporting.
+- [ ] **R6 — Visual tests:** verify responsive UI, state comparison, timed animation observations, and uncertainty handling.
+- [ ] **R7 — Hardening:** run security, privacy, resource, crash/recovery, and cross-platform regression tests.
+- [ ] **R8 — Release:** publish a reproducible build, pinned DSH compatibility, verified installation instructions, and acceptance evidence.
+
+A milestone is complete only after its implementation and tests are publicly verifiable. No test should be marked passed without actual execution evidence.
+
+## Installation and development
+
+**No verified public installation command or released version is available yet.** Build commands, DSH compatibility, runtime dependencies, supported operating-system versions, and the release artifact format will be documented after implementation and test verification.
+
+The existing repository may still contain legacy `banner.png` and `banner_zh.png` assets from the browser-workspace concept. They are **not product screenshots** and should not be presented as evidence of the new cross-platform UI testing system. New visual assets can be added after the updated design is reviewed.
+
+### Known constraints
+
+- DSH APIs and extension points may change; adapters must be validated against pinned versions.
+- Windows and Linux GUI automation differ significantly; Wayland restrictions and focus rules may limit unattended operation.
+- Android testing depends on device/emulator availability, debugging permissions, platform API level, and app security settings.
+- Automated visual judgments require defined acceptance criteria and may need human review.
+- A browser tab, an OS application, and an Android activity do not expose interchangeable capabilities.
+
+## Relationship to other projects
+
+| Project | Role |
 | --- | --- |
-| Read tab metadata / observe frames | Concurrent, subject to ACL |
-| Agent writes to different tabs | Concurrent |
-| Agent writes to the same tab | Exclusive multi-operation lease |
-| Human takeover of a tab | Revoke/pause existing writer and grant a bounded human lease |
-| Change shared cookies / context settings | Stronger context-level permission; may affect every tab |
-| Agent disconnects / lease expires | Revoke its lease and reject stale commands via fencing/version checks |
+| [`dsh-agent-team-presets`](https://github.com/bloodarea/dsh-agent-team-presets) | Reusable team and role configurations, model routes, and tool policies |
+| **`dsh-agent-team-ui-testing`** | UI testing targets, sessions, automation, evidence, verification, and governed human/agent control |
 
-The Agent Team lead governs **policy and delegation**. The plugin provides deterministic **mechanisms**: ownership checks, lock enforcement, fairness/timeouts, recovery, and audit records.
+The projects are complementary but **do not require each other**. The UI testing runtime is intended to support a single DSH agent without an Agent Team plugin.
 
-### Browser rendering and input
+## Contributing
 
-- Use Chromium/CDP to render and automate real pages without foreground desktop mouse/keyboard synthesis.
-- Send tab-specific frames or snapshots to the sidebar; resize the **displayed image** independently of the browser viewport.
-- Translate sidebar pointer positions through the current scale/offset into **CSS viewport coordinates**; handle DPR, letterboxing, scrolling, and touch modes explicitly.
-- Keep background browser execution alive when a viewer changes tabs, disconnects, or hides the panel.
-- Test and document limitations such as Chromium background throttling, dialogs, downloads, and headless-only behavior.
+Early contributions are most useful when they provide reproducible DSH integration findings, platform-specific feasibility tests, accessibility/DOM fallback cases, security threat models, or concrete UI acceptance scenarios.
 
-### Developer debugging and privacy
+When filing an issue, include the exact DSH version/commit, platform and runtime versions, reproduction steps, expected result, observed result, and sanitized evidence. Do not upload credentials, personal device data, or unredacted authenticated traffic.
 
-Network and Console events belong to the actual Chromium tab/workspace, not whichever DSH chat is currently visible. Debug records and exports must be bounded, independently permissioned, and sanitized by default. Request/response body capture must be explicitly enabled. Cookies, authorization headers, passwords, session tokens, and cross-team data must never be indiscriminately exposed to models or the sidebar.
-
-<a id="model-experience"></a>
-## Model Experience
-
-### What agents should see
-
-After implementation, an agent should receive **small, structured tools**, such as listing workspaces/tabs, navigating, inspecting the DOM, setting viewport, watching console/network events, requesting a lease, and releasing control. **These tool names are illustrative, not a published API contract.** Identity and authorization derive from the DSH runtime—not from agent-supplied `agentId` or `teamId` arguments.
-
-### Token effect
-
-Browser frames, page text, and Network responses should be returned **on demand**, capped or summarized appropriately, rather than continuously appended to conversation context. Returning a screenshot or DOM excerpt only when requested reduces unnecessary tokens but can omit relevant information; agents should be able to request greater detail when the task calls for it.
-
-### Prompt and KV cache effect
-
-The plugin should not need to inject growing tab history or secret browser state into every system prompt. Stable tool schemas can improve prompt-prefix stability; actual caching behavior depends on the model/provider and DSH integration. Browser persistence is **not** equivalent to LLM conversational-memory persistence.
-
-<a id="relationship"></a>
-## Relationship to `dsh-agent-team-presets`
-
-| Project | Responsibility |
-| --- | --- |
-| [`dsh-agent-team-presets`](https://github.com/bloodarea/dsh-agent-team-presets) | Reusable teams, roles, model routes, prompts, and tool policies |
-| **`dsh-agent-team-browser`** | Browser workspaces, authorized tab access, background runtime, human takeover, and debugging |
-
-They share a naming family and are intended to complement each other, but **neither needs to depend on the other**. Browser access is enforced by browser-side authorization even when a team preset permits the browser tools.
-
-<a id="roadmap"></a>
-## Roadmap and verification
-
-This checklist indicates **work to be implemented and verified**, not shipped features:
-
-- [ ] **R0:** Audit upstream DSH/plugin APIs, versions, and license notices; prove sidebar and headless streaming feasibility.
-- [ ] **R1:** Build workspace/context/tab lifecycle and a shared Chromium runtime.
-- [ ] **R2:** Verify Agent Team identities, cross-Session workspace binding, ACL, and tab leases.
-- [ ] **R3:** Integrate official Sidebar, switch channels, and keep background tabs alive on viewer disconnect.
-- [ ] **R4:** Implement independent viewport/DPR emulation, fit/1:1 display, and correct input-coordinate transforms.
-- [ ] **R5:** Implement human takeover and complete non-focus-stealing browser tool coverage.
-- [ ] **R6:** Implement permission-aware Network, Console, response, and cookie inspection.
-- [ ] **R7:** Harden authentication, privacy, crash recovery, performance, and Windows/Linux behavior.
-- [ ] **R8:** Complete reproducible builds, acceptance results, third-party notices, and community release.
-
-Release gates include: **three agents / three DSH Sessions / one authorized workspace**, zero host-window focus theft during background operations, shared-context and isolated-context tests, valid same-tab lease enforcement, sidebar viewport independence, and correct human takeover. Failed or unrun tests must not be described as passing.
-
-<a id="known-limitations-and-deferred-work"></a>
-## Known limitations and deferred work
-
-- **Pre-release only:** no completed installable build, proven compatibility matrix, or verified screenshots of the final UI are provided yet.
-- **Experimental DSH APIs:** Agent Team and Sidebar plugin integration points may change. The target DSH revision must be pinned and audited before implementation.
-- **Site-specific authentication:** sharing a `BrowserContext` shares applicable browser storage, **not** every site's tab-bound or server-bound login state.
-- **Headless compatibility:** native file pickers, some permissions/dialogs, anti-automation challenges, and media/GPU behavior may need explicit handling or safe fallback.
-- **Restoration is bounded:** restoring browser metadata does not restore every transient DOM/JS state.
-- **Security isolation:** sharing a context is intentional credential sharing. Different teams/workspaces must be isolated by default and must not share cookies without explicit authorization.
-- **No operating-system focus guarantee until tested:** focus-preservation is an acceptance requirement to be validated on target desktop platforms, not a claim of completed verification.
-
-<a id="development"></a>
-## Development and project references
-
-The intended implementation strategy is **reuse selectively, own the integration**:
-
-- [wqty123/dsh-browser](https://github.com/wqty123/dsh-browser) — browser service, existing tools, and session/tab primitives to audit and reuse where suitable.
-- [try-works/dsh-browser-agent](https://github.com/try-works/dsh-browser-agent) — CDP frame streaming and interactive Web UI approaches to evaluate.
-- [stuarthu/dsh-chrome](https://github.com/stuarthu/dsh-chrome) — network inspection and sensitive-data filtering techniques to evaluate.
-- [DeepSeekHarness right sidebar design](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/sidebar-right.md) — sidebar integration reference.
-- [DeepSeekHarness Agent Team design](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/agent-team.md) — teammate identity, roster, and lifecycle reference.
-- [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/) — browser-control API reference.
-
-These repositories are **design and potential code sources, not necessarily dependencies**. Any copied code must retain the relevant license and copyright notices, including transitive notices. The final source layout, build commands, and test commands are subject to the upstream API audit and will be documented when they are real.
-
-### Contributing
-
-Until the first working release, useful contributions include reproducible DSH API compatibility findings, headless/CDP browser test cases, authorization threat models, and UI/viewport test scenarios. Please include the DSH version/commit, OS, reproduction steps, expected behavior, and actual behavior with any issue report. Never publish real cookies or credentials in logs or screenshots.
-
-<a id="license"></a>
 ## License and acknowledgements
 
-**License selection for this new repository is pending.** Do not assume it has the same license as the companion presets plugin. Before code reuse or distribution, inspect each upstream license (including MIT/ISC components and additional `NOTICE` files), preserve required attribution, and publish the repository's own license and third-party notices.
+**The repository's license has not yet been confirmed in the available published materials.** Please check the repository's actual `LICENSE` file before reuse or redistribution; any third-party code incorporated later must retain applicable notices and license terms.
 
-Thanks to the DeepSeekHarness maintainers and browser-plugin community for the foundational ideas and implementations that inform this proposed design. Attribution for code actually incorporated will be maintained explicitly.
+Thanks to the DeepSeekHarness ecosystem and browser/UI automation communities for the prior art that informs this design. Candidate references include [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/) and existing DSH browser integrations; these references are not automatically runtime dependencies.
 
 ---
 
-**Project:** `dsh-agent-team-browser` · **Maintainer:** [bloodarea](https://github.com/bloodarea) · **Companion:** [dsh-agent-team-presets](https://github.com/bloodarea/dsh-agent-team-presets)
+**Repository:** [bloodarea/dsh-agent-team-ui-testing](https://github.com/bloodarea/dsh-agent-team-ui-testing) · **Maintainer:** [bloodarea](https://github.com/bloodarea) · **Status:** Architecture / pre-release
