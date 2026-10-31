@@ -71,18 +71,18 @@ AI 编程 Agent 可以生成页面和界面代码，但仅凭代码、程序成�
 | **动画验证** | 按时间采集帧与状态，针对时长、过渡、布局稳定性等明确条件进行验证 |
 | **可复现性** | 记录环境、步骤、测试证据、失败原因和回放限制 |
 
-## T0–T3：按能力选择与逐级回退
+## T1–T4：按能力选择与逐级回退
 
-这是我们计划采用的结构化优先策略。**T0–T3 是选择及回退层级，不要求每一步都依次执行四层。**
+这是我们计划采用的结构化优先策略。**T1–T4 是选择及回退层级，不要求每一步都依次执行四层。** 目前**只针对 Web 运行环境**定义了这四层；桌面、Android 等其他运行环境的分层方案尚未确定，不能照搬这套技术栈去推断它们的实现路径。
 
-| 层级 | 技术方式 | 典型用途 | 注意事项 |
-| --- | --- | --- | --- |
-| **T0** | 应用 API / 测试 API | 健康状态、初始化测试数据、应用内部状态查询 | 可以帮助准备和验证，但不能单独证明界面可用或视觉正确 |
-| **T1** | 系统/运行时事件接口 | 平台允许的输入事件、自动化控制、应用事件 | 需要确认事件确实作用于目标对象 |
-| **T2** | 结构化 UI 节点 | Web DOM、无障碍树、Android UI Hierarchy | 优先使用稳定标识和语义信息；节点可能缺失或过期 |
-| **T3** | 视觉理解与坐标操作 | 截图、多模态识别、目标定位 | 不确定性较高；操作后需要再观察和确认 |
+| 层级 | 推荐技术栈 | 主要能力 | 参考项目 | 实现策略 |
+| --- | --- | --- | --- | --- |
+| **T1 程序化接口** | Playwright APIRequestContext + CDP Runtime / Input / Network | HTTP API、JS 执行、原生事件、网络抓包、CSSOM | [Playwright](https://playwright.dev/)、[Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) | 直接复用 |
+| **T2 结构化 GUI** | Playwright Locator / ARIA Snapshot + CDP DOM / Accessibility / Overlay | DOM 树、Shadow DOM、元素选取、结构化定位、布局属性 | [Playwright MCP](https://github.com/microsoft/playwright-mcp)、agent-browser | 复用 + 统一节点协议 |
+| **T3 静态视觉理解** | Playwright Screenshot + [Sharp](https://sharp.pixelplumbing.com/) + [Pixelmatch](https://github.com/mapbox/pixelmatch) + VLM | 截图、局部放大、像素差异、布局缺陷、视觉语义判断 | Sharp、Pixelmatch、[Argos](https://argos-ci.com/) | 复用算法，自研判定 |
+| **T4 动态视觉理解** | Web Animations API + CDP Animation / Screencast + Sharp；按需 FFmpeg / [OpenCV](https://opencv.org/) | 动画时间轴、连续帧、淡入淡出、运动轨迹、卡顿分析 | CDP Animation、[rrweb](https://www.rrweb.io/)、OpenCV | 复用采集，自研时序验证 |
 
-平台适配器先报告可用能力；Agent 选取**足以满足当前断言、且成本较低的可靠路径**。操作失败或信息不足时再切换/回退。涉及实际界面外观和交互的验收，仍然必须取得相应的 UI 观察证据，不能把 T0 API 成功误报成 UI 测试成功。
+适配器先报告可用能力；Agent 选取**足以满足当前断言、且成本较低的可靠路径**。操作失败或信息不足时再切换/回退。涉及实际界面外观和交互的验收，仍然必须取得相应的 UI 观察证据，不能把 T1 接口调用成功误报成 UI 测试成功。
 
 ## 从测试需求到验证结果
 
@@ -118,7 +118,7 @@ flowchart TD
     H[人类查看 / 接管] --> G
     G --> M[测试会话管理与租约]
     G --> V[DSH Sidebar 查看器]
-    M --> P[T0 / T1 / T2 / T3 能力选择]
+    M --> P[T1 / T2 / T3 / T4 能力选择]
     P --> B[Web 适配器: Chromium / CDP]
     P --> D[桌面适配器: Windows / Linux]
     P --> R[Android 适配器: 设备 / 模拟器]
@@ -168,7 +168,7 @@ flowchart TD
 
 - [ ] **R0 — 可行性验证：** 审计 DSH 插件/Sidebar 接口、上游许可证、目标平台能力与安全边界。
 - [ ] **R1 — Web 基础：** 保留工作区/上下文/标签页管理、后台 Chromium 执行及查看器解耦。
-- [ ] **R2 — 测试核心：** 实现结构化测试会话、T0–T3 能力选择、操作、观察、断言和证据报告。
+- [ ] **R2 — 测试核心：** 实现结构化测试会话、T1–T4 能力选择、操作、观察、断言和证据报告。
 - [ ] **R3 — 协作控制：** 实现单/多 Agent 授权、目标归属、人工接管和并发测试协调。
 - [ ] **R4 — 桌面应用：** 验证 Windows/Linux 的无障碍、输入、截图、权限和焦点约束。
 - [ ] **R5 — Android：** 验证设备/模拟器生命周期、UI 节点、交互、截图和错误报告。

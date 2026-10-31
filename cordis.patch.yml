@@ -1,0 +1,3 @@
+- insert:
+    - id: ui-testing-browser
+      name: 'dsh-agent-team-ui-testing'

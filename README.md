@@ -71,18 +71,18 @@ The following list is a **target specification**, not an implemented feature lis
 | **Animation verification** | Sample state and frames over time, check transitions/timing/layout stability against explicit acceptance criteria |
 | **Reproducibility** | Record environment metadata, steps, test artifacts, failure evidence, and replay limitations |
 
-## T0–T3: capability-aware interaction and observation
+## T1–T4: capability-aware interaction and observation
 
-The intended hierarchy favors efficient, reliable, structured interfaces. It is a **selection and fallback strategy**, not a requirement to execute all four levels on every step.
+This is the structured-first strategy we intend to follow. **T1–T4 are selection and fallback levels, not a pipeline that must be walked in order.** The four levels are currently defined **for the Web target only**; desktop, Android and other targets have no agreed tier model yet, and their implementation paths must not be inferred from this Web stack.
 
-| Level | Technique | Examples | Caveat |
-| --- | --- | --- | --- |
-| **T0** | Application or test API | Health, test fixtures, app-specific state/query interfaces | Useful for setup and validation, but does not prove the UI was rendered or usable |
-| **T1** | Supported event / automation interface | OS or runtime interaction commands, app events, platform controls | Must confirm that an action actually reached its intended target |
-| **T2** | Structured UI tree | Web DOM, accessibility tree, Android UI hierarchy | Prefer stable identities/semantics; structures can be incomplete or stale |
-| **T3** | Visual perception and coordinate input | Screenshots, multimodal model, visual target localization | More variable; require uncertainty reporting and post-action confirmation |
+| Level | Recommended stack | Core capabilities | References | Implementation strategy |
+| --- | --- | --- | --- | --- |
+| **T1 Programmatic interface** | Playwright APIRequestContext + CDP Runtime / Input / Network | HTTP APIs, JS execution, native events, network capture, CSSOM | [Playwright](https://playwright.dev/), [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) | Reuse directly |
+| **T2 Structured GUI** | Playwright Locator / ARIA Snapshot + CDP DOM / Accessibility / Overlay | DOM tree, Shadow DOM, element picking, structured targeting, layout properties | [Playwright MCP](https://github.com/microsoft/playwright-mcp), agent-browser | Reuse + unified node protocol |
+| **T3 Static visual understanding** | Playwright Screenshot + [Sharp](https://sharp.pixelplumbing.com/) + [Pixelmatch](https://github.com/mapbox/pixelmatch) + VLM | Screenshots, region zoom, pixel diff, layout defects, visual-semantic judgement | Sharp, Pixelmatch, [Argos](https://argos-ci.com/) | Reuse algorithms, own the verdicts |
+| **T4 Dynamic visual understanding** | Web Animations API + CDP Animation / Screencast + Sharp; FFmpeg / [OpenCV](https://opencv.org/) on demand | Animation timelines, frame sequences, fades, motion paths, jank analysis | CDP Animation, [rrweb](https://www.rrweb.io/), OpenCV | Reuse capture, own the temporal verification |
 
-An adapter advertises its capabilities. The agent selects the **lowest-cost dependable method suitable for the assertion** and can escalate when a method is unavailable or inconclusive. UI-specific acceptance criteria still require UI-level observations; a successful T0 call is never silently treated as a visual test pass.
+An adapter advertises its capabilities. The agent selects the **lowest-cost dependable method suitable for the assertion** and can escalate when a method is unavailable or inconclusive. UI-specific acceptance criteria still require UI-level observations; a successful T1 call is never silently treated as a visual test pass.
 
 ## From a test request to verifiable evidence
 
@@ -118,7 +118,7 @@ flowchart TD
     H[Human reviewer / takeover] --> G
     G --> M[Test session manager and leases]
     G --> V[DSH sidebar viewer]
-    M --> P[Capability selection: T0 / T1 / T2 / T3]
+    M --> P[Capability selection: T1 / T2 / T3 / T4]
     P --> B[Web adapter: Chromium / CDP]
     P --> D[Desktop adapter: Windows / Linux]
     P --> R[Android adapter: device / emulator]
@@ -168,7 +168,7 @@ These are **planned work items**, not claims of completion. Ordering may change 
 
 - [ ] **R0 — Feasibility:** audit DSH plugin/sidebar interfaces, upstream licenses, test target capabilities, and security boundaries.
 - [ ] **R1 — Web foundation:** retain workspace/context/tab management, background Chromium execution, and viewer independence.
-- [ ] **R2 — Test core:** add typed test sessions, T0–T3 capability selection, actions, observations, assertions, and evidence reports.
+- [ ] **R2 — Test core:** add typed test sessions, T1–T4 capability selection, actions, observations, assertions, and evidence reports.
 - [ ] **R3 — Collaboration:** implement agent/team authorization, target ownership, human takeover, and concurrent test scheduling.
 - [ ] **R4 — Desktop:** validate Windows/Linux adapters, accessibility/input/capture options, permissions, and focus constraints.
 - [ ] **R5 — Android:** validate device/emulator lifecycle, UI hierarchy, interaction, screenshots, and failure reporting.

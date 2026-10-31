@@ -1,0 +1,156 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AsterFlow · 前端质量检查卷（含答案）</title><style>
+:root{color-scheme:dark;--bg:#0b121c;--panel:#152131;--stroke:#304357;--txt:#e8f0f9;--muted:#93a9c2;--blue:#8999ff}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:13px/1.65 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}.shell{max-width:1100px;margin:auto;padding:31px 26px 80px}.head{display:flex;align-items:center;justify-content:space-between;gap:15px;padding-bottom:18px;border-bottom:1px solid var(--stroke)}.brand{font-size:12px;letter-spacing:1px;color:#a8bad4;font-weight:800}.brand span{color:#80cdbd}.muted{color:var(--muted)}h1{font-size:30px;letter-spacing:-.5px;margin:22px 0 8px;line-height:1.25}h2{font-size:17px;margin:25px 0 11px}.lead{font-size:13px;color:#acc1d5;margin:0;max-width:880px}.top-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.btn{cursor:pointer;background:#22364d;color:#dceaf7;border:1px solid #46617d;padding:8px 12px;border-radius:8px;font:600 12px system-ui}.btn:hover{background:#304963}.btn.active{background:#788bff;color:white;border-color:#8599ff}.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:11px;margin-top:22px}.stat{background:#152235;border:1px solid #2a4056;border-radius:11px;padding:15px}.stat b{font-size:22px;display:block;font-variant-numeric:tabular-nums}.stat small{font-size:10px;color:#8fa6bd}.intro{background:#142836;border:1px solid #2c5361;border-radius:10px;padding:14px 17px;margin:22px 0 24px;color:#bcd2df}.intro strong{color:#deedf6}.toolbar{position:sticky;top:0;z-index:10;background:#0b121cf0;backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:space-between;gap:15px;padding:11px 0;border-bottom:1px solid #273c50;margin-bottom:12px}.toolbar h2{margin:0;font-size:16px}.legend{font-size:11px;color:#89a4bd}.question{border:1px solid #2e4358;background:linear-gradient(180deg,#172638,#121e2c);border-radius:12px;padding:17px 19px;margin-top:12px;break-inside:avoid}.q-top{display:flex;align-items:flex-start;gap:14px}.q-counter{font:800 17px/1 ui-monospace,monospace;background:#283f58;color:#c7def4;border-radius:8px;width:40px;height:40px;display:grid;place-items:center;flex:none}.q-header{flex:1}.q-sub{font-size:10px;color:#89d4cd;letter-spacing:1.4px;font-weight:700;margin-bottom:3px}.q-header h3{font-size:13px;font-weight:620;line-height:1.65;margin:0}.points{margin-left:auto;font-size:11px;color:#91a7c1;white-space:nowrap}.answer-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:13px}.answer-fields span{font-size:10px;color:#819cb7}.writing-lines{height:36px;border-bottom:1px dashed #344d62;margin-top:7px}.solution{display:none;margin-top:14px;background:#101a28;border:1px solid #36506a;border-radius:9px;padding:14px 15px}.show-answers .solution{display:block}.show-answers .answer-fields{display:none}.solution-heading{display:flex;align-items:center;gap:10px;margin-bottom:11px}.solution-heading b{font-size:13px}.tier{background:#294762;color:#b6d5ef;padding:3px 9px;border-radius:5px;font:700 11px ui-monospace,monospace}.tier.t1{background:#23443f;color:#8ae3c7}.tier.t2{background:#243e5a;color:#98c7ed}.tier.t3{background:#414061;color:#c6c0ff}.tier.t4{background:#523b42;color:#fabdc8}.tier.mix{background:#503e31;color:#ffcf8f}dl{margin:0;display:grid;grid-template-columns:92px 1fr;gap:8px 13px}dt{font-size:11px;color:#9ab2cc;font-weight:750}dd{font-size:12px;margin:0;color:#c6d7e8}code{background:#213447;padding:1px 5px;border-radius:4px}.bottom-note{background:#18293b;border:1px solid #314a62;border-radius:11px;padding:18px;margin-top:22px}.bottom-note h2{margin:0 0 8px}.bottom-note p{margin:7px 0;color:#b0c4d9}.bottom-note pre{background:#0b1725;border:1px solid #283d52;border-radius:8px;padding:13px;font:11px/1.65 ui-monospace,monospace;overflow:auto;color:#9cd5b9;white-space:pre-wrap}.private{display:none}.show-answers .private{display:block}.mode-only{display:block}.show-answers .mode-only{display:none}.footer{font-size:11px;color:#6f859f;margin-top:25px}.count{color:#a8bdd3;font-size:11px}.answer-detail{margin:16px 0 0;color:#adc6dd}.answer-detail td,.answer-detail th{border:1px solid #354c61;padding:8px 12px}.answer-detail{border-collapse:collapse;width:100%;font-size:11px}.answer-detail th{color:#cee0ef;text-align:left}.answer-detail td{color:#a9bbcd}@media(max-width:650px){.shell{padding:18px 12px 50px}.stat-grid{grid-template-columns:repeat(2,1fr)}.top-controls{gap:5px}.answer-fields{grid-template-columns:1fr}h1{font-size:24px}dl{grid-template-columns:1fr;gap:2px}dd{margin-bottom:8px}.question{padding:13px}.toolbar{align-items:start;flex-direction:column}}@media print{*{color:#121820!important;background:transparent!important;box-shadow:none!important}body{font-size:11px}.shell{max-width:100%;padding:0}.head,.toolbar .top-controls,.footer{display:none}.toolbar{position:static}.question{border:1px solid #bbb;page-break-inside:avoid;break-inside:avoid;padding:10px 12px}.solution{border:1px solid #aaa}.writing-lines{border-bottom:1px solid #bbb}.stat{border:1px solid #aaa}.intro{border:1px solid #999}h1{font-size:21px}.q-header h3{font-size:11px}}
+</style></head><body><div class="shell"><header class="head"><div class="brand">ASTERFLOW <span>/ QA FIELD SHEET</span></div><div class="top-controls"><button class="btn active" id="paperMode">仅看试卷</button><button class="btn" id="answerMode">标准答案</button><button class="btn" id="printPaper">打印 / 保存 PDF</button></div></header>
+<h1>前端视觉与交互质量检查卷</h1><p class="lead">受测对象：AsterFlow 运营工作台 · 独立 HTML 单页。请在真实浏览器中检查页面结构、布局样式、Canvas 图形、动态过渡和多步骤交互，逐题提交可复现证据与修复建议。</p>
+<div class="stat-grid"><div class="stat"><b>20</b><small>检测项</small></div><div class="stat"><b>100</b><small>总分 / 每题 5 分</small></div><div class="stat"><b>5</b><small>能力类别（答案中揭示）</small></div><div class="stat"><b>1365 × 900</b><small>建议桌面测试视口</small></div></div>
+<div class="intro"><strong>考核规则</strong>　靶机页面不会标注测试层级、缺陷编号、修复提示或答案。试卷先提供 20 个业务区域检查任务；允许在需要时结合程序接口、结构化节点、截图和连续帧。每题建议：准确定位（2 分）＋有效证据（2 分）＋可行修复（1 分）。页面自带的产品按钮可以正常交互；不需要任何外部服务。</div>
+<div class="toolbar"><div><h2>检查任务</h2><span class="legend">初始默认隐藏所有标准答案 · 可按需切换</span></div><span class="count">01 — 20 / 共 20 道</span></div>
+<div class="mode-only" style="color:#8499b0;font-size:11px;margin-bottom:10px">试卷模式仅给出检查区域和操作任务，不直接透露缺陷位置与类型。</div>
+<article class="question" id="q01">
+    <header class="q-top"><div class="q-counter">01</div><div class="q-header"><div class="q-sub">全局搜索</div><h3>检查顶栏搜索框的尺寸是否符合设计体系，并提交尺寸测量结果。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T1"><div class="solution-heading"><span class="tier t1">T1</span><b>顶栏搜索框高度</b></div>
+    <dl><dt>实际缺陷</dt><dd>全局搜索框实际高 32px，设计令牌要求 40px，显得过于扁平。</dd><dt>预期效果</dt><dd>40px；保持顶栏其他控件的既定尺寸。</dd><dt>取证 / 复现</dt><dd>读取 window.AsterFlow.theme.globalSearchHeight 和 #shell-search 的 getBoundingClientRect().height。</dd><dt>建议修复</dt><dd>将 .search 的 height:32px 改为 var(--control-h)（40px）。</dd><dt>通过标准</dt><dd>全局搜索框高 40px，窗口尺寸变化时仍保持。</dd><dt>能力归类</dt><dd>T1 通过程序化读取设计配置与 DOM 盒模型完成断言。</dd></dl></div>
+    </article>
+<article class="question" id="q02">
+    <header class="q-top"><div class="q-counter">02</div><div class="q-header"><div class="q-sub">主导航</div><h3>核查当前页面的导航状态及其可见强调方式。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T2"><div class="solution-heading"><span class="tier t2">T2</span><b>当前导航缺少选中态</b></div>
+    <dl><dt>实际缺陷</dt><dd>“总览”已标记 aria-current=&quot;page&quot;，却没有高亮背景和左侧选中指示。</dd><dt>预期效果</dt><dd>ARIA 当前页应当拥有可见激活态，突出显示与其他导航不同。</dd><dt>取证 / 复现</dt><dd>定位 nav a[aria-current=&quot;page&quot;]，读取 CSS 规则、伪元素显示值并检查截图。</dd><dt>建议修复</dt><dd>恢复 .nav-item.current 的背景色，并将 ::before 的 display:none 改为 block。</dd><dt>通过标准</dt><dd>当前页具有可见强调，其他导航保持普通状态。</dd><dt>能力归类</dt><dd>T2 由可访问状态定位，再检查样式。</dd></dl></div>
+    </article>
+<article class="question" id="q03">
+    <header class="q-top"><div class="q-counter">03</div><div class="q-header"><div class="q-sub">资源分布</div><h3>核对“资源使用概览”圆环图的中心说明文字与圆环是否对齐。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T3"><div class="solution-heading"><span class="tier t3">T3</span><b>圆环中心标签偏右</b></div>
+    <dl><dt>实际缺陷</dt><dd>Canvas 中“91% / 已使用”文字中心相对圆环中心整体向右偏移约 36 个画布像素。</dd><dt>预期效果</dt><dd>文字应与圆环共用圆心，中心对齐。</dd><dt>取证 / 复现</dt><dd>截取 #occupancyChart，比较圆心与文字视觉中心；DOM 没有独立文字节点。</dd><dt>建议修复</dt><dd>绘制中心文字时改用 cx 而不是 cx+36。</dd><dt>通过标准</dt><dd>资源数字和副标题都在圆环中心，左右留白基本对称。</dd><dt>能力归类</dt><dd>T3 像素图像/Canvas 渲染检查。</dd></dl></div>
+    </article>
+<article class="question" id="q04">
+    <header class="q-top"><div class="q-counter">04</div><div class="q-header"><div class="q-sub">任务同步</div><h3>启动“立即同步”，连续观察进度条的填充轨迹。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T4"><div class="solution-heading"><span class="tier t4">T4</span><b>同步进度中途倒退</b></div>
+    <dl><dt>实际缺陷</dt><dd>约 48% 动画进度时填充到 65%，55% 时突然回退到 18%，随后继续增长。</dd><dt>预期效果</dt><dd>单次同步进度应连续、非递减地增长至 100%。</dd><dt>取证 / 复现</dt><dd>点击 #runSync，以带时间戳的帧序列读取 #syncGauge 宽度；观察 2 秒内曲线。</dd><dt>建议修复</dt><dd>将 @keyframes sync-run 中 55%{width:18%} 删除，改为单调增长关键帧。</dd><dt>通过标准</dt><dd>任意连续采样宽度不出现明显倒退，终值达到 100%。</dd><dt>能力归类</dt><dd>T4 时序验证，单张截图无法证明。</dd></dl></div>
+    </article>
+<article class="question" id="q05">
+    <header class="q-top"><div class="q-counter">05</div><div class="q-header"><div class="q-sub">工作空间切换</div><h3>展开页头工作空间菜单，检查弹层相对于触发按钮的锚定位置。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="MIX"><div class="solution-heading"><span class="tier mix">MIX</span><b>工作空间菜单横向错位</b></div>
+    <dl><dt>实际缺陷</dt><dd>弹层显示在按钮左边缘右侧约 44px 处，没与触发控件对齐。</dd><dt>预期效果</dt><dd>弹层左边缘与按钮左边缘基本对齐，且不影响已有选择流程。</dd><dt>取证 / 复现</dt><dd>点击 #workspaceSwitch；关联 aria-controls 与 #workspaceDropdown，比较双方 DOMRect.left 并截图。</dd><dt>建议修复</dt><dd>将 .workspace-dropdown 的 left:44px 改为 0。</dd><dt>通过标准</dt><dd>展开后弹层左缘与触发器左缘差值不超过 4px。</dd><dt>能力归类</dt><dd>T2 定位/几何 + T3 画面判断 + T1 坐标断言。</dd></dl></div>
+    </article>
+<article class="question" id="q06">
+    <header class="q-top"><div class="q-counter">06</div><div class="q-header"><div class="q-sub">新建项目</div><h3>检查主操作按钮与产品色彩令牌的一致性。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T1"><div class="solution-heading"><span class="tier t1">T1</span><b>主按钮偏粉红</b></div>
+    <dl><dt>实际缺陷</dt><dd>“新建项目”使用 #ed6b89，而主题主色为 #768bff。</dd><dt>预期效果</dt><dd>主按钮应使用主题强调色，与其他主要操作一致。</dd><dt>取证 / 复现</dt><dd>读取 window.AsterFlow.theme.primaryColor、#createProject 的 computed backgroundColor。</dd><dt>建议修复</dt><dd>删除 .cta-project 的 background:#ed6b89!important 覆盖，使用 .btn.primary。</dd><dt>通过标准</dt><dd>Computed backgroundColor 与主题主色一致。</dd><dt>能力归类</dt><dd>T1 程序化样式契约比较。</dd></dl></div>
+    </article>
+<article class="question" id="q07">
+    <header class="q-top"><div class="q-counter">07</div><div class="q-header"><div class="q-sub">集成管理</div><h3>检查不可执行的危险操作是否正确表达其不可用状态。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T2"><div class="solution-heading"><span class="tier t2">T2</span><b>不可用按钮仍强烈高亮</b></div>
+    <dl><dt>实际缺陷</dt><dd>“删除当前集成”标为 aria-disabled=&quot;true&quot;，但外观仍是鲜亮的危险操作按钮。</dd><dt>预期效果</dt><dd>不可用状态应降低视觉权重并与正常危险按钮区分。</dd><dt>取证 / 复现</dt><dd>通过 [aria-disabled=&quot;true&quot;] 找到按钮，检查 opacity、背景、鼠标行为。</dd><dt>建议修复</dt><dd>将 aria-disabled=true 时的样式设为弱化配色并 opacity:var(--disabled-opacity)；最好同步原生 disabled。</dd><dt>通过标准</dt><dd>禁用按钮弱化显示，且无可执行交互。</dd><dt>能力归类</dt><dd>T2 语义状态与计算样式验证。</dd></dl></div>
+    </article>
+<article class="question" id="q08">
+    <header class="q-top"><div class="q-counter">08</div><div class="q-header"><div class="q-sub">请求与吞吐</div><h3>检查图表一周各日数据和坐标轴标签是否完整显示。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T3"><div class="solution-heading"><span class="tier t3">T3</span><b>最后一天柱形被画布截断</b></div>
+    <dl><dt>实际缺陷</dt><dd>“周日”柱形起始 X=788，而画布宽 800，柱子大部被右边界裁掉，标签不可见。</dd><dt>预期效果</dt><dd>七天数据和标签都在画布内完整显示。</dd><dt>取证 / 复现</dt><dd>截取 #revenueChart，关注最后一组；使用图像或画布读回验证裁切。</dd><dt>建议修复</dt><dd>将最后一组 x 与其他星期统一分配到绘图区内（而不是 788），预留左右边距。</dd><dt>通过标准</dt><dd>周一至周日全部可见，各组柱子与标签无边缘截断。</dd><dt>能力归类</dt><dd>T3 Canvas 图像检测；非 DOM 元素。</dd></dl></div>
+    </article>
+<article class="question" id="q09">
+    <header class="q-top"><div class="q-counter">09</div><div class="q-header"><div class="q-sub">实时状态</div><h3>观察“实时数据”绿点至少两个完整动画周期。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T4"><div class="solution-heading"><span class="tier t4">T4</span><b>实时指示点左右漂移</b></div>
+    <dl><dt>实际缺陷</dt><dd>绿点在循环中水平移动 14px，破坏与文案的对齐。</dd><dt>预期效果</dt><dd>状态点应当原位呼吸（透明度/缩放变化），位置不移动。</dd><dt>取证 / 复现</dt><dd>抓取 #live-indicator 的帧间位置；或检查 @keyframes status-breathe。</dd><dt>建议修复</dt><dd>移除 keyframes 中 translateX(14px)，只保留 scale/opacity。</dd><dt>通过标准</dt><dd>连续两周期内中心位置稳定，且保留呼吸变化。</dd><dt>能力归类</dt><dd>T4 周期性运动轨迹验证。</dd></dl></div>
+    </article>
+<article class="question" id="q10">
+    <header class="q-top"><div class="q-counter">10</div><div class="q-header"><div class="q-sub">最近发布</div><h3>勾选“仅看异常”，比较复选状态与表格内容更新时机。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="MIX"><div class="solution-heading"><span class="tier mix">MIX</span><b>筛选状态与表格延迟不同步</b></div>
+    <dl><dt>实际缺陷</dt><dd>复选框立刻变为选中，但正常记录继续显示约 800ms 才被隐藏。</dd><dt>预期效果</dt><dd>筛选状态改变时列表应同步响应，目标响应小于 100ms。</dd><dt>取证 / 复现</dt><dd>监听 #abnormalOnly change + tbody 行可见性，记录同一时钟的时间差；确认视觉延迟。</dd><dt>建议修复</dt><dd>移除 change 回调中 setTimeout(...,800)，或实现明确可见的加载状态。</dd><dt>通过标准</dt><dd>勾选后 100ms 内仅显示 warning 项；取消勾选及时恢复。</dd><dt>能力归类</dt><dd>T1 事件/状态 + T2 行属性 + T4 时间对齐。</dd></dl></div>
+    </article>
+<article class="question" id="q11">
+    <header class="q-top"><div class="q-counter">11</div><div class="q-header"><div class="q-sub">核心指标</div><h3>对比“今日请求”统计卡和相邻卡的容器圆角。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T1"><div class="solution-heading"><span class="tier t1">T1</span><b>统计卡圆角不一致</b></div>
+    <dl><dt>实际缺陷</dt><dd>“今日请求”卡圆角 3px，其余 KPI 卡按令牌应为 16px。</dd><dt>预期效果</dt><dd>同级指标卡圆角一致，符合通用卡片令牌。</dd><dt>取证 / 复现</dt><dd>读取 .requests 的 borderTopLeftRadius 和 window.AsterFlow.theme.cardRadius。</dd><dt>建议修复</dt><dd>删除 .kpi.requests{border-radius:3px}，继承 var(--r-card)。</dd><dt>通过标准</dt><dd>四张指标卡边角一致，计算值为 16px。</dd><dt>能力归类</dt><dd>T1 令牌与计算样式检测。</dd></dl></div>
+    </article>
+<article class="question" id="q12">
+    <header class="q-top"><div class="q-counter">12</div><div class="q-header"><div class="q-sub">Webhook 设置</div><h3>核查有错误状态的输入框外观，确保用户能直接看到异常。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T2"><div class="solution-heading"><span class="tier t2">T2</span><b>无效输入框缺少错误轮廓</b></div>
+    <dl><dt>实际缺陷</dt><dd>Webhook 输入框拥有 aria-invalid=&quot;true&quot; 与错误文案，但边框仍是普通灰蓝色。</dd><dt>预期效果</dt><dd>错误状态应有明显红色描边和适度焦点/辅助样式。</dd><dt>取证 / 复现</dt><dd>定位 input[aria-invalid=&quot;true&quot;]，计算 borderColor，并与错误令牌对比。</dd><dt>建议修复</dt><dd>把 .form-input[aria-invalid=true] 的 border-color 改为 var(--danger)。</dd><dt>通过标准</dt><dd>ARIA 错误状态与视觉边框一致，错误消息保留。</dd><dt>能力归类</dt><dd>T2 状态语义结合 CSS 检测。</dd></dl></div>
+    </article>
+<article class="question" id="q13">
+    <header class="q-top"><div class="q-counter">13</div><div class="q-header"><div class="q-sub">节点分布</div><h3>检查节点拓扑图底部设备标签是否存在遮挡或重叠。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T3"><div class="solution-heading"><span class="tier t3">T3</span><b>Canvas 机架标签互相覆盖</b></div>
+    <dl><dt>实际缺陷</dt><dd>N-06 附近两个设备胶囊和文本在画布右下重叠，无法清楚读出两个名称。</dd><dt>预期效果</dt><dd>设备标签分别可读，具有间距，不重叠节点和其他标签。</dd><dt>取证 / 复现</dt><dd>截图 #nodeMap 放大右下角；检查像素区域，而非依赖 DOM 节点。</dd><dt>建议修复</dt><dd>重新计算机架标签布局，设置不重叠的边界框（例如一上一下）。</dd><dt>通过标准</dt><dd>两个设备名称可完整识别，胶囊之间有足够间距。</dd><dt>能力归类</dt><dd>T3 画布内文字遮挡检测。</dd></dl></div>
+    </article>
+<article class="question" id="q14">
+    <header class="q-top"><div class="q-counter">14</div><div class="q-header"><div class="q-sub">通知中心</div><h3>打开右上角通知抽屉，观察其出现阶段的透明度变化。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T4"><div class="solution-heading"><span class="tier t4">T4</span><b>抽屉出现时透明度突跳</b></div>
+    <dl><dt>实际缺陷</dt><dd>抽屉进场 400ms，但 opacity 在 9% 处就突变到 1，未平滑淡入。</dd><dt>预期效果</dt><dd>抽屉的透明度应随时间连续平滑变化，与位移动画协调。</dd><dt>取证 / 复现</dt><dd>点击 #openNotifications，逐帧采集抽屉 opacity 与时间戳，或检查实际动画关键帧。</dd><dt>建议修复</dt><dd>将 @keyframes drawer-in 的 9%{opacity:1} 移除，使用 0% 到 100% 平滑插值。</dd><dt>通过标准</dt><dd>透明度无突跳，抽屉仍按原动画时长进入。</dd><dt>能力归类</dt><dd>T4 进场动画曲线检查。</dd></dl></div>
+    </article>
+<article class="question" id="q15">
+    <header class="q-top"><div class="q-counter">15</div><div class="q-header"><div class="q-sub">区域对比</div><h3>打开“基线对比”，确认金色标记圈与图中的参考锚点是否重合。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="MIX"><div class="solution-heading"><span class="tier mix">MIX</span><b>对比定位圈与锚点偏离</b></div>
+    <dl><dt>实际缺陷</dt><dd>Canvas 金色锚点在约 35% / 45%，HTML 十字光圈定位在 48% / 56%。</dd><dt>预期效果</dt><dd>覆盖层准星与 Canvas 真实锚点重合，缩放后也维持对齐。</dd><dt>取证 / 复现</dt><dd>点击 #toggleCompare 并核对 aria-pressed；提取 Canvas 尺寸/坐标映射 + 截图。</dd><dt>建议修复</dt><dd>将 .compare-pin 坐标按 322/920 与 154/340 计算，并在容器缩放时保持同一坐标系。</dd><dt>通过标准</dt><dd>任一容器宽度下，准星中心与锚点像素误差不超过 4px。</dd><dt>能力归类</dt><dd>T1 尺寸映射 + T2 状态 + T3 图像定位。</dd></dl></div>
+    </article>
+<article class="question" id="q16">
+    <header class="q-top"><div class="q-counter">16</div><div class="q-header"><div class="q-sub">侧边导航</div><h3>检查侧栏实际宽度与产品布局配置是否一致。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T1"><div class="solution-heading"><span class="tier t1">T1</span><b>侧边栏比设计宽</b></div>
+    <dl><dt>实际缺陷</dt><dd>配置宽度为 232px，实际 .sidebar 的固定宽度为 252px。</dd><dt>预期效果</dt><dd>侧栏应遵守设计令牌 232px，不受 Viewer 显示比例影响。</dd><dt>取证 / 复现</dt><dd>读取 window.AsterFlow.theme.sidebarWidth，读取 sidebar.getBoundingClientRect().width。</dd><dt>建议修复</dt><dd>将 .sidebar 的 flex-basis 和 width 改为 var(--nav-width)，并使响应式断点遵循同一规范。</dd><dt>通过标准</dt><dd>桌面设计视口下宽度为 232px，主体区域随之自然扩展。</dd><dt>能力归类</dt><dd>T1 布局 API/令牌断言；在桌面宽度下测试。</dd></dl></div>
+    </article>
+<article class="question" id="q17">
+    <header class="q-top"><div class="q-counter">17</div><div class="q-header"><div class="q-sub">API 配额</div><h3>核查进度条显示的使用量与可访问状态数值是否一致。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T2"><div class="solution-heading"><span class="tier t2">T2</span><b>配额条视觉值偏低</b></div>
+    <dl><dt>实际缺陷</dt><dd>控件 aria-valuenow=&quot;76&quot;，文字也为 76%，但实际填充宽度只有 42%。</dd><dt>预期效果</dt><dd>填充宽度应表达约 76% 的总长度。</dd><dt>取证 / 复现</dt><dd>定位 [role=progressbar]，比较 aria-valuenow 和内部 span 宽度占比。</dd><dt>建议修复</dt><dd>将 .task-progress&gt;span 的 width:42% 改为 76% 或从 aria 值驱动样式。</dd><dt>通过标准</dt><dd>可访问数值、文案和视觉条长度一致。</dd><dt>能力归类</dt><dd>T2 结构化进度语义与几何检测。</dd></dl></div>
+    </article>
+<article class="question" id="q18">
+    <header class="q-top"><div class="q-counter">18</div><div class="q-header"><div class="q-sub">事件时间轴</div><h3>检查事件图表标题、提示信息和图形的层级关系。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T3"><div class="solution-heading"><span class="tier t3">T3</span><b>告警标签遮挡图内标题</b></div>
+    <dl><dt>实际缺陷</dt><dd>黄色“注意：排队重试”胶囊绘制在 Canvas 顶部文字区域，覆盖“事件频率 / 60 分钟”。</dd><dt>预期效果</dt><dd>标题与告警标签应分别占位、互不遮挡。</dd><dt>取证 / 复现</dt><dd>截图 #streamTimeline 的顶部，检查同一区域中文字和色块的重叠。</dd><dt>建议修复</dt><dd>将黄色标记移动到标题右侧独立区域或下方图表图例区。</dd><dt>通过标准</dt><dd>完整标题和提示均可读，无重叠遮挡。</dd><dt>能力归类</dt><dd>T3 Canvas 绘制顺序/视觉分析。</dd></dl></div>
+    </article>
+<article class="question" id="q19">
+    <header class="q-top"><div class="q-counter">19</div><div class="q-header"><div class="q-sub">成功反馈</div><h3>点击“发送测试通知”，观察通知从出现到消失的全过程。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="T4"><div class="solution-heading"><span class="tier t4">T4</span><b>通知消失瞬间断帧</b></div>
+    <dl><dt>实际缺陷</dt><dd>成功通知出现后约 2.45 秒被直接移除，缺少退场淡出动画。</dd><dt>预期效果</dt><dd>通知应有约 240ms 的淡出/位移收尾后再移除 DOM。</dd><dt>取证 / 复现</dt><dd>点击 #showToast，连续采样 toast 的显示、透明度和 DOM 生命周期。</dd><dt>建议修复</dt><dd>新增 toast-out 关键帧，退场动画结束后再 remove。</dd><dt>通过标准</dt><dd>退场阶段可测得平滑 opacity 变化，无瞬间消失。</dd><dt>能力归类</dt><dd>T4 DOM 生命周期 + 动态画面联合验证。</dd></dl></div>
+    </article>
+<article class="question" id="q20">
+    <header class="q-top"><div class="q-counter">20</div><div class="q-header"><div class="q-sub">报表导出</div><h3>打开“导出报表”预览，检查确认区能否完整显示和交互。</h3></div><span class="points">5 分</span></header>
+    <div class="answer-fields"><div><span>观察结果 / 缺陷位置</span><div class="writing-lines"></div></div><div><span>复现与修复建议</span><div class="writing-lines"></div></div></div>
+    <div class="solution" data-tier="MIX"><div class="solution-heading"><span class="tier mix">MIX</span><b>导出面板被助手悬浮窗压住</b></div>
+    <dl><dt>实际缺陷</dt><dd>模态导出面板层级低于右下协作助手 Dock，确认按钮部分被遮挡/覆盖。</dd><dt>预期效果</dt><dd>模态内容必须处于所有普通悬浮控件之上，确认按钮可点。</dd><dt>取证 / 复现</dt><dd>点击 #previewExport；读取 dialog 位置、z-index 和命中测试；检查截图及按钮可点击性。</dd><dt>建议修复</dt><dd>调整模态遮罩/面板 z-index 高于 .support-dock，保留完整遮罩和焦点逻辑。</dd><dt>通过标准</dt><dd>弹层完整可见，右下组件不挡住提交操作。</dd><dt>能力归类</dt><dd>T2 DOM 对象 + T3 层级视觉 + 交互验证。</dd></dl></div>
+    </article>
+<section class="bottom-note"><h2>提交规范</h2><p>每道题记录：操作步骤、视口尺寸、定位依据、实际与预期差异、截图/日志/带时间戳视频、建议修复方式。T4 动画类问题需至少跨越一个完整生命周期；循环动画不少于两个周期。</p><p>建议对非动态题在 <code>1365×900</code> 下观察，并补测 <code>1024×768</code>；移动端可用于响应式回归，但基准指标请以桌面视口为准。不要将侧栏观看缩放误认为浏览器真实 viewport。</p>
+<div class="private"><h2>答案分布与技术判断</h2><table class="answer-detail"><thead><tr><th>能力</th><th>题号</th><th>核心取证</th></tr></thead><tbody><tr><td>T1 程序化接口</td><td>01、06、11、16</td><td>主题配置 / CSSOM / 盒模型</td></tr><tr><td>T2 结构化 GUI</td><td>02、07、12、17</td><td>ARIA 状态 / DOM / Computed Style</td></tr><tr><td>T3 静态视觉</td><td>03、08、13、18</td><td>Canvas 截图 / 像素裁切 / 视觉遮挡</td></tr><tr><td>T4 动态视觉</td><td>04、09、14、19</td><td>连续时间戳 / 动画曲线 / DOM 退场</td></tr><tr><td>混合能力</td><td>05、10、15、20</td><td>跨接口、结构、视觉与动态联合证据</td></tr></tbody></table>
+<p>下列是开发者可复用的程序化观测示例。它们只用于取证，不直接修复靶机。</p><pre>// 示例：读取产品样式约束与实际尺寸
+const guide = window.AsterFlow.theme;
+const bar = document.querySelector('#shell-search');
+const height = bar.getBoundingClientRect().height;
+console.log({expected: guide.globalSearchHeight, actual: height});
+
+// 示例：检查配额文案与几何比例
+const track = document.querySelector('#quota-meter');
+const value = Number(track.getAttribute('aria-valuenow'));
+const fill = track.querySelector('span');
+console.log({value, visual: Math.round(fill.getBoundingClientRect().width /
+  track.getBoundingClientRect().width * 100)});
+
+// 示例：为动态验证记录采样点（需要在触发操作前启动）
+const samples = [];
+const started = performance.now();
+function sample(){
+  const el = document.querySelector('#syncGauge');
+  const rect = el.getBoundingClientRect();
+  samples.push({t:performance.now()-started,w:rect.width});
+  if(performance.now()-started < 2200) requestAnimationFrame(sample);
+}
+requestAnimationFrame(sample);</pre>
+<p><strong>重要：</strong>前端画布中的缺陷不一定能通过 DOM 遍历直接发现；T4 的时间轴检查也不能只依赖 CSS 关键帧，最终应校验实际渲染/执行行为。</p></div></section>
+<div class="footer">AsterFlow Lab · UI quality assessment · Standalone offline HTML</div></div>
+<script>(()=>{const root=document.body,one=document.getElementById('paperMode'),two=document.getElementById('answerMode');function showAnswers(v){root.classList.toggle('show-answers',v);one.classList.toggle('active',!v);two.classList.toggle('active',v);document.title=v?'AsterFlow · 标准答案':'AsterFlow · 前端质量检查卷'}one.addEventListener('click',()=>showAnswers(false));two.addEventListener('click',()=>showAnswers(true));document.getElementById('printPaper').addEventListener('click',()=>window.print());const params=new URLSearchParams(location.search);if(params.get('answers')==='1')showAnswers(true)})();</script></body></html>
