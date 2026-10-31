@@ -1,0 +1,150 @@
+{
+  "schema_version": "0.2",
+  "notice": "M0–M2 开发事实快照，不是运行时可用性声明。主验收 21/21 组、196/196 必需项通过（含 P21 宿主 lossless JSON 契约），仅代表报告覆盖路径；3081 真宿主/provider 图像可见性另验。注册表及 browser_capabilities 实际结果优先。",
+  "platform": "web",
+  "tier": "T1",
+  "runtime_authority": "Agent 当前工具注册表决定可调用名字；browser_capabilities 根据实际运行态返回 available/unavailable/unsupported；browser_state 只诊断运行态",
+  "source": "index.js；按工具名/Runtime 方法识别，不使用漂移行号",
+  "evidence": "node tests/acceptance/run.mjs: tests/acceptance/runs/2026-10-31T09-11-49-006Z-151626/run-report.json; 21/21组196/196项, 0 finding/skip, exit=0; P21 用真实 @deepseek-ai/dsh-util-values snapshotJsonValue 校验 8 工具输出; check-skill 23/23、check-skill-registry 17/17, exit=0; fake Cordis ctx+真实Chromium; docs/t1-m0-m2-contract.md",
+  "runtime_contract": {
+    "isolation": "single-owner-lease",
+    "shared_page": true,
+    "idle_lease_ms": 15000,
+    "in_flight_holds_lease": true,
+    "missing_exec_scope": "anonymous",
+    "diagnostics_do_not_start": [
+      "browser_state",
+      "browser_capabilities"
+    ],
+    "lease_checked_tools": [
+      "browser_navigate",
+      "browser_eval",
+      "browser_screenshot",
+      "browser_input",
+      "browser_network",
+      "browser_computed_style"
+    ],
+    "action_fields": [
+      "actionId",
+      "sessionId",
+      "startedAt",
+      "finishedAt",
+      "target",
+      "args"
+    ],
+    "error_codes": [
+      "NAV_FAILED",
+      "CDP_TIMEOUT",
+      "CDP_DISCONNECTED",
+      "TARGET_NOT_FOUND",
+      "EVAL_ERROR",
+      "BUSY",
+      "ABORTED",
+      "INVALID_ARGUMENT",
+      "UNSUPPORTED",
+      "INTERNAL"
+    ],
+    "abort": "CDP 已发出后在同一串行队列内关闭浏览器，再放锁；后续可懒启动；不回滚网页副作用",
+    "target_policy": "HTTP(S)、DNS、最终 URL 与 Document 导航/重定向校验；loopback 允许，RFC1918 默认阻断（DSH_UI_TESTING_ALLOW_PRIVATE=1 开放）；阻断 metadata/unspecified/multicast/credentials/已配置 DSH_WEB_URL origin",
+    "residual_risks": [
+      "子资源与页面 fetch/WebSocket 不构成完整网络沙箱",
+      "DNS rebinding/校验与连接时序",
+      "未配置 DSH_WEB_URL 时宿主 origin 识别不完整",
+      "URL 尽力脱敏不覆盖所有业务敏感内容"
+    ]
+  },
+  "operations": [
+    {
+      "id": "web.t1.navigate",
+      "status": "verified",
+      "tool": "browser_navigate",
+      "source_lines": "Runtime.navigate / 工具注册 browser_navigate",
+      "constraints": "检查 errorText/最终 URL 与目标/DNS/Document 重定向；不保证 load complete；失败抛 BrowserError。"
+    },
+    {
+      "id": "web.t1.runtime-evaluate",
+      "status": "verified",
+      "tool": "browser_eval",
+      "source_lines": "Runtime.evaluate / browser_eval",
+      "constraints": "顶层主世界，可序列化值，无 frame 选择；页面异常返回分类 error 对象，含描述/栈/位置；不冒充 UI 动作或网络证据。"
+    },
+    {
+      "id": "web.t1.input",
+      "status": "partial",
+      "tool": "browser_input",
+      "source_lines": "Runtime.input / browser_input",
+      "constraints": "applied 是数组长度，不证明识别/生效；text 走 insertText；modifiers 支持字符串数组或 CDP 位掩码（Alt=1/Ctrl=2/Meta=4/Shift=8），key 支持 virtualKeyCode/autoRepeat/unmodifiedText/commands/location/isKeypad，mouse 支持 buttons/pointerType；非法修饰键/类型抛 INVALID_ARGUMENT；无焦点管理工具，不做 M3 高层输入。"
+    },
+    {
+      "id": "web.t1.network-observe",
+      "status": "partial",
+      "tool": "browser_network",
+      "source_lines": "Runtime 网络事件/traffic / browser_network",
+      "constraints": "响应与 loadingFailed 元数据，URL 脱敏，默认 50/上限 300，Map 有界；无头/正文；跨导航可累积，close 清空；不启动浏览器但须租约，其他 owner BUSY。"
+    },
+    {
+      "id": "web.t1.cssom",
+      "status": "verified",
+      "tool": "browser_computed_style",
+      "source_lines": "Runtime.computedStyle / browser_computed_style",
+      "constraints": "首个匹配元素；未命中返回 TARGET_NOT_FOUND error 对象；无伪元素/iframe/Shadow DOM 内部定位，不证明视觉。"
+    },
+    {
+      "id": "web.t1.screenshot",
+      "status": "partial",
+      "tool": "browser_screenshot",
+      "source_lines": "Runtime.screenshot / browser_screenshot execute+render",
+      "constraints": "保留 PNG base64，capturedAt/sha256/attachmentId；可选 saveImage+image block（附件先投影为纯 JSON {attachmentId,mediaType,bytes,width,height,name}，否则宿主 lossless JSON 校验会拒绝），无服务 base64-fallback 文本；provider 图像可见性另验；无裁剪/差异/VLM，不代表 T3。"
+    },
+    {
+      "id": "web.t1.runtime-state",
+      "status": "verified",
+      "tool": "browser_state",
+      "source_lines": "Runtime.state / browser_state",
+      "constraints": "不启动、不占租约；document.title 刷新，owner 诊断；error 可过期；running:false 不等于 unsupported。"
+    },
+    {
+      "id": "web.t1.capability-discovery",
+      "status": "partial",
+      "tool": "browser_capabilities",
+      "source_lines": "Runtime 能力探测 / browser_capabilities",
+      "constraints": "不启动、不占租约；未启动 T1 可 available（按需启动可能失败）；其他 owner 占用时页面/network unavailable+BUSY、诊断仍 available；running/transport 独立真实诊断，single-owner-lease 非会话隔离。"
+    },
+    {
+      "id": "web.t1.http-request",
+      "status": "unsupported",
+      "tool": null,
+      "source_lines": null,
+      "constraints": "无独立 HTTP 客户端；页面 fetch 不能替代独立请求/响应能力。"
+    },
+    {
+      "id": "web.t1.viewport-control",
+      "status": "unsupported",
+      "tool": null,
+      "source_lines": "面板内部 HTTP /viewport",
+      "constraints": "Agent 无视口工具，默认 1280x800/DPR1；面板可调 200–4096，不可走面板 HTTP 绕过工具。"
+    },
+    {
+      "id": "web.t1.browser-extras",
+      "status": "unsupported",
+      "tool": null,
+      "source_lines": null,
+      "constraints": "无下载/上传/Cookie 导出/多标签页/frame 级目标。"
+    }
+  ],
+  "unsupported_tiers": [
+    "T2",
+    "T3",
+    "T4"
+  ],
+  "unsupported_platforms": [
+    "Windows",
+    "Linux",
+    "Android",
+    "macOS",
+    "HarmonyOS",
+    "TUI",
+    "Game",
+    "3D"
+  ]
+}

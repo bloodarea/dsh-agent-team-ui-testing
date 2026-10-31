@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH UI Testing Fixture</title>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+    body {
+      margin: 24px;
+      font-family: Arial, "Noto Sans", sans-serif;
+      color: rgb(17, 24, 39);
+      background-color: rgb(255, 255, 255);
+    }
+    h1 {
+      font-size: 24px;
+      margin: 0 0 8px;
+    }
+    section {
+      margin: 16px 0;
+      padding: 12px 16px;
+      border: 1px solid rgb(209, 213, 219);
+      border-radius: 8px;
+    }
+    h2 {
+      margin: 0 0 8px;
+      font-size: 18px;
+    }
+    /* Fixed values used by the acceptance suite: assertions rely on these exact computed values. */
+    #style-target {
+      color: rgb(220, 38, 38);
+      font-size: 16px;
+      font-weight: 700;
+      padding: 12px 16px;
+      margin: 8px;
+      background-color: rgb(254, 242, 242);
+      border: 2px solid rgb(220, 38, 38);
+    }
+    #counter {
+      display: inline-block;
+      min-width: 32px;
+      font-size: 24px;
+      font-weight: 700;
+      margin: 0 12px 0 0;
+      color: rgb(30, 64, 175);
+    }
+    button {
+      font-size: 14px;
+      padding: 6px 12px;
+    }
+    input {
+      font-size: 14px;
+      padding: 6px 8px;
+    }
+    #result,
+    #fetch-result {
+      font-weight: 700;
+    }
+    #fetch-result {
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1 id="page-title">DSH UI Testing Fixture</h1>
+  <p id="intro">Deterministic local target for the dsh-agent-team-ui-testing T1 acceptance suite.
+    No external network, no random data.</p>
+
+  <section id="counter-section">
+    <h2>Counter</h2>
+    <p><span id="counter" data-testid="counter">0</span>
+      <button id="inc" type="button">Increment</button></p>
+  </section>
+
+  <section id="style-section">
+    <h2>Computed style target</h2>
+    <div id="style-target" data-testid="style-target">Fixed style target</div>
+  </section>
+
+  <section id="form-section">
+    <h2>Form</h2>
+    <input id="name" type="text" placeholder="Your name" autocomplete="off">
+    <button id="submit" type="button">Submit</button>
+    <p id="result" data-testid="result">not-submitted</p>
+  </section>
+
+  <section id="fetch-section">
+    <h2>Fetch</h2>
+    <button id="fetch-btn" type="button">Fetch data</button>
+    <pre id="fetch-result" data-testid="fetch-result">no-fetch</pre>
+  </section>
+
+  <section id="nav-section">
+    <h2>Navigation</h2>
+    <a id="to-second" href="/second.html">Go to second page</a>
+    <button id="go-second" type="button">Navigate to second</button>
+  </section>
+
+  <script>
+    (function () {
+      'use strict';
+      var counter = 0;
+      var counterEl = document.getElementById('counter');
+      document.getElementById('inc').addEventListener('click', function () {
+        counter += 1;
+        counterEl.textContent = String(counter);
+      });
+
+      document.getElementById('submit').addEventListener('click', function () {
+        var name = document.getElementById('name').value.trim();
+        document.getElementById('result').textContent = name ? 'hello ' + name : 'empty-name';
+      });
+
+      document.getElementById('fetch-btn').addEventListener('click', function () {
+        var resultEl = document.getElementById('fetch-result');
+        fetch('/api/data').then(function (response) {
+          return response.json().then(function (data) {
+            resultEl.textContent = data.message;
+            document.body.dataset.fetchStatus = String(response.status);
+          });
+        }).catch(function () {
+          resultEl.textContent = 'fetch-error';
+        });
+      });
+
+      document.getElementById('go-second').addEventListener('click', function () {
+        location.href = '/second.html';
+      });
+
+      // Deterministic automatic request so browser_network always has a known entry to assert.
+      fetch('/api/data').then(function (response) {
+        return response.json().then(function (data) {
+          document.body.dataset.autoload = data.message;
+        });
+      }).catch(function () {
+        document.body.dataset.autoload = 'error';
+      });
+
+      // The query-string token is deliberately fake; it exists so the acceptance suite can check
+      // whether the runtime redacts URL credentials in browser_network output.
+      var token = new URLSearchParams(location.search).get('token');
+      window.__fixture = { token: token };
+      if (token) document.body.dataset.token = token;
+    })();
+  </script>
+</body>
+</html>

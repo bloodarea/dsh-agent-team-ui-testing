@@ -1,41 +1,46 @@
-# 内置 Skill 编写参考（模板包 v1.1）
+# 内置 Skill：模板与已落地实现
 
 > 索引：[docs/index.md](index.md) · 更新于 2026-10-31
 
-## 这是什么
+## 两个位置，别混淆
 
-`reference/skill-template-v1.1/` 是一套**编写插件内置 Skill 的参考模板**，不是已启用的 Skill，也不是可运行的插件。
+- **模板**：`reference/skill-template-v1.1/`，一套**编写插件内置 Skill 的参考模板**，不是已启用的 Skill，也不是可运行的插件。入口 `reference/skill-template-v1.1/README_TEMPLATE.md`。
+- **已落地实现**：`skills/ui-testing/`（27 个文件）随插件发布，由 `index.js` 的 `ctx.inject(['skills'], …)` 注册为 `ui-testing`。运行时 Agent 通过 `skill` 工具加载正文，`resourceBase` 指向该目录，可再按需读取 `references/` 等资源。
 
-- 位置：`reference/skill-template-v1.1/`
-- 入口：`reference/skill-template-v1.1/README_TEMPLATE.md`
-- 主 Skill 骨架：`reference/skill-template-v1.1/skills/ui-testing/SKILL.md`
-
-之所以放在 `reference/` 而不是仓库根：模板里自带 `skills/`、`knowledge/`、`manifests/`、`integration/`、`scripts/` 和一份 `docs/`，直接铺到根目录会和现有 `docs/`（项目记忆）以及将来真正要发布的 `skills/` 混在一起。真正启用时再从模板复制，不要原地改模板。
+模板自带 `knowledge/`、`manifests/` 在落地时被收进 `skills/ui-testing/` 内部（`skills/ui-testing/knowledge/…`、`skills/ui-testing/manifests/…`），这样 `package.json` 只需 `files: ["skills/**"]` 就能整包发布，不用在仓库根再加两个目录。
 
 ## 硬规则：以实际实现为准
 
-模板里的 `planned` / `not-verified` 标记、示例工具名、示例参数**都只是占位**。写真正的 SKILL 时，以下事实优先于模板：
+模板里的 `planned` / `not-verified` 标记、示例工具名、示例参数**都只是占位**。落地版已按真实实现改写，事实来源：
 
-| 模板里的条目 | 当前真实状态 |
+| 模板里的条目 | 真实状态 |
 | --- | --- |
-| `web.t1.runtime-evaluate`（JS 执行） | **已实现**：`browser_eval` 工具 + `POST /plugins/ui-testing/eval` |
-| `web.t1.input`（原生事件） | **已实现**：`browser_input` 工具 + `POST /input`；键盘只支持可打印字符与少量控制键 |
-| `web.t1.network-observe`（网络抓包） | **已实现**：`browser_network` 工具，只存元数据、不含正文 |
-| `web.t1.cssom`（样式读取） | **已实现**：`browser_computed_style` 工具 |
-| `web.t1.http-request`（Playwright APIRequestContext） | **未实现**：没有独立 HTTP 客户端，页面内请求只能靠 `browser_eval` 里的 `fetch` |
-| T2 结构化 GUI（元素选取/ARIA） | **未实现**，界面按钮禁用 |
-| T3 / T4（视觉、动画） | **未实现** |
+| `web.t1.runtime-evaluate`（JS 执行） | 已实现：`browser_eval` + `POST /plugins/ui-testing/eval` |
+| `web.t1.input`（原生事件） | 已实现按键/组合键：`browser_input` + `POST /input`；`modifiers`（数组或位掩码）、`virtualKeyCode`、`autoRepeat`、`location/isKeypad`、mouse/wheel 修饰键均透传，整批先校验后派发（P20）。`applied` 仍只是数组长度；`commands`/`unmodifiedText`/`pointerType:pen` 只有 schema+透传（未验证） |
+| `web.t1.network-observe`（网络抓包） | 部分实现：`browser_network`，响应及 loadingFailed 元数据、URL 脱敏；无头/正文；其他 owner 调用返回 BUSY |
+| `web.t1.cssom`（样式读取） | 已实现：`browser_computed_style`（只取首个匹配元素） |
+| `web.t1.http-request`（Playwright APIRequestContext） | 未实现：没有独立 HTTP 客户端；页面内请求只能靠 `browser_eval` 里的 `fetch` |
+| `web.t1.screenshot` | 保留 base64 与 `capturedAt/sha256/attachmentId`；可选附件 image block，无服务 render `base64-fallback` 文本；返回值按 lossless JSON 投影（附件为纯 JSON），否则真实宿主会判 `INVALID_TOOL_OUTPUT`；provider 可见性待实测，无 T3 分析 |
+| 能力发现 | 工具面 8 个，新增 `browser_capabilities` 报真实 `available/unavailable/unsupported`；注册表决定能否调用，state/capabilities 诊断不启动 |
+| T2 结构化 GUI / T3 静态视觉 / T4 动态视觉 | 未实现，Skill 与 manifest 明确标 `unsupported` |
 
-其它必须与实现对齐的点：
+运行时细节与限制见 [runtime-t1.md](runtime-t1.md)，M0–M2 当前契约与待验收项见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)；[t1-infrastructure-audit.md](t1-infrastructure-audit.md) 是历史结论，不代表新增路径通过。改 `index.js` 的工具名/参数时，**必须同步改 SKILL 与台账**，否则 Skill 会教 Agent 调用不存在的接口。
 
-- 能力发现没有独立接口；目前唯一可用的自述是 `browser_state` 工具返回的 `{mode, activity, url, viewport, running}`。
-- 运行时的细节与限制见 [runtime-t1.md](runtime-t1.md)，不要把模板示例里的 Playwright 用法写进 SKILL 当作可用能力。
-- 模板自带的 `knowledge/web/t1-capability-ledger.md` 仍是初始 `planned` 状态；真正集成 Skill 时必须按实现逐项改写，并附代码位置与运行证据。
+## 注册与发布（已落地）
 
-## 真正启用内置 Skill 时的步骤
+1. 资源目录由 `index.js` 按 `new URL('./skills/ui-testing/', import.meta.url)` 定位，注册代码从 `SKILL.md` 的 frontmatter 取**单行** `description`（块标量会退回代码内常量），正文去掉 frontmatter 后作为 `content`。
+2. 注册走 `ctx.inject(['skills'], …)`：宿主没有 `skills` 服务或资源缺失时只记日志，不阻断浏览器工具，保证纯工具部署可用。
+3. `package.json` 的 `dsh.profile` 安装方式不变；新增 `files: ["skills/**"]`，`npm pack --dry-run` 可见 27 个 Skill 文件随包发布。
+4. 改 `index.js` / `package.json` / 新增 `skills/` 属 Host 变更，**需要重启 DSH** 才生效；`client.js` 仍是热更新。
 
-1. 把 `reference/skill-template-v1.1/skills/ui-testing/` 复制到仓库根的 `skills/ui-testing/`（DSH 要求 Skill 资源随包发布）。
-2. 按上表把内容改成实际实现，删掉所有不存在的工具与参数。
-3. 在 `index.js` 里用 `ctx.skills.register(...)` 注册，并确认 scope（宿主全局或 preset）。
-4. 把 `skills/**` 加进 `package.json` 的 `files`，否则发布包里没有这些文件。
-5. 用 `python reference/skill-template-v1.1/scripts/validate_skill.py` 做结构自检——它只校验模板结构，**不代表 DSH 能发现或加载**；最终以 `skill` 工具能否列出并加载为准。
+## 验收入口
+
+```bash
+node tests/acceptance/check-skill.mjs           # SKILL 结构、引用文件、工具名与 index.js 一致性
+node tests/acceptance/check-skill-registry.mjs  # 真实 DSH SkillRegistry 的注册/发现/加载/render
+node tests/acceptance/run.mjs                   # 驱动真实运行时；本轮探针数量/结果以实际报告为准
+```
+
+`check-skill-registry.mjs` 需要本机已安装 DSH（可用 `DSH_ROOT` 覆盖包路径）；它证明 `ctx.skills.register()` 在真实 DSH 服务里能列出、加载、渲染，**不代表**某个正在运行的 DSH 会话已经重启生效。Agent 会话级是否真的能调用 `skill` 工具，以重启后新会话的实际工具列表为准。
+
+模板自带的 `reference/skill-template-v1.1/scripts/validate_skill.py` 只校验模板目录自身结构（`ROOT/manifests/…`、全部 `planned`），**不能**用来校验 `skills/ui-testing/`，验收以上面的三个脚本为准。

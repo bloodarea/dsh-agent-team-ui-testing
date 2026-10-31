@@ -18,4 +18,4 @@
 
 ## 对当前实现的含义
 
-调试视图只有 iframe 预览，`sandbox` + 跨源使得 T2 的 DOM/无障碍读取实际不可用，T1 也没有通道——所以「选择元素」「打开调试工具」必须是禁用态。要做 T2，前提是先接 CDP 或 Playwright 一类的真实通道。
+调试视图当前通过无头 Chromium + CDP 提供部分 T1 工具及 screencast 预览，已经有真实 T1 通道；M0–M2 工具面与待验收状态见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)。T2 DOM/ARIA/结构化节点协议仍未实现，「选择元素」「打开调试工具」继续禁用；单纯有 CDP 连接或可见截图不代表 T2/T3/T4 已实现。

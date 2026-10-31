@@ -5,6 +5,9 @@
 | 文件 | 内容 | 什么时候读 |
 | --- | --- | --- |
 | [status.md](status.md) | 当前实现状态、冻结约定、未实现清单 | 任何改动前先读 |
+| [t1-m0-m2-contract.md](t1-m0-m2-contract.md) | M0–M2 现行实现契约、验收状态与剩余风险 | 查工具/租约/错误/证据现状时先读 |
+| [t1-infrastructure-audit.md](t1-infrastructure-audit.md) | M0–M2 前历史审计（结论、证据、缺口；不代表现行状态） | 追溯缺陷与历史证据时 |
+| [t1-issues-and-solutions.md](t1-issues-and-solutions.md) | 缺陷解决状态总表：已解决/部分解决，以及「不属于 T1」的分类依据（含 §3.2/§3.3） | 查某个问题是已修、待做还是不该在 T1 做时 |
 | [runtime-t1.md](runtime-t1.md) | T1 运行时：无头 Chromium、HTTP 接口、Agent 工具、限制 | 改运行时/接工具时 |
 | [skill-authoring.md](skill-authoring.md) | 内置 Skill 编写参考（模板包位置、以实际实现为准的对照表） | 写/改 SKILL 时 |
 | [capability-tiers.md](capability-tiers.md) | Web 能力分层 T1–T4（技术栈与实现策略） | 设计/排序功能时 |
