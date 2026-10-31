@@ -78,14 +78,30 @@ AI 编程 Agent 可以生成页面和界面代码，但仅凭代码、程序成�
 
 ## T1–T4：按能力选择与逐级回退
 
-这是我们计划采用的结构化优先策略。**T1–T4 是选择及回退层级，不要求每一步都依次执行四层。** 目前**只针对 Web 运行环境**定义了这四层；桌面、Android、TUI、HarmonyOS、游戏与 3D 等其他运行环境的分层方案尚未确定，不能照搬这套技术栈去推断它们的实现路径。
+这是我们计划采用的结构化优先策略。**T1–T4 是选择及回退层级，不要求每一步都依次执行四层。** 这套分层是本插件的**调试能力分级**，不代表业界现成的统一标准：每一级都可以独立调用，也可以作为下一级的回退来源。目前**只针对 Web 运行环境**定义了这四层；桌面、Android、TUI、HarmonyOS、游戏与 3D 等其他运行环境的分层方案尚未确定，不能照搬这套技术栈去推断它们的实现路径。
 
-| 层级 | 推荐技术栈 | 主要能力 | 参考项目 | 实现策略 |
-| --- | --- | --- | --- | --- |
-| **T1 程序化接口** | Playwright APIRequestContext + CDP Runtime / Input / Network | HTTP API、JS 执行、原生事件、网络抓包、CSSOM | [Playwright](https://playwright.dev/)、[Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) | 直接复用 |
-| **T2 结构化 GUI** | Playwright Locator / ARIA Snapshot + CDP DOM / Accessibility / Overlay | DOM 树、Shadow DOM、元素选取、结构化定位、布局属性 | [Playwright MCP](https://github.com/microsoft/playwright-mcp)、agent-browser | 复用 + 统一节点协议 |
-| **T3 静态视觉理解** | Playwright Screenshot + [Sharp](https://sharp.pixelplumbing.com/) + [Pixelmatch](https://github.com/mapbox/pixelmatch) + VLM | 截图、局部放大、像素差异、布局缺陷、视觉语义判断 | Sharp、Pixelmatch、[Argos](https://argos-ci.com/) | 复用算法，自研判定 |
-| **T4 动态视觉理解** | Web Animations API + CDP Animation / Screencast + Sharp；按需 FFmpeg / [OpenCV](https://opencv.org/) | 动画时间轴、连续帧、淡入淡出、运动轨迹、卡顿分析 | CDP Animation、[rrweb](https://www.rrweb.io/)、OpenCV | 复用采集，自研时序验证 |
+| 层级 | 正式名称 | 核心技术 | 主要调试能力 | 触发与升级条件 | 相对成本 |
+| --- | --- | --- | --- | --- | --- |
+| **T1** | 程序化调试 | CDP、HTTP、Fetch、JavaScript、Network、Console | 接口请求、网络抓包、JS 执行、异常检测、资源加载、状态检查、性能数据 | 默认优先；需要操作页面元素时进入 T2 | 低 |
+| **T2** | 结构化 GUI 调试 | DOM、Accessibility Tree、ARIA、Snapshot、Locator、Ref | 元素定位、点击、输入、滚动、表单、交互测试、节点状态、结构化证据 | 无法通过可靠的结构化定位完成操作，或需要视觉判断时进入 T3 | 低～中 |
+| **T3** | 静态视觉调试 | Screenshot、Computer Vision、坐标操作、图像差异分析 | UI 布局、颜色、遮挡、样式缺陷、Canvas、图表、静态截图操作 | 需要连续动作、动画或时间状态判断时进入 T4 | 高 |
+| **T4** | 动态视觉调试 | Screencast、帧序列、时间戳、视觉推理、鼠标键盘事件 | 动画、拖拽、复杂动态组件、过渡状态、连续画面分析 | 最高级：失败后输出诊断结果，交由 Agent 或人类裁决 | 最高 |
+
+每一级的实现范围与完成门槛（“主要参考”是选型对照，不代表已选定依赖或已完成集成）：
+
+| 层级 | 主要参考 | 实现策略 | 完成门槛 |
+| --- | --- | --- | --- |
+| **T1** | [Playwright](https://playwright.dev/) MCP、agent-browser、[Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) | 直接复用 | 能够独立完成不依赖视觉理解的页面与接口诊断，并向 T2 提供同一浏览器会话 |
+| **T2** | ego-lite、agent-browser、[Playwright MCP](https://github.com/microsoft/playwright-mcp) | 复用 + 统一节点协议 | 对常规 Web 页面实现可靠的结构化发现、定位、操作、验证闭环，并明确识别何时需要视觉能力 |
+| **T3** | Playwright MCP Vision、agent-browser、[Sharp](https://sharp.pixelplumbing.com/)、[Pixelmatch](https://github.com/mapbox/pixelmatch)、[Argos](https://argos-ci.com/) | 复用算法，自研判定 | 能够对静态画面完成视觉定位与操作，并准确验证前后状态；需要连续时间信息时升级 T4 |
+| **T4** | agent-browser 视频录制机制、自研动态视觉调度、CDP Animation、[rrweb](https://www.rrweb.io/)、按需 FFmpeg / [OpenCV](https://opencv.org/) | 复用采集，自研时序验证 | 可以根据连续帧判断动态交互的结果，并输出带时间戳的可复现证据 |
+
+回退链的执行逻辑：Agent 接收调试任务后，根据任务目标选择成本最低的适用层级；经**操作验证 + 缺陷归因 + 证据输出**后，当前层级无法获得必要证据时按需升级或跳转。回退策略遵守四条规则：
+
+1. **按需选择。** 网络异常优先 T1，按钮交互优先 T2，布局错误可以直接 T3。
+2. **逐级升级是默认策略，允许跳级。** 已明确需要连续动态画面时，可以直接进入 T4。
+3. **区分工具失败和产品缺陷。** 定位器失效可以重试或升级；业务断言失败应当记录缺陷，不能通过回退掩盖。
+4. **证据跨层级复用。** T1 的 Network 数据、T2 的元素 Ref、T3 的截图及 T4 的关键帧都应该归属于同一次调试任务。
 
 适配器先报告可用能力；Agent 选取**足以满足当前断言、且成本较低的可靠路径**。操作失败或信息不足时再切换/回退。涉及实际界面外观和交互的验收，仍然必须取得相应的 UI 观察证据，不能把 T1 接口调用成功误报成 UI 测试成功。
 
@@ -137,7 +153,7 @@ flowchart TD
 
 ### 保留原来的共享浏览器能力
 
-原来的浏览器工作区设计依然是重要基础：
+原来的浏览器工作区设计依然是重要基础。**本轮已实现的是「按 DSH 工作区隔离 page」**：同一时刻一个 Chromium/profile、每个工作区独立 page/URL/viewport/history/网络缓冲/租约；多标签页、独立 BrowserContext 与跨工作区 Cookie/存储隔离仍是规划，不在本轮实现。
 
 - 一个经过授权的 **Browser Workspace** 可以管理多个标签页，支持明确的标签页访问权限与写入租约。
 - 同一个经过授权的 `BrowserContext` 内，标签页可以共享适用的 Cookie 和同源存储；不同上下文默认隔离。共享 Cookie 不保证所有网站都能自动登录。

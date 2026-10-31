@@ -35,7 +35,7 @@ This project aims to provide:
 
 | Environment | Current status | Candidate integration approach | Intended coverage |
 | --- | --- | --- | --- |
-| **Web** (Chromium) | **T1 implemented**; T2–T4 not implemented (debug view available) | Chromium, Chrome DevTools Protocol (CDP), DOM/accessibility APIs | Navigation, forms, responsive layouts, console/network inspection, screenshots and interactions |
+| **Web** (Chromium) | **T1 implemented** with per-DSH-workspace page isolation (one shared Chromium/profile; Cookie/storage shared); T2–T4 not implemented (debug view available) | Chromium, Chrome DevTools Protocol (CDP), DOM/accessibility APIs | Navigation, forms, responsive layouts, console/network inspection, screenshots and interactions |
 | **Windows desktop** | Planned, not implemented (picker disabled) | Windows UI Automation (UIA) and platform-approved input/capture mechanisms | Native controls, window state, user journeys, screenshots |
 | **Linux desktop** | Planned, not implemented (picker disabled) | Accessibility interfaces and compositor/desktop-specific automation | Native controls and GUI workflows; actual coverage depends on X11/Wayland and permissions |
 | **macOS desktop** | Planned, not implemented (picker disabled) | macOS Accessibility (AXUIElement) plus system capture/input APIs (TCC authorization required) | Native controls, window state, user journeys, screenshots; full unattended automation is not an initial commitment |
@@ -76,16 +76,32 @@ The following list is a **target specification**, not an implemented feature lis
 | **Animation verification** | Sample state and frames over time, check transitions/timing/layout stability against explicit acceptance criteria |
 | **Reproducibility** | Record environment metadata, steps, test artifacts, failure evidence, and replay limitations |
 
-## T1–T4: capability-aware interaction and observation
+## T1–T4: capability-aware selection and stepwise fallback
 
-This is the structured-first strategy we intend to follow. **T1–T4 are selection and fallback levels, not a pipeline that must be walked in order.** The four levels are currently defined **for the Web target only**; desktop, Android, TUI, HarmonyOS, games, 3D and other targets have no agreed tier model yet, and their implementation paths must not be inferred from this Web stack.
+This is the structured-first strategy we intend to follow. **T1–T4 are selection and fallback levels, not a pipeline that must be walked in order.** They are this plugin's own **debugging-capability tiers**, not an industry standard: every level must be callable on its own and can serve as the fallback source of the level above it. The four levels are currently defined **for the Web target only**; desktop, Android, TUI, HarmonyOS, games, 3D and other targets have no agreed tier model yet, and their implementation paths must not be inferred from this Web stack.
 
-| Level | Recommended stack | Core capabilities | References | Implementation strategy |
-| --- | --- | --- | --- | --- |
-| **T1 Programmatic interface** | Playwright APIRequestContext + CDP Runtime / Input / Network | HTTP APIs, JS execution, native events, network capture, CSSOM | [Playwright](https://playwright.dev/), [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) | Reuse directly |
-| **T2 Structured GUI** | Playwright Locator / ARIA Snapshot + CDP DOM / Accessibility / Overlay | DOM tree, Shadow DOM, element picking, structured targeting, layout properties | [Playwright MCP](https://github.com/microsoft/playwright-mcp), agent-browser | Reuse + unified node protocol |
-| **T3 Static visual understanding** | Playwright Screenshot + [Sharp](https://sharp.pixelplumbing.com/) + [Pixelmatch](https://github.com/mapbox/pixelmatch) + VLM | Screenshots, region zoom, pixel diff, layout defects, visual-semantic judgement | Sharp, Pixelmatch, [Argos](https://argos-ci.com/) | Reuse algorithms, own the verdicts |
-| **T4 Dynamic visual understanding** | Web Animations API + CDP Animation / Screencast + Sharp; FFmpeg / [OpenCV](https://opencv.org/) on demand | Animation timelines, frame sequences, fades, motion paths, jank analysis | CDP Animation, [rrweb](https://www.rrweb.io/), OpenCV | Reuse capture, own the temporal verification |
+| Level | Formal name | Core technology | Primary debugging capability | Trigger / escalation | Relative cost |
+| --- | --- | --- | --- | --- | --- |
+| **T1** | Programmatic debugging | CDP, HTTP, Fetch, JavaScript, Network, Console | API requests, network capture, JS execution, exception detection, resource loading, state inspection, performance data | Default first choice; escalate to T2 when page elements must be operated | Low |
+| **T2** | Structured GUI debugging | DOM, Accessibility Tree, ARIA, Snapshot, Locator, Ref | Element targeting, clicking, typing, scrolling, forms, interaction tests, node state, structured evidence | Escalate to T3 when reliable structured targeting cannot complete the operation, or visual judgement is required | Low–medium |
+| **T3** | Static visual debugging | Screenshot, Computer Vision, coordinate actions, image diff | UI layout, colour, occlusion, styling defects, Canvas, charts, operating on static screenshots | Escalate to T4 when continuous motion, animation or time-state judgement is required | High |
+| **T4** | Dynamic visual debugging | Screencast, frame sequences, timestamps, visual reasoning, mouse/keyboard events | Animation, dragging, complex dynamic widgets, transition states, continuous frame analysis | Highest level: on failure emit diagnostics and leave the verdict to the agent or a human | Highest |
+
+Scope and completion bar per level ("Primary references" is a comparison shortlist, not a set of selected dependencies or finished integrations):
+
+| Level | Primary references | Implementation strategy | Completion bar |
+| --- | --- | --- | --- |
+| **T1** | [Playwright](https://playwright.dev/) MCP, agent-browser, [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) | Reuse directly | Complete page and API diagnosis without visual understanding, and hand the same browser session to T2 |
+| **T2** | ego-lite, agent-browser, [Playwright MCP](https://github.com/microsoft/playwright-mcp) | Reuse + unified node protocol | Reliable structured discovery, targeting, action and verification loop on ordinary Web pages, plus explicit detection of when vision is needed |
+| **T3** | Playwright MCP Vision, agent-browser, [Sharp](https://sharp.pixelplumbing.com/), [Pixelmatch](https://github.com/mapbox/pixelmatch), [Argos](https://argos-ci.com/) | Reuse algorithms, own the verdicts | Visual targeting and actions on a static frame with accurate before/after verification; escalate to T4 when continuous time information is needed |
+| **T4** | agent-browser video recording, in-house dynamic-visual scheduling, CDP Animation, [rrweb](https://www.rrweb.io/), FFmpeg / [OpenCV](https://opencv.org/) on demand | Reuse capture, own the temporal verification | Judge the result of a dynamic interaction from a frame sequence and emit timestamped, reproducible evidence |
+
+Fallback chain: the agent receives a debugging task and picks the lowest-cost suitable level; after **action verification + defect attribution + evidence output**, it escalates or jumps when the current level cannot produce the required evidence. The fallback strategy obeys four rules:
+
+1. **Choose by need.** Network faults start at T1, button interaction at T2, layout errors may go straight to T3.
+2. **Stepwise escalation is the default, skipping is allowed.** When continuous dynamic frames are clearly required, go straight to T4.
+3. **Separate tool failure from product defects.** A broken locator may be retried or escalated; a failed business assertion must be recorded as a defect and never masked by a fallback.
+4. **Reuse evidence across levels.** T1 network data, T2 element refs, T3 screenshots and T4 key frames all belong to the same debugging task.
 
 An adapter advertises its capabilities. The agent selects the **lowest-cost dependable method suitable for the assertion** and can escalate when a method is unavailable or inconclusive. UI-specific acceptance criteria still require UI-level observations; a successful T1 call is never silently treated as a visual test pass.
 
