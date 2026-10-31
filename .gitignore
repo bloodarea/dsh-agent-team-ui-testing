@@ -1,3 +1,2 @@
-# Acceptance runs are regenerated on every test run (reports, screenshots, logs).
-# Curated final evidence lives in tests/acceptance/evidence/.
 tests/acceptance/runs/
+reference/

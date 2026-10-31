@@ -16,7 +16,7 @@ skills/ui-testing/    内置 Skill（SKILL.md + references/examples/templates/kn
 tests/ui_test_exam/   插件自身能力的对照测试靶机（20 处预设缺陷），见该目录 README
 tests/ui_test_fixture/ 自建授权本地靶机（确定性断言值），供验收脚本使用
 tests/acceptance/     真实验收脚本：fake ctx 驱动 index.js、帧推送/轮询、能力台账检查、Skill 注册检查
-reference/            参考资产（内置 Skill 模板包 v1.1，见 skill-authoring.md）
+reference/            本地参考资产（Skill 模板包 v1.1）**不入库**：已进 .gitignore，见 skill-authoring.md
 docs/                 项目记忆（本目录）
 ```
 

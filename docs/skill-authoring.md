@@ -4,7 +4,7 @@
 
 ## 两个位置，别混淆
 
-- **模板**：`reference/skill-template-v1.1/`，一套**编写插件内置 Skill 的参考模板**，不是已启用的 Skill，也不是可运行的插件。入口 `reference/skill-template-v1.1/README_TEMPLATE.md`。
+- **模板**：`reference/skill-template-v1.1/`，一套**编写插件内置 Skill 的参考模板**，不是已启用的 Skill，也不是可运行的插件。入口 `reference/skill-template-v1.1/README_TEMPLATE.md`。该目录**不入库**（已在 `.gitignore`），只存在于本地工作区；从远端克隆的仓库没有它。
 - **已落地实现**：`skills/ui-testing/`（27 个文件）随插件发布，由 `index.js` 的 `ctx.inject(['skills'], …)` 注册为 `ui-testing`。运行时 Agent 通过 `skill` 工具加载正文，`resourceBase` 指向该目录，可再按需读取 `references/` 等资源。
 
 模板自带 `knowledge/`、`manifests/` 在落地时被收进 `skills/ui-testing/` 内部（`skills/ui-testing/knowledge/…`、`skills/ui-testing/manifests/…`），这样 `package.json` 只需 `files: ["skills/**"]` 就能整包发布，不用在仓库根再加两个目录。
