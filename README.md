@@ -1,12 +1,12 @@
 # dsh-agent-team-ui-testing
 
 **AI-native, cross-platform UI testing for DeepSeekHarness.**  
-Help AI agents operate, inspect, test, and verify Web, desktop, and Android interfaces—with evidence humans can review.
+Help AI agents operate, inspect, test, and verify Web, desktop, Android, TUI and 3D interfaces—with evidence humans can review.
 
 **English** | [简体中文](README_zh.md)
 
 > [!IMPORTANT]
-> **Project status: architecture / pre-release.** This repository currently documents a proposed design, not a released or verified plugin. All capabilities below are **planned** unless explicitly marked otherwise. There is no verified installation command, compatibility matrix, or published release yet. This README describes intended behavior, not completed tests.
+> **Project status: architecture / pre-release.** This repository now contains a working **Web T1 debug-view plugin** (linked locally, not published to npm; verification state in [docs/status.md](docs/status.md)); other runtime environments remain planned. All other capabilities below are **planned** unless explicitly marked otherwise. There is still no published installation package, compatibility matrix, or official release. This README describes intended behavior, not completed tests.
 
 ## What is this?
 
@@ -14,7 +14,7 @@ Help AI agents operate, inspect, test, and verify Web, desktop, and Android inte
 
 The project evolves from the earlier **`dsh-agent-team-browser`** concept, whose original focus was shared Chromium workspaces. **The browser workspace remains part of the plan**, but becomes one adapter within a broader UI testing runtime.
 
-**Primary targets:** Web (Chromium), Windows/Linux desktop applications, and Android applications. Other platforms may be evaluated later.
+**Planned runtime environments (9):** Web, Windows desktop, Linux desktop, macOS desktop, Android, TUI, HarmonyOS, games, and 3D. Only the **Web T1 programmatic channel** is implemented and verified on an isolated DSH instance; the other eight environments are **planned and not implemented**, and stay disabled in the runtime picker.
 
 The `dsh-agent-team-*` name denotes the project family. **Agent Team and [`dsh-agent-team-presets`](https://github.com/bloodarea/dsh-agent-team-presets) are optional:** a single agent should be able to use the testing runtime independently.
 
@@ -33,16 +33,21 @@ This project aims to provide:
 
 ## Planned scope
 
-| Target | Candidate integration approach | Intended coverage |
-| --- | --- | --- |
-| **Web** | Chromium, Chrome DevTools Protocol (CDP), DOM/accessibility APIs | Navigation, forms, responsive layouts, console/network inspection, screenshots and interactions |
-| **Windows desktop** | Windows UI Automation (UIA) and platform-approved input/capture mechanisms | Native controls, window state, user journeys, screenshots |
-| **Linux desktop** | Accessibility interfaces and compositor/desktop-specific automation | Native controls and GUI workflows; actual coverage depends on X11/Wayland and permissions |
-| **Android** | ADB, UI hierarchy/UiAutomator-style capabilities, device screenshots/input | Activities, navigation, controls, permission-aware device workflows |
+| Environment | Current status | Candidate integration approach | Intended coverage |
+| --- | --- | --- | --- |
+| **Web** (Chromium) | **T1 implemented**; T2–T4 not implemented (debug view available) | Chromium, Chrome DevTools Protocol (CDP), DOM/accessibility APIs | Navigation, forms, responsive layouts, console/network inspection, screenshots and interactions |
+| **Windows desktop** | Planned, not implemented (picker disabled) | Windows UI Automation (UIA) and platform-approved input/capture mechanisms | Native controls, window state, user journeys, screenshots |
+| **Linux desktop** | Planned, not implemented (picker disabled) | Accessibility interfaces and compositor/desktop-specific automation | Native controls and GUI workflows; actual coverage depends on X11/Wayland and permissions |
+| **macOS desktop** | Planned, not implemented (picker disabled) | macOS Accessibility (AXUIElement) plus system capture/input APIs (TCC authorization required) | Native controls, window state, user journeys, screenshots; full unattended automation is not an initial commitment |
+| **Android** | Planned, not implemented (picker disabled) | ADB, UI hierarchy/UiAutomator-style capabilities, device screenshots/input | Activities, navigation, controls, permission-aware device workflows |
+| **TUI** | Planned, not implemented (picker disabled) | Pseudo-terminal (PTY/termios) and terminal buffer capture (to be validated) | Terminal sessions, key input, screen-content assertions |
+| **HarmonyOS** | Planned, not implemented (picker disabled) | HDC and platform UI inspection/input interfaces (to be evaluated) | Application/atomic-service UI, navigation, controls, device workflows |
+| **Games** | Planned, not implemented (picker disabled) | Engine/platform debug and input interfaces (evaluated per engine) | Runtime state, input, scene and frame evidence |
+| **3D** | Planned, not implemented (picker disabled) | WebGL/graphics APIs and scene-state access (to be evaluated) | Viewpoint/scene assertions, frame evidence |
 
-These technologies are **candidates, not selected dependencies or verified integrations**. An adapter must report its available operations instead of pretending every platform supports the same functions.
+These technologies are **candidates, not selected dependencies or verified integrations**. Apart from Web T1, no capability-tier model is defined for the other environments (T1–T4 currently apply to Web only). An adapter must report its available operations instead of pretending every platform supports the same functions.
 
-**Not included in the initial commitment:** macOS/iOS automation, unrestricted OS control, bypassing CAPTCHA or application security restrictions, or guarantees of background input on every native platform.
+**Not included in the initial commitment:** iOS automation, fully unattended macOS automation (accessibility/TCC constraints), unrestricted OS control, bypassing CAPTCHA or application security restrictions, guarantees of background input on every native application, or generic game/3D automation (evaluated per engine and graphics stack).
 
 ## Key design principles
 
@@ -73,7 +78,7 @@ The following list is a **target specification**, not an implemented feature lis
 
 ## T1–T4: capability-aware interaction and observation
 
-This is the structured-first strategy we intend to follow. **T1–T4 are selection and fallback levels, not a pipeline that must be walked in order.** The four levels are currently defined **for the Web target only**; desktop, Android and other targets have no agreed tier model yet, and their implementation paths must not be inferred from this Web stack.
+This is the structured-first strategy we intend to follow. **T1–T4 are selection and fallback levels, not a pipeline that must be walked in order.** The four levels are currently defined **for the Web target only**; desktop, Android, TUI, HarmonyOS, games, 3D and other targets have no agreed tier model yet, and their implementation paths must not be inferred from this Web stack.
 
 | Level | Recommended stack | Core capabilities | References | Implementation strategy |
 | --- | --- | --- | --- | --- |
@@ -175,6 +180,8 @@ These are **planned work items**, not claims of completion. Ordering may change 
 - [ ] **R6 — Visual tests:** verify responsive UI, state comparison, timed animation observations, and uncertainty handling.
 - [ ] **R7 — Hardening:** run security, privacy, resource, crash/recovery, and cross-platform regression tests.
 - [ ] **R8 — Release:** publish a reproducible build, pinned DSH compatibility, verified installation instructions, and acceptance evidence.
+
+The remaining planned environments (macOS desktop, TUI, HarmonyOS, games, 3D) have no separate milestones yet; they are evaluated and ordered later by demand and platform feasibility, and are currently **not implemented** and disabled in the runtime picker.
 
 A milestone is complete only after its implementation and tests are publicly verifiable. No test should be marked passed without actual execution evidence.
 
