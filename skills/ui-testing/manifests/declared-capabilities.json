@@ -1,36 +1,164 @@
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
   "capture_p0": {
     "contract": "docs/capture-p0.md",
     "status": "partial",
     "verified_scope": "当前默认暂存修订C1–C14，Lead串行14/14、142/142、0失败、exit0；此前115/117保留历史，不代表宿主重载或provider视觉",
-    "final_reports": {"capture":"tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json","result":"14/14、142/142、0失败、exit0；C14+23、C1+2","t1":"tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json:22/22、324/324、exit0","t1_flake":"tests/acceptance/runs/2026-11-01T05-59-53-185Z-105978/run-report.json:22 probes/21 PASS/1 FAIL；323/324 required通过、1 failed、exit1","t1_baseline":"tests/acceptance/runs/2026-11-01T04-30-43-916Z-53146/run-report.json:同项P21-host-output-contract loadingFailed快照失败，actual仅3条成功记录","t1_interpretation":"两次行为实现相同仅persist描述文案差异；既有环境flake随机复现，Lead判非P0回归；失败不能记PASS，验收需串行但不保证flake消失","t2":"tests/acceptance/runs/2026-11-01T06-01-14-788Z-107358/run-report.json:37/38+1 NOT_RUN、260/260、exit0","unit":"26/26","faults":"16/16","documentChecks":"文档后Skill/registry由Lead最终复核"},
-    "file": {"pathKind":["relative","absolute"],"persistence":["persistent","staging"],"root":["workspace","env","staging"],"ephemeral":"staging=true/persistent=false","observed":"仅{persistence,relativePath}; staging relativePath=null，不暴露绝对路径"},
+    "final_reports": {
+      "capture": "tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json",
+      "result": "14/14、142/142、0失败、exit0；C14+23、C1+2",
+      "t1": "tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json:22/22、324/324、exit0",
+      "t1_flake": "tests/acceptance/runs/2026-11-01T05-59-53-185Z-105978/run-report.json:22 probes/21 PASS/1 FAIL；323/324 required通过、1 failed、exit1",
+      "t1_baseline": "tests/acceptance/runs/2026-11-01T04-30-43-916Z-53146/run-report.json:同项P21-host-output-contract loadingFailed快照失败，actual仅3条成功记录",
+      "t1_interpretation": "两次行为实现相同仅persist描述文案差异；既有环境flake随机复现，Lead判非P0回归；失败不能记PASS，验收需串行但不保证flake消失",
+      "t2": "tests/acceptance/runs/2026-11-01T06-01-14-788Z-107358/run-report.json:37/38+1 NOT_RUN、260/260、exit0",
+      "unit": "26/26",
+      "faults": "16/16",
+      "documentChecks": "文档后Skill/registry由Lead最终复核",
+      "t3": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json:criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0",
+      "t3_rerun": "tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json:同结果（criteria 56/56、389/389、exit0）",
+      "t1_latest": "tests/acceptance/runs/2026-11-01T07-31-29-210Z-168725/run-report.json:22/22、324/324、exit0（工具面 22）",
+      "t2_latest": "tests/acceptance/runs/2026-11-01T07-33-10-505Z-170262/run-report.json:37/38+1 NOT_RUN、260/260、exit0（工具面 22）",
+      "capture_latest": "tests/acceptance/runs/capture-p0-2026-11-01T07-35-21-142Z-176846/report.json:14/14、142/142、exit0",
+      "units_latest": "vision 算法 36/36、基线 52/52、capture 26/26、runtime-faults 16/16",
+      "other": "P0单测26/26、faults16/16、skill26/26、registry17/17（T3 收口时点）；无仓库output/PNG残留；此前115/117项与T1 P21 flake均属增量前历史"
+    },
+    "file": {
+      "pathKind": [
+        "relative",
+        "absolute"
+      ],
+      "persistence": [
+        "persistent",
+        "staging"
+      ],
+      "root": [
+        "workspace",
+        "env",
+        "staging"
+      ],
+      "ephemeral": "staging=true/persistent=false",
+      "observed": "仅{persistence,relativePath}; staging relativePath=null，不暴露绝对路径"
+    },
     "lifecycle": "默认staging插件实例级tmp目录，dispose清理；持久不清理；暂存失败file=null+capture_file_unavailable仍交付图；legacy默认暂存，持久无根OUTPUT_PATH_INVALID(root_unknown)",
     "reports": [
       "tests/acceptance/runs/capture-p0-2026-11-01T04-57-34-532Z-65733/report.json",
       "tests/acceptance/runs/capture-p0-2026-11-01T04-58-28-002Z-66463/report.json",
       "tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json"
     ],
-    "final_lead_serial": {"capture_reports":["tests/acceptance/runs/capture-p0-2026-11-01T05-15-01-055Z-85097/report.json","tests/acceptance/runs/capture-p0-2026-11-01T05-15-05-476Z-85616/report.json"],"result":"两次13/13、117/117、0 failed、exit0","t1":"tests/acceptance/runs/2026-11-01T05-15-09-827Z-86138/run-report.json:22/22、324/324","t2":"tests/acceptance/runs/2026-11-01T05-17-06-786Z-87684/run-report.json:37/38+1 NOT_RUN、260/260","other":"P0单测26/26、faults16/16、skill25/25、registry17/17；无仓库output/PNG残留；此前115项属增量前历史"},
-    "maxDelta_increment": {"report":"tests/acceptance/runs/capture-p0-2026-11-01T05-09-04-665Z-79630/report.json","result":"13/13 probes、117/117 requiredChecks、0 failedChecks、exit0","field":"公开capture.anomaly.maxDelta：checked=false为null；checked=true为相对首像素最大通道差，白页0/内容页255；此前三份115项为增量前"},
-    "regression": {"report":"tests/acceptance/runs/2026-11-01T04-59-29-531Z-68121/run-report.json","result":"22/22 probes、324/324 requiredChecks、exit0"},
-    "parameters": {"scaleRange":[1,4],"scaleContinuous":true,"defaultScale":1,"coordinateSpace":"document-css-px","maxOutputPixels":16000000,"persist":{"type":"boolean","default":false},"out":"persistent-root-relative POSIX .png; 提供即持久"},
-    "output": {"persistRules":["out","persist:true","DSH_UI_TESTING_CAPTURE_DIR"],"defaultMode":"staging","stagingRoot":"<tmp>/dsh-ui-testing-capture-*","workspaceRoot":"<workspace>","directory":"output/capture","env":"DSH_UI_TESTING_CAPTURE_DIR","mode":"0600","noClobber":true,"ephemeral":true},
+    "final_lead_serial": {
+      "capture_reports": [
+        "tests/acceptance/runs/capture-p0-2026-11-01T05-15-01-055Z-85097/report.json",
+        "tests/acceptance/runs/capture-p0-2026-11-01T05-15-05-476Z-85616/report.json"
+      ],
+      "result": "两次13/13、117/117、0 failed、exit0",
+      "t1": "tests/acceptance/runs/2026-11-01T05-15-09-827Z-86138/run-report.json:22/22、324/324",
+      "t2": "tests/acceptance/runs/2026-11-01T05-17-06-786Z-87684/run-report.json:37/38+1 NOT_RUN、260/260",
+      "other": "P0单测26/26、faults16/16、skill25/25、registry17/17；无仓库output/PNG残留；此前115项属增量前历史"
+    },
+    "maxDelta_increment": {
+      "report": "tests/acceptance/runs/capture-p0-2026-11-01T05-09-04-665Z-79630/report.json",
+      "result": "13/13 probes、117/117 requiredChecks、0 failedChecks、exit0",
+      "field": "公开capture.anomaly.maxDelta：checked=false为null；checked=true为相对首像素最大通道差，白页0/内容页255；此前三份115项为增量前"
+    },
+    "regression": {
+      "report": "tests/acceptance/runs/2026-11-01T04-59-29-531Z-68121/run-report.json",
+      "result": "22/22 probes、324/324 requiredChecks、exit0"
+    },
+    "parameters": {
+      "scaleRange": [
+        1,
+        4
+      ],
+      "scaleContinuous": true,
+      "defaultScale": 1,
+      "coordinateSpace": "document-css-px",
+      "maxOutputPixels": 16000000,
+      "persist": {
+        "type": "boolean",
+        "default": false
+      },
+      "out": "persistent-root-relative POSIX .png; 提供即持久"
+    },
+    "output": {
+      "persistRules": [
+        "out",
+        "persist:true",
+        "DSH_UI_TESTING_CAPTURE_DIR"
+      ],
+      "defaultMode": "staging",
+      "stagingRoot": "<tmp>/dsh-ui-testing-capture-*",
+      "workspaceRoot": "<workspace>",
+      "directory": "output/capture",
+      "env": "DSH_UI_TESTING_CAPTURE_DIR",
+      "mode": "0600",
+      "noClobber": true,
+      "ephemeral": true
+    },
     "evidence": "capture.version=1: request/environment/png/expected/sizeCheck/mapping/anomaly/file/delivery/warnings; JSON mapping/formulas; pageDPR未知null、受控DSF1来源runtime-override；headlessSource=product|userAgent|null；≤16M像素全量扫描；capabilities.capture/limits.capture不启动，observed仅上次真实截图",
     "delivery": "原始PNG/base64与file相同字节/hash；compare=attachment-metadata，缺失字段不推断相同；false仅未观测到降采样/重编码",
-    "warnings": ["content_uniform","content_transparent","model_image_downscaled","attachment_reencoded","blank_check_skipped","capture_file_unavailable","attachment_unavailable","capture_beyond_viewport"],
-    "error_taxonomy": {"CAPTURE_FAILED":["capture",true],"INVALID_PNG":["capture",false],"CAPTURE_SIZE_MISMATCH":["capture",false],"CAPTURE_UPSCALED":["capture",false],"CAPTURE_TOO_LARGE":["resource",false],"OUTPUT_PATH_INVALID":["input",false],"OUTPUT_EXISTS":["output",false],"OUTPUT_WRITE_FAILED":["output",true]},
+    "warnings": [
+      "content_uniform",
+      "content_transparent",
+      "model_image_downscaled",
+      "attachment_reencoded",
+      "blank_check_skipped",
+      "capture_file_unavailable",
+      "attachment_unavailable",
+      "capture_beyond_viewport"
+    ],
+    "error_taxonomy": {
+      "CAPTURE_FAILED": [
+        "capture",
+        true
+      ],
+      "INVALID_PNG": [
+        "capture",
+        false
+      ],
+      "CAPTURE_SIZE_MISMATCH": [
+        "capture",
+        false
+      ],
+      "CAPTURE_UPSCALED": [
+        "capture",
+        false
+      ],
+      "CAPTURE_TOO_LARGE": [
+        "resource",
+        false
+      ],
+      "OUTPUT_PATH_INVALID": [
+        "input",
+        false
+      ],
+      "OUTPUT_EXISTS": [
+        "output",
+        false
+      ],
+      "OUTPUT_WRITE_FAILED": [
+        "output",
+        true
+      ]
+    },
     "observed": "default1280x800; scale2=2560x1600; 101x50@1.11=112x56; headless=true/source=userAgent; C13 scroll/viewport/red/green/fixed rect前后不变",
-    "unverified": ["tmp不可写真实失败场景NOT_RUN","SIGKILL/崩溃暂存残留不保证","P0真实宿主重启加载与新会话调用NOT_RUN","provider视觉与最终图像尺寸NOT_RUN","canvas/WebGL内部源位图细节不会增加","C13不排除截图期间瞬时LBI","本地恶意进程TOCTOU未解决，非完整文件系统隔离"],
+    "unverified": [
+      "tmp不可写真实失败场景NOT_RUN",
+      "SIGKILL/崩溃暂存残留不保证",
+      "P0真实宿主重启加载与新会话调用NOT_RUN",
+      "provider视觉与最终图像尺寸NOT_RUN",
+      "canvas/WebGL内部源位图细节不会增加",
+      "C13不排除截图期间瞬时LBI",
+      "本地恶意进程TOCTOU未解决，非完整文件系统隔离"
+    ],
     "tiers_unchanged": "T3/T4 unsupported; no visual diff, thresholds, VLM or temporal analysis"
   },
-  "notice": "开发事实快照，不是运行时可用性声明。**注册表与 browser_capabilities 的实际结果优先于本文件与任何静态文档**。工具面 16 个 = T1 9 个（含独立 HTTP browser_http_request）+ T2 7 个（browser_snapshot/click/type/scroll/fill_form/node_state/wait_for）。T2 接口按 docs/t2-structured-gui.md（契约权威），当前为**优化构建**（快照冗余文本压缩 + `browser_scroll` 不自动滚入/稳定性硬化）：进程内套件 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json` 探针 38（pass 37 / fail 0 / notRun 1 = C38 套件边界）、必需检查 **260/260**、exit 0；真实宿主记录 `tests/acceptance/evidence/t2-real-host-2026-11-01.md` 的 14 行检查属**优化前构建**（pid <pid>，10:40:04 重载），已标「待真实宿主定向复验」，不得写成优化后已验。因此 7 个 web.t2.* 与聚合项 web.t2.structured-dom 记 verified（限于进程内 260 项 + 优化前真实宿主 14 行覆盖的行为）；未验证：优化构建的真实宿主定向复验 5 项、provider 图像可见性、仅 advisory 覆盖的 closed-shadow 不产生 ref 分支。",
+  "notice": "开发事实快照，不是运行时可用性声明。**注册表与 browser_capabilities 的实际结果优先于本文件与任何静态文档**。工具面 22 个 = T1 9 个（含独立 HTTP browser_http_request）+ T2 7 个（browser_snapshot/click/type/scroll/fill_form/node_state/wait_for）+ T3 6 个（browser_vision_image/find/compare/act/baseline/check）。T2 接口按 docs/t2-structured-gui.md（契约权威），当前为**优化构建**（快照冗余文本压缩 + `browser_scroll` 不自动滚入/稳定性硬化）：进程内套件 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json` 探针 38（pass 37 / fail 0 / notRun 1 = C38 套件边界）、必需检查 **260/260**、exit 0；真实宿主记录 `tests/acceptance/evidence/t2-real-host-2026-11-01.md` 的 14 行检查属**优化前构建**（pid <pid>，10:40:04 重载），已标「待真实宿主定向复验」，不得写成优化后已验。因此 7 个 web.t2.* 与聚合项 web.t2.structured-dom 记 verified（限于进程内 260 项 + 优化前真实宿主 14 行覆盖的行为）；未验证：优化构建的真实宿主定向复验 5 项、provider 图像可见性、仅 advisory 覆盖的 closed-shadow 不产生 ref 分支。 T3 静态视觉已实现并通过进程内验收：`tests/acceptance/t3-vision.mjs` criteria 56/56、requiredChecks **389/389**、failedChecks 0、notApplicable 3（均带 reason）、exit 0（报告 `tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json`，执行者复跑 `tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json` 同结果）；6 个 web.t3.* 与聚合项 web.t3.static-vision 记 verified。**真实宿主重载、provider 图像可见性、T4 与上述 3 条 N/A 仍未验证**，不得由进程内套件推定。",
   "platform": "web",
-  "tier": "T1+T2",
+  "tier": "T1+T2+T3",
   "runtime_authority": "Agent 当前工具注册表决定可调用名字；browser_capabilities 根据实际运行态返回 available/unavailable/unsupported；browser_state 只诊断运行态。静态 tier/台账/本 manifest 都不构成可用性证明。",
   "source": "接口与限额来自 docs/t2-structured-gui.md §2/§3/§4/§5/§6（Lead 裁决的权威契约）；T1 事实来自 index.js 注册表与 Runtime 实现；不使用漂移行号",
-  "evidence": "T2 优化构建（进程内，Lead 独立复跑 exit 0）: node tests/acceptance/t2-structured.mjs → `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`：probes 38（pass 37 / fail 0 / notRun 1 = C38 §9.38）、requiredChecks **260/260**（此前 233；C4 24、C6 8、C25 18、C26 8）、criteriaCovered 38、findings 5（info/advisory）、exit 0。优化效果（同一 /web-t2.html、默认参数，两次捕获 tree/digest 一致）：nodeCount 421→275（−34.7%）、tree UTF-8 14432→9254（−35.9%）、`- text` 行 232→91。T1 回归: node tests/acceptance/run.mjs → `tests/acceptance/runs/2026-11-01T03-41-59-200Z-41002/run-report.json`：22/22 探针、324/324、findings 1（info: P20 unmodifiedText INCONCLUSIVE）、exit 0。runtime-faults 16/16、check-skill 25/25、check-skill-registry 17/17（均 exit 0）；`node --check` 与 `git diff --check` 通过（Lead 记录）。T2 真实宿主: `tests/acceptance/evidence/t2-real-host-2026-11-01.md` **14/14 检查行通过，但属优化前构建（pid <pid>）**；同文件已追加「优化构建复验（待真实宿主重载）」小节，列出待定向复验 5 项。历史真实宿主/套件：`runs/2026-10-31T19-25-29-077Z-54114`（233/233，优化前）、`runs/2026-10-31T19-26-07-741Z-55458`（T1 324/324）、团队复跑 `runs/2026-10-31T19-21-26-010Z-49307`、`runs/2026-10-31T19-22-02-871Z-50749`。注册面/能力报告实测（真实 Cordis + 真 SkillRegistry 挂载 index.js，未启动 Chromium）：注册 16 个工具；capabilities 返回 22 项能力与 limits.structuredGui。",
+  "evidence": "【T3 静态视觉（verified）】`node tests/acceptance/t3-vision.mjs`（Lead 串行复跑，同一最终代码）→ `tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json`：criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0；执行者复跑 `tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json` 同结果。回归：T1 `run.mjs` 22/22、324/324（`2026-11-01T07-31-29-210Z-168725`）；T2 `t2-structured.mjs` 37/38+1 NOT_RUN（C38 套件边界）、260/260（`2026-11-01T07-33-10-505Z-170262`）；P0 `capture-p0.mjs` 14/14、142/142（`capture-p0-2026-11-01T07-35-21-142Z-176846`）；单测 vision 36/36 + 基线 52/52、capture 26/26、runtime-faults 16/16；check-skill 26/26、registry 17/17。未验证：真实宿主重载、provider 图像可见性、T4、3 条 N/A（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups）、本地 TOCTOU/网络 FS CAS。【历史】以下 T2/T1/P0 记录保持原文（T2 优化构建时点，工具面当时为 16）。 T2 优化构建（进程内，Lead 独立复跑 exit 0）: node tests/acceptance/t2-structured.mjs → `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`：probes 38（pass 37 / fail 0 / notRun 1 = C38 §9.38）、requiredChecks **260/260**（此前 233；C4 24、C6 8、C25 18、C26 8）、criteriaCovered 38、findings 5（info/advisory）、exit 0。优化效果（同一 /web-t2.html、默认参数，两次捕获 tree/digest 一致）：nodeCount 421→275（−34.7%）、tree UTF-8 14432→9254（−35.9%）、`- text` 行 232→91。T1 回归: node tests/acceptance/run.mjs → `tests/acceptance/runs/2026-11-01T03-41-59-200Z-41002/run-report.json`：22/22 探针、324/324、findings 1（info: P20 unmodifiedText INCONCLUSIVE）、exit 0。runtime-faults 16/16、check-skill 25/25、check-skill-registry 17/17（均 exit 0）；`node --check` 与 `git diff --check` 通过（Lead 记录）。T2 真实宿主: `tests/acceptance/evidence/t2-real-host-2026-11-01.md` **14/14 检查行通过，但属优化前构建（pid <pid>）**；同文件已追加「优化构建复验（待真实宿主重载）」小节，列出待定向复验 5 项。历史真实宿主/套件：`runs/2026-10-31T19-25-29-077Z-54114`（233/233，优化前）、`runs/2026-10-31T19-26-07-741Z-55458`（T1 324/324）、团队复跑 `runs/2026-10-31T19-21-26-010Z-49307`、`runs/2026-10-31T19-22-02-871Z-50749`。注册面/能力报告实测（真实 Cordis + 真 SkillRegistry 挂载 index.js，未启动 Chromium）：注册 16 个工具；capabilities 返回 22 项能力与 limits.structuredGui。",
   "observations": [
     {
       "id": "t2-suite-green",
@@ -45,7 +173,7 @@
       "id": "real-host-verified",
       "scope": "§9.38 真实宿主会话（优化前构建）",
       "record": "tests/acceptance/evidence/t2-real-host-2026-11-01.md",
-      "result": "14/14 检查行通过（16 工具注册与 capabilities、snapshot 主文档/scope、可信 click、type、fill_form 7 字段、表单提交真值、toggle、wait text/textGone、文档与目标滚动、隐藏节点 node_state、覆盖目标 NOT_INTERACTABLE、导航后 REF_STALE、T1 未回归）",
+      "result": "14/14 检查行通过（T2 时点 16 工具注册与 capabilities、snapshot 主文档/scope、可信 click、type、fill_form 7 字段、表单提交真值、toggle、wait text/textGone、文档与目标滚动、隐藏节点 node_state、覆盖目标 NOT_INTERACTABLE、导航后 REF_STALE、T1 未回归）",
       "environment": "DSH 3080 pid <pid>（2026-11-01 10:40:04 重载）、<session-id>、scope <scope-id>（非 legacy）、fixture http://127.0.0.1:33631/web-t2.html",
       "build_scope": "**优化前构建**；本记录不能代表优化后的快照压缩与 scroll 行为",
       "boundary": "fake-ctx 套件内 C38 仍为 NOT_RUN（套件边界）；真实宿主证据以本记录为准",
@@ -81,8 +209,28 @@
     {
       "id": "capabilities-call-ok",
       "tool": "browser_capabilities",
-      "observation": "真实 Cordis + 真 SkillRegistry 挂载 index.js 后调用成功，返回 16 工具对应的 22 项能力与 limits.structuredGui（与契约 §5.3 一致）",
+      "observation": "真实 Cordis + 真 SkillRegistry 挂载 index.js 后调用成功，返回 22 工具对应的 28 项能力（12 T1 + 8 T2 + 7 T3 + 1 T4）与 limits.structuredGui（与契约 §5.3 一致）",
       "limits": "available 是设计级状态；行为验证以 T2 套件报告为准"
+    },
+    {
+      "id": "t3-suite-verified",
+      "suite": "t3-vision",
+      "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
+      "rerun": "tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json",
+      "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3、exit 0",
+      "notApplicable": [
+        "C25 DOM 小数 / Blink 截断：Chrome 对小数 clip 取 floor，Host 按 §3.1 以实际采样构造 mapping 并记录 sizeTolerance(±1px)",
+        "C30 inert hit-test：inert 子树不参与命中测试（elementFromPoint/CDP 均返回 BODY），该断言不适用",
+        "C31 页面级 downs/ups：取消路径的按钮释放由 CDP 层保证，页面计数不可稳定观测"
+      ],
+      "coverage": "C1 注册面/C2 纯参数预检、C3–C4 live 采集与小数、C5 scope 隔离、C12 image 裁剪+识别、C14/C48 find、C17/C22/C24/C40 compare 与 mask、C25–C31 act 六步、C35–C41 基线/回归/CAS/墓碑、C43–C49 六类缺陷与 facts、C51 output、C55 BUSY 隔离、C56 闭环",
+      "unverified": [
+        "真实宿主重载：需要隔离 DSH 实例加载终版 index.js 并在真实 Agent 会话复跑 T3 工具（本进程套件不能代替）",
+        "provider 图像可见性：附件元数据不能证明模型实际看到原分辨率图像（NOT_RUN）",
+        "T4 动态视觉（帧序列/动画时序/连续视觉推理）仍 unsupported",
+        "3 条 notApplicable：C25 DOM 小数 / Blink 截断行为、C30 inert 子树不参与 hit-test（elementFromPoint 与 CDP 均返回 BODY）、C31 页面级 downs/ups 计数（原因均已记录）",
+        "本地恶意进程 TOCTOU 与网络文件系统 HEAD CAS：基线/落盘守卫不是安全沙箱"
+      ]
     }
   ],
   "runtime_contract": {
@@ -217,7 +365,10 @@
   "limits": {
     "capture": {
       "source": "docs/capture-p0.md; runtime browser_capabilities.capture/limits.capture",
-      "scaleRange": [1,4],
+      "scaleRange": [
+        1,
+        4
+      ],
       "continuousScale": true,
       "maxOutputPixels": 16000000,
       "maxRegionPixels": 16000000,
@@ -229,8 +380,15 @@
       "coordinateSpace": "document-css-px",
       "staging": true,
       "persistParam": true,
-      "pathKind": ["relative","absolute"],
-      "persistRules": ["out","persist:true","DSH_UI_TESTING_CAPTURE_DIR"],
+      "pathKind": [
+        "relative",
+        "absolute"
+      ],
+      "persistRules": [
+        "out",
+        "persist:true",
+        "DSH_UI_TESTING_CAPTURE_DIR"
+      ],
       "observedPolicy": "首次null，仅真实截图；file只{persistence,relativePath|null}，staging不公开绝对路径；查询不启动/不创建暂存根"
     },
     "structuredGui": {
@@ -377,7 +535,7 @@
       "status": "partial",
       "tool": "browser_capabilities",
       "source_lines": "Runtime 能力探测 / browser_capabilities",
-      "constraints": "P0新增capture/limits.capture声明与上次真实截图observed（首次null），不启动/不夺租约；设计上不启动、不占租约；工具面 16 项（9 T1 + 7 T2），含 web.t1.http-request=available、web.t2.* 与 web.t2.structured-dom=available；未启动的页面工具可 available（按需启动可能失败）；其他 owner 占用时页面/network/T2 unavailable+BUSY、诊断与 HTTP 仍 available。实测可调用并返回 16 工具对应 22 项能力 + limits.structuredGui；available 只是设计级状态，行为验证看 T2 报告；固定映射见契约 §5.3。"
+      "constraints": "P0新增capture/limits.capture声明与上次真实截图observed（首次null），不启动/不夺租约；设计上不启动、不占租约；工具面 22 项（9 T1 + 7 T2 + 6 T3），含 web.t1.http-request=available、web.t2.* 与 web.t2.structured-dom=available；未启动的页面工具可 available（按需启动可能失败）；其他 owner 占用时页面/network/T2 unavailable+BUSY、诊断与 HTTP 仍 available。实测可调用并返回 16 工具对应 22 项能力 + limits.structuredGui；available 只是设计级状态，行为验证看 T2 报告；固定映射见契约 §5.3。"
     },
     {
       "id": "web.t1.http-request",
@@ -457,11 +615,88 @@
       "constraints": "无下载/上传/Cookie 导出/多标签页/frame 级目标；无 hover 专用工具、无 drag/drop、无原生 select popup/文件选择/JSDialog 接管/IME/composition/contenteditable 编辑器协议/截图 diff。"
     },
     {
+      "id": "web.t3.image",
+      "status": "verified",
+      "tool": "browser_vision_image",
+      "source_lines": "docs/t3-vision.md §2.2；index.js 工具注册 browser_vision_image",
+      "constraints": "source(默认live)/region(PixelRect)/resize(factor 1–4,nearest|bilinear)/preprocess(≤8)/annotations(≤64)/recognize/output。处理顺序固定：source→crop→resize→preprocess→统计+识别→标注→编码/校验/交付；分析与识别在标注前，regions 相对未标注图。无变换复用原 productId/原始 PNG；有变换 derived，标注另存未标注 derived 供 recognition 引用。返回 product/image/bytes/sha256/attachment*/file/analysis/recognition/evidence；无断言 verdict=INCONCLUSIVE(no-assertion)。",
+      "evidence": {
+        "suite": "tests/acceptance/t3-vision.mjs",
+        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
+        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+      }
+    },
+    {
+      "id": "web.t3.find",
+      "status": "verified",
+      "tool": "browser_vision_find",
+      "source_lines": "docs/t3-vision.md §2.3；index.js 工具注册 browser_vision_find",
+      "constraints": "query 必填：method=color/components/edges/template + minArea/maxResults；template 只接受 product/baseline 源且不大于搜索 ROI。region 先裁 ROI，FindResult 坐标始终相对完整源图（ROI 原点已回加），documentCss 由 mapping 映射；无匹配为成功空列表（不是 TARGET_NOT_FOUND）；candidates 非 DOM 身份、semanticName 恒 null；默认不生成图片/文件/product（live 源仍生成可引用源 product）。",
+      "evidence": {
+        "suite": "tests/acceptance/t3-vision.mjs",
+        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
+        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+      }
+    },
+    {
+      "id": "web.t3.compare",
+      "status": "verified",
+      "tool": "browser_vision_compare",
+      "source_lines": "docs/t3-vision.md §2.4/§4；index.js 工具注册 browser_vision_compare",
+      "constraints": "before/after 必须显式、两图必须同像素尺寸（否则 VISION_SIZE_MISMATCH）；region 为共同 PixelRect。YIQ 固定算法 yiq-v1（严格 >、白底合成、AA 3×3 排除、mask 并集不进分母）；masks 缺省继承 before 基线元数据、显式 [] 清空；options/thresholds 逐字段覆盖并返回 resolved*；全屏蔽抛 VISION_EMPTY_COMPARISON。输出完整尺寸 annotated diff PNG（红差异/黄AA/灰mask/蓝bbox）+ P0 落盘规则；similarity=1-D/C 不是语义相似度。",
+      "evidence": {
+        "suite": "tests/acceptance/t3-vision.mjs",
+        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
+        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+      }
+    },
+    {
+      "id": "web.t3.act",
+      "status": "verified",
+      "tool": "browser_vision_act",
+      "source_lines": "docs/t3-vision.md §6；index.js 工具注册 browser_vision_act",
+      "constraints": "productId/action(move|click|drag)/point 必填；drag 必须 to，move 禁止 button/clickCount/steps/durationMs，drag 禁止 clickCount，button 只对 click/drag。六步：现场 layout/scroll/visualViewport 复验（逐轴 ≤0.01、scale=1）→ 同矩形重采样解码 RGBA hash 比对 → 视口校验（不自动滚动）→ DOM.getNodeForLocation + connected/disabled/inert + 两帧 rAF 命中稳定 → CDP Input 真实派发（finally 释放按键）→ 单次 after product。失败零派发：VISION_STALE_IMAGE/VISION_HIT_MISMATCH/NOT_INTERACTABLE(outside-viewport)/UNSUPPORTED(跨frame)。verdict 固定 INCONCLUSIVE(dispatch-only)。",
+      "evidence": {
+        "suite": "tests/acceptance/t3-vision.mjs",
+        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
+        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+      }
+    },
+    {
+      "id": "web.t3.baseline",
+      "status": "verified",
+      "tool": "browser_vision_baseline",
+      "source_lines": "docs/t3-vision.md §2.6/§8；index.js 工具注册 browser_vision_baseline",
+      "constraints": "action=list|get|create|update|delete + 条件必填/禁止字段互斥。root 用 P0 规则（DSH_UI_TESTING_CAPTURE_DIR 优先，否则可信 exec cwd），scopeHash 隔离，目录 0700/文件 0600；仅 create/update mkdir，list/get/delete 只读。不可变 revision + HEAD CAS（link no-clobber），delete 为墓碑不删 PNG，create 名字不可复用。source 禁止指向正在创建/更新的同名 HEAD。离线 list/get/delete 不启动 Chromium。",
+      "evidence": {
+        "suite": "tests/acceptance/t3-vision.mjs",
+        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
+        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+      }
+    },
+    {
+      "id": "web.t3.check",
+      "status": "verified",
+      "tool": "browser_vision_check",
+      "source_lines": "docs/t3-vision.md §2.7/§7/§8.3；index.js 工具注册 browser_vision_check",
+      "constraints": "cases 1–20，每 case assertions 1–32、facts 0–64，整批先纯参数校验；单 case 解析 source 一次、case 结束释放 pin。regression 与基线比较（mapping 兼容必需、尺寸不等 BLOCKED、不发布文件、返回 diffProductId）；layout/occlusion/overflow/truncation/color/missing 按 §7.2 像素信号+外部事实融合，required 缺事实/来源不匹配为 INCONCLUSIVE/BLOCKED，advisory 最多 WARN。summary/verdict/exitCode 合成（FAIL→1，无 FAIL 但 BLOCKED/INCONCLUSIVE→2，PASS/WARN→0），不调用 process.exit；不导航、不建基线、不读 DOM。",
+      "evidence": {
+        "suite": "tests/acceptance/t3-vision.mjs",
+        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
+        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+      }
+    },
+    {
       "id": "web.t3.static-vision",
-      "status": "unsupported",
+      "status": "verified",
       "tool": null,
-      "source_lines": null,
-      "constraints": "P0已提供连续scale/文档clip/PNG校验与安全落盘；无视觉差异/阈值基线/VLM管线，browser_screenshot原始PNG不等于T3分析。T2 的 hit-test 只证明坐标命中，颜色/可读性/遮挡成因仍需 T3。"
+      "source_lines": "docs/t3-vision.md §10/§11；browser_capabilities 聚合项 web.t3.static-vision",
+      "constraints": "聚合能力：image/find/compare/act/baseline/check 六工具 + 22 项能力映射（截图分析/裁剪放大/标注/预处理/识别/定位/坐标交互/前后对比/像素差异/区域高亮/相似度/动态屏蔽/基线/回归/布局/遮挡/溢出/截断/颜色/缺失/缺陷判断/裁剪识别）。其他 owner 持租约时与其他 T3 项一起 unavailable+BUSY；T4 仍 unsupported。证据待验收：注册/参数预检已过，56 条套件与真实宿主/provider 未复跑。 已验证（Lead 串行复跑，同一最终代码）：t3-vision.mjs criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（均带 reason）、exit 0；6 个 web.t3.* 与聚合按 BUSY 状态报告。未验证：真实宿主重载、provider 图像可见性、T4、3 条 N/A、本地 TOCTOU / 网络文件系统 CAS。",
+      "evidence": {
+        "suite": "tests/acceptance/t3-vision.mjs",
+        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
+        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+      }
     },
     {
       "id": "web.t4.dynamic-vision",
@@ -472,7 +707,6 @@
     }
   ],
   "unsupported_tiers": [
-    "T3",
     "T4"
   ],
   "unsupported_platforms": [
@@ -484,5 +718,52 @@
     "TUI",
     "Game",
     "3D"
-  ]
+  ],
+  "t3_vision": {
+    "contract": "docs/t3-vision.md",
+    "status": "verified",
+    "algorithmVersion": "t3-v1",
+    "tools": [
+      "browser_vision_image",
+      "browser_vision_find",
+      "browser_vision_compare",
+      "browser_vision_act",
+      "browser_vision_baseline",
+      "browser_vision_check"
+    ],
+    "sourceKinds": [
+      "live",
+      "product",
+      "baseline"
+    ],
+    "coordinateSpaces": {
+      "image": "image-px",
+      "document": "document-css-px",
+      "input": "viewport-css-px"
+    },
+    "evidence": {
+      "suite": "tests/acceptance/t3-vision.mjs（Lead 串行复跑，同一最终代码）",
+      "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
+      "executor_rerun": "tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json",
+      "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0；两次复跑结果一致",
+      "regression": {
+        "t1": "run.mjs 22/22 探针、324/324 必需检查（tests/acceptance/runs/2026-11-01T07-31-29-210Z-168725/run-report.json）",
+        "t2": "t2-structured.mjs 37/38 + 1 NOT_RUN（C38 套件边界）、260/260（tests/acceptance/runs/2026-11-01T07-33-10-505Z-170262/run-report.json）",
+        "capture_p0": "14/14 探针、142/142（tests/acceptance/runs/capture-p0-2026-11-01T07-35-21-142Z-176846/report.json）",
+        "units": "vision 36/36（算法）+ 52/52（基线）、capture 26/26、runtime-faults 16/16",
+        "skill": "check-skill 26/26、check-skill-registry 17/17"
+      },
+      "implementation_mode": "C42/C50 契约标 U 类（纯单测），实际由 delta 在 t3-vision.mjs 中以 B 类（真实 Chromium + 真实 Host 路径）覆盖，属更强证据；报告已注明实现模式"
+    },
+    "not_implemented": [
+      "T4 动态视觉：帧序列/动画时序/连续视觉推理；无 VLM/OCR/语义命名；不跨 frame 坐标输入；不跨重启恢复 product"
+    ],
+    "unverified": [
+      "真实宿主重载：需要隔离 DSH 实例加载终版 index.js 并在真实 Agent 会话复跑 T3 工具（本进程套件不能代替）",
+      "provider 图像可见性：附件元数据不能证明模型实际看到原分辨率图像（NOT_RUN）",
+      "T4 动态视觉（帧序列/动画时序/连续视觉推理）仍 unsupported",
+      "3 条 notApplicable：C25 DOM 小数 / Blink 截断行为、C30 inert 子树不参与 hit-test（elementFromPoint 与 CDP 均返回 BODY）、C31 页面级 downs/ups 计数（原因均已记录）",
+      "本地恶意进程 TOCTOU 与网络文件系统 HEAD CAS：基线/落盘守卫不是安全沙箱"
+    ]
+  }
 }

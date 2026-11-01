@@ -59,6 +59,16 @@ export const EXPECTED_TOOLS = Object.freeze([
   Object.freeze({ name: 'browser_fill_form', required: ['fields'] }),
   Object.freeze({ name: 'browser_node_state', required: [] }),
   Object.freeze({ name: 'browser_wait_for', required: [] }),
+  // --- T3 (docs/t3-vision.md §2.1) --------------------------------------------------------
+  // The `required` arrays are fixed by the contract: conditional requirements (drag needs `to`,
+  // move forbids button/clickCount/steps/durationMs, baseline per-action field sets) are enforced
+  // at execution time, never smuggled into the registered schema.
+  Object.freeze({ name: 'browser_vision_image', required: [] }),
+  Object.freeze({ name: 'browser_vision_find', required: ['query'] }),
+  Object.freeze({ name: 'browser_vision_compare', required: ['before', 'after'] }),
+  Object.freeze({ name: 'browser_vision_act', required: ['productId', 'action', 'point'] }),
+  Object.freeze({ name: 'browser_vision_baseline', required: ['action'] }),
+  Object.freeze({ name: 'browser_vision_check', required: ['cases'] }),
 ]);
 
 /** The seven Web T2 tools declared in docs/t2-structured-gui.md §2.2. */
@@ -67,8 +77,15 @@ export const T2_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => [
   'browser_fill_form', 'browser_node_state', 'browser_wait_for',
 ].includes(tool.name)));
 
-/** The nine Web T1 tools kept unchanged by the T2 work. */
-export const T1_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => !T2_TOOLS.some((t2) => t2.name === tool.name)));
+/** The six Web T3 static-vision tools declared in docs/t3-vision.md §2.1. */
+export const T3_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => [
+  'browser_vision_image', 'browser_vision_find', 'browser_vision_compare',
+  'browser_vision_act', 'browser_vision_baseline', 'browser_vision_check',
+].includes(tool.name)));
+
+/** The nine Web T1 tools kept unchanged by the T2/T3 work. */
+export const T1_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => !T2_TOOLS.some((t2) => t2.name === tool.name)
+  && !T3_TOOLS.some((t3) => t3.name === tool.name)));
 
 export const PROFILE_PREFIX = 'dsh-ui-testing-';
 

@@ -12,7 +12,7 @@
 | `browser_computed_style` | `{ok:true,style}` | 未命中返回 error 对象；非法 selector/页面异常按实际分类错误处理 |
 | `browser_state` | mode/activity/url/title/viewport/seq/running/error 与 owner 诊断；错误四字段 error/errorAt/errorActionId/errorTarget | 不启动、不占租约；标题从 document.title 刷新；成功的页面/网络操作清空错误，诊断与 HTTP 不清 |
 | `browser_http_request` | `{ok:true,method,url,status,statusText,headers,contentType,encoding,body,bodyBytes,bodyTruncated,redirects,timings}` | 独立 HTTP(S)：`ok:true` 仅表示取得响应（非 2xx 也成功返回）；默认不跟随重定向、5s/64KiB 预算、无 cookie jar；不启动 Chromium、不占租约；失败抛分类错误 |
-| `browser_capabilities` | runtime/capabilities/limits 等真实诊断 | available/unavailable/unsupported，不启动、不占租约；16 项（9 T1 + 7 T2）与 `limits.structuredGui`；自身抛错时不得当作能力结论 |
+| `browser_capabilities` | runtime/capabilities/limits 等真实诊断 | available/unavailable/unsupported，不启动/不建目录/不产 product、不占租约；28 项能力（12 T1 + 8 T2 + 7 T3 + 1 T4）、`limits.structuredGui` 与 `vision`/`limits.vision`；自身抛错时不得当作能力结论 |
 | `browser_snapshot` | `{ok:true,snapshotId,digest,tree,refs,nodeCount,truncated,truncationReasons,coverage}` + evidence | 主 frame AX 快照；`scope`/`maxNodes`(1–2000)/`depth`(0–32)/`boxes`；采集中文档代次变化抛 `REF_STALE` |
 | `browser_click` | `{ok:true,dispatched,button,clickCount,point}` + evidence | `ref`/`selector` 恰一；滚动+两帧稳定+命中校验后 CDP 鼠标事件；hidden/covered → `NOT_INTERACTABLE`（`details.escalation:"T3"`），无 force |
 | `browser_type` | `{ok:true,dispatched,insertedCharacters,replaced,submitted}` + evidence | 原生文本 input 与 textarea；`replace`/`submit`；不回显文本；contenteditable 等抛 `UNSUPPORTED` |

@@ -54,7 +54,7 @@ runtime-faults 16/16、check-skill 25/25、check-skill-registry 17/17（均 exit
 | 条件等待（三类互斥、`WAIT_TIMEOUT`） | verified | 契约 §4.4；C28 text/textGone/state 单项与 AND、polls/elapsedMs 真实且不产生新 snapshot；C29 超时 details 完整、`timeoutMs:0` 只采一次、混条件拒绝；C30 取消 1s 内 `ABORTED` 且 page 清理正确 |
 | 结构化证据（version=1、minted provenance、networkDelta、escalation） | verified | 契约 §5；C33 七工具成功证据（envelope/provenance/targets/identity）、C34 六码抛错 + `details.escalation=T3`、失败后页面仍 running |
 | 脱敏与证据限额（可编辑值 null、密码类屏蔽、selector 原文不入 args） | verified | 契约 §5.2；C35 输入哨兵不外泄、`value:null`+`valueRedacted`、evidence ≤262144、URL 脱敏、networkDelta 窗口 20 条与 dropped 计数 |
-| 能力报告（16 工具、`limits.structuredGui`、T3/T4 unsupported） | verified | 契约 §5.3；C2 冷启动能力报告：七项 `web.t2.*` + `web.t2.structured-dom` available、限额字段正确、T3/T4 unsupported；本机另以真实 Cordis+SkillRegistry 调用确认 22 项能力可返回 |
+| 能力报告（T2 时点 16 工具、`limits.structuredGui`；T3 收口后 22 工具并新增 `vision`/`limits.vision`） | verified | 契约 §5.3；C2 冷启动能力报告：七项 `web.t2.*` + `web.t2.structured-dom` available、限额字段正确（T2 时点 T3/T4 均 unsupported；**T3 收口后** `web.t3.*` 六项 + `web.t3.static-vision` available 且 T3 已进程内验收 56/56、389/389，T4 仍 unsupported）；本机另以真实 Cordis+SkillRegistry 调用确认能力可返回（T2 时点 22 项，T3 收口后 28 项 = 12 T1 + 8 T2 + 7 T3 + 1 T4） |
 | 工作区隔离（page/ref/lease/network 按工作区） | verified | 契约 §1；C3 两工作区独立 page/ref/lease/network、A 的 ref 在 B 为 `REF_STALE`；C32 七工具 lease BUSY 且 state/HTTP 仍可用 |
 | 取消语义（等待中取消、表单输入中途取消） | verified | C30/C31：`ABORTED` 真实保留 `applied`/dispatch，无回滚、不自动重放 |
 | closed shadow 不产生 ref / 不落到相似节点 | partial | 只有 C36 的一条 **advisory** 检查（"closed shadow 不产生 ref（或 ref 不可解析时明确 UNSUPPORTED）"）；closed shadow 相关的 selector 不可达与宿主可查状态属 required 且已通过。禁止据此声称 closed shadow 内部可操作 |
@@ -83,7 +83,7 @@ runtime-faults 16/16、check-skill 25/25、check-skill-registry 17/17（均 exit
 
 1. ✅ T2 套件在授权 loopback fixture 上跑绿（优化构建）：`runs/2026-11-01T03-41-31-025Z-39784`（probes 38：37 pass / 0 fail / 1 notRun，requiredChecks **260/260**，criteriaCovered 38，exit 0；此前 233/233 见 `runs/2026-10-31T19-25-29-077Z-54114`）。覆盖 §9 的注册面、冷启动能力、工作区隔离、快照、ref 生命周期、唯一 selector、可信动作、表单、滚动、等待、错误码、证据、租约、取消。
 2. ✅ 报告路径 + 计数已写入本表与 `manifests/declared-capabilities.json` 的 `evidence`/`observations`。
-3. ✅ 隔离/真实宿主注册 16 工具并由新 Agent 会话跑通 snapshot→动作→wait/node_state：`tests/acceptance/evidence/t2-real-host-2026-11-01.md` 14/14 检查行通过（DSH 3080 pid <pid> 重载终版，非 legacy scope）。套件内 C38 仍记 NOT_RUN 属套件边界。
+3. ✅ 隔离/真实宿主注册 16 工具（T2 时点；T3 收口后注册面为 22）并由新 Agent 会话跑通 snapshot→动作→wait/node_state：`tests/acceptance/evidence/t2-real-host-2026-11-01.md` 14/14 检查行通过（DSH 3080 pid <pid> 重载终版，非 legacy scope）。套件内 C38 仍记 NOT_RUN 属套件边界。
 4. ✅ `browser_capabilities` 可调用并按 §5.3 报 `limits.structuredGui`（C2 required 检查）。
 
 因此：7 个 T2 工具与聚合项按上述实测覆盖记 `verified`；真实宿主会话已由记录补齐，**仅剩 provider 图像可见性（T1/T3 遗留）与仅 advisory 覆盖的 closed-shadow ref 细分未验证**。不要把本台账的 verified 外推到跨帧、视觉（T3/T4）、provider 图像可见性（T1 遗留）或真实宿主首次加载行为。

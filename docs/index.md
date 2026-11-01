@@ -5,6 +5,8 @@
 | 文件 | 内容 | 什么时候读 |
 | --- | --- | --- |
 | [status.md](status.md) | 当前实现状态、冻结约定、未实现清单 | 任何改动前先读 |
+| [t3-vision.md](t3-vision.md) | **Web T3** 静态视觉权威契约：六工具 schema、坐标/证据/错误、YIQ diff/识别/act/基线/缺陷规则与 56 条验收 | 改 T3 工具、判定视觉能力边界或复跑验收时 |
+| [t3-implementation-plan.md](t3-implementation-plan.md) | T3 实施期协调记录：切片/写入范围、模块 API、集成顺序、Lead 裁决与验收口径 | 追溯 T3 实现决策或复跑差异时 |
 | [t1-known-gaps.md](t1-known-gaps.md) | **Web T1** 部分实现/未实现/未解难点：工具级缺口、平台依赖、风险与建议顺序 | 判断 T1 某项能力是否真的可用、汇报限制或排期时 |
 | [t1-m0-m2-contract.md](t1-m0-m2-contract.md) | M0–M2 现行实现契约、验收状态与剩余风险 | 查工具/租约/错误/证据现状时先读 |
 | [t1-http-request.md](t1-http-request.md) | WEB-T1 独立 HTTP 请求（`browser_http_request`）参数/返回/安全/错误/P22 验收与四项收口裁决 | 改 HTTP 工具、判定 HTTP 能力边界或查本轮收口裁决时 |

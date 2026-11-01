@@ -32,7 +32,7 @@ const LEDGER_FILE = join(SKILL_DIR, 'knowledge', 'web', 't1-capability-ledger.md
 const MANIFEST_FILE = join(SKILL_DIR, 'manifests', 'declared-capabilities.json');
 const INDEX_FILE = join(REPO_ROOT, 'index.js');
 
-const ALLOWED_STATUSES = new Set(['implemented-not-verified', 'verified', 'partial', 'unsupported']);
+const ALLOWED_STATUSES = new Set(['implemented', 'implemented-not-verified', 'verified', 'partial', 'unsupported']);
 
 const results = [];
 function record(label, pass, detail, { skip = false, optional = false } = {}) {
@@ -82,15 +82,18 @@ async function main() {
   const indexSource = await readFile(INDEX_FILE, 'utf8');
   const actualTools = new Set();
   for (const match of indexSource.matchAll(/name:\s*'((?:browser_)[a-z0-9_]+)'/g)) actualTools.add(match[1]);
-  // 16 = 9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2).
+  // 22 = 9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2)
+  //      + 6 T3 (docs/t3-vision.md §2.1).
   const expectedTools = [
     'browser_navigate', 'browser_eval', 'browser_screenshot', 'browser_input', 'browser_network',
     'browser_computed_style', 'browser_http_request', 'browser_state', 'browser_capabilities',
     'browser_snapshot', 'browser_click', 'browser_type', 'browser_scroll', 'browser_fill_form',
     'browser_node_state', 'browser_wait_for',
+    'browser_vision_image', 'browser_vision_find', 'browser_vision_compare',
+    'browser_vision_act', 'browser_vision_baseline', 'browser_vision_check',
   ];
-  record('index.js 中可解析出 16 个实际注册的 browser_* 工具（9 T1 + 7 T2）',
-    actualTools.size === 16 && expectedTools.every((name) => actualTools.has(name)), [...actualTools]);
+  record('index.js 中可解析出 22 个实际注册的 browser_* 工具（9 T1 + 7 T2 + 6 T3）',
+    actualTools.size === 22 && expectedTools.every((name) => actualTools.has(name)), [...actualTools]);
 
   // 2. Frontmatter.
   const raw = await readFile(SKILL_FILE, 'utf8');
@@ -114,7 +117,7 @@ async function main() {
   // 4. Tool names in SKILL.md are all real (no invented/Playwright names).
   const mentionedTools = new Set([...body.matchAll(/browser_[a-z0-9_]+/g)].map((match) => match[0]));
   const inventedTools = [...mentionedTools].filter((name) => !actualTools.has(name));
-  record('SKILL.md 中出现的每个 browser_* 工具名都是 index.js 实际注册的 16 个之一', inventedTools.length === 0, { mentioned: [...mentionedTools], invented: inventedTools });
+  record('SKILL.md 中出现的每个 browser_* 工具名都是 index.js 实际注册的 22 个之一', inventedTools.length === 0, { mentioned: [...mentionedTools], invented: inventedTools });
 
   // 5. Ledger.
   record('knowledge/web/t1-capability-ledger.md 存在', existsSync(LEDGER_FILE), relative(REPO_ROOT, LEDGER_FILE));
@@ -150,12 +153,15 @@ async function main() {
     record('declared-capabilities.json 是合法 JSON', true);
     record('manifest.platform === web', String(manifest.platform).toLowerCase() === 'web', manifest.platform);
     const tier = String(manifest.tier || '').toUpperCase();
-    record('manifest.tier 是 T1 或 T1+T2（T2 已实现）', tier === 'T1' || tier === 'T1+T2', manifest.tier);
+    record('manifest.tier 是 T1 / T1+T2 / T1+T2+T3（T2、T3 已实现）',
+      tier === 'T1' || tier === 'T1+T2' || tier === 'T1+T2+T3', manifest.tier);
     record('manifest.notice 非空（说明工具注册表才是权威）', typeof manifest.notice === 'string' && manifest.notice.length > 10, manifest.notice);
     record('manifest 所有 operation 使用已知状态且无 planned', Array.isArray(manifest.operations) && manifest.operations.every((op) => ALLOWED_STATUSES.has(op.status)), manifest.operations);
     const discovery = manifest.operations?.find((op) => op.id === 'web.t1.capability-discovery');
     record('manifest 能力发现声明 browser_capabilities', discovery?.tool === 'browser_capabilities' && discovery.status !== 'unsupported', discovery);
-    record('manifest 不把 T3/T4 声明为可用', ['T3', 'T4'].every((item) => manifest.unsupported_tiers?.includes(item)), manifest.unsupported_tiers);
+    record('manifest 的 unsupported_tiers 只留 T4（T3 已实现并声明）',
+      JSON.stringify([...(manifest.unsupported_tiers || [])].sort()) === JSON.stringify(['T4']) && tier.includes('T3'),
+      { tier: manifest.tier, unsupported_tiers: manifest.unsupported_tiers });
     // T2 half of the manifest: only enforced once the skill owner flips tier to T1+T2 (contract
     // §8/§9.38). Never faked here: until then it is reported as INFO, not PASS.
     // The seven tool projections (web.t2.snapshot … web.t2.wait_for) plus the aggregate
@@ -163,12 +169,20 @@ async function main() {
     const t2Ops = (manifest.operations || []).filter((op) => String(op.id || '').startsWith('web.t2.'));
     const t2ToolOps = t2Ops.filter((op) => typeof op.tool === 'string' && op.tool.length > 0);
     const manifestDeclaresT2 = tier.includes('T2');
-    record('manifest 声明 T2（tier=T1+T2，unsupported_tiers 恰为 T3/T4，含 7 项 web.t2 工具操作）',
+    record('manifest 声明 T2（tier 含 T2，含 7 项 web.t2 工具操作）',
       manifestDeclaresT2 && t2ToolOps.length === 7
-        && JSON.stringify([...(manifest.unsupported_tiers || [])].sort()) === JSON.stringify(['T3', 'T4'])
         && t2Ops.every((op) => op.status !== 'unsupported'),
       { tier: manifest.tier, unsupported_tiers: manifest.unsupported_tiers, t2ToolOperations: t2ToolOps.map((op) => `${op.id}:${op.tool}:${op.status}`) },
       { optional: true });
+    // T3 half: six tool projections plus the web.t3.static-vision aggregate, declared implemented
+    // (evidence pending acceptance — Lead flips them to verified after the real suite).
+    const t3Ops = (manifest.operations || []).filter((op) => String(op.id || '').startsWith('web.t3.'));
+    const t3ToolOps = t3Ops.filter((op) => typeof op.tool === 'string' && op.tool.length > 0);
+    const t3Aggregate = t3Ops.find((op) => op.id === 'web.t3.static-vision');
+    record('manifest 声明 T3（6 项 web.t3 工具操作 + web.t3.static-vision 聚合，状态非 unsupported）',
+      tier.includes('T3') && t3ToolOps.length === 6 && Boolean(t3Aggregate)
+        && t3Ops.every((op) => op.status !== 'unsupported'),
+      { tier: manifest.tier, t3ToolOperations: t3ToolOps.map((op) => `${op.id}:${op.tool}:${op.status}`), aggregate: t3Aggregate?.status });
   }
 
   return failSummary();

@@ -1,6 +1,6 @@
 # T2 · 结构化 GUI（已实现并验收）
 
-**实现状态：已实现并已验收（verified）。** 本轮新增 7 个工具，工具总数 9 → **16**：`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`。权威契约是仓库 `docs/t2-structured-gui.md`；能力 id 为 `web.t2.snapshot/click/type/scroll/fill_form/node_state/wait_for`，聚合项 `web.t2.structured-dom`。
+**实现状态：已实现并已验收（verified）。** 本轮（T2 时点）新增 7 个工具，工具总数 9 → **16**（T3 收口后总面为 **22 = 9 T1 + 7 T2 + 6 T3**）：`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`。权威契约是仓库 `docs/t2-structured-gui.md`；能力 id 为 `web.t2.snapshot/click/type/scroll/fill_form/node_state/wait_for`，聚合项 `web.t2.structured-dom`。
 
 > 验收口径：`tests/acceptance/t2-structured.mjs` 已跑绿（Lead 独立复跑）——`tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`：探针 38（pass 37 / fail 0 / notRun 1 = C38 套件边界）、必需检查 **260/260**、criteriaCovered 38、failedChecks 0、exit 0（此前一轮 233/233：`runs/2026-10-31T19-25-29-077Z-54114`）。优化实测（同 fixture/默认参数）：nodeCount 421→275、tree 14432→9254 字节、`- text` 232→91，两次捕获 tree/digest 一致。§9.38 **真实宿主**已由 Lead 在 DSH 3080（pid <pid>，2026-11-01 10:40:04 重载）的真实 Agent 会话验收：`tests/acceptance/evidence/t2-real-host-2026-11-01.md` **14/14 检查行通过**（16 工具注册、snapshot→click→type→fill_form→scroll→wait→node_state、页面真值与 `window.__t2` 核对、覆盖目标 NOT_INTERACTABLE、导航后 REF_STALE、T1 未回归），套件内 C38 仍记 NOT_RUN 属 fake-ctx 套件边界。**注意：该记录属优化前构建**；优化构建（快照压缩 + scroll 硬化）已进程内 260/260 通过，但真实宿主**定向复验 5 项仍待**（snapshot 压缩形态、同名/独立节点 refs、离屏拒绝 + hint + 恢复、持续运动 `unstable`、T1 未回归）——未完成前不得写成“优化后真实宿主已验证”。仍未验证：provider 图像可见性（T1 遗留）、closed-shadow「不产生 ref」细分（仅 advisory 检查）。运行态仍以 `browser_capabilities` 与真实调用结果为准，本文与 manifest 都不是可用性证明。
 
@@ -26,7 +26,7 @@
 - **证据**：version=1 evidence（provenance/targets/before/after/dispatch/networkDelta/escalation/incomplete），成功在 `result.evidence`，失败在 `BrowserError.details.evidence`。
 - **错误**：`REF_STALE`/`TARGET_NOT_FOUND`/`TARGET_NOT_UNIQUE`/`NOT_INTERACTABLE`/`WAIT_TIMEOUT`/`INVALID_ARGUMENT` 全部抛错（不再走 T1 legacy `{ok:false,error}`）。
 - **零依赖**：只用现有 CDP 与 Node 内建库，不引入 Playwright/Puppeteer；不改面板视觉。
-- **Skill/manifest**：入口 16 工具表、本文与 `knowledge/web/t2-capability-ledger.md` 同步；`declared-capabilities.json` tier `T1+T2`、unsupported 仅 T3/T4。
+- **Skill/manifest**：入口工具表（T2 时点 16，T3 收口后 22）、本文与 `knowledge/web/t2-capability-ledger.md` 同步；`declared-capabilities.json` tier `T1+T2`（T3 收口后 `T1+T2+T3`）、unsupported 仅 T4。
 
 ## 压缩与滚动行为（2026-11-01 优化，契约 §3.1/§4.3）
 
@@ -57,7 +57,7 @@
 
 1. ✅ T2 正/负例脚本在授权 loopback fixture 上跑出绿报告：`tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`（优化构建），探针 38（37 pass / 0 fail / 1 notRun）、必需检查 **260/260**、exit 0；覆盖注册面、冷启动能力、工作区隔离、快照、ref 生命周期（含 LRU 与跨快照保留）、唯一 selector、可信动作、表单、滚动、等待、错误码、证据、租约、取消。
 2. ✅ 报告路径与计数已写进 `manifests/declared-capabilities.json` 与 `knowledge/web/t2-capability-ledger.md`。
-3. ✅ 真实宿主上注册 16 工具、真实 Agent 会话跑通 snapshot→动作→wait/node_state 并留下 durable 证据：`tests/acceptance/evidence/t2-real-host-2026-11-01.md`（14/14 检查行，每行 actionId）。
+3. ✅ 真实宿主上注册 16 工具（T2 时点）、真实 Agent 会话跑通 snapshot→动作→wait/node_state 并留下 durable 证据：`tests/acceptance/evidence/t2-real-host-2026-11-01.md`（14/14 检查行，每行 actionId）。
 4. ✅ `browser_capabilities` 按 §5.3 报 `limits.structuredGui`（C2 required 检查通过）。
 
 因此 7 个 T2 工具与聚合项记 `verified`；真实宿主会话已补齐，**仅剩 provider 图像可见性（T1 遗留）与仅 advisory 覆盖的 closed-shadow「不产生 ref」细分未验证**。不要把 verified 外推到跨帧、视觉（T3/T4）或 provider 图像可见性。

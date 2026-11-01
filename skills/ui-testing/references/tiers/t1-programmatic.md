@@ -1,6 +1,6 @@
 # T1 · 程序化接口（M0–M2）
 
-部分实现；**工具面 16 个 = 本文的 T1 9 个（含独立 HTTP `browser_http_request`）+ T2 7 个**（见 [T2 表](t2-structured.md)）。注册表决定可调用名字，browser_capabilities 报实际运行态三态；静态工程状态不能当 available。验收：M0–M2 的 P1–P21 加上 P22（独立 HTTP），具体计数与结论以仓库 runs/ 报告为准；T2 优化构建套件已跑绿（37/38 探针、**260/260** 必需检查、criteriaCovered 38、exit 0，报告 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`；套件内 C38 真实宿主/声明为 NOT_RUN，属 fake-ctx 套件边界），真实宿主 14/14 记录见 `tests/acceptance/evidence/t2-real-host-2026-11-01.md`（属优化前构建，优化后待定向复验）；provider 图像可见性仍 NOT_RUN。详细返回见 [操作契约](../contracts/operation.md)。
+部分实现；**工具面 22 个 = 本文的 T1 9 个（含独立 HTTP `browser_http_request`）+ T2 7 个**（见 [T2 表](t2-structured.md)）**+ T3 6 个**（见 [T3 表](t3-static-visual.md)，权威契约 `docs/t3-vision.md`）。注册表决定可调用名字，browser_capabilities 报实际运行态三态；静态工程状态不能当 available。验收：M0–M2 的 P1–P21 加上 P22（独立 HTTP），具体计数与结论以仓库 runs/ 报告为准；T2 优化构建套件已跑绿（37/38 探针、**260/260** 必需检查、criteriaCovered 38、exit 0，报告 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`；套件内 C38 真实宿主/声明为 NOT_RUN，属 fake-ctx 套件边界），真实宿主 14/14 记录见 `tests/acceptance/evidence/t2-real-host-2026-11-01.md`（属优化前构建，优化后待定向复验）；provider 图像可见性仍 NOT_RUN。详细返回见 [操作契约](../contracts/operation.md)。
 
 | 操作 | 工具 | 关键边界 |
 | --- | --- | --- |
@@ -12,7 +12,7 @@
 | CSSOM | browser_computed_style | 首匹配，未命中 error 对象；无伪元素/iframe/Shadow DOM 内部定位 |
 | 状态 | browser_state | document.title 刷新与 owner 诊断，不启动/不占租约；error/errorAt/errorActionId/errorTarget 由成功页面操作清空 |
 | 独立 HTTP | browser_http_request | Host HTTP(S) 客户端：不启动浏览器/不占租约；默认 GET、5s 总超时、64KiB 保留上限、不跟随重定向；每跳复验目标、无 cookie jar、新错误码 HTTP_TIMEOUT/HTTP_FAILED/HTTP_REDIRECT_LIMIT；`ok:true` 非 2xx |
-| 能力 | browser_capabilities | 实际 available/unavailable/unsupported 与原因限制，不启动/不占租约；16 项（9 T1 + 7 T2）与 `limits.structuredGui` |
+| 能力 | browser_capabilities | 实际 available/unavailable/unsupported 与原因限制，不启动/不占租约；28 项能力（12 T1 + 8 T2 + 7 T3 + 1 T4）、`limits.structuredGui` 与 `vision`/`limits.vision` |
 
 同一时刻一个无头 Chromium/profile；每个 DSH 工作区一个 page。single-owner-lease 按工作区，15s idle、进行中保持、缺 exec 走 legacy、disposed 只释放对应 owner。页面操作与 network 受同工作区租约；state/capabilities 可诊断。同工作区页面工具与面板同串行队列；已发 CDP 命令后 abort 先关闭该 page 再放锁，后续可懒启动。Cookie/存储共享，非安全隔离。
 

@@ -282,3 +282,78 @@ The T2 fixture long text block is deterministic: exactly three hundred character
 - 不要把真实 token / Cookie / 凭据写进页面或 query；测试 token 固定用 `DEMO_TOKEN_NOT_REAL`。
 - 不要改成监听 `0.0.0.0`；靶机必须只在本机回环地址可达。
 - T2 两页（`web-t2.html` / `web-t2-second.html`）的 id、文本、几何与 `window.__t2` 契约是 `tests/acceptance/t2-structured.mjs` 的硬依赖；不要为了「更好看」改结构、改文案或加外部资源。
+
+## T3 静态视觉页面契约（`/web-t3.html`）
+
+> 本页是为 **Web T3（静态视觉调试）验收**新增的确定性靶机。`tests/acceptance/t3-vision.mjs` 逐条依赖下表的 id、几何、颜色与 `window.__t3` 场景函数；改动任何一项都必须同步修改该脚本与本节真值表。
+> 实测口径：本机无头 Chromium，`--hide-scrollbars --window-size=1280,800`，视口 `1280×800`、`document.compatMode === "CSS1Compat"`、`document.documentElement.scrollHeight === 1600`、初始 `scrollY === 0`。所有盒子都是 `position:absolute` 的整数 CSS 坐标；没有任何 border / 圆角 / 阴影 / 渐变（否则边缘抗锯齿会让像素真值不确定）；页面无外链、无网络请求、无随机数、无自动动画。
+
+### T3.1 像素真值盒（y = 40–320）
+
+| 选择器 | CSS 盒（left/top/width/height） | 颜色 / 内容 | 用途 |
+| --- | --- | --- | --- |
+| `#t3-red` | 40 / 40 / 80 / 60 | 纯 `rgb(255,0,0)` | live 采集/裁剪/识别/颜色真值；scale 1.25 → **100×75** |
+| `#t3-blue` | 160 / 40 / 80 / 60 | 纯 `rgb(0,0,255)` | 颜色负例（找红色时不得命中） |
+| `#t3-click` | 300 / 40 / 80 / 60 | 白底 + 文本计数（初始 `"0"`） | act 点击坐标/事件真值；每次 click +1 |
+| `#t3-clock` | 500 / 40 / 80 / 20 | 初始 `rgb(255,255,0)`，`toggleClock()` 后 `rgb(0,255,0)` | C24 动态区域 mask（只显式 toggle，不自动变色） |
+| `#t3-overlay` | 320 / 50 / 40 / 40（默认 `display:none`） | `rgb(255,0,255)` | 覆盖 `#t3-click` 中心 (340,70)；`showOverlay()` 后改变像素并遮挡点击 |
+| `#t3-canvas` | 40 / 140 / 160 / 80 | 真实 canvas 2D 位图：左 80×80 纯红、右 80×80 纯蓝（backing store 160×80，DSF=1） | C14/C25/C27/C54/C56 canvas 识别与坐标输入；click 会在命中处画 8×8 黑块 |
+| `#t3-textimg` | 240 / 140 / 160 / 60 | 白底 canvas + 黑字 `T3 TEXT`（`24px monospace`） | C54：文字图像候选 `semanticName` 必须为 `null`（无 OCR） |
+| `#t3-drag-source` | 280 / 140 / 40 / 40 | `rgb(200,200,200)` | 拖拽起点中心 **(300,160)** |
+| `#t3-drop` | 380 / 140 / 80 / 40 | `rgb(220,220,220)` | 拖拽 drop 中心 **(420,160)**；`mouseup` 真值记入 `__t3.last.drop` |
+| `#t3-flip` | 300 / 240 / 80 / 60 | 初始纯红，点击后纯蓝（再点回红） | C17 前后对比（真实 click 改变固定纯色卡片） |
+| `#t3-moving` | 500 / 240 / 40 / 40 | `rgb(255,128,0)`；`startMoving()` 才用 rAF 往返 0–60px | C30 持续运动拒绝（默认静止） |
+| `#t3-disabled` | 560 / 240 / 80 / 40 | `<button disabled>` | C30 disabled 命中拒绝 |
+| `#t3-inert`（内含 `#t3-inert-btn` 670/250/60/20） | 660 / 240 / 80 / 40 | `<div inert>` + button | C30 inert 命中拒绝 |
+| `#t3-frame` | 760 / 240 / 160 / 80 | 同源 iframe（`srcdoc`，内部 button） | C30 跨 frame 命中边界 |
+| `#t3-css-patch` | 50 / 50 / 10 / 10（默认 `display:none`） | 纯黑 | C22：`showCssPatch()` 后 10×10 CSS 变化（scale 2 → 20×20 像素） |
+
+固定像素断言（`decodePng` 正规化为 RGBA 后逐像素）：
+
+- `{x:40,y:40,width:80,height:60}` → 4800 像素全部 `[255,0,0,255]`。
+- `{x:160,y:40,width:80,height:60}` → 全部 `[0,0,255,255]`。
+- `{x:40,y:140,width:160,height:80}` → 左 6400 像素 `[255,0,0,255]`、右 6400 像素 `[0,0,255,255]`。
+- `{x:500,y:40,width:80,height:20}` → 全部 `[255,255,0,255]`；`toggleClock()` 后全部 `[0,255,0,255]`。
+
+### T3.2 六类缺陷容器（y = 420–690）与正常副本
+
+| 类型 | 缺陷 id / 盒 | 正常副本 id / 盒 | DOM 事实（测试侧显式读取后作为 `facts` 传入；工具不自行查 DOM） |
+| --- | --- | --- | --- |
+| layout | `#t3-layout` 100 / 420 / 120 / 40 | `#t3-layout-ok` 300 / 420 / 120 / 40 | `rect`；`moveLayout(104)` / `moveLayout(100.5)` 改 left |
+| occlusion | `#t3-occluded` 100 / 470 / 120 / 40 | `#t3-occluded-ok` 300 / 470 / 120 / 40 | `rect` + `visible` + `hitSamples`（5 点：中心 + 四象限，`document.elementFromPoint` 判定 `covered`）；`showOccluder('auto'\|'none'\|'partial')` / `hideOccluder()` |
+| overflow | `#t3-overflow` 100 / 520 / 100 / 40（`overflow:visible`，子元素 150×20 蓝） | `#t3-overflow-ok` 300 / 520 / 100 / 40（`overflow:auto`，同子元素） | `scroll`（实测 `scrollWidth/clientWidth = 150/100`，两者一致）+ `style.overflowX/Y` + `allowOverflow`；`setOverflow('auto'\|'visible')` |
+| truncation | `#t3-truncated` 100 / 570 / 100 / 20（nowrap/hidden/ellipsis，实测 `scrollWidth/clientWidth = 447/100`） | `#t3-truncated-ok` 300 / 570 / 480 / 20（同文本，`447/480` 完整显示） | `textMetrics`（content=scrollWidth/scrollHeight、available=clientWidth/clientHeight）+ `style`（overflow/whiteSpace/textOverflow/lineClamp）+ `allowTruncation`；`setTruncation('defect'\|'clamp')` |
+| color | `#t3-color` 100 / 620 / 80 / 40（初始纯红；`setColorBox('rgb(0,0,255)')` 变蓝） | `#t3-color-ok` 300 / 620 / 80 / 40 纯红；`#t3-color-conflict` 420/620/80/40（父蓝、子 `#t3-color-conflict-inner` 430/630/60/20 红）；`#t3-color-alpha` 520/620/80/40（`rgba(255,0,0,0.5)`） | `rect` + `style.backgroundColor`（父盒蓝 / 子 ROI 红 = 冲突；alpha 128 = 透明背景未知） |
+| missing | `#t3-missing-icon` 100 / 670 / 20 / 20 纯红 | `#t3-missing-ok` 300 / 670 / 20 / 20 纯红 | `presence`（`expected/exists/searchComplete`）+ 模板 product（从 `#t3-missing-icon` live 区域采集）；`hideMissingIcon()` / `restoreMissingIcon()` / `recolorMissingIcon()` |
+
+> required 规则只由「显式 fact + 图像」决定；pixels-only 的 required 结论必须是 `INCONCLUSIVE(reason=insufficient-facts)`，advisory 才可按像素信号给 `WARN`。像素信号与几何事实不一致时两者都要保留。
+
+### T3.3 `window.__t3`（只供验收取证，视觉工具不得读取）
+
+| 字段 / 方法 | 说明 |
+| --- | --- |
+| `events` | 环形缓冲（最多 `maxEvents = 300`，超出丢最旧）；`reset()` 清空且不换引用 |
+| `seq` | 累计记录数（不因缓冲上限回退） |
+| `types` | 捕获阶段监听的 6 类：`mousemove`、`mousedown`、`mouseup`、`click`、`dblclick`、`contextmenu` |
+| `counters` | `{moves,downs,ups,clicks,rightClicks,middleClicks,dblclicks,drops,canvasClicks,flipClicks,clockToggles,inertClicks}`（`inertClicks` 在 inert 子树被激活时才会增长，用于证明事件未被递送） |
+| `last` | 每种类型最近一条记录；`last.drop` 为 drop 真值 |
+| 单条记录 | `{type, isTrusted, clientX, clientY, button, buttons, detail, modifiers:{ctrl,shift,alt,meta}, target, ts}`；`target` 为元素 id（无 id 时退化为 `aria:` 名称或 `tag:文本`） |
+| `summary()` | 按类型的计数映射（只统计仍在缓冲内的记录） |
+| `reset()` | 清空 events/seq/counters/last |
+| 场景函数 | `showOverlay/hideOverlay`、`toggleClock`、`moveLayout(x)`、`showOccluder(mode)/hideOccluder`、`setOverflow(mode)`、`setTruncation(mode)`、`setColorBox(css)`、`hideMissingIcon/restoreMissingIcon/recolorMissingIcon`、`startMoving/stopMoving`、`startFlash/stopFlash`、`showCssPatch/hideCssPatch`、`resetScene()`（恢复所有 DOM 默认值并重绘 canvas） |
+
+已实测的典型事件真值（无头 Chromium、`--hide-scrollbars`）：
+
+| 场景 | 记录 |
+| --- | --- |
+| 真实 click `#t3-click` 中心 (340,70) | `mousemove` → `mousedown`(button 0, buttons 1) → `mouseup`(buttons 0) → `click`，全部 `isTrusted:true`，`clientX/clientY` 为连续 CSS 坐标（保留小数） |
+| 双击 | 两组 `mousedown/mouseup/click`（`detail` 依次 1、2）+ 一条 `dblclick` |
+| 右键 | `mousedown/contextmenu/mouseup` 的 `button === 2` |
+| 拖拽（steps=4） | 1 条起始 `mousemove` + `mousedown` + 4 条线性 `mousemove` + `mouseup`；`#t3-drop` 收到 `mouseup` 时 `counters.drops === 1`（按下记录 `pressOrigin`，捕获阶段只在非 drop 目标释放时清空，drop 的冒泡 handler 记录真值） |
+| 页面加载 | `events.length === 0`、`seq === 0`（页面自身不派发输入事件） |
+
+### T3.4 禁止
+
+- 不要给色块加 border/圆角/阴影/渐变/内文；不要给页面加外链、字体、图片或网络请求。
+- 不要自动启动动画（`startMoving` / `startFlash` 必须由场景显式调用，且测试结束调用 `stopMoving` / `stopFlash` / `resetScene`）。
+- 不要修改 `#t3-*` 的 id、几何、颜色或 `window.__t3` 契约；`tests/acceptance/t3-vision.mjs` 与本节逐项对应。

@@ -24,7 +24,8 @@ export async function capabilityProbe({ harness, check }) {
   check('所有实际工具都有 capability 声明且没有虚构工具', harness.toolNames().every((name) => advertisedTools.has(name))
     && [...advertisedTools].every((name) => harness.tools.has(name)), { expected: harness.toolNames(), actual: [...advertisedTools] });
   // T2 (docs/t2-structured-gui.md §5.3): seven web.t2.* projections + the aggregate id are
-  // available; T3/T4 stay unsupported with no tool behind them.
+  // available; T3 (docs/t3-vision.md §11) adds six tool projections + the static-vision aggregate;
+  // T4 stays unsupported with no tool behind it.
   const expectedT2 = [
     ['web.t2.snapshot', 'browser_snapshot'], ['web.t2.click', 'browser_click'], ['web.t2.type', 'browser_type'],
     ['web.t2.scroll', 'browser_scroll'], ['web.t2.fill_form', 'browser_fill_form'],
@@ -37,10 +38,22 @@ export async function capabilityProbe({ harness, check }) {
     expected: [...expectedT2.map((item) => `${item[0]}:available`), 'web.t2.structured-dom:available'],
     actual: { problems: t2Problems, structured },
   });
-  check('T3/T4 仍明确 unsupported 且没有同名工具', ['t3', 't4'].every((tier) => capabilities.some((item) => item.id.toLowerCase().includes(tier) && item.status === 'unsupported'))
-    && capabilities.filter((item) => /t3|t4/i.test(item.id)).every((item) => !item.tool), {
-    expected: ['T3 unsupported', 'T4 unsupported', 'no tool'],
-    actual: capabilities.filter((item) => /t3|t4/i.test(item.id)),
+  // T3 is implemented (docs/t3-vision.md): its six tool projections and the static-vision aggregate
+  // must be available; T4 must still be unsupported with no tool behind it. This replaces the
+  // pre-T3 "T3/T4 unsupported" assertion and is strictly stronger, not looser.
+  const expectedT3 = [
+    ['web.t3.image', 'browser_vision_image'], ['web.t3.find', 'browser_vision_find'],
+    ['web.t3.compare', 'browser_vision_compare'], ['web.t3.act', 'browser_vision_act'],
+    ['web.t3.baseline', 'browser_vision_baseline'], ['web.t3.check', 'browser_vision_check'],
+  ];
+  const t3Problems = expectedT3.filter(([id, tool]) => !capabilities.some((item) => item.id === id && item.tool === tool && item.status === 'available'));
+  const t3Aggregate = capabilities.find((item) => item.id === 'web.t3.static-vision');
+  const t4Entries = capabilities.filter((item) => /t4/i.test(item.id));
+  check('六项 web.t3.* 投影与 web.t3.static-vision 聚合 available，T4 仍 unsupported 且没有同名工具',
+    t3Problems.length === 0 && t3Aggregate?.status === 'available' && !t3Aggregate?.tool
+      && t4Entries.length > 0 && t4Entries.every((item) => item.status === 'unsupported' && !item.tool), {
+    expected: [...expectedT3.map(([id]) => `${id}:available`), 'web.t3.static-vision:available', 'T4 unsupported + no tool'],
+    actual: { problems: t3Problems, aggregate: t3Aggregate, t4: t4Entries },
   });
   const t1Tools = capabilities.filter((item) => item.id.startsWith('web.t1.') && item.tool);
   const httpEntry = capabilities.find((item) => item.id === 'web.t1.http-request');

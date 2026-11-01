@@ -16,7 +16,7 @@
 
 当前默认暂存、显式持久：persist:boolean=false；out/persist:true/非空env任一才持久，env非法不回退；其余含legacy无cwd均插件暂存，dispose清理。file新增pathKind/persistence/root/ephemeral，持久相对/暂存绝对；capabilities.observed只含persistence/relativePath|null。14/14、142/142（[最终报告](../tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json)），tmp不可写真实失败/SIGKILL仍NOT_RUN；下方115项为历史。
 
-本文其余第4轮实例/工具数/验收计数为历史快照，现行16工具状态见 [status.md](status.md)。P0权威契约为 [capture-p0.md](capture-p0.md)：截图增加连续scale1–4（1.11合法）、文档CSS region、相对out、PNG CRC/尺寸拒绝、≤16M全量均匀/透明统计、安全0600/no-clobber落盘与附件metadata比较；不是T3判断。真实Chromium+fake ctx三次各13/13、115/115（[报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），T1回归22/22、324/324（[报告](../tests/acceptance/runs/2026-11-01T04-59-29-531Z-68121/run-report.json)）。仍未验证：真实宿主P0重载/provider视觉、瞬时布局影响；canvas源位图限制与本地TOCTOU边界仍在。原始PNG落盘不等于独立JSONL证据包。
+本文其余第4轮实例/工具数/验收计数为历史快照，现行 **22 工具**状态见 [status.md](status.md)（T1 9 + T2 7 + T3 6；T3 见 [t3-vision.md](t3-vision.md)）。P0权威契约为 [capture-p0.md](capture-p0.md)：截图增加连续scale1–4（1.11合法）、文档CSS region、相对out、PNG CRC/尺寸拒绝、≤16M全量均匀/透明统计、安全0600/no-clobber落盘与附件metadata比较；不是T3判断。T3 的静态视觉判定由第 7 轮六个视觉工具与 56 条套件另证（进程内 56/56、389/389）。真实Chromium+fake ctx三次各13/13、115/115（[报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），T1回归22/22、324/324（[报告](../tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)）。仍未验证：真实宿主P0重载/provider视觉、瞬时布局影响；canvas源位图限制与本地TOCTOU边界仍在。原始PNG落盘不等于独立JSONL证据包。
 
 ## 0. 一分钟结论
 

@@ -351,9 +351,11 @@ async function probe1ToolSurface({ harness, check, finding }) {
   const expectedNames = EXPECTED_TOOLS.map((tool) => tool.name);
   const actualNames = harness.toolNames();
 
-  // 16 = 9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2).
-  check('工具注册面恰好是 16 个 browser_* 工具（9 T1 + 7 T2）', actualNames.length === 16, {
-    expected: { count: 16, names: expectedNames },
+  // 22 = 9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2)
+  //      + 6 T3 (docs/t3-vision.md §2.1). Counted against EXPECTED_TOOLS so the T3 surface cannot
+  //      drift silently; the "same names" assertion below still proves nothing extra was registered.
+  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（9 T1 + 7 T2 + 6 T3）`, actualNames.length === EXPECTED_TOOLS.length, {
+    expected: { count: EXPECTED_TOOLS.length, names: expectedNames },
     actual: { count: actualNames.length, names: actualNames },
   });
   check('工具名与 docs/runtime-t1.md 完全一致（无缺失、无多余）', JSON.stringify([...actualNames].sort()) === JSON.stringify([...expectedNames].sort()), {
@@ -1566,7 +1568,7 @@ async function main() {
     helpers: harnessModule,
   };
 
-  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 16 个 browser_* 工具（9 T1 + 7 T2），名称/参数 schema 与 docs/runtime-t1.md + docs/t2-structured-gui.md §2.2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
+  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 22 个 browser_* 工具（9 T1 + 7 T2 + 6 T3），名称/参数 schema 与 docs/runtime-t1.md + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
   await runProbe({ id: 'P2-navigate-state', title: '导航与运行态', group: 'navigation', expected: 'fixture 可导航，state.url/running 正确，state.title 反映文档标题；file:// 被拒；不可达地址产生错误字符串' }, ({ check, finding }) => probe2Navigate({ harness: harnessA, check, finding, observations }));
   await runProbe({ id: 'P3-eval', title: '页面 JS 执行', group: 'js', expected: '#counter 初始 "0"；{ok,value,type} 形态；页面抛异常返回 {ok:false,error}；支持 awaitPromise' }, ({ check, finding }) => probe3Eval({ harness: harnessA, check, finding, observations }));
   await runProbe({ id: 'P4-computed-style', title: '计算样式', group: 'css', expected: '#style-target 的 color/font-size/font-weight/padding 精确命中；不存在 selector 返回 {ok:false,error}' }, ({ check, finding }) => probe4ComputedStyle({ harness: harnessA, check, finding, observations }));

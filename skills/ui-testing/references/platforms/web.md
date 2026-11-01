@@ -1,6 +1,6 @@
 # Web 平台操作指南（M0–M2 + T2）
 
-Web 已有 **16 个结构化工具**：T1 9 个（含独立 HTTP 请求 `browser_http_request`）+ T2 7 个（`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`）。T3/T4 未实现。按当前注册表与 `browser_capabilities` 实际三态选路，不把文档或 manifest 当运行态证明。工具映射见 [T1 表](../tiers/t1-programmatic.md) 与 [T2 表](../tiers/t2-structured.md)，返回见 [操作契约](../contracts/operation.md)。
+Web 已有 **22 个工具**：T1 9 个（含独立 HTTP 请求 `browser_http_request`）+ T2 7 个（`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`）+ T3 6 个（`browser_vision_image`、`browser_vision_find`、`browser_vision_compare`、`browser_vision_act`、`browser_vision_baseline`、`browser_vision_check`）。T3 静态视觉已进程内验收（56/56 criteria、389/389 required）并在 3080 真实宿主会话完成六工具冒烟，**T4 动态视觉仍未实现**；provider 图像可见性仍未验证（记录 `tests/acceptance/evidence/t3-real-host-2026-11-01.md`）。按当前注册表与 `browser_capabilities` 实际三态选路，不把文档或 manifest 当运行态证明。工具映射见 [T1 表](../tiers/t1-programmatic.md) 与 [T2 表](../tiers/t2-structured.md)，返回见 [操作契约](../contracts/operation.md)。
 
 同一时刻最多一个无头 Chromium/profile；每个 DSH 工作区一个 page，默认 1280×800/DPR1。single-owner-lease 按工作区：空闲 15s、进行中保持、缺 exec 走 legacy、disposed 只释放对应 owner；同工作区其他 session 页面/network/T2 BUSY，不同工作区独立。面板与 Agent 在同一工作区同 page/串行队列；Cookie/localStorage/cache 共享，不是安全隔离。state/capabilities 不启动、不占租约。
 
@@ -12,4 +12,4 @@ Web 已有 **16 个结构化工具**：T1 9 个（含独立 HTTP 请求 `browser
 
 面板 screencast 的 WS 优先/HTTP 回退、metrics 都是预览诊断，不是 Agent 页面证据；内部 HTTP 路由不是 Agent API，不可绕过工具。
 
-须验证：16 工具注册面/诊断不启动、标题/导航/错误、租约/anonymous/disposed/BUSY、面板队列与取消关闭、目标/DNS/Document 重定向、网络失败/脱敏/资源界限、action render、截图附件/fallback/provider、独立 HTTP 的预算/重定向/阻断/取消/零派发，以及 T2 的快照/ref 生命周期/唯一 selector/可信动作/表单/滚动/等待/错误码/证据。实测状态见两个台账，未跑写 NOT_RUN。没有 Agent 视口设置、下载/上传/Cookie 导出、多 target/frame 选择或 T3–T4。
+须验证：22 工具注册面/诊断不启动、标题/导航/错误、租约/anonymous/disposed/BUSY、面板队列与取消关闭、目标/DNS/Document 重定向、网络失败/脱敏/资源界限、action render、截图附件/fallback/provider、独立 HTTP 的预算/重定向/阻断/取消/零派发、T2 的快照/ref 生命周期/唯一 selector/可信动作/表单/滚动/等待/错误码/证据。实测状态见两个台账，未跑写 NOT_RUN。没有 Agent 视口设置、下载/上传/Cookie 导出、多 target/frame 选择或 T3–T4。

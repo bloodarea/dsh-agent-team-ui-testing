@@ -1,19 +1,20 @@
 ---
 name: ui-testing
-description: 使用实际注册的 browser_navigate、browser_eval、browser_screenshot、browser_input、browser_network、browser_computed_style、browser_http_request、browser_snapshot、browser_click、browser_type、browser_scroll、browser_fill_form、browser_node_state、browser_wait_for、browser_state、browser_capabilities 完成授权 Web 页面的调试与测试：T1 程序化接口（含独立 HTTP 请求/响应验证）+ T2 结构化 GUI（snapshot→ref→动作→证据→等待/节点状态），并诊断运行态、租约、错误和结构化证据；P0截图支持连续scale/文档region/PNG校验/默认暂存与显式持久（persist参数；真实Chromium进程内14/14、142/142；宿主重载/provider待验），T2 已实现并通过优化构建验收（37/38 探针、260/260 必需检查）与真实宿主 14/14 记录（该记录属优化前构建，优化后待定向复验；见 docs/t2-structured-gui.md 与 tests/acceptance/evidence/t2-real-host-2026-11-01.md），T3 静态视觉 / T4 动态视觉与其他平台未实现，按当前注册表及运行态能力结果选路。
+description: 使用实际注册的 browser_navigate、browser_eval、browser_screenshot、browser_input、browser_network、browser_computed_style、browser_http_request、browser_snapshot、browser_click、browser_type、browser_scroll、browser_fill_form、browser_node_state、browser_wait_for、browser_vision_image、browser_vision_find、browser_vision_compare、browser_vision_act、browser_vision_baseline、browser_vision_check、browser_state、browser_capabilities 完成授权 Web 页面的调试与测试：T1 程序化接口（含独立 HTTP 请求/响应验证）+ T2 结构化 GUI（snapshot→ref→动作→证据→等待/节点状态）+ T3 静态视觉（PNG 裁剪/预处理/标注/确定性识别/坐标交互/像素差异/受管基线/回归与六类缺陷用例），并诊断运行态、租约、错误和结构化证据；P0截图支持连续scale/文档region/PNG校验/默认暂存与显式持久（persist参数；真实Chromium进程内14/14、142/142；宿主重载/provider待验），T2 已实现并通过优化构建验收（37/38 探针、260/260 必需检查）与真实宿主 14/14 记录（该记录属优化前构建，优化后待定向复验；见 docs/t2-structured-gui.md 与 tests/acceptance/evidence/t2-real-host-2026-11-01.md），T3 静态视觉已实现并通过进程内验收（t3-vision.mjs criteria 56/56、requiredChecks 389/389、notApplicable 3、exit 0）与 2026-11-01 重启后 3080 真实宿主六工具冒烟（provider 图像可见性仍 NOT_RUN，见 tests/acceptance/evidence/t3-real-host-2026-11-01.md），T4 动态视觉与其他平台未实现，按当前注册表及运行态能力结果选路。
 ---
 
-# UI Testing · Web T1/T2 操作规范
+# UI Testing · Web T1/T2/T3 操作规范
 
 ## 何时使用
 
-用于已授权 HTTP(S) 网页的调试、UI 测试、元素定位与交互、计算样式、网络元数据、截图和运行态诊断。**T1 = 程序化接口**（导航/JS/输入/网络/CSSOM/截图/独立 HTTP）；**T2 = 结构化 GUI**（AX 语义快照 + ref 定位 + 可信输入 + 节点状态 + 条件等待）；T3（静态视觉判断：像素差异/阈值/VLM）与 T4（动态视觉：帧序列/动画时序）未实现。本插件尚未定义或实现的 Windows / Android / Linux / macOS / TUI / HarmonyOS / 游戏 / 3D 不适用。
+用于已授权 HTTP(S) 网页的调试、UI 测试、元素定位与交互、计算样式、网络元数据、截图和运行态诊断。**T1 = 程序化接口**（导航/JS/输入/网络/CSSOM/截图/独立 HTTP）；**T2 = 结构化 GUI**（AX 语义快照 + ref 定位 + 可信输入 + 节点状态 + 条件等待）；**T3 = 静态视觉**（对有限张静态 PNG 做裁剪/缩放/预处理/标注/确定性识别/坐标输入/像素差异/受管基线/回归与缺陷用例；无 VLM、无 OCR、无语义命名，不主动读 DOM）；**T4 = 动态视觉**（帧序列/动画时序）未实现。本插件尚未定义或实现的 Windows / Android / Linux / macOS / TUI / HarmonyOS / 游戏 / 3D 不适用。
 
 ## 事实来源与边界
 
-运行时是无头 Chromium + CDP，加上 Host 侧独立 HTTP(S) 客户端；Host 实现入口为 `index.js`。**工具面 16 个**：T1 9 个 + T2 7 个（`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`）。T2 的权威接口契约是本仓库 `docs/t2-structured-gui.md`（§2 工具表、§3 Ref、§4 动作/表单/等待、§5 证据、§6 错误）；T2 代码与运行验收状态由实施报告另证。
+运行时是无头 Chromium + CDP，加上 Host 侧独立 HTTP(S) 客户端；Host 实现入口为 `index.js`。**工具面 22 个**：T1 9 个 + T2 7 个（`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`）+ T3 6 个（`browser_vision_image`、`browser_vision_find`、`browser_vision_compare`、`browser_vision_act`、`browser_vision_baseline`、`browser_vision_check`）。T2 的权威接口契约是本仓库 `docs/t2-structured-gui.md`（§2 工具表、§3 Ref、§4 动作/表单/等待、§5 证据、§6 错误）；T3 的权威契约是 `docs/t3-vision.md`（§2 工具表、§3 坐标/证据/错误、§4 算法、§5 识别、§6 act、§7 缺陷、§8 基线/回归）。两者的代码与运行验收状态由实施报告另证。
 
-- **验收基线（Lead 独立复跑，exit 0）**：T1 `tests/acceptance/run.mjs` 22/22 组、**324/324** 必需检查、failedChecks 0、findings 1（info: `unmodifiedText` INCONCLUSIVE）——报告 `tests/acceptance/runs/2026-11-01T03-41-59-200Z-41002/run-report.json`；T2 `tests/acceptance/t2-structured.mjs`（**优化构建**）探针 38（**pass 37 / fail 0 / notRun 1 = C38 套件边界**）、必需检查 **260/260**、criteriaCovered 38、exit 0——报告 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`（此前一轮 233/233：`runs/2026-10-31T19-25-29-077Z-54114`）；`runtime-faults` 16/16。优化实测（同 fixture/默认参数）：nodeCount 421→275（−34.7%）、tree 14432→9254 字节（−35.9%）、`- text` 行 232→91，两次捕获 tree/digest 一致。T2 的 §9.38 真实宿主已由 Lead 在 DSH 3080（pid <pid>，2026-11-01 10:40:04 重载）的真实 Agent 会话验收：`tests/acceptance/evidence/t2-real-host-2026-11-01.md` **14/14 检查行通过**——但该记录属**优化前构建**；优化构建（快照压缩 + scroll 硬化）已进程内 260/260 通过，**真实宿主定向复验 5 项仍待**（snapshot 压缩形态 / 同名与独立节点 refs / 离屏拒绝+hint+恢复 / 持续运动 unstable / T1 未回归），未完成前不得声称“优化后真实宿主已验证”。provider 图像可见性仍 NOT_RUN。
+- **T3 静态视觉已实现并已验收（verified）**：`tests/acceptance/t3-vision.mjs` criteria **56/56**、requiredChecks **389/389**、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0——报告 `tests/acceptance/runs/2026-11-01T08-38-27-595Z-194712/run-report.json`（此前 `07-34-49-952Z-174834` 与执行者 `07-33-56-470Z-172394` 同结果）。**真实宿主已复验**：2026-11-01 16:23 重启后的 3080 真实会话内六工具冒烟 + 页面真值核对通过，见 `tests/acceptance/evidence/t3-real-host-2026-11-01.md`。**仍 NOT_RUN**：provider 图像可见性、T4 动态视觉，以及上述 3 条 N/A；不得由进程内套件推定。
+- **验收基线（Lead 独立复跑，exit 0）**：T1 `tests/acceptance/run.mjs` 22/22 组、**324/324** 必需检查、failedChecks 0、findings 1（info: `unmodifiedText` INCONCLUSIVE）——报告 `tests/acceptance/runs/2026-11-01T07-31-29-210Z-168725/run-report.json`（T3 收口时点：工具面 22；此前 16 工具时点为 `2026-11-01T03-41-59-200Z-41002`）；T2 `tests/acceptance/t2-structured.mjs`（**优化构建**）探针 38（**pass 37 / fail 0 / notRun 1 = C38 套件边界**）、必需检查 **260/260**、criteriaCovered 38、exit 0——报告 `tests/acceptance/runs/2026-11-01T07-33-10-505Z-170262/run-report.json`（此前 T2 记录 `2026-11-01T03-41-31-025Z-39784`）（此前一轮 233/233：`runs/2026-10-31T19-25-29-077Z-54114`）；`runtime-faults` 16/16。优化实测（同 fixture/默认参数）：nodeCount 421→275（−34.7%）、tree 14432→9254 字节（−35.9%）、`- text` 行 232→91，两次捕获 tree/digest 一致。T2 的 §9.38 真实宿主已由 Lead 在 DSH 3080（pid <pid>，2026-11-01 10:40:04 重载）的真实 Agent 会话验收：`tests/acceptance/evidence/t2-real-host-2026-11-01.md` **14/14 检查行通过**——但该记录属**优化前构建**；优化构建（快照压缩 + scroll 硬化）已进程内 260/260 通过，**真实宿主定向复验 5 项仍待**（snapshot 压缩形态 / 同名与独立节点 refs / 离屏拒绝+hint+恢复 / 持续运动 unstable / T1 未回归），未完成前不得声称“优化后真实宿主已验证”。provider 图像可见性仍 NOT_RUN。
 - **T2 结构化 GUI 已实现并已验收（verified）**：优化构建套件 37/38 探针通过（套件内唯一 notRun = C38「真实宿主/声明」，属 fake-ctx 套件边界）、必需检查 **260/260**、38 项 criteria 全覆盖；本文接口与流程按该实现与报告写。**仍有三项未验证**：优化构建的真实宿主定向复验 5 项（现有 14/14 记录属优化前构建）、provider 图像可见性（T1 遗留）、closed-shadow「不产生 ref」细分（仅 advisory 检查覆盖）。
 - **能力报告不能自证**：若 `browser_capabilities` 抛错或字段与注册 schema 不符，按“证据不足”处理（`BLOCKED`/`INCONCLUSIVE`），不要反向推断某能力可用或不可用。`available` 是设计级状态，不等于对应行为已验收。
 - 当前注册表决定工具是否可调用，`browser_capabilities` 再报告真实运行态；静态文档、manifest 与台账都不构成可用性证明。
@@ -24,7 +25,7 @@ description: 使用实际注册的 browser_navigate、browser_eval、browser_scr
 - 关闭清空网络/请求/URL/标题/帧缓存并回收进程与 profile，同时清空 T2 的 snapshot/ref 表。引用记录仍须核对 action 时间，避免引用同一次运行中更早的页面。
 - 没有直接 CDP 命令工具，不得自行拼 CDP、虚构 Playwright/Puppeteer 能力或调用内部面板 HTTP 路由绕过工具层。
 
-## 统一工具接口（16 个）
+## 统一工具接口（22 个）
 
 下面是各工具的业务字段；每次调用还返回并 render `actionId/sessionId/startedAt/finishedAt/target/args`（另有 `scope` 工作区身份），args 为参数摘要。实际返回与注册 schema 优先。
 
@@ -42,7 +43,7 @@ description: 使用实际注册的 browser_navigate、browser_eval、browser_scr
 | `browser_computed_style` | `{selector:string,properties?:string[]}` | `{ok:true,style}`；首个匹配元素；未命中返回分类 error 对象；无伪元素/iframe/Shadow DOM 内部定位，不证明视觉。 |
 | `browser_http_request` | `{url,method?,headers?,body?,timeoutMs?,maxBytes?,followRedirects?,maxRedirects?}` | 独立 HTTP(S)：`{ok:true,method,url,status,statusText,headers,contentType,encoding,body,bodyBytes,bodyTruncated,redirects,timings}`。`ok:true` **不等于 2xx**；`headers` 是小写头名→非空 string[]；`encoding` 为 utf8/base64；默认不跟随重定向、默认 5s/64 KiB（上限 20s/1 MiB/5 跳）；无 cookie jar；失败抛分类错误。 |
 | `browser_state` | `{}` | `mode/activity/url/title/viewport/seq/running/error/errorAt/errorActionId/errorTarget` 与 owner 等诊断信息；从 `document.title` 刷新标题，不懒启动、不申请租约；成功的页面/网络操作会清空错误四字段，诊断与 HTTP 调用不清。 |
-| `browser_capabilities` | `{}` | 实际运行态 `available/unavailable/unsupported`、原因/限制及 `single-owner-lease`；T2 段应含 7 个工具项与 `web.t2.structured-dom`（T3/T4 仍 unsupported），并报 `limits.structuredGui` 与P0的 `capture/limits.capture`；observed仅来自上次真实截图、首次null；不懒启动、不申请租约。附件服务缺失应明确降级，不能静态宣称图片可见。 |
+| `browser_capabilities` | `{}` | 实际运行态 `available/unavailable/unsupported`、原因/限制及 `single-owner-lease`；T2 段应含 7 个工具项与 `web.t2.structured-dom`；T3 段应含 6 个工具项 + 聚合 `web.t3.static-vision` 与 `vision` 块（`version:1`、`algorithmVersion:'t3-v1'`、`tools`、`sourceKinds`、`limits`、`observed:null|{observedAt,lastOperation,lastVerdict}`），T4 仍 unsupported；并报 `limits.structuredGui`、`limits.vision` 与P0的 `capture/limits.capture`；observed仅来自上次真实调用（截图或视觉），首次null，不含图像/绝对路径/页面文本；不懒启动、不建目录、不生成 product、不申请租约。附件服务缺失应明确降级，不能静态宣称图片可见。 |
 
 ### T2（7 个，结构化 GUI）
 
@@ -60,7 +61,26 @@ description: 使用实际注册的 browser_navigate、browser_eval、browser_scr
 
 `Field.type` 语义：`textbox`（string，清空替换，不自动提交）、`checkbox`（boolean，已满足不点击）、`radio`（boolean，仅 `true`）、`combobox`（string 或 1–20 项不重复 string[]，按 `option.value` 精确匹配，**不打开原生 popup**）、`slider`（有限 number，须在 min/max 内且符合 step，`step=any` 不支持）。`eventSource`：click/type/textbox/checkbox/radio 为 `cdp-input`（可信输入）；combobox/slider 为 `dom-control`（原生 setter + 冒泡 input/change，**不能声称 isTrusted**）。
 
-5 个 T1 页面工具（navigate/eval/screenshot/input/computed_style）与**全部 7 个 T2 工具**可懒启动；network/state/capabilities 不启动；`browser_http_request` 既不启动浏览器也不受页面租约/队列约束。未启动的页面工具可以标 available（constraint 明示启动可能失败），running/transport 另报真实连接；不能把 `running:false` 当 unsupported。其他 owner 占用时页面/network/T2 标 unavailable、reason BUSY（**只读的 snapshot/node_state/wait_for 同样 BUSY**），state/capabilities/http_request 仍 available。实际调用结果仍优先。
+### T3（6 个，静态视觉）
+
+T3 只处理有限张静态 PNG。源图只能是 `Source = {kind:"live",scale?:1–4,region?:文档CSS Rect} | {kind:"product",productId:"v1_<32hex>"} | {kind:"baseline",name,revision?}`；**禁止**任意文件路径、URL、附件 ID、调用方 base64/Buffer 输入，也不从附件服务反读图像。product 按工作区 scope 隔离（每 scope 16 张、合计 128 MiB、单张 32 MiB/16M 像素），page 导航/关闭后仍可离线分析，但 `act` 的可操作资格失效；不存在跨重启恢复。全部 T3 工具都进所属 scope 队列与 owner 检查；**离线 baseline list/get/delete 与 product 源不启动 Chromium**，只有 live 源与 `act` 会懒启动页面。
+
+| 工具 | 参数 | 业务返回与限制 |
+| --- | --- | --- |
+| `browser_vision_image` | `source?=live`；`region?:PixelRect`；`resize?{factor 1–4,method:nearest|bilinear}`；`preprocess?≤8`；`annotations?≤64`；`recognize?:Query`；`output?{persist,out}` | `{ok:true,product,image,bytes,sha256,attachment,attachmentId,imageDelivery,attachmentError,file,analysis,recognition,evidence}`。顺序固定 source→crop→resize→preprocess→统计/识别→标注→编码/交付；分析与识别在标注前，regions 相对最终未标注图。无像素变换复用原 productId/原始 PNG；有变换为 derived；有标注时另存未标注 derived 供 recognition 引用。无断言时 `verdict=INCONCLUSIVE(no-assertion)`。 |
+| `browser_vision_find` | `query*`；`source?=live`；`region?:PixelRect` | `{ok:true,source,result:FindResult,evidence}`。候选坐标始终相对完整源图（ROI 原点已回加），`documentCss` 由 mapping 映射；无匹配是成功空列表（不是 `TARGET_NOT_FOUND`）；`semanticName` 恒 null、candidates 不是可操作 ref；默认不产图片/文件/product（live 源仍生成可引用源 product）。 |
+| `browser_vision_compare` | `before*`,`after*`（都必须显式）；`region?`；`masks?≤64`；`options?`；`thresholds?`；`output?` | `{ok:true,before,after,product,image,…,comparison,evidence}`。两图必须同像素尺寸（否则 `VISION_SIZE_MISMATCH`）；YIQ 固定算法 `yiq-v1`；masks 缺省继承 before 基线、显式 `[]` 清空；options/thresholds 逐字段覆盖并返回 `resolved*`；全屏蔽抛 `VISION_EMPTY_COMPARISON`；输出完整尺寸 annotated diff PNG（红差异/黄 AA/灰 mask/蓝 bbox）。 |
+| `browser_vision_act` | `productId*`,`action*:move|click|drag`,`point*`；`to?`（仅 drag）；`button?`（click/drag）；`clickCount?`（仅 click）；`modifiers?`；`steps?`/`durationMs?`（仅 drag） | `{ok:true,dispatched,action,point{imagePixels,documentCss,viewportCss},to,dispatch{eventCount,completed,eventSource,released},beforeProductId,afterProduct,evidence}`。六步安全校验全过才派发，任何一步不过零派发；`verdict` 固定 `INCONCLUSIVE(dispatch-only)`。 |
+| `browser_vision_baseline` | `action*:list|get|create|update|delete` + 条件必填/禁止字段（见 docs/t3-vision.md §2.6） | list→`{baselines}`；get/create/update→`{baseline,product}`；delete→`{baseline}`（tombstone）。受管持久根、不可变 revision、HEAD CAS；仅 create/update 建目录；delete 是逻辑墓碑，不删不可变 PNG。 |
+| `browser_vision_check` | `cases*`（1–20；每 case `assertions` 1–32、`facts` 0–64） | `{ok:true,cases,summary{pass,warn,fail,inconclusive,blocked},verdict,exitCode,evidence}`。整批先纯参数校验再逐 case 执行；不导航、不建/更新基线、不读 DOM。 |
+
+**T3 证据口径**：成功业务体带 `evidence.vision.version=1`（`provenance/source/coordinateSpace/regions/metrics/baseline/facts/verdict/dispatch/output/escalation/incomplete/truncated`），失败走 `BrowserError.details.evidence.vision`。`ok:true` 只表示工具完成，`verdict` 才是断言结论；`INCONCLUSIVE`/`BLOCKED` 必须原样报告。evidence JSON ≤262144 字节、`regions`≤100，超限标 `truncated`；截断会丢失 required 判断依据时 PASS 降 INCONCLUSIVE。`facts` 一律 `trusted:false`（调用方声明），T3 不重新查询 DOM；无 VLM/OCR/语义命名。**截图成功、识别到候选、坐标已派发都不等于视觉验收通过。**
+
+**T3 工作流**：`image`（取 product + 统计）→ `find`（可选确定性定位）→ 外部 T1/T2/`act` 动作 → `image`/`compare`（前后两图差异）→ `baseline create`（建立受管基线）→ `check`（回归 + 六类缺陷）。需要交付差异图用 `compare`；`check` 不发布文件。缺事实或来源不匹配时如实记 INCONCLUSIVE/BLOCKED，不得用 `browser_eval` 改 DOM、改坐标或换相似目标绕过。
+
+**T3 选路**：语义元素与可交互目标优先 T2（ref/selector）；canvas/图片/颜色/像素差异/受管基线/回归阈值才用 T3；持续运动、动画时序、连续视觉推理属 T4（未实现）。T2 `NOT_INTERACTABLE` 的 `escalation:"T3"` 只提示需要视觉分析，不自动授权坐标输入；`browser_vision_act` 用当前截图里的顶层命中点，不是“知道调用者想要哪个 DOM 对象”。
+
+5 个 T1 页面工具（navigate/eval/screenshot/input/computed_style）与**全部 7 个 T2 工具**可懒启动；network/state/capabilities 不启动；`browser_http_request` 既不启动浏览器也不受页面租约/队列约束。**T3**：live 源与 `act` 可懒启动；product/baseline 源与离线 baseline list/get/delete 不启动页面，但**全部 T3 工具仍过 scope 队列与 owner 检查**。未启动的页面工具可以标 available（constraint 明示启动可能失败），running/transport 另报真实连接；不能把 `running:false` 当 unsupported。其他 owner 占用时页面/network/T2/T3 标 unavailable、reason BUSY（**只读的 snapshot/node_state/wait_for 与离线 baseline 同样 BUSY**），state/capabilities/http_request 仍 available。实际调用结果仍优先。
 
 ## P0 截图采集与证据
 
@@ -176,12 +196,12 @@ escalation{tier:"T3"|"T4"|null,reason}, incomplete[], truncated
 
 | 情形 | 处理 |
 | --- | --- |
-| 目标 hidden / covered，`NOT_INTERACTABLE` 带 `details.escalation:"T3"` | 动作失败就是结论；要判断“为什么看不见/被什么遮住/颜色与可读性”属 T3，当前 `unsupported` → `BLOCKED`/`INCONCLUSIVE` |
-| 目标持续运动、`unstable` | 拒绝派发；动画/时序判断属 T4，当前 `unsupported` |
-| canvas/WebGL/图片文字、无 AX 身份的 shadow/frame | 无节点可证 → `BLOCKED`/`INCONCLUSIVE`，可附已有 `browser_screenshot`，但不得伪造视觉判定 |
+| 目标 hidden / covered，`NOT_INTERACTABLE` 带 `details.escalation:"T3"` | 动作失败就是结论；要判断“为什么看不见/被什么遮住/颜色”可用 T3：先 `browser_vision_image` 取 product，再 `find`/`compare` 或 `browser_vision_act` 对当前截图坐标输入（需 product、≤30s、零派发校验）。T3 不是 T2 的 force 逃生口 |
+| 目标持续运动、`unstable` | 拒绝派发；动画/时序判断属 T4，当前 `unsupported` → `BLOCKED`/`INCONCLUSIVE` |
+| canvas/WebGL/图片文字、无 AX 身份的 shadow/frame | 无节点可证 → T3 可识别最终像素图案（`find`/`image`），但不得推断 canvas 内部对象、语义或可点击性；仍无法证明时记 `BLOCKED`/`INCONCLUSIVE` |
 | closed shadow、iframe/OOPIF 内部 | 不支持；只报告边框叶子状态，不把动作送进内部、不落到相似节点 |
 
-升级只是提示，**不是可用能力**：T3/T4 仍 unsupported，不得用截图或 `browser_eval` 冒充结构化/视觉结论。
+升级只是提示，**不是能力证明**：T3 已实现（静态像素），但坐标输入成功不等于点中业务目标、更不等于视觉验收通过；T4 仍 unsupported，不得用截图或 `browser_eval` 冒充结构化/动态视觉结论。
 
 ### 失败即结论，不是回退信号
 
@@ -267,7 +287,27 @@ browser_http_request {
 | `WAIT_TIMEOUT` | timeout / true | 条件在预算内未成立；`details` 含 `elapsedMs/polls/condition`；page 仍 running，**不走关闭 page 的清理分支**；retryable 不等于可以盲重放有副作用的动作 |
 | `INVALID_ARGUMENT` | input / false | 参数/互斥/边界/CSS 语法/重复字段目标/错误谓词或值类型；纯参数预检发生在启动与派发之前（零输入） |
 
-- eval 页面异常、style 未命中等 T1 操作失败返回 `{ok:false,error:{code,category,retryable,message,details}}`；T2 不走该路径，一律抛错（`details.evidence` 必带）。HTTP 内部路由保留 error 字符串并增加同级分类字段，不要套用为 Agent 返回形状。
+- **T3 专有 codes（一律抛错；`details.evidence.vision` 必带）**：
+
+| code | category / retryable | 语义与下一步 |
+| --- | --- | --- |
+| `VISION_SOURCE_NOT_FOUND` | vision / false | product 不存在/跨 scope/LRU/重启；baseline 内容不可用用专属码 |
+| `VISION_FORMAT_UNSUPPORTED` | vision / false | 合法 PNG 但 decoder 不支持该格式，不能跳过解码后宣称已分析 |
+| `VISION_LIMIT_EXCEEDED` | resource / false | 编码字节/总 store/工作集/候选比较次数/结果个数预算不足；`details.limit/actual/max` |
+| `VISION_TIMEOUT` | timeout / true | 5s 算法预算耗尽；无部分图像、无假结论 |
+| `VISION_SIZE_MISMATCH` | vision / false | compare 两图实际宽高不等；`details.before/after` |
+| `VISION_EMPTY_COMPARISON` | vision / false | ROI 内所有像素被 mask 排除（无分母，不给 similarity=1） |
+| `VISION_STALE_IMAGE` | action / false | act 非 actionable、超过 30s、页面代次/scroll/viewport/zoom 变化或重采样 hash 不同 |
+| `VISION_HIT_MISMATCH` | action / false | 无命中/disabled/inert/两帧 backend 不同/命中 rect 持续变化；零派发，不回退点 |
+| `VISION_BASELINE_ROOT_UNAVAILABLE` | output / false | 无可信持久根、非法 env 根、scope 无工作区身份；不回退暂存 |
+| `VISION_BASELINE_NAME_INVALID` | input / false | 基线 name 非法（早期预检，零副作用） |
+| `VISION_BASELINE_NOT_FOUND` | vision / false | 无 committed 名字/revision，或 HEAD 为墓碑 |
+| `VISION_BASELINE_EXISTS` | output / false | create 名字已使用（含 tombstone） |
+| `VISION_BASELINE_CONFLICT` | concurrency / false | expectedRevision 不等于 HEAD，或争抢下一 head 槽失败 |
+| `VISION_BASELINE_READ_FAILED` | output / true | 元数据损坏、PNG 缺失/hash 不符、目录读失败；reason=io/corrupt/hash-mismatch |
+| `VISION_BASELINE_WRITE_FAILED` | output / true | 权限/只读/fsync/link/write 失败；reason=permission/read-only/io，不暴露绝对根 |
+
+- eval 页面异常、style 未命中等 T1 操作失败返回 `{ok:false,error:{code,category,retryable,message,details}}`；T2/T3 不走该路径，一律抛错（`details.evidence` 必带）。HTTP 内部路由保留 error 字符串并增加同级分类字段，不要套用为 Agent 返回形状。
 - retryable 不是自动重试授权。超时/断连/取消可能已经产生副作用，先查状态。BUSY 应等 owner 释放/空闲到期后再尝试，不能通过面板 HTTP 绕过。
 - 导航检查失败信号与最终目标仍不代表 load complete；另读 `document.readyState` 或应用自身状态。
 - `browser_eval` 用于页面 JS 状态，不冒充输入命中、网络抓包、CSSOM、像素/动画证据。样式用 computed_style，网络用 network，元素语义与交互用 T2。
@@ -287,7 +327,8 @@ browser_http_request {
 - 引用实际 `actionId/sessionId/startedAt/finishedAt/target/args`（含 `scope`），以及 JS/style/network/state 结果；抛错引用 `[CODE]` 和错误中的证据摘要。这些字段必须进入 render 内容才可保留在 durable transcript。
 - T2 引用 `evidence.provenance`（`snapshotId/digest` 是 **minted provenance**，不是“当前快照”）、`targets[].resolved`（role/name/bbox/identity）、`dispatch`、`before/after`、`networkDelta`、`escalation`、`incomplete/truncated`；`nodeAfter:null` + `incomplete` 说明文档已切换。
 - 截图引用真实 `capturedAt/sha256/attachmentId`；附件 ID 不是文件路径。附件保存或 image block 生成不自动证明 provider 已显示图像；无服务的 base64-fallback 文本不能冒充已看到画面。
-- 原始截图及可见附件仍不等于 T3 分析，无法替代像素差异/阈值或 T4 连续帧证据。`/metrics` 只证明预览管线指标。
+- T3 引用 `evidence.vision`：`version/operation/provenance(algorithmVersion=t3-v1)`、`source`（kind/productId/sha256/尺寸/capturedAt/mapping，live 另带 CaptureV1）、`coordinateSpace`、`regions`、`metrics`、`baseline`（name/revision/headToken/tombstone）、`facts`（trusted=false）、`verdict{status,reason}`、`dispatch`、`output`、`incomplete/truncated`。`compare` 引用 `comparison.metrics`（totalPixels/maskedPixels/comparedPixels/diffPixels/aaPixels/diffRatio/similarity）与 resolved masks/options/thresholds；`check` 引用每 assertion 的 status/reason/metrics/diffProductId 与 summary/verdict/exitCode。
+- 原始截图及可见附件仍不等于 T3 分析；T3 也只支持指定区域/分辨率/时间/阈值下的像素结论，不证明业务、交互、可访问性或整页正确。`/metrics` 只证明预览管线指标。T3 的进程内验收为 `tests/acceptance/runs/2026-11-01T08-38-27-595Z-194712/run-report.json`（criteria 56/56、requiredChecks 389/389、notApplicable 3、exit 0；此前 `07-34-49-952Z-174834` 同结果）；真实宿主冒烟见 `tests/acceptance/evidence/t3-real-host-2026-11-01.md`，provider 图像可见性仍写 `NOT_RUN`。
 - 报告包含目标、期望/实际、工具参数、action 证据、失败/回退原因、`PASS/FAIL/BLOCKED/INCONCLUSIVE/NOT_RUN` 和未验证部分；不得伪造路径、附件或已通过状态。T2 未跑的条件写 `NOT_RUN`，不写“已通过”。
 
 ## 按需参考
@@ -296,7 +337,7 @@ browser_http_request {
 - 选路：`references/core/selection.md`；回退：`references/core/fallback.md`
 - 验证：`references/core/verification.md`；安全：`references/core/safety.md`
 - T1：`references/tiers/t1-programmatic.md`；T2：`references/tiers/t2-structured.md`
-- T3/T4：`references/tiers/t3-static-visual.md`、`references/tiers/t4-dynamic-visual.md`
+- T3：`references/tiers/t3-static-visual.md`（已实现摘要，权威契约 `docs/t3-vision.md`）；T4：`references/tiers/t4-dynamic-visual.md`（未实现）
 - 平台：`references/platforms/index.md`、`references/platforms/web.md`
 - 契约：`references/contracts/capability.md`、`references/contracts/operation.md`、`references/contracts/evidence.md`
 - 场景：`references/scenarios/functional.md`、`references/scenarios/visual-motion.md`

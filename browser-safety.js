@@ -27,6 +27,19 @@ const TAXONOMY = {
   CAPTURE_SIZE_MISMATCH: ['capture', false], CAPTURE_UPSCALED: ['capture', false],
   CAPTURE_TOO_LARGE: ['resource', false], OUTPUT_PATH_INVALID: ['input', false],
   OUTPUT_EXISTS: ['output', false], OUTPUT_WRITE_FAILED: ['output', true],
+  // Web T3 (static vision, docs/t3-vision.md §3.3). Every code below is fixed by the contract:
+  // a vision refusal must never degrade into INTERNAL, and a product/baseline that cannot be
+  // read must never be reported as a visual FAIL. `vision` marks "the image/source side said no",
+  // `action` marks "the live page no longer matches the screenshot", `output` marks the managed
+  // baseline root on disk, `concurrency` marks the HEAD CAS loser.
+  VISION_SOURCE_NOT_FOUND: ['vision', false], VISION_FORMAT_UNSUPPORTED: ['vision', false],
+  VISION_LIMIT_EXCEEDED: ['resource', false], VISION_TIMEOUT: ['timeout', true],
+  VISION_SIZE_MISMATCH: ['vision', false], VISION_EMPTY_COMPARISON: ['vision', false],
+  VISION_STALE_IMAGE: ['action', false], VISION_HIT_MISMATCH: ['action', false],
+  VISION_BASELINE_ROOT_UNAVAILABLE: ['output', false], VISION_BASELINE_NAME_INVALID: ['input', false],
+  VISION_BASELINE_NOT_FOUND: ['vision', false], VISION_BASELINE_EXISTS: ['output', false],
+  VISION_BASELINE_CONFLICT: ['concurrency', false],
+  VISION_BASELINE_READ_FAILED: ['output', true], VISION_BASELINE_WRITE_FAILED: ['output', true],
 };
 export class BrowserError extends Error {
   constructor(code, message, details = {}) {

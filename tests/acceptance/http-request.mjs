@@ -143,9 +143,9 @@ export async function httpRequestProbe({ check, finding, fixture }) {
   try {
     // --- P22.1 registration + defaults -----------------------------------------------------
     const names = harness.toolNames();
-    // 16 = 9 T1 + 7 T2 (docs/t2-structured-gui.md §2.2); the independent HTTP primitive must stay
-    // registered next to them and keep its own defaults.
-    check('P22.1 注册表恰有 16 个工具且含 browser_http_request', names.length === 16 && names.includes('browser_http_request'), { names });
+    // 22 = 9 T1 + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1); the
+    // independent HTTP primitive must stay registered next to them and keep its own defaults.
+    check('P22.1 注册表恰有 22 个工具且含 browser_http_request', names.length === 22 && names.includes('browser_http_request'), { names });
     const health = await httpTool({ url: fixture.url + 'health' });
     check('P22.1 默认参数：GET/200/utf8/bodyBytes/无截断/无重定向',
       health.ok === true && health.value.status === 200 && health.value.method === 'GET'

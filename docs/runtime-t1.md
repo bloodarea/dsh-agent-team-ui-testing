@@ -102,7 +102,9 @@ T1（9 个）：`browser_navigate`、`browser_eval`、`browser_screenshot`、`br
 
 T2（第 6 轮新增 7 个）：`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`。完整契约见 [t2-structured-gui.md](t2-structured-gui.md)，实现/验收状态见 [status.md](status.md)。
 
-T2 与 T1 共用同一 Runtime/队列/租约，`browser_snapshot` 的 ref 表按 Runtime 隔离；七工具都是页面操作（懒启动 + BUSY），`browser_state`/`browser_capabilities` 与独立 HTTP 不因 T2 改变语义。`browser_capabilities` 新增 `web.t2.*` 与 `limits.structuredGui`，T3/T4 仍 unsupported。
+T3（第 7 轮新增 6 个）：`browser_vision_image`、`browser_vision_find`、`browser_vision_compare`、`browser_vision_act`、`browser_vision_baseline`、`browser_vision_check`。完整契约见 [t3-vision.md](t3-vision.md)，实现/验收状态见 [status.md](status.md)。
+
+T2 与 T1 共用同一 Runtime/队列/租约，`browser_snapshot` 的 ref 表按 Runtime 隔离；七工具都是页面操作（懒启动 + BUSY），`browser_state`/`browser_capabilities` 与独立 HTTP 不因 T2 改变语义。`browser_capabilities` 新增 `web.t2.*` 与 `limits.structuredGui`。**本文 T2 轮快照中的“T3/T4 仍 unsupported”已被第 7 轮取代**：T3 六个视觉工具与 `web.t3.*` 已实现并验收，T4 仍 unsupported。
 
 M0–M2 的 `single-owner-lease` 保留，但已改为**按 DSH 工作区**：页面操作与 network 先按 exec 身份解析工作区 runtime，再申请该 runtime 的租约；空闲 15s、进行中保持，同工作区其他 session 返回 `BUSY`，不同工作区互不影响。exec 身份缺失走 `legacy:default`；`agent/disposed` 只释放对应 owner。同一工作区的面板与 Agent 使用同一 page/串行队列；不同工作区 page/URL/viewport/网络缓冲独立，但 Cookie/存储共享。state/capabilities 不启动浏览器也不占租约。`browser_http_request` 仍是独立分支：不启动 Chromium、不申请/续租、不进页面队列、不建 page/entry，插件卸载时取消在飞请求。帧管线、`/metrics`、WS 都不是 Agent 工具。scope 身份、请求头/query、recent→binding 与限制见 [workspace-isolation.md](workspace-isolation.md)。
 

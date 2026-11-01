@@ -3,7 +3,7 @@
  * The client half only renders frames and forwards input, so nothing here can steal window focus.
  */
 import { spawn } from 'node:child_process';
-import { accessSync, constants as fsConstants, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { accessSync, constants as fsConstants, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, sep } from 'node:path';
@@ -19,6 +19,12 @@ import {
   CAPTURE_LIMITS, checkPixelSize, createCaptureMapping, decodePng, detectImageAnomaly,
   expectedPixelSize, inspectPng, projectCaptureMapping, publishCapture, resolveCapturePath,
 } from './capture-p0.js';
+// Web T3 static vision (docs/t3-vision.md, docs/t3-implementation-plan.md §2). The Host layer never
+// re-implements the pixel algorithms: it validates arguments, resolves sources, owns the product
+// store per scope, delivers the single PNG and implements the act/check decision rules on top of
+// the pure module API.
+import * as vision from './vision-t3.js';
+import { createBaselineStore } from './vision-baseline.js';
 export { BrowserError, Cdp } from './browser-safety.js';
 
 export const inject = ['tools', 'webServer'];
@@ -1915,6 +1921,17 @@ export class Runtime {
     this.captureObservation = null;
     // Cached Browser.getVersion projection ({ product, headless }); set on first capture.
     this.productInfo = undefined;
+    // Web T3 (docs/t3-vision.md §1.1): one product store per workspace scope, owned by the plugin
+    // instance and independent of the page lifecycle — a page navigation/close keeps the stored
+    // images analysable offline (their actionable资格 is invalidated separately). Only dispose
+    // (plugin unload / runtime retire) clears it.
+    this.visionProducts = new vision.VisionProductStore({ now: () => Date.now() });
+    // Provenance per product (runtimeId/pageGeneration/documentEpoch) so `act` can prove it is
+    // operating on the same page generation, and evidence can cite the capture lineage.
+    this.visionProvenance = new Map();
+    // Last real vision call of this Runtime, projected into browser_capabilities.vision.observed
+    // (numbers/status only — never an image, an absolute path or page text).
+    this.visionObservation = null;
     // Web T2 runtime state (docs/t2-structured-gui.md §3.2, §5).
     //
     // `snapshot` is the single published ref table of this Runtime: `browser_snapshot` replaces it
@@ -2837,6 +2854,64 @@ export class Runtime {
         capturedAt,
       },
     };
+  }
+
+  /**
+   * Live layout facts for a T3 source/act re-check (docs/t3-vision.md §3.1, §6 step 1).
+   *
+   * Read-only: no viewport/scroll/DPR change, no retry, no second capture. `cssContentSize` is the
+   * document CSS content box a `Source.live` region must stay inside; `visualViewportScale` is the
+   * pinch-zoom factor (must be 1 for coordinate input).
+   */
+  async layoutMetrics(signal) {
+    await this.ensure(signal);
+    let layout;
+    try {
+      layout = await this.send('Page.getLayoutMetrics', {}, signal);
+    } catch (error) {
+      throw this.#captureError(error, 'getLayoutMetrics');
+    }
+    const layoutViewport = (layout && layout.cssLayoutViewport) || {};
+    const visualViewport = (layout && layout.cssVisualViewport) || {};
+    const content = (layout && layout.cssContentSize) || {};
+    const pick = (primary, fallback, or) => (Number.isFinite(primary) ? primary : Number.isFinite(fallback) ? fallback : or);
+    return {
+      scroll: {
+        x: pick(layoutViewport.pageX, visualViewport.pageX, 0),
+        y: pick(layoutViewport.pageY, visualViewport.pageY, 0),
+      },
+      viewport: {
+        width: pick(layoutViewport.clientWidth, visualViewport.clientWidth, this.viewport.width),
+        height: pick(layoutViewport.clientHeight, visualViewport.clientHeight, this.viewport.height),
+      },
+      contentSize: {
+        width: pick(content.width, undefined, Number.NaN),
+        height: pick(content.height, undefined, Number.NaN),
+      },
+      visualViewportScale: Number.isFinite(visualViewport.scale) ? visualViewport.scale : null,
+    };
+  }
+
+  /** Page generation of the current target (public wrapper for T3 evidence/act checks). */
+  pageGeneration() { return this.#t2PageGeneration(); }
+
+  /** Document epoch of the current target (bumped on every document replacement). */
+  documentEpoch() { return this.t2.documentEpoch; }
+
+  /** Remember a product's provenance and last-observed vision operation (capabilities projection). */
+  noteVisionOperation(operation, verdict) {
+    this.visionObservation = {
+      observedAt: Date.now(),
+      lastOperation: operation,
+      lastVerdict: typeof verdict === 'string' ? verdict : null,
+    };
+  }
+
+  /** Drop every stored image/pin of this scope (plugin unload / runtime retire only). */
+  disposeVision() {
+    try { this.visionProducts.clear(); } catch { /* ignore */ }
+    try { this.visionProvenance.clear(); } catch { /* ignore */ }
+    this.visionObservation = null;
   }
 
   /**
@@ -4862,6 +4937,9 @@ export class RuntimeRegistry {
     if (this.recentKey === entry.key) this.recentKey = undefined;
     try { this.onRetire?.(entry.runtime); } catch { /* ignore */ }
     try { entry.runtime.frameTransport?.dispose?.(); } catch { /* ignore */ }
+    // A retired scope runtime is gone: its stored images must not outlive it (a later productId
+    // then reports VISION_SOURCE_NOT_FOUND exactly like a restart).
+    try { entry.runtime.disposeVision?.(); } catch { /* ignore */ }
   }
 
   /** Idle sweep: only entries with no active op, no valid lease, no visible viewer, no in-flight. */
@@ -4934,6 +5012,7 @@ export class RuntimeRegistry {
       try { await runtime.close(); } catch { /* ignore */ }
       try { this.onRetire?.(runtime); } catch { /* ignore */ }
       try { runtime.frameTransport?.dispose?.(); } catch { /* ignore */ }
+      try { runtime.disposeVision?.(); } catch { /* ignore */ }
     }
     if (this.host) { try { await this.host.close(); } catch { /* ignore */ } }
   }
@@ -5915,6 +5994,9 @@ export function apply(ctx) {
             browser_snapshot: '读取结构快照', browser_click: '点击元素', browser_type: '输入文本',
             browser_scroll: '滚动页面', browser_fill_form: '填写表单', browser_node_state: '读取节点状态',
             browser_wait_for: '等待节点条件',
+            browser_vision_image: '视觉分析', browser_vision_find: '视觉识别定位',
+            browser_vision_compare: '视觉差异比较', browser_vision_act: '按截图坐标输入',
+            browser_vision_baseline: '管理视觉基线', browser_vision_check: '视觉回归检查',
           }[definition.name]));
           return execute(args, { ...exec, meta, runtime });
         }, { signal: exec.signal, sessionId, agent: pageOperation,
@@ -6615,9 +6697,3018 @@ export function apply(ctx) {
     },
   });
 
+
+  /* -------------------------------------------------------------------------------------------
+   * Web T3 static vision (docs/t3-vision.md)
+   *
+   * Host responsibilities (docs/t3-implementation-plan.md §2.4): pure argument pre-checks (before
+   * ensure/mkdir/CDP), source resolution + pin/release, the per-scope product store, the single
+   * delivered PNG (P0 output rules + attachment), the unified `evidence.vision` v1 projection, and
+   * the decision rules of `act` (§6) and `check` (§7). Pixel algorithms stay in vision-t3.js and
+   * baseline storage in vision-baseline.js; neither module is modified here.
+   * ----------------------------------------------------------------------------------------- */
+  const T3_EVIDENCE_BYTES = 262144;
+  const T3_EVIDENCE_REGIONS = 100;
+  const T3_MAX_CASES = 20;
+  const T3_MAX_ASSERTIONS = 32;
+  const T3_MAX_FACTS = 64;
+  const T3_MAX_MASKS = 64;
+  const T3_MAX_ANNOTATIONS = 64;
+  const T3_MAX_PREPROCESS = 8;
+  const T3_ACT_MAX_AGE_MS = 30000;
+  const T3_TOOL_NAMES = Object.freeze([
+    'browser_vision_image', 'browser_vision_find', 'browser_vision_compare',
+    'browser_vision_act', 'browser_vision_baseline', 'browser_vision_check',
+  ]);
+  const T3_SOURCE_KINDS = Object.freeze(['live', 'product', 'baseline']);
+  const T3_WARNING_VOCABULARY = Object.freeze([
+    ...(Array.isArray(vision.WARNING_VOCABULARY) ? vision.WARNING_VOCABULARY : []),
+  ]);
+  const T3_FACT_SOURCES = Object.freeze([
+    'browser_snapshot', 'browser_node_state', 'browser_computed_style', 'browser_eval',
+  ]);
+  const T3_ASSERTION_TYPES = Object.freeze([
+    'regression', 'layout', 'occlusion', 'overflow', 'truncation', 'color', 'missing',
+  ]);
+  const T3_OVERFLOW_VALUES = Object.freeze(['visible', 'hidden', 'clip', 'auto', 'scroll']);
+  const T3_WHITE_SPACE_VALUES = Object.freeze(['normal', 'nowrap', 'pre', 'pre-wrap', 'pre-line', 'break-spaces']);
+  const T3_TEXT_OVERFLOW_VALUES = Object.freeze(['clip', 'ellipsis']);
+  const T3_ALGORITHM_VERSION = (() => {
+    const value = vision.VISION_ALGORITHM_VERSION;
+    return typeof value === 'string' && value ? value : 't3-v1';
+  })();
+  const T3_LIMITS = (() => {
+    const source = vision.VISION_LIMITS && typeof vision.VISION_LIMITS === 'object' ? vision.VISION_LIMITS : {};
+    return {
+      maxProducts: Number.isFinite(source.maxProducts) ? source.maxProducts : 16,
+      maxTotalBytes: Number.isFinite(source.maxTotalBytes) ? source.maxTotalBytes : 128 * 1024 * 1024,
+      maxProductBytes: Number.isFinite(source.maxProductBytes) ? source.maxProductBytes : 32 * 1024 * 1024,
+      maxProductPixels: Number.isFinite(source.maxProductPixels) ? source.maxProductPixels : 16000000,
+      maxWorkingSetBytes: Number.isFinite(source.maxWorkingSetBytes) ? source.maxWorkingSetBytes : 256 * 1024 * 1024,
+      maxTemplateComparisons: Number.isFinite(source.maxTemplateComparisons) ? source.maxTemplateComparisons : 50000000,
+      algorithmBudgetMs: Number.isFinite(source.algorithmBudgetMs) ? source.algorithmBudgetMs : 5000,
+      maxOutputPixels: Number.isFinite(source.maxOutputPixels) ? source.maxOutputPixels : 16000000,
+      maxOutputBytes: Number.isFinite(source.maxOutputBytes) ? source.maxOutputBytes : 32 * 1024 * 1024,
+    };
+  })();
+  const T3_DEFAULT_DIFF_OPTIONS = Object.freeze({ threshold: 0.1, includeAA: false, minRegionPixels: 1 });
+  const T3_DEFAULT_THRESHOLDS = Object.freeze({ warnRatio: 0.001, failRatio: 0.01 });
+
+  const t3Warning = (warnings, code) => {
+    if (typeof code === 'string' && code !== '' && !warnings.includes(code)) warnings.push(code);
+  };
+  const t3Sha256 = (data) => createHash('sha256').update(data).digest('hex');
+  const t3RgbaSha256 = (rgba) => createHash('sha256')
+    .update(Buffer.from(rgba.buffer, rgba.byteOffset, rgba.byteLength)).digest('hex');
+  const t3NewBudget = () => ({ startedAt: Date.now(), budgetMs: T3_LIMITS.algorithmBudgetMs });
+  const t3AlgoOpts = (budget, signal) => ({
+    signal,
+    budgetMs: budget && Number.isFinite(budget.budgetMs) ? budget.budgetMs : T3_LIMITS.algorithmBudgetMs,
+    startedAt: budget && Number.isFinite(budget.startedAt) ? budget.startedAt : Date.now(),
+  });
+  const t3Invalid = (message, details = {}) => new BrowserError('INVALID_ARGUMENT', message, details);
+
+  /** Decode helper: the module reports failures as `{ok:false,code,message}` (never throws). */
+  async function t3Decode(bytes, signal, budget) {
+    let decoded;
+    try {
+      decoded = await vision.decodePngToRgbaAsync(bytes, t3AlgoOpts(budget, signal));
+    } catch (error) {
+      if (error instanceof BrowserError) throw error;
+      throw new BrowserError('INVALID_PNG', '图像解码失败', { reason: redactText(String(error && error.message ? error.message : error)).slice(0, 200) });
+    }
+    if (!decoded || decoded.ok !== true) {
+      throw new BrowserError(decoded && decoded.code ? decoded.code : 'INVALID_PNG',
+        decoded && decoded.message ? decoded.message : '图像解码失败',
+        decoded && decoded.details ? decoded.details : {});
+    }
+    if (!Number.isInteger(decoded.width) || !Number.isInteger(decoded.height) || !decoded.rgba) {
+      throw new BrowserError('INTERNAL', '解码结果缺少尺寸或 RGBA 缓冲');
+    }
+    return decoded;
+  }
+
+  /**
+   * Contract Mapping for a live capture (§3.1).
+   *
+   * `p = scale × runtimeDSF` (DSF pinned to 1) is the nominal density, but Chromium *floors* a
+   * fractional clip: a 79.5×59.5 CSS clip at scale 1 comes back as 79×59 pixels. The contract says
+   * the mapping must report the actual sampling, so cssPerPixel is derived from the requested CSS
+   * rect and the real PNG size (axis-independent) instead of the nominal p.
+   */
+  function t3CaptureMapping(captured, width, height) {
+    const requestedWidth = Number.isFinite(captured.region.width) && captured.region.width > 0 ? captured.region.width : width;
+    const requestedHeight = Number.isFinite(captured.region.height) && captured.region.height > 0 ? captured.region.height : height;
+    return {
+      coordinateSpace: 'document-css-px',
+      originCss: { x: captured.region.x, y: captured.region.y },
+      cssPerPixel: { x: requestedWidth / width, y: requestedHeight / height },
+      imagePixels: { width, height },
+      capturedCssRect: {
+        x: captured.region.x, y: captured.region.y,
+        width: captured.region.width, height: captured.region.height,
+      },
+      scrollAtCapture: { x: captured.scroll.x, y: captured.scroll.y },
+      viewportAtCapture: { width: captured.viewport.width, height: captured.viewport.height },
+      visualViewportScale: Number.isFinite(captured.visualViewportScale) ? captured.visualViewportScale : null,
+      geometryTransform: 'axis-aligned',
+    };
+  }
+
+  /** Public Product projection (contract §2.2). Never contains bytes/base64. */
+  function t3ProductPublic(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    const byteLength = Buffer.isBuffer(entry.bytes) || entry.bytes instanceof Uint8Array
+      ? entry.bytes.length
+      : Number.isFinite(entry.bytes) ? entry.bytes : null;
+    return {
+      productId: entry.productId,
+      width: Number.isInteger(entry.width) ? entry.width : null,
+      height: Number.isInteger(entry.height) ? entry.height : null,
+      bytes: byteLength,
+      sha256: typeof entry.sha256 === 'string' ? entry.sha256 : null,
+      rgbaSha256: typeof entry.rgbaSha256 === 'string' ? entry.rgbaSha256 : null,
+      createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : null,
+      capturedAt: Number.isFinite(entry.capturedAt) ? entry.capturedAt : null,
+      kind: typeof entry.kind === 'string' ? entry.kind : null,
+      mapping: entry.mapping && typeof entry.mapping === 'object' ? entry.mapping : null,
+      actionable: entry.actionable === true,
+      parentIds: Array.isArray(entry.parentIds) ? [...entry.parentIds] : [],
+      operations: Array.isArray(entry.operations)
+        ? entry.operations.map((item) => ({ op: item && item.op ? item.op : null, parameters: item && item.parameters ? item.parameters : {} }))
+        : [],
+    };
+  }
+
+  /** Store one product and remember its provenance (act/evidence need it after pin()). */
+  function t3AddProduct(runtime, entry) {
+    const product = runtime.visionProducts.add({
+      bytes: entry.bytes,
+      width: entry.width,
+      height: entry.height,
+      sha256: entry.sha256,
+      rgbaSha256: entry.rgbaSha256 ?? null,
+      kind: entry.kind,
+      mapping: entry.mapping ?? null,
+      actionable: entry.actionable === true,
+      parentIds: entry.parentIds ?? [],
+      operations: entry.operations ?? [],
+      createdAt: Date.now(),
+      capturedAt: entry.capturedAt ?? null,
+    });
+    if (!product || typeof product.productId !== 'string') {
+      throw new BrowserError('INTERNAL', 'product store 未返回 productId');
+    }
+    runtime.visionProvenance.set(product.productId, entry.provenance ?? null);
+    return product;
+  }
+
+  function t3Provenance(runtime, exec) {
+    return {
+      actionId: exec && exec.meta ? exec.meta.actionId ?? null : null,
+      scopeId: runtime.scope ? runtime.scope.id : null,
+      runtimeId: runtime.runtimeId ?? null,
+      pageGeneration: runtime.pageGeneration(),
+      documentEpoch: runtime.documentEpoch(),
+    };
+  }
+
+  /** Release every product pinned by one tool call (never throws). */
+  function t3ReleasePins(runtime, pins) {
+    for (const productId of pins) {
+      try { runtime.visionProducts.release(productId); } catch { /* ignore */ }
+    }
+    pins.length = 0;
+  }
+
+  /**
+   * Re-normalise an already validated Source. The module rejects an explicit `region: null`, so a
+   * normalised live source must be rebuilt with the absent field omitted (idempotent otherwise).
+   */
+  function t3SourceForResolve(source, label) {
+    if (!source || typeof source !== 'object' || typeof source.kind !== 'string') {
+      return vision.validateSource(source, label);
+    }
+    if (source.kind === 'live') {
+      return vision.validateSource({
+        kind: 'live',
+        scale: source.scale ?? 1,
+        ...(source.region ? { region: source.region } : {}),
+      }, label);
+    }
+    if (source.kind === 'product') return vision.validateSource({ kind: 'product', productId: source.productId }, label);
+    return vision.validateSource({
+      kind: 'baseline',
+      name: source.name,
+      ...(source.revision ? { revision: source.revision } : {}),
+    }, label);
+  }
+
+  /**
+   * Resolve one `Source` (contract §1.1) into bytes + decoded image + evidence source entry.
+   * `role` is only used for evidence; every pin is released by the caller in `finally`.
+   * The returned `captureFacts` is the ancestor capture lineage (act re-capture/age checks).
+   */
+  async function t3ResolveSource(runtime, exec, source, role, pins, budget) {
+    const normalized = t3SourceForResolve(source, 'source');
+    if (normalized.kind === 'live') {
+      // §3.1: a live CssRect must be inside the live cssContentSize; reject BEFORE the capture.
+      const metrics = await runtime.layoutMetrics(exec.signal);
+      if (normalized.region) {
+        const r = normalized.region;
+        if (!(r.x >= 0 && r.y >= 0 && r.width >= 1 && r.height >= 1)) {
+          throw t3Invalid('source.region 非法', { path: 'source.region', reason: 'region-invalid' });
+        }
+        if (Number.isFinite(metrics.contentSize.width) && r.x + r.width > metrics.contentSize.width + 1e-9) {
+          throw t3Invalid('source.region 超出文档宽度', { path: 'source.region', reason: 'region-outside-document' });
+        }
+        if (Number.isFinite(metrics.contentSize.height) && r.y + r.height > metrics.contentSize.height + 1e-9) {
+          throw t3Invalid('source.region 超出文档高度', { path: 'source.region', reason: 'region-outside-document' });
+        }
+      }
+      const shot = await runtime.capture({ scale: normalized.scale ?? 1, region: normalized.region ?? undefined }, exec.signal);
+      const png = inspectPng(shot.pngBytes, { checkCrc: true });
+      if (!png.ok) {
+        throw new BrowserError('INVALID_PNG', '实时采集返回的字节不是结构完整的 PNG（不交付坏图）', {
+          phase: 'inspectPng', reason: png.message,
+        });
+      }
+      const expected = expectedPixelSize({
+        width: shot.capture.region.width,
+        height: shot.capture.region.height,
+        scale: shot.capture.requestedScale,
+        deviceScaleFactor: shot.capture.deviceScaleFactor,
+      });
+      // Chromium floors a fractional clip (79.5 CSS @1 → 79 px). A ≤1 px difference per axis is that
+      // rounding, not a size mismatch: accept the actual sampling and let the mapping report it
+      // (§3.1). Anything larger is refused. `browser_screenshot` keeps its strict P0 behaviour.
+      const sizeDelta = { x: Math.abs(png.width - expected.width), y: Math.abs(png.height - expected.height) };
+      if (sizeDelta.x > 1 || sizeDelta.y > 1) {
+        throw new BrowserError('CAPTURE_SIZE_MISMATCH', '实时采集尺寸与期望相差超过 1px（不交付图片）', {
+          actual: { width: png.width, height: png.height },
+          expected: { width: expected.width, height: expected.height },
+          tolerance: 1,
+        });
+      }
+      const sizeTolerance = {
+        expected: { width: expected.width, height: expected.height },
+        actual: { width: png.width, height: png.height },
+        maxDeltaPx: 1,
+        delta: sizeDelta,
+      };
+      const decoded = await t3Decode(shot.pngBytes, exec.signal, budget);
+      const mapping = t3CaptureMapping(shot.capture, decoded.width, decoded.height);
+      const sha256 = t3Sha256(shot.pngBytes);
+      const capture = {
+        version: 1,
+        format: 'png',
+        transport: 'cdp-page-capture-screenshot',
+        request: {
+          scale: shot.capture.requestedScale,
+          region: normalized.region ? { ...normalized.region } : null,
+          coordinateSpace: 'document-css-px',
+          out: null,
+          persist: false,
+        },
+        environment: {
+          browser: 'chromium',
+          headless: null,
+          headlessSource: null,
+          pageDevicePixelRatio: Number.isFinite(shot.capture.pageDevicePixelRatio) ? shot.capture.pageDevicePixelRatio : null,
+          deviceScaleFactor: shot.capture.deviceScaleFactor,
+          deviceScaleFactorSource: shot.capture.deviceScaleFactorSource,
+          viewport: { width: shot.capture.viewport.width, height: shot.capture.viewport.height },
+          scroll: { x: shot.capture.scroll.x, y: shot.capture.scroll.y },
+        },
+        png: { width: png.width, height: png.height, bytes: shot.pngBytes.length, chunks: png.chunks ?? null, crc: 'ok' },
+        expected: { width: expected.width, height: expected.height, pixelsPerCssPixel: expected.pixelsPerCssPixel },
+        sizeCheck: {
+          ok: true,
+          actual: { width: png.width, height: png.height },
+          expected: { width: expected.width, height: expected.height },
+          upscaled: false,
+          tolerancePx: 1,
+          delta: sizeDelta,
+        },
+        sizeTolerance,
+        mapping,
+        anomaly: { checked: false, uniform: null, transparent: null, sampledPixels: 0, distinctColors: null, averageColor: null, maxDelta: null, tolerance: 0 },
+        file: null,
+        delivery: {
+          original: { width: png.width, height: png.height, bytes: shot.pngBytes.length, sha256, mediaType: 'image/png' },
+          image: null,
+          downscaled: false,
+          reencoded: false,
+        },
+        warnings: [],
+      };
+      const captureFacts = {
+        region: { ...shot.capture.region },
+        scale: shot.capture.requestedScale,
+        scroll: { x: shot.capture.scroll.x, y: shot.capture.scroll.y },
+        viewport: { width: shot.capture.viewport.width, height: shot.capture.viewport.height },
+        visualViewportScale: Number.isFinite(shot.capture.visualViewportScale) ? shot.capture.visualViewportScale : null,
+        capturedAt: shot.capture.capturedAt,
+        sha256,
+        rgbaSha256: t3RgbaSha256(decoded.rgba),
+      };
+      const product = t3AddProduct(runtime, {
+        bytes: shot.pngBytes, width: decoded.width, height: decoded.height,
+        sha256, rgbaSha256: captureFacts.rgbaSha256, kind: 'capture', mapping,
+        actionable: true, parentIds: [], operations: [], capturedAt: shot.capture.capturedAt,
+        provenance: { ...t3Provenance(runtime, exec), capture: captureFacts },
+      });
+      pins.push(product.productId);
+      return {
+        kind: 'live', role,
+        product: t3ProductPublic(product),
+        bytes: shot.pngBytes,
+        sha256,
+        image: { width: decoded.width, height: decoded.height, rgba: decoded.rgba },
+        capture,
+        captureFacts,
+      };
+    }
+    if (normalized.kind === 'product') {
+      const entry = runtime.visionProducts.pin(normalized.productId);
+      if (!entry) {
+        throw new BrowserError('VISION_SOURCE_NOT_FOUND', 'product 不存在、已淘汰或不属于本工作区', {
+          productId: normalized.productId,
+        });
+      }
+      pins.push(normalized.productId);
+      const bytes = Buffer.isBuffer(entry.bytes) ? entry.bytes
+        : entry.bytes instanceof Uint8Array ? Buffer.from(entry.bytes) : null;
+      if (!bytes) throw new BrowserError('INTERNAL', 'product 条目缺少编码字节');
+      const decoded = await t3Decode(bytes, exec.signal, budget);
+      const stored = runtime.visionProvenance.get(normalized.productId) || null;
+      return {
+        kind: 'product', role,
+        product: t3ProductPublic(entry),
+        bytes,
+        sha256: typeof entry.sha256 === 'string' ? entry.sha256 : t3Sha256(bytes),
+        image: { width: decoded.width, height: decoded.height, rgba: decoded.rgba },
+        capture: null,
+        captureFacts: stored && stored.capture ? stored.capture : null,
+      };
+    }
+    // baseline source: read-only, never creates the managed root/directories.
+    const store = t3BaselineStore(runtime, exec);
+    const got = await store.get(normalized.name, normalized.revision);
+    if (!got || !got.meta || !got.pngBytes) {
+      throw new BrowserError('VISION_BASELINE_NOT_FOUND', '基线不可读', { name: normalized.name, revision: normalized.revision ?? null });
+    }
+    const bytes = Buffer.isBuffer(got.pngBytes) ? got.pngBytes : Buffer.from(got.pngBytes);
+    const decoded = await t3Decode(bytes, exec.signal, budget);
+    const product = t3AddProduct(runtime, {
+      bytes, width: decoded.width, height: decoded.height,
+      sha256: t3Sha256(bytes), rgbaSha256: t3RgbaSha256(decoded.rgba), kind: 'baseline',
+      mapping: got.meta.mapping ?? null, actionable: false, parentIds: [], operations: [],
+      capturedAt: null, provenance: t3Provenance(runtime, exec),
+    });
+    pins.push(product.productId);
+    return {
+      kind: 'baseline', role,
+      product: t3ProductPublic(product),
+      bytes,
+      sha256: t3Sha256(bytes),
+      image: { width: decoded.width, height: decoded.height, rgba: decoded.rgba },
+      capture: null,
+      captureFacts: null,
+      baseline: got.meta,
+    };
+  }
+
+  /** Resolve the trusted persistent baseline root (P0 rules) and build the managed store. */
+  function t3BaselineStore(runtime, exec) {
+    const envRoot = captureEnvRoot();
+    let root = null;
+    let reason = null;
+    if (envRoot !== null) {
+      // A configured-but-invalid root never falls back to the workspace (contract §8.1).
+      try {
+        const info = statSync(envRoot);
+        if (!info.isDirectory()) reason = 'env-root-not-directory';
+        else root = realpathSync(envRoot);
+      } catch {
+        reason = 'env-root-unavailable';
+      }
+    } else {
+      const resolved = captureRootFor(exec);
+      if (resolved.root === null) reason = 'no-workspace-root';
+      else {
+        try {
+          const info = statSync(resolved.root);
+          if (!info.isDirectory()) reason = 'workspace-root-not-directory';
+          else root = realpathSync(resolved.root);
+        } catch {
+          reason = 'workspace-root-unavailable';
+        }
+      }
+    }
+    if (root === null) {
+      throw new BrowserError('VISION_BASELINE_ROOT_UNAVAILABLE', '没有可用的可信持久根，无法使用视觉基线', { reason });
+    }
+    return createBaselineStore({ root, scopeId: runtime.scope.id, now: () => Date.now() });
+  }
+
+  /** Evidence source projection (§3.2): product/baseline carry lineage only, live carries CaptureV1. */
+  function t3EvidenceSource(resolved, role) {
+    return {
+      role,
+      kind: resolved.kind,
+      productId: resolved.product ? resolved.product.productId : null,
+      sha256: resolved.sha256 ?? null,
+      width: resolved.image ? resolved.image.width : (resolved.product ? resolved.product.width : null),
+      height: resolved.image ? resolved.image.height : (resolved.product ? resolved.product.height : null),
+      capturedAt: resolved.product ? resolved.product.capturedAt : null,
+      mapping: resolved.product ? resolved.product.mapping : null,
+      capture: resolved.kind === 'live' ? resolved.capture : null,
+    };
+  }
+
+  /** Unified `evidence.vision` v1 (§3.2); every field is present, unknown observations are null. */
+  function t3Evidence(input) {
+    const provenance = input.provenance || {};
+    const verdict = input.verdict || { status: 'INCONCLUSIVE', reason: 'no-assertion' };
+    return {
+      version: 1,
+      operation: input.operation,
+      provenance: {
+        actionId: provenance.actionId ?? null,
+        scopeId: provenance.scopeId ?? null,
+        runtimeId: provenance.runtimeId ?? null,
+        pageGeneration: Number.isInteger(provenance.pageGeneration) ? provenance.pageGeneration : null,
+        documentEpoch: Number.isInteger(provenance.documentEpoch) ? provenance.documentEpoch : null,
+        algorithmVersion: T3_ALGORITHM_VERSION,
+      },
+      source: Array.isArray(input.source) ? input.source : [],
+      coordinateSpace: { image: 'image-px', document: 'document-css-px', input: 'viewport-css-px' },
+      regions: Array.isArray(input.regions) ? input.regions : [],
+      metrics: input.metrics && typeof input.metrics === 'object' ? input.metrics : {},
+      baseline: Array.isArray(input.baseline) ? input.baseline : [],
+      facts: Array.isArray(input.facts) ? input.facts : [],
+      verdict: { status: verdict.status, reason: verdict.reason },
+      dispatch: input.dispatch && typeof input.dispatch === 'object' ? {
+        started: input.dispatch.started === true,
+        eventCount: Number.isInteger(input.dispatch.eventCount) ? input.dispatch.eventCount : 0,
+        completed: input.dispatch.completed === true,
+        eventSource: input.dispatch.eventSource === 'cdp-input' ? 'cdp-input' : null,
+        hitBackendNodeId: Number.isInteger(input.dispatch.hitBackendNodeId) ? input.dispatch.hitBackendNodeId : null,
+      } : { started: false, eventCount: 0, completed: false, eventSource: null, hitBackendNodeId: null },
+      output: input.output && typeof input.output === 'object' ? {
+        productId: input.output.productId ?? null,
+        sha256: input.output.sha256 ?? null,
+        file: input.output.file ?? null,
+        delivery: input.output.delivery ?? null,
+      } : { productId: null, sha256: null, file: null, delivery: null },
+      escalation: input.escalation && typeof input.escalation === 'object'
+        ? { tier: input.escalation.tier === 'T4' ? 'T4' : null, reason: input.escalation.reason ?? null }
+        : { tier: null, reason: null },
+      incomplete: Array.isArray(input.incomplete) ? [...input.incomplete] : [],
+      truncated: input.truncated === true,
+    };
+  }
+
+  /**
+   * Bound the evidence (§3.2): regions ≤100, JSON ≤262144 bytes. Only optional detail is dropped
+   * (facts → baseline → capture payload → regions → warnings); totals, thresholds, dispatch and the
+   * verdict always survive, and the loss is always reported via `truncated`.
+   */
+  function t3BoundEvidence(evidence) {
+    if (evidence.regions.length > T3_EVIDENCE_REGIONS) {
+      evidence.regions = evidence.regions.slice(0, T3_EVIDENCE_REGIONS);
+      evidence.truncated = true;
+    }
+    const size = () => Buffer.byteLength(JSON.stringify(evidence), 'utf8');
+    if (size() <= T3_EVIDENCE_BYTES) return evidence;
+    evidence.truncated = true;
+    const drops = [
+      () => { if (evidence.facts.length) { evidence.facts = []; return true; } return false; },
+      () => { if (evidence.baseline.length) { evidence.baseline = []; return true; } return false; },
+      () => {
+        for (const entry of evidence.source) {
+          if (entry && entry.capture) {
+            entry.capture = {
+              version: 1,
+              format: 'png',
+              transport: 'cdp-page-capture-screenshot',
+              png: { width: entry.width, height: entry.height, bytes: null, chunks: null, crc: null },
+              file: null,
+              truncated: true,
+            };
+            return true;
+          }
+        }
+        return false;
+      },
+      () => { if (evidence.regions.length > 20) { evidence.regions = evidence.regions.slice(0, 20); return true; } return false; },
+      () => { if (evidence.metrics && Array.isArray(evidence.metrics.warnings) && evidence.metrics.warnings.length) { evidence.metrics.warnings = []; return true; } return false; },
+      () => { if (evidence.source.length > 4) { evidence.source = evidence.source.slice(0, 4); return true; } return false; },
+    ];
+    for (const drop of drops) {
+      if (size() <= T3_EVIDENCE_BYTES) break;
+      drop();
+    }
+    if (size() > T3_EVIDENCE_BYTES) {
+      // Last resort: keep the verdict + dispatch + output, drop the bulky per-region detail.
+      evidence.regions = [];
+      evidence.metrics = { warnings: [], evidenceTruncated: true };
+      evidence.incomplete = [...evidence.incomplete, 'evidence-truncated'];
+    }
+    return evidence;
+  }
+
+  /** Throw with the complete vision evidence attached (success and failure both carry it). */
+  function t3ThrowWithEvidence(error, evidence) {
+    const classified = error instanceof BrowserError ? error : new BrowserError('INTERNAL', String(error && error.message ? error.message : error));
+    const bounded = t3BoundEvidence(evidence);
+    classified.details = { ...classified.details, evidence: { ...classified.details?.evidence, vision: bounded } };
+    return classified;
+  }
+
+  /**
+   * Deliver exactly one PNG for a vision call, with the P0 rules unchanged: `output.out`,
+   * `output.persist:true` or a configured env root persist; otherwise the plugin staging root.
+   * The same bytes are offered to the attachments service; a missing/failed service falls back to
+   * base64 without ever claiming the provider saw the image.
+   */
+  async function t3DeliverImage(runtime, exec, output, data, width, height, warnings) {
+    const request = output || { persist: false, out: null };
+    const envRoot = captureEnvRoot();
+    const persistent = request.out !== null || request.persist === true || envRoot !== null;
+    const defaultName = 'output/capture/' + exec.meta.actionId + '.png';
+    let target = null;
+    let rootSource = null;
+    if (persistent) {
+      const rootInfo = captureRootFor(exec);
+      if (rootInfo.root === null) {
+        throw new BrowserError('OUTPUT_PATH_INVALID', '没有可用的工作区根，无法持久落盘：请省略 output.out/persist 或设置 DSH_UI_TESTING_CAPTURE_DIR', {
+          reason: 'root_unknown', outRequested: request.out !== null, persistRequested: request.persist === true,
+        });
+      }
+      rootSource = rootInfo.source;
+      const resolved = resolveCapturePath({ root: rootInfo.root, out: request.out === null ? undefined : request.out, defaultName });
+      if (!resolved.ok) throw new BrowserError('OUTPUT_PATH_INVALID', resolved.message, resolved.details);
+      target = resolved;
+    }
+    const sha256 = t3Sha256(data);
+    let file = null;
+    if (target) {
+      const published = publishCapture(target.dir, target.absolutePath, data);
+      if (!published.ok) throw new BrowserError(published.code, published.message, published.details);
+      file = {
+        path: target.relativePath, pathKind: 'relative', persistence: 'persistent',
+        root: rootSource === 'env' ? 'env' : 'workspace', ephemeral: false,
+        bytes: published.bytes, sha256, width, height, mode: published.mode, noClobber: true,
+        createdAt: published.createdAt,
+      };
+    } else {
+      try {
+        const stagingRoot = ensureCaptureStagingRoot();
+        const absolutePath = join(stagingRoot, exec.meta.actionId + '.png');
+        const published = publishCapture(stagingRoot, absolutePath, data);
+        if (!published.ok) throw new Error('staging publish failed: ' + published.code);
+        file = {
+          path: absolutePath, pathKind: 'absolute', persistence: 'staging', root: 'staging',
+          ephemeral: true, bytes: published.bytes, sha256, width, height, mode: published.mode,
+          noClobber: true, createdAt: published.createdAt,
+        };
+      } catch {
+        t3Warning(warnings, 'capture_file_unavailable');
+      }
+    }
+    const delivery = {
+      original: { width, height, bytes: data.length, sha256, mediaType: 'image/png' },
+      image: null, downscaled: false, reencoded: false,
+    };
+    let attachment;
+    let attachmentError;
+    let imageDelivery = 'base64-fallback';
+    if (typeof attachments?.saveImage === 'function') {
+      try {
+        attachment = projectAttachment(await abortable(
+          attachments.saveImage({ data, mediaType: 'image/png', name: `ui-testing-${exec.meta.actionId}.png` }),
+          exec.signal,
+        ));
+      } catch (error) {
+        if (error && error.code === 'ABORTED') throw error;
+        attachmentError = '附件保存失败，使用 base64-fallback';
+      }
+      if (attachment) {
+        imageDelivery = 'attachment';
+        const refWidth = Number.isFinite(attachment.width) ? attachment.width : null;
+        const refHeight = Number.isFinite(attachment.height) ? attachment.height : null;
+        const refBytes = Number.isFinite(attachment.bytes) ? attachment.bytes : null;
+        const refMediaType = typeof attachment.mediaType === 'string' ? attachment.mediaType : null;
+        delivery.image = { width: refWidth, height: refHeight, bytes: refBytes, mediaType: refMediaType };
+        if ((refWidth !== null && refWidth < width) || (refHeight !== null && refHeight < height)) {
+          delivery.downscaled = true;
+          t3Warning(warnings, 'model_image_downscaled');
+        }
+        if ((refMediaType !== null && refMediaType !== 'image/png')
+          || (refBytes !== null && refBytes !== data.length)
+          || (typeof attachment.sha256 === 'string' && attachment.sha256 !== sha256)) {
+          delivery.reencoded = true;
+          t3Warning(warnings, 'attachment_reencoded');
+        }
+      }
+    } else {
+      t3Warning(warnings, 'attachment_unavailable');
+    }
+    return {
+      sha256, file, delivery,
+      attachment, attachmentError, imageDelivery,
+      attachmentId: attachment ? (attachment.attachmentId || attachment.id || null) : null,
+    };
+  }
+
+  /** Encode a processed image with the module encoder and validate the delivered PNG. */
+  async function t3EncodeImage(image, signal, budget) {
+    const bytes = await vision.encodePngRgbaAsync(image, t3AlgoOpts(budget, signal));
+    if (!Buffer.isBuffer(bytes) && !(bytes instanceof Uint8Array)) {
+      throw new BrowserError('INTERNAL', 'PNG 编码器未返回字节');
+    }
+    const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+    if (data.length > T3_LIMITS.maxOutputBytes) {
+      throw new BrowserError('VISION_LIMIT_EXCEEDED', '编码 PNG 超过单图字节上限', {
+        limit: 'maxOutputBytes', actual: data.length, max: T3_LIMITS.maxOutputBytes,
+      });
+    }
+    if (image.width * image.height > T3_LIMITS.maxOutputPixels) {
+      throw new BrowserError('VISION_LIMIT_EXCEEDED', '输出图像超过像素上限', {
+        limit: 'maxOutputPixels', actual: image.width * image.height, max: T3_LIMITS.maxOutputPixels,
+      });
+    }
+    const png = inspectPng(data, { checkCrc: true });
+    if (!png.ok) throw new BrowserError('INVALID_PNG', '编码结果未通过 PNG 结构/CRC 校验', { phase: 'inspectPng', reason: png.message });
+    if (png.width !== image.width || png.height !== image.height) {
+      throw new BrowserError('CAPTURE_SIZE_MISMATCH', '编码结果尺寸与内存图像不一致', {
+        actual: { width: png.width, height: png.height }, expected: { width: image.width, height: image.height },
+      });
+    }
+    return { data, png };
+  }
+
+  /** Validate an image-space PixelRect against an image (integer, inside, no clamping). */
+  function t3RectInside(rect, image, name) {
+    if (rect.x + rect.width > image.width || rect.y + rect.height > image.height) {
+      throw t3Invalid(`${name} 超出图像边界`, {
+        path: name, reason: 'rect-outside-image',
+        image: { width: image.width, height: image.height },
+      });
+    }
+    return rect;
+  }
+
+  function t3NormalizeOutput(value) {
+    if (value === undefined || value === null) return { persist: false, out: null };
+    return vision.validateOutput(value, 'output');
+  }
+
+  /** Validate one `Case.assertions[].type`-specific assertion (unknown fields rejected). */
+  function t3Assertion(value, name) {
+    const assertion = t2Object(value, name);
+    t2RejectUnknown(assertion, [
+      'id', 'type', 'severity', 'baseline', 'revision', 'region', 'factId', 'expectedRect',
+      'toleranceCss', 'maxCoveredRatio', 'expectedColor', 'tolerance', 'minFraction', 'query', 'minCount',
+      'masks', 'options', 'thresholds',
+    ], name);
+    const id = t2StringField(assertion.id, { name: `${name}.id`, maxBytes: 64 });
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(id)) throw t3Invalid(`${name}.id 必须是合法 Name`, { path: `${name}.id` });
+    const type = t2StringField(assertion.type, { name: `${name}.type`, maxBytes: 32 });
+    if (!T3_ASSERTION_TYPES.includes(type)) throw t3Invalid(`${name}.type 必须是 ${T3_ASSERTION_TYPES.join('/')}`, { path: `${name}.type` });
+    const severity = assertion.severity === undefined ? 'required' : assertion.severity;
+    if (severity !== 'required' && severity !== 'advisory') throw t3Invalid(`${name}.severity 只能是 required/advisory`, { path: `${name}.severity` });
+    const allowedByType = {
+      regression: ['id', 'type', 'severity', 'baseline', 'revision', 'region', 'masks', 'options', 'thresholds'],
+      layout: ['id', 'type', 'severity', 'region', 'factId', 'expectedRect', 'toleranceCss'],
+      occlusion: ['id', 'type', 'severity', 'region', 'factId', 'maxCoveredRatio'],
+      overflow: ['id', 'type', 'severity', 'region', 'factId', 'toleranceCss'],
+      truncation: ['id', 'type', 'severity', 'region', 'factId', 'toleranceCss'],
+      color: ['id', 'type', 'severity', 'region', 'factId', 'expectedColor', 'tolerance', 'minFraction'],
+      missing: ['id', 'type', 'severity', 'region', 'factId', 'query', 'minCount'],
+    };
+    t2RejectUnknown(assertion, allowedByType[type], `${name}(${type})`);
+    const out = { id, type, severity };
+    if (type === 'regression') {
+      const baseline = t2StringField(assertion.baseline, { name: `${name}.baseline`, maxBytes: 64 });
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(baseline)) throw t3Invalid(`${name}.baseline 必须是合法 Name`, { path: `${name}.baseline` });
+      out.baseline = baseline;
+      out.revision = assertion.revision === undefined ? undefined : t2IntegerField(assertion.revision, undefined, 1, 9999999999, `${name}.revision`);
+      out.region = assertion.region === undefined ? undefined : vision.validatePixelRect(assertion.region, `${name}.region`);
+      out.masks = assertion.masks === undefined ? undefined : vision.validateMasks(assertion.masks, `${name}.masks`);
+      out.options = assertion.options === undefined ? undefined : vision.validateDiffOptions(assertion.options, `${name}.options`);
+      out.thresholds = assertion.thresholds === undefined ? undefined : vision.validateThresholds(assertion.thresholds, `${name}.thresholds`);
+    } else {
+      out.region = vision.validatePixelRect(assertion.region, `${name}.region`);
+      out.factId = assertion.factId === undefined ? undefined : t2StringField(assertion.factId, { name: `${name}.factId`, maxBytes: 64 });
+      if (out.factId !== undefined && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(out.factId)) throw t3Invalid(`${name}.factId 必须是合法 Name`, { path: `${name}.factId` });
+      if (type === 'layout') {
+        out.expectedRect = assertion.expectedRect === undefined ? undefined : vision.validateCssRect(assertion.expectedRect, `${name}.expectedRect`);
+        if (out.expectedRect !== undefined && out.factId === undefined) throw t3Invalid(`${name}.expectedRect 必须同时提供 factId`, { path: `${name}.expectedRect` });
+        out.toleranceCss = t2NumberField(assertion.toleranceCss, 1, 0, 100, `${name}.toleranceCss`);
+      } else if (type === 'occlusion') {
+        out.maxCoveredRatio = t2NumberField(assertion.maxCoveredRatio, 0, 0, 1, `${name}.maxCoveredRatio`);
+      } else if (type === 'overflow' || type === 'truncation') {
+        out.toleranceCss = t2NumberField(assertion.toleranceCss, 1, 0, 100, `${name}.toleranceCss`);
+      } else if (type === 'color') {
+        out.expectedColor = t3Rgb(assertion.expectedColor, `${name}.expectedColor`);
+        out.tolerance = t2IntegerField(assertion.tolerance, 16, 0, 255, `${name}.tolerance`);
+        out.minFraction = t2NumberField(assertion.minFraction, 0.95, 0, 1, `${name}.minFraction`);
+      } else if (type === 'missing') {
+        out.query = vision.validateQuery(assertion.query, `${name}.query`);
+        out.minCount = t2IntegerField(assertion.minCount, 1, 1, 100, `${name}.minCount`);
+      }
+    }
+    return out;
+  }
+
+  /** `RGB` = three integers 0–255, given as `[r,g,b]` or `{r,g,b}` (contract §1.2). */
+  function t3Rgb(value, name) {
+    let parts;
+    if (Array.isArray(value)) {
+      parts = value;
+    } else if (value && typeof value === 'object') {
+      t2RejectUnknown(value, ['r', 'g', 'b'], name);
+      if (value.r === undefined || value.g === undefined || value.b === undefined) {
+        throw t3Invalid(`${name} 必须是 [r,g,b] 或 {r,g,b}`, { path: name });
+      }
+      parts = [value.r, value.g, value.b];
+    } else {
+      throw t3Invalid(`${name} 必须是 [r,g,b] 或 {r,g,b}`, { path: name });
+    }
+    if (parts.length !== 3) throw t3Invalid(`${name} 必须是 3 个整数通道`, { path: name });
+    for (const channel of parts) {
+      if (typeof channel !== 'number' || !Number.isInteger(channel) || channel < 0 || channel > 255) {
+        throw t3Invalid(`${name} 每个通道必须是 0–255 整数`, { path: name });
+      }
+    }
+    return [parts[0], parts[1], parts[2]];
+  }
+
+  /** `RGBA` = four integers 0–255, given as `[r,g,b,a]` or `{r,g,b,a}` (contract §1.2). */
+  function t3Rgba(value, name) {
+    let parts;
+    if (Array.isArray(value)) {
+      parts = value;
+    } else if (value && typeof value === 'object') {
+      t2RejectUnknown(value, ['r', 'g', 'b', 'a'], name);
+      if (value.r === undefined || value.g === undefined || value.b === undefined || value.a === undefined) {
+        throw t3Invalid(`${name} 必须是 [r,g,b,a] 或 {r,g,b,a}`, { path: name });
+      }
+      parts = [value.r, value.g, value.b, value.a];
+    } else {
+      throw t3Invalid(`${name} 必须是 [r,g,b,a] 或 {r,g,b,a}`, { path: name });
+    }
+    if (parts.length !== 4) throw t3Invalid(`${name} 必须是 4 个整数通道`, { path: name });
+    for (const channel of parts) {
+      if (typeof channel !== 'number' || !Number.isInteger(channel) || channel < 0 || channel > 255) {
+        throw t3Invalid(`${name} 每个通道必须是 0–255 整数`, { path: name });
+      }
+    }
+    return [parts[0], parts[1], parts[2], parts[3]];
+  }
+
+
+  /* --- T3 request validators (pure, no browser/file access) -------------------------------- */
+
+  function t3Resize(value) {
+    const object = t2Object(value, 'resize');
+    t2RejectUnknown(object, ['factor', 'method'], 'resize');
+    const factor = t2NumberField(object.factor, undefined, 1, 4, 'resize.factor');
+    const method = object.method === undefined ? 'nearest' : object.method;
+    if (method !== 'nearest' && method !== 'bilinear') throw t3Invalid('resize.method 只能是 nearest/bilinear', { path: 'resize.method' });
+    return { factor, method };
+  }
+
+  function t3PreprocessParameters(op) {
+    const parameters = {};
+    for (const key of ['radius', 'value', 'order']) {
+      if (op && op[key] !== undefined) parameters[key] = op[key];
+    }
+    return parameters;
+  }
+
+  /** `browser_vision_image` root arguments (contract §2.1/§2.2). */
+  function t3ImageRequest(input) {
+    t2RejectUnknown(input, ['source', 'region', 'resize', 'preprocess', 'annotations', 'recognize', 'output'], 'browser_vision_image');
+    return {
+      source: vision.validateSource(input.source, 'source'),
+      region: input.region === undefined ? null : vision.validatePixelRect(input.region, 'region'),
+      resize: input.resize === undefined ? null : t3Resize(input.resize),
+      preprocess: vision.validatePreprocess(input.preprocess, 'preprocess'),
+      annotations: vision.validateAnnotations(input.annotations, 'annotations'),
+      recognize: input.recognize === undefined ? null : vision.validateQuery(input.recognize, 'recognize'),
+      output: t3NormalizeOutput(input.output),
+    };
+  }
+
+  /** `browser_vision_find` root arguments (contract §2.1/§2.3). */
+  function t3FindRequest(input) {
+    t2RejectUnknown(input, ['source', 'region', 'query'], 'browser_vision_find');
+    if (input.query === undefined || input.query === null) throw t3Invalid('query 必填', { path: 'query' });
+    return {
+      source: vision.validateSource(input.source, 'source'),
+      region: input.region === undefined ? null : vision.validatePixelRect(input.region, 'region'),
+      query: vision.validateQuery(input.query, 'query'),
+    };
+  }
+
+  /** `browser_vision_compare` root arguments (contract §2.1/§2.4). */
+  function t3CompareRequest(input) {
+    t2RejectUnknown(input, ['before', 'after', 'region', 'masks', 'options', 'thresholds', 'output'], 'browser_vision_compare');
+    if (input.before === undefined || input.before === null) throw t3Invalid('before 必填（必须显式给出）', { path: 'before' });
+    if (input.after === undefined || input.after === null) throw t3Invalid('after 必填（必须显式给出）', { path: 'after' });
+    return {
+      before: vision.validateSource(input.before, 'before'),
+      after: vision.validateSource(input.after, 'after'),
+      region: input.region === undefined ? null : vision.validatePixelRect(input.region, 'region'),
+      masksProvided: input.masks !== undefined,
+      masks: input.masks === undefined ? [] : vision.validateMasks(input.masks, 'masks'),
+      optionsProvided: input.options !== undefined,
+      options: input.options === undefined ? null : vision.validateDiffOptions(input.options, 'options'),
+      thresholdsProvided: input.thresholds !== undefined,
+      thresholds: input.thresholds === undefined ? null : vision.validateThresholds(input.thresholds, 'thresholds'),
+      output: t3NormalizeOutput(input.output),
+    };
+  }
+
+  /** `browser_vision_act` root arguments (contract §2.1/§2.5). */
+  function t3ActRequest(input) {
+    t2RejectUnknown(input, ['productId', 'action', 'point', 'to', 'button', 'clickCount', 'modifiers', 'steps', 'durationMs'], 'browser_vision_act');
+    const productId = t2StringField(input.productId, { name: 'productId', maxBytes: 64 });
+    if (!/^v1_[0-9a-f]{32}$/.test(productId)) throw t3Invalid('productId 必须匹配 ^v1_[0-9a-f]{32}$', { path: 'productId' });
+    const action = t2StringField(input.action, { name: 'action', maxBytes: 8 });
+    if (!['move', 'click', 'drag'].includes(action)) throw t3Invalid('action 只能是 move/click/drag', { path: 'action' });
+    const point = vision.validatePoint(input.point, 'point');
+    const hasTo = input.to !== undefined && input.to !== null;
+    if (action === 'drag' && !hasTo) throw t3Invalid('drag 必须提供 to', { path: 'to' });
+    if (action !== 'drag' && hasTo) throw t3Invalid(`${action} 不接受 to`, { path: 'to' });
+    const to = hasTo ? vision.validatePoint(input.to, 'to') : null;
+    const hasButton = input.button !== undefined;
+    const hasClickCount = input.clickCount !== undefined;
+    const hasSteps = input.steps !== undefined;
+    const hasDuration = input.durationMs !== undefined;
+    if (action === 'move') {
+      if (hasButton) throw t3Invalid('move 不接受 button', { path: 'button' });
+      if (hasClickCount) throw t3Invalid('move 不接受 clickCount', { path: 'clickCount' });
+      if (hasSteps) throw t3Invalid('move 不接受 steps', { path: 'steps' });
+      if (hasDuration) throw t3Invalid('move 不接受 durationMs', { path: 'durationMs' });
+    }
+    if (action === 'click' && hasSteps) throw t3Invalid('click 不接受 steps', { path: 'steps' });
+    if (action === 'click' && hasDuration) throw t3Invalid('click 不接受 durationMs', { path: 'durationMs' });
+    if (action === 'drag' && hasClickCount) throw t3Invalid('drag 不接受 clickCount', { path: 'clickCount' });
+    const button = hasButton ? input.button : 'left';
+    if (!['left', 'right', 'middle'].includes(button)) throw t3Invalid('button 只能是 left/right/middle', { path: 'button' });
+    const clickCount = action === 'click'
+      ? t2IntegerField(input.clickCount, 1, 1, 2, 'clickCount')
+      : 1;
+    const modifiers = t2ModifierList(input.modifiers);
+    const steps = action === 'drag' ? t2IntegerField(input.steps, 20, 1, 100, 'steps') : 0;
+    const durationMs = action === 'drag' ? t2IntegerField(input.durationMs, 500, 0, 2000, 'durationMs') : 0;
+    return { productId, action, point, to, button, clickCount, modifiers, steps, durationMs };
+  }
+
+  /** `browser_vision_baseline` root arguments (contract §2.1/§2.6). */
+  function t3BaselineRequest(input) {
+    t2RejectUnknown(input, ['action', 'name', 'revision', 'source', 'expectedRevision', 'caseId', 'options', 'thresholds', 'masks'], 'browser_vision_baseline');
+    const action = t2StringField(input.action, { name: 'action', maxBytes: 16 });
+    if (!['list', 'get', 'create', 'update', 'delete'].includes(action)) {
+      throw t3Invalid('action 只能是 list/get/create/update/delete', { path: 'action' });
+    }
+    const present = (key) => input[key] !== undefined && input[key] !== null;
+    const name = present('name') ? t2StringField(input.name, { name: 'name', maxBytes: 64 }) : null;
+    if (name !== null && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(name)) {
+      throw new BrowserError('VISION_BASELINE_NAME_INVALID', '基线 name 必须匹配 ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$', { name: null });
+    }
+    const revision = present('revision') ? t2IntegerField(input.revision, undefined, 1, 9999999999, 'revision') : null;
+    const expectedRevision = present('expectedRevision') ? t2IntegerField(input.expectedRevision, undefined, 1, 9999999999, 'expectedRevision') : null;
+    const caseId = present('caseId') ? t2StringField(input.caseId, { name: 'caseId', maxBytes: 64 }) : null;
+    if (caseId !== null && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(caseId)) throw t3Invalid('caseId 必须是合法 Name', { path: 'caseId' });
+    const source = present('source') ? vision.validateSource(input.source, 'source') : null;
+    const options = present('options') ? vision.validateDiffOptions(input.options, 'options') : null;
+    const thresholds = present('thresholds') ? vision.validateThresholds(input.thresholds, 'thresholds') : null;
+    // update 的 options/thresholds 按字段继承旧 HEAD 值：必须传用户给出的 partial 对象，不能传
+    // 补齐默认值的完整对象，否则会静默覆盖未提供的旧字段（契约 §2.6/§8.3）。
+    const optionsPartial = present('options') ? { ...input.options } : null;
+    const thresholdsPartial = present('thresholds') ? { ...input.thresholds } : null;
+    const masksProvided = input.masks !== undefined;
+    const masks = input.masks === undefined ? [] : vision.validateMasks(input.masks, 'masks');
+    const forbidden = (keys) => {
+      for (const key of keys) if (present(key)) throw t3Invalid(`${action} 不接受字段：${key}`, { path: key });
+    };
+    if (action === 'list') {
+      forbidden(['name', 'revision', 'source', 'expectedRevision', 'caseId', 'options', 'thresholds']);
+      if (masksProvided) throw t3Invalid('list 不接受字段：masks', { path: 'masks' });
+    } else if (action === 'get') {
+      if (name === null) throw t3Invalid('get 必须提供 name', { path: 'name' });
+      forbidden(['source', 'expectedRevision', 'caseId', 'options', 'thresholds']);
+      if (masksProvided) throw t3Invalid('get 不接受字段：masks', { path: 'masks' });
+    } else if (action === 'create') {
+      if (name === null) throw t3Invalid('create 必须提供 name', { path: 'name' });
+      if (source === null) throw t3Invalid('create 必须提供 source', { path: 'source' });
+      forbidden(['revision', 'expectedRevision']);
+    } else if (action === 'update') {
+      if (name === null) throw t3Invalid('update 必须提供 name', { path: 'name' });
+      if (source === null) throw t3Invalid('update 必须提供 source', { path: 'source' });
+      if (expectedRevision === null) throw t3Invalid('update 必须提供 expectedRevision', { path: 'expectedRevision' });
+      forbidden(['revision']);
+    } else {
+      if (name === null) throw t3Invalid('delete 必须提供 name', { path: 'name' });
+      if (expectedRevision === null) throw t3Invalid('delete 必须提供 expectedRevision', { path: 'expectedRevision' });
+      forbidden(['revision', 'source', 'caseId', 'options', 'thresholds']);
+      if (masksProvided) throw t3Invalid('delete 不接受字段：masks', { path: 'masks' });
+    }
+    return {
+      action, name, revision, source, expectedRevision, caseId, options, thresholds,
+      optionsPartial, thresholdsPartial, masks, masksProvided,
+    };
+  }
+
+  /** FindResult projection (§2.3): the module already returns full-image coordinates. */
+  function t3FindResult(query, found, image, sourceProduct, mapping, searchRegion) {
+    const candidates = Array.isArray(found && found.candidates) ? found.candidates : [];
+    return {
+      method: query.method,
+      sourceProductId: sourceProduct ? sourceProduct.productId : null,
+      searchRegion: searchRegion ?? { x: 0, y: 0, width: image.width, height: image.height },
+      candidates: candidates.map((candidate) => ({
+        id: candidate.id,
+        region: candidate.region,
+        documentCss: mapping ? vision.mapImageRectToDocument(mapping, candidate.region) : null,
+        centroid: candidate.centroid,
+        area: candidate.area,
+        score: candidate.score,
+        signal: candidate.signal,
+        semanticName: null,
+      })),
+      totalCandidates: Number.isInteger(found && found.totalCandidates) ? found.totalCandidates : candidates.length,
+      truncated: Boolean(found && found.truncated),
+      metrics: found && found.metrics ? found.metrics : {
+        foregroundPixels: null, evaluatedPositions: null, pixelComparisons: 0, algorithm: 'unknown',
+      },
+    };
+  }
+
+  /** Resolve a template Query source (product/baseline only); returns the resolved source or null. */
+  async function t3TemplateImage(runtime, exec, query, pins, budget) {
+    if (!query || query.method !== 'template') return null;
+    const template = query.template;
+    if (!template) throw t3Invalid('template 查询必须提供 template source', { path: 'template' });
+    if (template.kind === 'live') throw t3Invalid('template source 只能是 product 或 baseline', { path: 'template' });
+    return t3ResolveSource(runtime, exec, template, 'template', pins, budget);
+  }
+
+  function t3MergeResolved(base, provided, validator, name) {
+    if (provided === null || provided === undefined) return { ...base };
+    const normalized = validator(provided, name);
+    const merged = { ...base };
+    for (const key of Object.keys(provided)) {
+      if (Object.hasOwn(normalized, key)) merged[key] = normalized[key];
+    }
+    return merged;
+  }
+
+  /** A ratio verdict from the module when available (equal → lower level). */
+  function t3RatioVerdict(diffRatio, thresholds) {
+    if (typeof vision.ratioVerdict === 'function') return vision.ratioVerdict(diffRatio, thresholds);
+    if (!(diffRatio > thresholds.failRatio)) return diffRatio > thresholds.warnRatio ? 'WARN' : 'PASS';
+    return 'FAIL';
+  }
+
+  function t3ValidateMaskBounds(masks, image) {
+    const seen = new Set();
+    masks.forEach((mask, index) => {
+      if (seen.has(mask.id)) throw t3Invalid(`masks[${index}].id 重复`, { path: `masks[${index}].id` });
+      seen.add(mask.id);
+      const region = mask.region;
+      if (region.x + region.width > image.width || region.y + region.height > image.height) {
+        throw t3Invalid(`masks[${index}].region 超出图像边界`, {
+          path: `masks[${index}].region`,
+          image: { width: image.width, height: image.height },
+        });
+      }
+    });
+  }
+
+  function t3EvidenceRegion(entry) {
+    return {
+      id: entry.id,
+      role: entry.role,
+      imagePixels: entry.imagePixels,
+      beforeDocumentCss: entry.beforeDocumentCss ?? null,
+      afterDocumentCss: entry.afterDocumentCss ?? null,
+      area: Number.isInteger(entry.area) ? entry.area : null,
+    };
+  }
+
+  /* --- browser_vision_image ---------------------------------------------------------------- */
+  register({
+    name: 'browser_vision_image',
+    description: 'T3 静态视觉：对一张 PNG（live 截图 / product / 基线）做 region 裁剪、resize、预处理、全量统计、可选确定性识别（color/components/edges/template）与像素标注，并交付一张 PNG。'
+      + '处理顺序固定：source → region → resize → preprocess → 统计/识别 → annotations → 编码/校验/交付；分析与识别在标注之前，regions 坐标相对最终未标注图。'
+      + '无参数即一张实时截图加统计；未请求断言时 verdict=INCONCLUSIVE（reason=no-assertion），截图/识别成功都不等于视觉验收通过。'
+      + '不提供 VLM/OCR/语义命名，也不读 DOM。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: [],
+      properties: {
+        source: {
+          type: 'object',
+          description: '源图：{kind:"live",scale?:1–4,region?:文档CSS Rect} | {kind:"product",productId:"v1_<32hex>"} | {kind:"baseline",name,revision?}；默认 live。',
+        },
+        region: {
+          type: 'object',
+          description: '图像像素裁剪 Rect（integer，左闭右开，必须完全在图内）；省略为整图。',
+          properties: { x: { type: 'integer' }, y: { type: 'integer' }, width: { type: 'integer' }, height: { type: 'integer' } },
+          required: ['x', 'y', 'width', 'height'],
+        },
+        resize: {
+          type: 'object',
+          description: '事后位图插值（与 source.scale 的 CDP 光栅密度无关）：factor 连续 1–4（不支持缩小），method nearest/bilinear。',
+          properties: { factor: { type: 'number' }, method: { type: 'string', enum: ['nearest', 'bilinear'] } },
+          required: ['factor'],
+        },
+        preprocess: {
+          type: 'array',
+          description: '按列表顺序执行：grayscale/blur(radius 1–3)/normalize/threshold(value 0–255)/channels(order rgba/bgra/argb)，最多 8 项。',
+          maxItems: 8,
+          items: { type: 'object' },
+        },
+        annotations: {
+          type: 'array',
+          description: '整数像素标注：rect(region)/cross(point,size?)/number(point,number 1–999)/arrow(point,to)，color RGBA、thickness 1–8，最多 64 项；列表顺序即覆盖顺序。',
+          maxItems: 64,
+          items: { type: 'object' },
+        },
+        recognize: {
+          type: 'object',
+          description: '可选确定性识别 Query（同 browser_vision_find 的 query）；template 只接受 product/baseline 源。',
+        },
+        output: {
+          type: 'object',
+          description: '交付 PNG 的落盘选择：persist?:boolean=false（默认写插件暂存目录），out?:工作区相对 .png（提供即持久）。0600、原子写入、绝不覆盖；同 out 冲突返回 OUTPUT_EXISTS。',
+          properties: { persist: { type: 'boolean' }, out: { type: 'string' } },
+          required: [],
+        },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => {
+      const { image, attachment, ...meta } = value;
+      return attachment ? [{ type: 'image', attachment }, ...text(meta)] : text({ ...meta, image });
+    } },
+    async execute(args, exec) {
+      const runtime = exec.runtime;
+      const provenance = t3Provenance(runtime, exec);
+      const pins = [];
+      const budget = t3NewBudget();
+      const warnings = [];
+      const incomplete = [];
+      let resolved = null;
+      try {
+        const request = t3ImageRequest(args && typeof args === 'object' ? args : {});
+        resolved = await t3ResolveSource(runtime, exec, request.source, 'source', pins, budget);
+        let image = resolved.image;
+        let mapping = resolved.product ? resolved.product.mapping : null;
+        let actionable = resolved.product ? resolved.product.actionable === true : false;
+        const sourceProduct = resolved.product;
+        const operations = [];
+        if (request.region) {
+          t3RectInside(request.region, image, 'region');
+          image = await vision.cropImageAsync(image, request.region, t3AlgoOpts(budget, exec.signal));
+          mapping = typeof vision.mappingAfterCrop === 'function' ? vision.mappingAfterCrop(mapping, request.region) : mapping;
+          operations.push({ op: 'crop', parameters: { region: { ...request.region } } });
+        }
+        if (request.resize) {
+          const outputWidth = Math.round(image.width * request.resize.factor);
+          const outputHeight = Math.round(image.height * request.resize.factor);
+          if (outputWidth < 1 || outputHeight < 1) throw t3Invalid('resize 结果尺寸必须 ≥1', { path: 'resize.factor' });
+          if (outputWidth * outputHeight > T3_LIMITS.maxProductPixels) {
+            throw new BrowserError('VISION_LIMIT_EXCEEDED', 'resize 结果超过单图像素上限', {
+              limit: 'maxProductPixels', actual: outputWidth * outputHeight, max: T3_LIMITS.maxProductPixels,
+            });
+          }
+          image = await vision.resizeImageAsync(image, request.resize.factor, request.resize.method, t3AlgoOpts(budget, exec.signal));
+          mapping = typeof vision.mappingAfterResize === 'function'
+            ? vision.mappingAfterResize(mapping, outputWidth, outputHeight)
+            : mapping;
+          operations.push({ op: 'resize', parameters: { factor: request.resize.factor, method: request.resize.method } });
+          t3Warning(warnings, 'bitmap-upscaled');
+          if (request.resize.method !== 'nearest') actionable = false;
+        }
+        for (const op of request.preprocess) {
+          image = await vision.preprocessImageAsync(image, [op], t3AlgoOpts(budget, exec.signal));
+          operations.push({ op: op.op, parameters: t3PreprocessParameters(op) });
+          actionable = false;
+        }
+        // Analysis + recognition happen BEFORE annotations (annotations are not page content).
+        const analysis = await vision.analyzeImageAsync(image, t3AlgoOpts(budget, exec.signal));
+        let found = null;
+        let templateResolved = null;
+        if (request.recognize) {
+          templateResolved = await t3TemplateImage(runtime, exec, request.recognize, pins, budget);
+          found = await vision.findInImageAsync(image, request.recognize, {
+            roi: { x: 0, y: 0, width: image.width, height: image.height },
+            templateImage: templateResolved ? templateResolved.image : null,
+            ...t3AlgoOpts(budget, exec.signal),
+          }, t3AlgoOpts(budget, exec.signal));
+        }
+        let processedProduct = sourceProduct;
+        let processedBytes = resolved.bytes;
+        let finalImage = image;
+        if (operations.length) {
+          const encoded = await t3EncodeImage(image, exec.signal, budget);
+          processedBytes = encoded.data;
+          processedProduct = t3ProductPublic(t3AddProduct(runtime, {
+            bytes: encoded.data, width: image.width, height: image.height,
+            sha256: encoded.sha256, rgbaSha256: t3RgbaSha256(image.rgba), kind: 'derived',
+            mapping, actionable, parentIds: [sourceProduct.productId], operations,
+            capturedAt: sourceProduct.capturedAt,
+            provenance: { ...provenance, capture: resolved.captureFacts ?? null },
+          }));
+        }
+        const recognition = found
+          ? t3FindResult(request.recognize, found, image, processedProduct, mapping, { x: 0, y: 0, width: image.width, height: image.height })
+          : null;
+        let finalProduct = processedProduct;
+        let finalBytes = processedBytes;
+        if (request.annotations.length) {
+          finalImage = await vision.annotateImageAsync(image, request.annotations, t3AlgoOpts(budget, exec.signal));
+          const encoded = await t3EncodeImage(finalImage, exec.signal, budget);
+          finalBytes = encoded.data;
+          finalProduct = t3ProductPublic(t3AddProduct(runtime, {
+            bytes: encoded.data, width: finalImage.width, height: finalImage.height,
+            sha256: encoded.sha256, rgbaSha256: t3RgbaSha256(finalImage.rgba), kind: 'derived',
+            mapping, actionable: false, parentIds: [processedProduct.productId],
+            operations: [{ op: 'annotate', parameters: { annotations: request.annotations } }],
+            capturedAt: processedProduct.capturedAt,
+            provenance: { ...provenance, capture: resolved.captureFacts ?? null },
+          }));
+        }
+        const delivered = await t3DeliverImage(runtime, exec, request.output, finalBytes, finalImage.width, finalImage.height, warnings);
+        const metrics = {
+          pixelCount: analysis.pixelCount,
+          transparentPixels: analysis.transparentPixels,
+          opaquePixels: analysis.opaquePixels,
+          uniform: analysis.uniform,
+          edgePixels: analysis.edgePixels,
+          edgeRatio: analysis.edgeRatio,
+          operationCount: operations.length,
+          annotated: request.annotations.length > 0,
+          recognized: recognition ? recognition.totalCandidates : null,
+          warnings,
+        };
+        const evidence = t3BoundEvidence(t3Evidence({
+          operation: 'image',
+          provenance,
+          source: templateResolved
+            ? [t3EvidenceSource(resolved, 'source'), t3EvidenceSource(templateResolved, 'template')]
+            : [t3EvidenceSource(resolved, 'source')],
+          regions: [],
+          metrics,
+          verdict: { status: 'INCONCLUSIVE', reason: 'no-assertion' },
+          output: { productId: finalProduct.productId, sha256: delivered.sha256, file: delivered.file, delivery: delivered.delivery },
+          incomplete,
+        }));
+        runtime.noteVisionOperation('image', 'INCONCLUSIVE');
+        return {
+          ok: true,
+          product: finalProduct,
+          image: finalBytes.toString('base64'),
+          bytes: finalBytes.length,
+          sha256: delivered.sha256,
+          attachment: delivered.attachment,
+          attachmentId: delivered.attachmentId,
+          imageDelivery: delivered.imageDelivery,
+          attachmentError: delivered.attachmentError,
+          file: delivered.file,
+          analysis,
+          recognition,
+          // §1.2: the success body nests the vision evidence exactly like the error path.
+          evidence: { vision: evidence },
+        };
+      } catch (error) {
+        const evidence = t3Evidence({
+          operation: 'image',
+          provenance,
+          source: resolved ? [t3EvidenceSource(resolved, 'source')] : [],
+          verdict: { status: 'BLOCKED', reason: 'error' },
+          metrics: { errorCode: error && error.code ? error.code : 'INTERNAL', warnings },
+          incomplete: [...incomplete, 'operation-failed'],
+        });
+        runtime.noteVisionOperation('image', null);
+        throw t3ThrowWithEvidence(error, evidence);
+      } finally {
+        t3ReleasePins(runtime, pins);
+      }
+    },
+  });
+
+  /* --- browser_vision_find ----------------------------------------------------------------- */
+  register({
+    name: 'browser_vision_find',
+    description: 'T3 静态视觉：在源图（可先按 region 裁出 ROI）上做确定性识别并定位，返回 FindResult。'
+      + 'method=color/components/edges/template；候选坐标始终相对完整源图（ROI 原点已回加），documentCss 用 mapping 映射。'
+      + '无匹配是成功（candidates:[],totalCandidates:0），不是 TARGET_NOT_FOUND；candidates 只是本次排序编号，不是可操作 ref，也不是 DOM 身份或语义命名（semanticName 恒 null）。'
+      + '默认不生成图片、文件或额外 product（live 源仍会生成可引用源 product）。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['query'],
+      properties: {
+        source: { type: 'object', description: '源图（同 browser_vision_image.source），默认 live。' },
+        region: {
+          type: 'object',
+          description: '搜索 ROI（图像像素 integer Rect，必须完全在图内）；候选坐标仍相对完整源图。',
+          properties: { x: { type: 'integer' }, y: { type: 'integer' }, width: { type: 'integer' }, height: { type: 'integer' } },
+          required: ['x', 'y', 'width', 'height'],
+        },
+        query: { type: 'object', description: 'Query：method* + minArea?(1–16000000) + maxResults?(1–100)；color{color*:RGB,tolerance?} / components{background?,tolerance?} / edges{edgeThreshold?} / template{template*:Source(product|baseline),minScore?,stride?}。' },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      const runtime = exec.runtime;
+      const provenance = t3Provenance(runtime, exec);
+      const pins = [];
+      const budget = t3NewBudget();
+      const warnings = [];
+      let resolved = null;
+      try {
+        const request = t3FindRequest(args && typeof args === 'object' ? args : {});
+        resolved = await t3ResolveSource(runtime, exec, request.source, 'source', pins, budget);
+        const image = resolved.image;
+        const roi = request.region ? t3RectInside(request.region, image, 'region') : { x: 0, y: 0, width: image.width, height: image.height };
+        const templateResolved = await t3TemplateImage(runtime, exec, request.query, pins, budget);
+        const found = await vision.findInImageAsync(image, request.query, {
+          roi, templateImage: templateResolved ? templateResolved.image : null,
+          ...t3AlgoOpts(budget, exec.signal),
+        }, t3AlgoOpts(budget, exec.signal));
+        const result = t3FindResult(request.query, found, image, resolved.product, resolved.product ? resolved.product.mapping : null, { ...roi });
+        if (result.truncated) t3Warning(warnings, 'regions-truncated');
+        const sourceEntries = templateResolved
+          ? [t3EvidenceSource(resolved, 'source'), t3EvidenceSource(templateResolved, 'template')]
+          : [t3EvidenceSource(resolved, 'source')];
+        const evidence = t3BoundEvidence(t3Evidence({
+          operation: 'find',
+          provenance,
+          source: sourceEntries,
+          regions: result.candidates.map((candidate) => t3EvidenceRegion({
+            id: candidate.id,
+            role: 'candidate',
+            imagePixels: candidate.region,
+            beforeDocumentCss: candidate.documentCss,
+            afterDocumentCss: null,
+            area: candidate.area,
+          })),
+          metrics: {
+            method: result.method,
+            totalCandidates: result.totalCandidates,
+            truncated: result.truncated,
+            pixelComparisons: result.metrics ? result.metrics.pixelComparisons : null,
+            foregroundPixels: result.metrics ? result.metrics.foregroundPixels : null,
+            warnings,
+          },
+          verdict: { status: 'INCONCLUSIVE', reason: 'no-assertion' },
+          incomplete: [],
+        }));
+        runtime.noteVisionOperation('find', 'INCONCLUSIVE');
+        return { ok: true, source: resolved.product, result, evidence: { vision: evidence } };
+      } catch (error) {
+        const evidence = t3Evidence({
+          operation: 'find',
+          provenance,
+          source: resolved ? [t3EvidenceSource(resolved, 'source')] : [],
+          verdict: { status: 'BLOCKED', reason: 'error' },
+          metrics: { errorCode: error && error.code ? error.code : 'INTERNAL', warnings },
+          incomplete: ['operation-failed'],
+        });
+        runtime.noteVisionOperation('find', null);
+        throw t3ThrowWithEvidence(error, evidence);
+      } finally {
+        t3ReleasePins(runtime, pins);
+      }
+    },
+  });
+
+  /* --- browser_vision_compare -------------------------------------------------------------- */
+  register({
+    name: 'browser_vision_compare',
+    description: 'T3 静态视觉：对两张显式源图做 YIQ 像素差异比较（固定算法 t3-v1），输出完整尺寸的标注差异 PNG（红=差异、黄=AA、灰=mask、蓝=区域 bbox）与 PASS/WARN/FAIL。'
+      + 'before/after 必须显式给出；两图必须同像素尺寸，否则 VISION_SIZE_MISMATCH；region 是两图共同的图像像素 Rect。'
+      + 'masks 缺省继承 before 基线元数据（before 非基线则空），显式 [] 清空；options/thresholds 逐字段覆盖 before 基线默认。'
+      + '全屏蔽无分母抛 VISION_EMPTY_COMPARISON，不返回 similarity=1；similarity 是阈值化差异覆盖率，不是语义相似度。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['before', 'after'],
+      properties: {
+        before: { type: 'object', description: '比较前的源图（必填、显式）：Source。' },
+        after: { type: 'object', description: '比较后的源图（必填、显式）：Source。' },
+        region: {
+          type: 'object',
+          description: '比较 ROI（图像像素 integer Rect，两图都必须有效）；省略为全图。',
+          properties: { x: { type: 'integer' }, y: { type: 'integer' }, width: { type: 'integer' }, height: { type: 'integer' } },
+          required: ['x', 'y', 'width', 'height'],
+        },
+        masks: { type: 'array', description: 'Mask[]（最多 64、id 唯一）：{id,region:PixelRect}，坐标相对完整图。', maxItems: 64, items: { type: 'object' } },
+        options: {
+          type: 'object',
+          description: 'DiffOptions：threshold 0–1（默认 0.1）、includeAA（默认 false）、minRegionPixels ≥1（默认 1）。',
+          properties: { threshold: { type: 'number' }, includeAA: { type: 'boolean' }, minRegionPixels: { type: 'integer' } },
+          required: [],
+        },
+        thresholds: {
+          type: 'object',
+          description: 'Thresholds：warnRatio/failRatio（0≤warn≤fail≤1，默认 0.001/0.01）。',
+          properties: { warnRatio: { type: 'number' }, failRatio: { type: 'number' } },
+          required: [],
+        },
+        output: {
+          type: 'object',
+          description: '差异 PNG 的落盘选择（同 browser_vision_image.output）：默认暂存，out/persist:true/env 触发持久。',
+          properties: { persist: { type: 'boolean' }, out: { type: 'string' } },
+          required: [],
+        },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => {
+      const { image, attachment, ...meta } = value;
+      return attachment ? [{ type: 'image', attachment }, ...text(meta)] : text({ ...meta, image });
+    } },
+    async execute(args, exec) {
+      const runtime = exec.runtime;
+      const provenance = t3Provenance(runtime, exec);
+      const pins = [];
+      const budget = t3NewBudget();
+      const warnings = [];
+      let resolvedBefore = null;
+      let resolvedAfter = null;
+      try {
+        const request = t3CompareRequest(args && typeof args === 'object' ? args : {});
+        resolvedBefore = await t3ResolveSource(runtime, exec, request.before, 'before', pins, budget);
+        resolvedAfter = await t3ResolveSource(runtime, exec, request.after, 'after', pins, budget);
+        const beforeImage = resolvedBefore.image;
+        const afterImage = resolvedAfter.image;
+        if (beforeImage.width !== afterImage.width || beforeImage.height !== afterImage.height) {
+          throw new BrowserError('VISION_SIZE_MISMATCH', '比较的两张图必须像素尺寸相同（不自动 resize/align）', {
+            before: { width: beforeImage.width, height: beforeImage.height },
+            after: { width: afterImage.width, height: afterImage.height },
+          });
+        }
+        const region = request.region ? t3RectInside(request.region, beforeImage, 'region') : { x: 0, y: 0, width: beforeImage.width, height: beforeImage.height };
+        const baselineMeta = resolvedBefore.kind === 'baseline' ? resolvedBefore.baseline : null;
+        let masks;
+        if (request.masksProvided) masks = request.masks;
+        else if (baselineMeta) masks = Array.isArray(baselineMeta.masks) ? baselineMeta.masks : [];
+        else masks = [];
+        t3ValidateMaskBounds(masks, beforeImage);
+        let options = { ...T3_DEFAULT_DIFF_OPTIONS };
+        if (baselineMeta && baselineMeta.options) options = { ...options, ...baselineMeta.options };
+        options = t3MergeResolved(options, request.options, vision.validateDiffOptions, 'options');
+        let thresholds = { ...T3_DEFAULT_THRESHOLDS };
+        if (baselineMeta && baselineMeta.thresholds) thresholds = { ...thresholds, ...baselineMeta.thresholds };
+        thresholds = t3MergeResolved(thresholds, request.thresholds, vision.validateThresholds, 'thresholds');
+        if (!(thresholds.warnRatio <= thresholds.failRatio)) {
+          throw t3Invalid('thresholds 必须满足 0 ≤ warnRatio ≤ failRatio ≤ 1', { path: 'thresholds' });
+        }
+        const diff = await vision.diffImagesAsync(beforeImage, afterImage, {
+          region, masks, options, ...t3AlgoOpts(budget, exec.signal),
+        }, t3AlgoOpts(budget, exec.signal));
+        if (!diff || !diff.metrics || diff.metrics.comparedPixels === 0) {
+          throw new BrowserError('VISION_EMPTY_COMPARISON', 'ROI 内所有像素都被 mask 排除，无法计算差异比例', {
+            region, maskedPixels: diff && diff.metrics ? diff.metrics.maskedPixels : null,
+          });
+        }
+        const verdict = t3RatioVerdict(diff.metrics.diffRatio, thresholds);
+        const mappingCompatible = Boolean(
+          resolvedBefore.product && resolvedBefore.product.mapping
+          && resolvedAfter.product && resolvedAfter.product.mapping
+          && vision.mappingCompatible(resolvedBefore.product.mapping, resolvedAfter.product.mapping),
+        );
+        const regionList = Array.isArray(diff.regions) ? diff.regions : [];
+        const comparisonRegions = regionList.map((item) => {
+          const imagePixels = item.imagePixels ?? item.region ?? null;
+          return {
+            id: item.id,
+            area: item.area,
+            imagePixels,
+            beforeDocumentCss: mappingCompatible && imagePixels ? vision.mapImageRectToDocument(resolvedBefore.product.mapping, imagePixels) : null,
+            afterDocumentCss: mappingCompatible && imagePixels ? vision.mapImageRectToDocument(resolvedAfter.product.mapping, imagePixels) : null,
+          };
+        });
+        if (comparisonRegions.length > T3_EVIDENCE_REGIONS) t3Warning(warnings, 'regions-truncated');
+        if (!mappingCompatible) t3Warning(warnings, 'mapping-incompatible');
+        const highlight = Buffer.isBuffer(diff.highlight) ? diff.highlight : Buffer.from(diff.highlight ?? []);
+        const png = inspectPng(highlight, { checkCrc: true });
+        if (!png.ok) throw new BrowserError('INVALID_PNG', '差异图未通过 PNG 结构/CRC 校验', { phase: 'inspectPng', reason: png.message });
+        if (png.width !== beforeImage.width || png.height !== beforeImage.height) {
+          throw new BrowserError('CAPTURE_SIZE_MISMATCH', '差异图尺寸必须等于完整源图尺寸', {
+            actual: { width: png.width, height: png.height },
+            expected: { width: beforeImage.width, height: beforeImage.height },
+          });
+        }
+        const diffProduct = t3ProductPublic(t3AddProduct(runtime, {
+          bytes: highlight, width: png.width, height: png.height, sha256: t3Sha256(highlight),
+          rgbaSha256: null, kind: 'diff', mapping: null, actionable: false,
+          parentIds: [resolvedBefore.product.productId, resolvedAfter.product.productId],
+          operations: [{ op: 'diff', parameters: { resolvedOptions: options, resolvedThresholds: thresholds, resolvedMasks: masks } }],
+          capturedAt: null, provenance,
+        }));
+        const delivered = await t3DeliverImage(runtime, exec, request.output, highlight, png.width, png.height, warnings);
+        const comparison = {
+          region,
+          resolvedMasks: masks,
+          resolvedOptions: options,
+          resolvedThresholds: thresholds,
+          metrics: diff.metrics,
+          regions: comparisonRegions,
+          regionCount: Number.isInteger(diff.regionCount) ? diff.regionCount : comparisonRegions.length,
+          regionsTruncated: diff.regionsTruncated === true || comparisonRegions.length > T3_EVIDENCE_REGIONS,
+          verdict,
+          reason: 'ratio',
+          mappingCompatible,
+        };
+        const metrics = {
+          ...diff.metrics,
+          warnings,
+        };
+        const evidence = t3BoundEvidence(t3Evidence({
+          operation: 'compare',
+          provenance,
+          source: [t3EvidenceSource(resolvedBefore, 'before'), t3EvidenceSource(resolvedAfter, 'after')],
+          regions: comparisonRegions.map((item) => t3EvidenceRegion({
+            id: item.id, role: 'diff', imagePixels: item.imagePixels,
+            beforeDocumentCss: item.beforeDocumentCss, afterDocumentCss: item.afterDocumentCss, area: item.area,
+          })),
+          metrics,
+          verdict: { status: verdict, reason: 'ratio' },
+          output: { productId: diffProduct.productId, sha256: delivered.sha256, file: delivered.file, delivery: delivered.delivery },
+          incomplete: comparison.regionsTruncated ? ['regions-truncated'] : [],
+        }));
+        runtime.noteVisionOperation('compare', verdict);
+        return {
+          ok: true,
+          before: resolvedBefore.product,
+          after: resolvedAfter.product,
+          product: diffProduct,
+          image: highlight.toString('base64'),
+          bytes: highlight.length,
+          sha256: delivered.sha256,
+          attachment: delivered.attachment,
+          attachmentId: delivered.attachmentId,
+          imageDelivery: delivered.imageDelivery,
+          attachmentError: delivered.attachmentError,
+          file: delivered.file,
+          comparison,
+          evidence: { vision: evidence },
+        };
+      } catch (error) {
+        const sources = [];
+        if (resolvedBefore) sources.push(t3EvidenceSource(resolvedBefore, 'before'));
+        if (resolvedAfter) sources.push(t3EvidenceSource(resolvedAfter, 'after'));
+        const evidence = t3Evidence({
+          operation: 'compare',
+          provenance,
+          source: sources,
+          verdict: { status: 'BLOCKED', reason: 'error' },
+          metrics: { errorCode: error && error.code ? error.code : 'INTERNAL', warnings },
+          incomplete: ['operation-failed'],
+        });
+        runtime.noteVisionOperation('compare', null);
+        throw t3ThrowWithEvidence(error, evidence);
+      } finally {
+        t3ReleasePins(runtime, pins);
+      }
+    },
+  });
+
+
+  /* --- browser_vision_act ------------------------------------------------------------------ */
+
+  const T3_MOUSE_BUTTON_BITS = Object.freeze({ left: 1, right: 2, middle: 4 });
+
+  function t3MouseMask(button) {
+    return T3_MOUSE_BUTTON_BITS[button] || 1;
+  }
+
+  function t3ModifierMask(modifiers) {
+    return (modifiers || []).reduce((mask, name) => mask | (MODIFIER_BITS[name] || 0), 0);
+  }
+
+  /**
+   * Hit-test one *document CSS* point (§6 step 4).
+   *
+   * `DOM.getNodeForLocation` takes frame-view (document) coordinates and integer values: passing a
+   * viewport point or a fraction is rejected by the protocol ("Invalid parameters"). Only the hit
+   * test is quantised — the dispatched Input events keep the continuous viewport coordinates.
+   * CDP reports "no node at location" as an error, which is simply "no hit".
+   */
+  async function t3HitNode(runtime, signal, documentPoint) {
+    try {
+      const hit = await runtime.send('DOM.getNodeForLocation', {
+        x: Math.floor(documentPoint.x),
+        y: Math.floor(documentPoint.y),
+        includeUserAgentShadowDOM: true,
+        ignorePointerEventsNone: false,
+      }, signal);
+      if (!hit || !Number.isInteger(hit.backendNodeId)) return null;
+      return hit;
+    } catch (error) {
+      if (error && error.code === 'ABORTED') throw error;
+      return null;
+    }
+  }
+
+  /** Live node facts for the hit node: connected / disabled / inert / bbox (CSS px). */
+  async function t3NodeFacts(runtime, signal, backendNodeId) {
+    let objectId = null;
+    try {
+      const resolved = await runtime.send('DOM.resolveNode', { backendNodeId }, signal);
+      objectId = resolved && resolved.object ? resolved.object.objectId : null;
+    } catch {
+      objectId = null;
+    }
+    if (!objectId) return { connected: false, disabled: false, inert: false, rect: null };
+    try {
+      const evaluated = await runtime.send('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: 'function () {'
+          + ' var el = this;'
+          + ' if (!el || el.isConnected !== true) return { connected: false, disabled: false, inert: false, rect: null };'
+          + ' var rect = el.getBoundingClientRect();'
+          // Walk the composed ancestor chain (crossing shadow hosts): an inert *ancestor* makes the
+          // subtree non-interactive even though `el.inert` itself is false.
+          + ' var inert = false;'
+          + ' var node = el;'
+          + ' while (node && node.nodeType === 1) {'
+          + ' if (node.inert === true || node.hasAttribute("inert")) { inert = true; break; }'
+          + ' if (node.parentElement) { node = node.parentElement; continue; }'
+          + ' var root = typeof node.getRootNode === "function" ? node.getRootNode() : null;'
+          + ' node = root && root.host ? root.host : null;'
+          + ' }'
+          + ' var disabled = el.disabled === true || el.getAttribute("aria-disabled") === "true";'
+          + ' return { connected: true, disabled: disabled, inert: inert,'
+          + ' rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };'
+          + ' }',
+        returnByValue: true,
+      }, signal);
+      const value = evaluated && evaluated.result ? evaluated.result.value : null;
+      if (!value || typeof value !== 'object') return { connected: false, disabled: false, inert: false, rect: null };
+      return {
+        connected: value.connected === true,
+        disabled: value.disabled === true,
+        inert: value.inert === true,
+        rect: value.rect && Number.isFinite(value.rect.x) && Number.isFinite(value.rect.y)
+          ? { x: value.rect.x, y: value.rect.y, width: value.rect.width, height: value.rect.height }
+          : null,
+      };
+    } catch (error) {
+      if (error && error.code === 'ABORTED') throw error;
+      return { connected: false, disabled: false, inert: false, rect: null };
+    }
+  }
+
+  /** Wait two animation frames (bounded); a throttled page falls back to a bounded timer. */
+  async function t3NextFrames(runtime, signal) {
+    try {
+      // Direct CDP send: the bounded 1000ms budget must not be the 30s tool envelope.
+      await runtime.cdp.send('Runtime.evaluate', {
+        expression: 'new Promise(function (resolve) { requestAnimationFrame(function () { requestAnimationFrame(function () { resolve(1); }); }); })',
+        awaitPromise: true,
+        returnByValue: true,
+      }, { signal, timeoutMs: 1000 });
+    } catch (error) {
+      if (error && error.code === 'ABORTED') throw error;
+      await delay(32);
+    }
+  }
+
+  function t3RectClose(a, b, tolerance = 1) {
+    if (!a || !b) return false;
+    return Math.abs(a.x - b.x) <= tolerance && Math.abs(a.y - b.y) <= tolerance
+      && Math.abs(a.width - b.width) <= tolerance && Math.abs(a.height - b.height) <= tolerance;
+  }
+
+  /**
+   * §6 step 4: hit identity + node state + two-frame stability. Returns the proven hit.
+   * Zero dispatch on every failure path; the caller never searches for another point.
+   */
+  async function t3StableHit(runtime, signal, documentPoint) {
+    const startedAt = Date.now();
+    const first = await t3HitNode(runtime, signal, documentPoint);
+    if (!first) {
+      throw new BrowserError('VISION_HIT_MISMATCH', '该坐标没有可证明的命中节点（零派发）', { reason: 'no-hit' });
+    }
+    if (runtime.mainFrameId && first.frameId && first.frameId !== runtime.mainFrameId) {
+      throw new BrowserError('UNSUPPORTED', '跨 frame 命中无法证明主 frame 归属（零派发）', { reason: 'cross-frame-hit' });
+    }
+    const firstFacts = await t3NodeFacts(runtime, signal, first.backendNodeId);
+    if (!firstFacts.connected) {
+      throw new BrowserError('VISION_HIT_MISMATCH', '命中节点未连接（零派发）', { reason: 'not-connected' });
+    }
+    if (firstFacts.disabled) {
+      throw new BrowserError('VISION_HIT_MISMATCH', '命中节点 disabled（零派发）', { reason: 'disabled' });
+    }
+    if (firstFacts.inert) {
+      throw new BrowserError('VISION_HIT_MISMATCH', '命中节点 inert（零派发）', { reason: 'inert' });
+    }
+    let previous = { backendNodeId: first.backendNodeId, rect: firstFacts.rect };
+    for (let round = 0; round < 2; round += 1) {
+      if (Date.now() - startedAt > 1000) {
+        throw new BrowserError('VISION_HIT_MISMATCH', '命中在两帧内未稳定（零派发）', { reason: 'unstable-timeout' });
+      }
+      await t3NextFrames(runtime, signal);
+      const hit = await t3HitNode(runtime, signal, documentPoint);
+      if (!hit || hit.backendNodeId !== previous.backendNodeId) {
+        throw new BrowserError('VISION_HIT_MISMATCH', '两帧命中的 backend 节点不同（零派发）', { reason: 'hit-identity-changed' });
+      }
+      const facts = await t3NodeFacts(runtime, signal, hit.backendNodeId);
+      if (!facts.connected) {
+        throw new BrowserError('VISION_HIT_MISMATCH', '命中节点在两帧间断开（零派发）', { reason: 'not-connected' });
+      }
+      if (!t3RectClose(previous.rect, facts.rect, 1)) {
+        throw new BrowserError('VISION_HIT_MISMATCH', '命中节点 bbox 持续变化（零派发）', { reason: 'hit-rect-unstable' });
+      }
+      previous = { backendNodeId: hit.backendNodeId, rect: facts.rect };
+    }
+    return previous;
+  }
+
+  /** §6 step 5: real CDP Input dispatch (never DOM click/dispatchEvent). */
+  async function t3DispatchMouse(runtime, signal, request, start, end) {
+    const modifiers = t3ModifierMask(request.modifiers);
+    const button = request.button;
+    const buttonBit = t3MouseMask(button);
+    let eventCount = 0;
+    let started = false;
+    let completed = false;
+    let pressed = false;
+    const send = async (type, x, y, extra) => {
+      await runtime.send('Input.dispatchMouseEvent', { type, x, y, modifiers, ...extra }, signal);
+      eventCount += 1;
+    };
+    try {
+      if (request.action === 'move') {
+        started = true;
+        await send('mouseMoved', start.x, start.y, { button: 'none', buttons: 0 });
+        completed = true;
+      } else if (request.action === 'click') {
+        started = true;
+        await send('mouseMoved', start.x, start.y, { button: 'none', buttons: 0 });
+        for (let count = 1; count <= request.clickCount; count += 1) {
+          await send('mousePressed', start.x, start.y, { button, buttons: buttonBit, clickCount: count });
+          pressed = true;
+          await send('mouseReleased', start.x, start.y, { button, buttons: 0, clickCount: count });
+          pressed = false;
+        }
+        completed = true;
+      } else {
+        started = true;
+        await send('mouseMoved', start.x, start.y, { button: 'none', buttons: 0 });
+        await send('mousePressed', start.x, start.y, { button, buttons: buttonBit, clickCount: 1 });
+        pressed = true;
+        const perStep = request.steps > 0 ? request.durationMs / request.steps : 0;
+        for (let step = 1; step <= request.steps; step += 1) {
+          const ratio = step / request.steps;
+          const x = start.x + (end.x - start.x) * ratio;
+          const y = start.y + (end.y - start.y) * ratio;
+          if (perStep > 0) await delay(perStep);
+          await send('mouseMoved', x, y, { button, buttons: buttonBit });
+        }
+        await send('mouseReleased', end.x, end.y, { button, buttons: 0, clickCount: 1 });
+        pressed = false;
+        completed = true;
+      }
+    } finally {
+      if (pressed) {
+        // Best effort: a partially dispatched drag still releases the pressed button.
+        try {
+          await runtime.cdp.send('Input.dispatchMouseEvent', {
+            type: 'mouseReleased', x: start.x, y: start.y, button, buttons: 0, clickCount: 1, modifiers,
+          }, { signal, timeoutMs: 1000 });
+          eventCount += 1;
+          pressed = false;
+        } catch { /* the abort/disconnect path must not hang here */ }
+      }
+    }
+    return { eventCount, started, completed, released: !pressed };
+  }
+
+  /** Evidence source entry for a pinned product (act/baseline/check reuse this projection). */
+  function t3ProductSourceEntry(product, role) {
+    return {
+      role,
+      kind: product && product.kind === 'baseline' ? 'baseline' : product && product.kind === 'capture' ? 'product' : 'product',
+      productId: product ? product.productId : null,
+      sha256: product ? product.sha256 : null,
+      width: product ? product.width : null,
+      height: product ? product.height : null,
+      capturedAt: product ? product.capturedAt : null,
+      mapping: product ? product.mapping : null,
+      capture: null,
+    };
+  }
+
+  register({
+    name: 'browser_vision_act',
+    description: 'T3 静态视觉：用当前截图里的坐标派发真实鼠标输入（move/click/drag）。'
+      + 'productId 必须来自本工作区、capture 年龄 ≤30s、同 runtime/pageGeneration/documentEpoch 且可操作（仅 capture 或 crop+nearest derived）。'
+      + '派发前依次：现场 layout/scroll/visualViewport 复验 → 同矩形重采样并比对原始 RGBA hash → 视口校验 → DOM.getNodeForLocation 命中 + connected/disabled/inert + 两帧稳定 → CDP Input 真实派发（finally 释放按键）→ 输入后单次 after product。'
+      + '任何一步不满足都零派发：VISION_STALE_IMAGE / VISION_HIT_MISMATCH / NOT_INTERACTABLE(outside-viewport)。'
+      + 'dispatched=true 只表示输入已派发，不代表点中业务目标或任何视觉断言通过；本工具 verdict 固定 INCONCLUSIVE(dispatch-only)。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['productId', 'action', 'point'],
+      properties: {
+        productId: { type: 'string', description: '来自本工作区 store 的 productId（^v1_[0-9a-f]{32}$）。' },
+        action: { type: 'string', enum: ['move', 'click', 'drag'], description: '动作类型。' },
+        point: { type: 'object', description: '图像连续像素坐标 {x,y}（不自动加 0.5、不取整）；像素中心请传 i+0.5。', properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] },
+        to: { type: 'object', description: 'drag 终点（其他 action 禁止）；同样为图像连续像素坐标。', properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] },
+        button: { type: 'string', enum: ['left', 'right', 'middle'], description: '鼠标键（只对 click/drag，默认 left）。' },
+        clickCount: { type: 'integer', description: '只对 click，1–2，默认 1。' },
+        modifiers: { type: 'array', items: { type: 'string', enum: ['alt', 'ctrl', 'meta', 'shift'] }, maxItems: 4, uniqueItems: true, description: '修饰键 alt/ctrl/meta/shift（不重复，最多 4 项）。' },
+        steps: { type: 'integer', description: '只对 drag，1–100，默认 20（线性路径，事件数 steps+3）。' },
+        durationMs: { type: 'integer', description: '只对 drag，0–2000，默认 500（均分到移动步之间）。' },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      const runtime = exec.runtime;
+      const provenance = t3Provenance(runtime, exec);
+      const pins = [];
+      const warnings = [];
+      const incomplete = [];
+      const dispatchState = { started: false, eventCount: 0, completed: false, eventSource: 'cdp-input', hitBackendNodeId: null, released: true };
+      let product = null;
+      let request = null;
+      try {
+        request = t3ActRequest(args && typeof args === 'object' ? args : {});
+        const entry = runtime.visionProducts.pin(request.productId);
+        if (!entry) {
+          throw new BrowserError('VISION_SOURCE_NOT_FOUND', 'product 不存在、已淘汰或不属于本工作区', { productId: request.productId });
+        }
+        pins.push(request.productId);
+        product = t3ProductPublic(entry);
+        const stored = runtime.visionProvenance.get(request.productId) || null;
+        const captureFacts = stored && stored.capture ? stored.capture : null;
+        const ageMs = product.capturedAt === null ? null : Date.now() - product.capturedAt;
+        if (!product.actionable || product.mapping === null || captureFacts === null) {
+          throw new BrowserError('VISION_STALE_IMAGE', 'product 不可操作（基线/差异/预处理/标注或缺少采集映射）', {
+            reason: 'not-actionable', actionable: product.actionable, mapping: product.mapping !== null,
+          });
+        }
+        if (ageMs === null || ageMs > T3_ACT_MAX_AGE_MS) {
+          throw new BrowserError('VISION_STALE_IMAGE', 'product 的采集时间超过 30s 或未知', {
+            reason: 'stale-age', ageMs, maxAgeMs: T3_ACT_MAX_AGE_MS,
+          });
+        }
+        // Same runtime / page generation / document epoch.
+        if (!stored || stored.runtimeId !== runtime.runtimeId
+          || stored.pageGeneration !== runtime.pageGeneration()
+          || stored.documentEpoch !== runtime.documentEpoch()) {
+          throw new BrowserError('VISION_STALE_IMAGE', '页面代次或文档代次已变化（截图与现场不是同一页面）', {
+            reason: 'generation-changed',
+            pageGeneration: runtime.pageGeneration(),
+            documentEpoch: runtime.documentEpoch(),
+          });
+        }
+        // §6 step 1: live layout/scroll/viewport/zoom re-check (no auto scroll or zoom).
+        const live = await runtime.layoutMetrics(exec.signal);
+        const mapping = product.mapping;
+        const scrollCaptured = mapping.scrollAtCapture || { x: 0, y: 0 };
+        const viewportCaptured = mapping.viewportAtCapture || { width: 0, height: 0 };
+        const stale = [];
+        if (Math.abs(live.scroll.x - scrollCaptured.x) > 0.01 || Math.abs(live.scroll.y - scrollCaptured.y) > 0.01) stale.push('scroll-changed');
+        if (Math.abs(live.viewport.width - viewportCaptured.width) > 0.01
+          || Math.abs(live.viewport.height - viewportCaptured.height) > 0.01) stale.push('viewport-changed');
+        if (live.visualViewportScale !== 1) stale.push('visual-viewport-scale');
+        if (mapping.visualViewportScale !== null && live.visualViewportScale !== null
+          && Math.abs(mapping.visualViewportScale - live.visualViewportScale) > 1e-9) stale.push('visual-viewport-scale-changed');
+        if (stale.length) {
+          throw new BrowserError('VISION_STALE_IMAGE', '现场 scroll/viewport/zoom 与截图采集时不同（零派发）', {
+            reason: stale[0], differences: stale,
+          });
+        }
+        if (mapping.visualViewportScale === null) incomplete.push('visual-viewport-scale-unknown');
+        // §6 step 2: re-capture the ancestor capture rect/scale and compare decoded RGBA hashes.
+        const recapture = await runtime.capture({ scale: captureFacts.scale, region: captureFacts.region }, exec.signal);
+        const recapturePng = inspectPng(recapture.pngBytes, { checkCrc: true });
+        if (!recapturePng.ok) {
+          throw new BrowserError('INVALID_PNG', '复验截图不是结构完整的 PNG', { phase: 'inspectPng', reason: recapturePng.message });
+        }
+        const recaptureDecoded = await t3Decode(recapture.pngBytes, exec.signal, t3NewBudget());
+        const recaptureHash = t3RgbaSha256(recaptureDecoded.rgba);
+        if (captureFacts.rgbaSha256 && recaptureHash !== captureFacts.rgbaSha256) {
+          throw new BrowserError('VISION_STALE_IMAGE', '重新截图与原始 capture 像素不一致（页面已变化，零派发）', {
+            reason: 'pixels-changed', captureSha256: captureFacts.sha256 ?? null, recaptureSha256: t3Sha256(recapture.pngBytes),
+          });
+        }
+        // §6 step 3: image → document → viewport, then inside-viewport check.
+        const documentPoint = vision.mapImagePointToDocument(mapping, request.point);
+        if (!documentPoint) {
+          throw new BrowserError('VISION_STALE_IMAGE', 'point 无法按 mapping 映射到文档坐标（零派发）', { reason: 'mapping-unavailable' });
+        }
+        const toViewport = (documentCss) => ({ x: documentCss.x - live.scroll.x, y: documentCss.y - live.scroll.y });
+        const viewportPoint = toViewport(documentPoint);
+        let viewportTo = null;
+        let documentTo = null;
+        if (request.action === 'drag') {
+          documentTo = vision.mapImagePointToDocument(mapping, request.to);
+          if (!documentTo) {
+            throw new BrowserError('VISION_STALE_IMAGE', 'to 无法按 mapping 映射到文档坐标（零派发）', { reason: 'mapping-unavailable' });
+          }
+          viewportTo = toViewport(documentTo);
+        }
+        const insideViewport = (p) => p.x >= 0 && p.y >= 0 && p.x <= live.viewport.width && p.y <= live.viewport.height;
+        if (!insideViewport(viewportPoint)) {
+          throw new BrowserError('NOT_INTERACTABLE', '起点不在当前视口内（零派发，不自动滚动）', { reason: 'outside-viewport' });
+        }
+        if (viewportTo && !insideViewport(viewportTo)) {
+          throw new BrowserError('NOT_INTERACTABLE', 'drag 终点不在当前视口内（零派发，不自动滚动）', { reason: 'outside-viewport' });
+        }
+        if (viewportTo) {
+          for (let step = 1; step <= request.steps; step += 1) {
+            const ratio = step / request.steps;
+            const x = viewportPoint.x + (viewportTo.x - viewportPoint.x) * ratio;
+            const y = viewportPoint.y + (viewportTo.y - viewportPoint.y) * ratio;
+            if (!insideViewport({ x, y })) {
+              throw new BrowserError('NOT_INTERACTABLE', 'drag 路径离开当前视口（零派发）', { reason: 'outside-viewport' });
+            }
+          }
+        }
+        // §6 step 4: hit identity + node state + two-frame stability. The hit test runs on the
+        // integer document point; the dispatch below keeps the continuous viewport point.
+        const hitDocument = { x: Math.floor(documentPoint.x), y: Math.floor(documentPoint.y) };
+        const proven = await t3StableHit(runtime, exec.signal, hitDocument);
+        dispatchState.hitBackendNodeId = proven.backendNodeId;
+        // Input 前再次复验 page 代次、document 代次、scroll 与起点命中。
+        if (stored.pageGeneration !== runtime.pageGeneration() || stored.documentEpoch !== runtime.documentEpoch()) {
+          throw new BrowserError('VISION_STALE_IMAGE', '命中校验期间页面代次变化（零派发）', { reason: 'generation-changed' });
+        }
+        const liveAgain = await runtime.layoutMetrics(exec.signal);
+        if (Math.abs(liveAgain.scroll.x - live.scroll.x) > 0.01 || Math.abs(liveAgain.scroll.y - live.scroll.y) > 0.01) {
+          throw new BrowserError('VISION_STALE_IMAGE', '命中校验期间 scroll 变化（零派发）', { reason: 'scroll-changed' });
+        }
+        const hitAgain = await t3HitNode(runtime, exec.signal, hitDocument);
+        if (!hitAgain || hitAgain.backendNodeId !== proven.backendNodeId) {
+          throw new BrowserError('VISION_HIT_MISMATCH', '输入前命中身份变化（零派发）', { reason: 'hit-identity-changed' });
+        }
+        // §6 step 5: real CDP Input dispatch (finally releases the pressed button).
+        const dispatched = await t3DispatchMouse(runtime, exec.signal, request, viewportPoint, viewportTo);
+        dispatchState.started = dispatched.started;
+        dispatchState.eventCount = dispatched.eventCount;
+        dispatchState.completed = dispatched.completed;
+        dispatchState.released = dispatched.released;
+        // §6 step 6: one immediate after-capture of the same rect/scale (no file/base64).
+        let afterProduct = null;
+        try {
+          const after = await runtime.capture({ scale: captureFacts.scale, region: captureFacts.region }, exec.signal);
+          const afterPng = inspectPng(after.pngBytes, { checkCrc: true });
+          if (!afterPng.ok) throw new Error('after PNG invalid');
+          const afterDecoded = await t3Decode(after.pngBytes, exec.signal, t3NewBudget());
+          const afterMapping = t3CaptureMapping(after.capture, afterDecoded.width, afterDecoded.height);
+          afterProduct = t3ProductPublic(t3AddProduct(runtime, {
+            bytes: after.pngBytes, width: afterDecoded.width, height: afterDecoded.height,
+            sha256: t3Sha256(after.pngBytes), rgbaSha256: t3RgbaSha256(afterDecoded.rgba),
+            kind: 'capture', mapping: afterMapping, actionable: true, parentIds: [], operations: [],
+            capturedAt: after.capture.capturedAt,
+            provenance: { ...t3Provenance(runtime, exec), capture: {
+              region: after.capture.region, scale: after.capture.requestedScale,
+              scroll: after.capture.scroll, viewport: after.capture.viewport,
+              visualViewportScale: after.capture.visualViewportScale ?? null,
+              capturedAt: after.capture.capturedAt, sha256: t3Sha256(after.pngBytes),
+              rgbaSha256: t3RgbaSha256(afterDecoded.rgba),
+            } },
+          }));
+        } catch (error) {
+          if (error && error.code === 'ABORTED') throw error;
+          incomplete.push('after-capture-failed');
+        }
+        const metrics = {
+          ageMs,
+          imagePixels: request.point,
+          documentCss: documentPoint,
+          viewportCss: viewportPoint,
+          released: dispatchState.released,
+          hitBackendNodeId: dispatchState.hitBackendNodeId,
+          warnings,
+        };
+        const evidence = t3BoundEvidence(t3Evidence({
+          operation: 'act',
+          provenance,
+          source: [t3ProductSourceEntry(product, 'source')],
+          regions: [],
+          metrics,
+          verdict: { status: 'INCONCLUSIVE', reason: 'dispatch-only' },
+          dispatch: {
+            started: dispatchState.started, eventCount: dispatchState.eventCount,
+            completed: dispatchState.completed, eventSource: 'cdp-input',
+            hitBackendNodeId: dispatchState.hitBackendNodeId,
+          },
+          output: { productId: afterProduct ? afterProduct.productId : null, sha256: null, file: null, delivery: null },
+          incomplete,
+        }));
+        runtime.noteVisionOperation('act', 'INCONCLUSIVE');
+        const pointOut = {
+          imagePixels: request.point,
+          documentCss: documentPoint,
+          viewportCss: viewportPoint,
+        };
+        const toOut = viewportTo ? { imagePixels: request.to, documentCss: documentTo, viewportCss: viewportTo } : null;
+        return {
+          ok: true,
+          dispatched: dispatchState.started && dispatchState.completed,
+          action: request.action,
+          point: pointOut,
+          to: toOut,
+          dispatch: {
+            eventCount: dispatchState.eventCount,
+            completed: dispatchState.completed,
+            eventSource: 'cdp-input',
+            released: dispatchState.released,
+          },
+          beforeProductId: request.productId,
+          afterProduct,
+          evidence: { vision: evidence },
+        };
+      } catch (error) {
+        const motion = error && error.code === 'VISION_HIT_MISMATCH'
+          && error.details && error.details.reason === 'hit-rect-unstable';
+        const evidence = t3Evidence({
+          operation: 'act',
+          provenance,
+          source: product ? [t3ProductSourceEntry(product, 'source')] : [],
+          verdict: { status: 'BLOCKED', reason: 'error' },
+          escalation: motion ? { tier: 'T4', reason: 'target-in-motion' } : null,
+          metrics: {
+            errorCode: error && error.code ? error.code : 'INTERNAL',
+            released: dispatchState.released,
+            warnings,
+          },
+          dispatch: {
+            started: dispatchState.started, eventCount: dispatchState.eventCount,
+            completed: dispatchState.completed, eventSource: dispatchState.started ? 'cdp-input' : null,
+            hitBackendNodeId: dispatchState.hitBackendNodeId,
+          },
+          incomplete: [...incomplete, 'operation-failed'],
+        });
+        runtime.noteVisionOperation('act', null);
+        throw t3ThrowWithEvidence(error, evidence);
+      } finally {
+        t3ReleasePins(runtime, pins);
+      }
+    },
+  });
+
+
+  /* --- browser_vision_baseline -------------------------------------------------------------- */
+
+  /** BaselineMeta projection for evidence (§3.2 `baseline[]`). */
+  function t3BaselineEvidenceEntry(meta) {
+    return {
+      name: meta && typeof meta.name === 'string' ? meta.name : null,
+      revision: meta && Number.isInteger(meta.revision) ? meta.revision : null,
+      headToken: meta && typeof meta.headToken === 'string' ? meta.headToken : null,
+      tombstone: Boolean(meta && meta.tombstone === true),
+    };
+  }
+
+  /** `store.get` returns `{ok,meta,pngBytes}`; tolerate a bare BaselineMeta too. */
+  function t3BaselineGetResult(got) {
+    if (!got || typeof got !== 'object') return { meta: null, pngBytes: null };
+    if (got.meta && typeof got.meta === 'object') return { meta: got.meta, pngBytes: got.pngBytes ?? null };
+    return { meta: got, pngBytes: got.pngBytes ?? null };
+  }
+
+  register({
+    name: 'browser_vision_baseline',
+    description: 'T3 静态视觉基线（受管、不可变 revision + HEAD CAS 提交）：action=list/get/create/update/delete。'
+      + 'root 沿用 P0 持久根规则（DSH_UI_TESTING_CAPTURE_DIR 优先，否则可信 exec cwd），按 scopeHash 隔离；目录 0700、文件 0600，仅 create/update 建目录，list/get/delete 只读。'
+      + 'create 一次调用完成采集+PNG+元数据+HEAD 提交（不覆盖已用名字，含墓碑）；update/delete 必须给 expectedRevision（CAS，不等报 VISION_BASELINE_CONFLICT）；delete 是逻辑墓碑，不删不可变 PNG。'
+      + 'source 禁止指向正在创建/更新的同名 HEAD（避免隐式自更新）。离线 list/get/delete 不启动 Chromium。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['list', 'get', 'create', 'update', 'delete'], description: '基线操作。' },
+        name: { type: 'string', description: '基线名（^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$，大小写敏感）。' },
+        revision: { type: 'integer', description: 'get 可选：读取指定不可变 revision（省略为逻辑 HEAD）。' },
+        source: { type: 'object', description: 'create/update 的源图（Source）；create 必填。' },
+        expectedRevision: { type: 'integer', description: 'update/delete 必填：CAS 期望的当前 HEAD revision。' },
+        caseId: { type: 'string', description: 'create 默认等于 name；update 缺省继承旧值。' },
+        options: { type: 'object', description: 'DiffOptions（create 默认契约默认值；update 缺省继承/逐字段合并）。' },
+        thresholds: { type: 'object', description: 'Thresholds（同上）。' },
+        masks: { type: 'array', description: 'Mask[]（create 默认 []；update 缺省继承，显式 [] 清空）。', maxItems: 64, items: { type: 'object' } },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      const runtime = exec.runtime;
+      const provenance = t3Provenance(runtime, exec);
+      const pins = [];
+      const warnings = [];
+      let request = null;
+      let resolved = null;
+      let meta = null;
+      try {
+        request = t3BaselineRequest(args && typeof args === 'object' ? args : {});
+        const store = t3BaselineStore(runtime, exec);
+        if (request.action === 'list') {
+          const listed = store.list();
+          if (!listed || listed.ok !== true) {
+            throw new BrowserError('VISION_BASELINE_READ_FAILED', '基线列表读取失败', { reason: 'io' });
+          }
+          const baselines = Array.isArray(listed.baselines) ? listed.baselines : [];
+          const evidence = t3BoundEvidence(t3Evidence({
+            operation: 'baseline',
+            provenance,
+            source: [],
+            baseline: baselines.map(t3BaselineEvidenceEntry),
+            metrics: { action: 'list', count: baselines.length, warnings },
+            verdict: { status: 'INCONCLUSIVE', reason: 'baseline-management' },
+            incomplete: [],
+          }));
+          runtime.noteVisionOperation('baseline', 'INCONCLUSIVE');
+          return { ok: true, action: 'list', baselines, provenance, evidence: { vision: evidence } };
+        }
+        if (request.action === 'get') {
+          const got = request.revision === null
+            ? store.get(request.name)
+            : store.get(request.name, request.revision);
+          const result = t3BaselineGetResult(got);
+          if (!result.meta) throw new BrowserError('VISION_BASELINE_READ_FAILED', '基线元数据不可读', { reason: 'corrupt', name: request.name });
+          meta = result.meta;
+          let product = null;
+          if (result.pngBytes) {
+            const bytes = Buffer.isBuffer(result.pngBytes) ? result.pngBytes : Buffer.from(result.pngBytes);
+            const decoded = await t3Decode(bytes, exec.signal, t3NewBudget());
+            product = t3ProductPublic(t3AddProduct(runtime, {
+              bytes, width: decoded.width, height: decoded.height, sha256: t3Sha256(bytes),
+              rgbaSha256: t3RgbaSha256(decoded.rgba), kind: 'baseline', mapping: meta.mapping ?? null,
+              actionable: false, parentIds: [], operations: [], capturedAt: null, provenance,
+            }));
+          }
+          const evidence = t3BoundEvidence(t3Evidence({
+            operation: 'baseline',
+            provenance,
+            source: product ? [t3ProductSourceEntry(product, 'source')] : [],
+            baseline: [t3BaselineEvidenceEntry(meta)],
+            metrics: { action: 'get', revision: meta.revision, tombstone: meta.tombstone === true, warnings },
+            verdict: { status: 'INCONCLUSIVE', reason: 'baseline-management' },
+            output: { productId: product ? product.productId : null, sha256: product ? product.sha256 : null, file: null, delivery: null },
+            incomplete: product ? [] : ['tombstone-revision'],
+          }));
+          runtime.noteVisionOperation('baseline', 'INCONCLUSIVE');
+          return { ok: true, action: 'get', baseline: meta, product, provenance, evidence: { vision: evidence } };
+        }
+        if (request.action === 'delete') {
+          const deleted = store.delete({
+            name: request.name,
+            actionId: exec.meta.actionId,
+            expectedRevision: request.expectedRevision,
+          });
+          meta = deleted && deleted.meta ? deleted.meta : deleted;
+          const evidence = t3BoundEvidence(t3Evidence({
+            operation: 'baseline',
+            provenance,
+            source: [],
+            baseline: [t3BaselineEvidenceEntry(meta)],
+            metrics: { action: 'delete', revision: meta && meta.revision, warnings },
+            verdict: { status: 'INCONCLUSIVE', reason: 'baseline-management' },
+            incomplete: [],
+          }));
+          runtime.noteVisionOperation('baseline', 'INCONCLUSIVE');
+          return { ok: true, action: 'delete', baseline: meta, provenance, evidence: { vision: evidence } };
+        }
+        // create / update: resolve the source (live capture or product/baseline) exactly once.
+        const sameNameHead = request.source.kind === 'baseline'
+          && request.source.name === request.name
+          && (request.source.revision === undefined || request.source.revision === null
+            || (request.action === 'update' && request.source.revision === request.expectedRevision));
+        if (sameNameHead) {
+          throw t3Invalid('source 不能指向正在创建/更新的同名 HEAD（避免隐式自更新）', { path: 'source' });
+        }
+        resolved = await t3ResolveSource(runtime, exec, request.source, 'source', pins, t3NewBudget());
+        const sourceSummary = {
+          productId: resolved.product.productId,
+          sha256: resolved.sha256,
+          capturedAt: resolved.product.capturedAt,
+          runtimeId: provenance.runtimeId,
+          pageGeneration: provenance.pageGeneration,
+          documentEpoch: provenance.documentEpoch,
+        };
+        const payload = {
+          name: request.name,
+          actionId: exec.meta.actionId,
+          pngBytes: resolved.bytes,
+          mapping: resolved.product.mapping ?? null,
+          source: sourceSummary,
+        };
+        if (request.action === 'create') {
+          payload.caseId = request.caseId === null ? request.name : request.caseId;
+          payload.options = request.options ?? { ...T3_DEFAULT_DIFF_OPTIONS };
+          payload.thresholds = request.thresholds ?? { ...T3_DEFAULT_THRESHOLDS };
+          payload.masks = request.masksProvided ? request.masks : [];
+          meta = store.create(payload);
+        } else {
+          payload.expectedRevision = request.expectedRevision;
+          if (request.caseId !== null) payload.caseId = request.caseId;
+          if (request.optionsPartial !== null) payload.options = request.optionsPartial;
+          if (request.thresholdsPartial !== null) payload.thresholds = request.thresholdsPartial;
+          if (request.masksProvided) payload.masks = request.masks;
+          meta = store.update(payload);
+        }
+        if (meta && meta.meta) meta = meta.meta;
+        if (!meta || typeof meta !== 'object') throw new BrowserError('VISION_BASELINE_WRITE_FAILED', '基线写入未返回元数据', { reason: 'io' });
+        const evidence = t3BoundEvidence(t3Evidence({
+          operation: 'baseline',
+          provenance,
+          source: [t3EvidenceSource(resolved, 'source')],
+          baseline: [t3BaselineEvidenceEntry(meta)],
+          metrics: {
+            action: request.action,
+            revision: meta.revision,
+            caseId: meta.caseId ?? null,
+            options: meta.options ?? null,
+            thresholds: meta.thresholds ?? null,
+            maskCount: Array.isArray(meta.masks) ? meta.masks.length : null,
+            warnings,
+          },
+          verdict: { status: 'INCONCLUSIVE', reason: 'baseline-management' },
+          output: { productId: resolved.product.productId, sha256: resolved.sha256, file: null, delivery: null },
+          incomplete: [],
+        }));
+        runtime.noteVisionOperation('baseline', 'INCONCLUSIVE');
+        return { ok: true, action: request.action, baseline: meta, product: resolved.product, provenance, evidence: { vision: evidence } };
+      } catch (error) {
+        const evidence = t3Evidence({
+          operation: 'baseline',
+          provenance,
+          source: resolved ? [t3EvidenceSource(resolved, 'source')] : [],
+          baseline: meta ? [t3BaselineEvidenceEntry(meta)] : [],
+          verdict: { status: 'BLOCKED', reason: 'error' },
+          metrics: { errorCode: error && error.code ? error.code : 'INTERNAL', action: request ? request.action : null, warnings },
+          incomplete: ['operation-failed'],
+        });
+        runtime.noteVisionOperation('baseline', null);
+        throw t3ThrowWithEvidence(error, evidence);
+      } finally {
+        t3ReleasePins(runtime, pins);
+      }
+    },
+  });
+
+
+  /* --- browser_vision_check ---------------------------------------------------------------- */
+
+  const T3_STATUS_ORDER = Object.freeze(['FAIL', 'BLOCKED', 'INCONCLUSIVE', 'WARN', 'PASS']);
+
+  function t3Verdict(statuses) {
+    for (const status of T3_STATUS_ORDER) {
+      if (statuses.includes(status)) return status;
+    }
+    return 'PASS';
+  }
+
+  function t3RectIntersects(a, b) {
+    if (!a || !b) return false;
+    const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+    const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+    return width > 0 && height > 0;
+  }
+
+  /** Fact schema (§7.1): no selector/HTML/free text; every nested object rejects unknown keys. */
+  function t3Fact(value, name, ids) {
+    const fact = t2Object(value, name);
+    t2RejectUnknown(fact, [
+      'id', 'provenance', 'rect', 'containerRect', 'visible', 'hitSamples', 'scroll', 'style',
+      'textMetrics', 'presence', 'allowOverflow', 'allowTruncation',
+    ], name);
+    const id = t2StringField(fact.id, { name: `${name}.id`, maxBytes: 64 });
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(id)) throw t3Invalid(`${name}.id 必须是合法 Name`, { path: `${name}.id` });
+    if (ids.has(id)) throw t3Invalid(`${name}.id 重复`, { path: `${name}.id` });
+    ids.add(id);
+    const provenance = t2Object(fact.provenance, `${name}.provenance`);
+    t2RejectUnknown(provenance, ['sourceTool', 'sourceActionId', 'observedAt', 'scopeId', 'runtimeId', 'pageGeneration', 'documentEpoch'], `${name}.provenance`);
+    const sourceTool = t2StringField(provenance.sourceTool, { name: `${name}.provenance.sourceTool`, maxBytes: 64 });
+    if (!T3_FACT_SOURCES.includes(sourceTool)) {
+      throw t3Invalid(`${name}.provenance.sourceTool 只能是 ${T3_FACT_SOURCES.join('/')}`, { path: `${name}.provenance.sourceTool` });
+    }
+    const out = {
+      id,
+      provenance: {
+        sourceTool,
+        sourceActionId: t2StringField(provenance.sourceActionId, { name: `${name}.provenance.sourceActionId`, maxBytes: 128 }),
+        observedAt: t2NumberField(provenance.observedAt, undefined, 0, Number.MAX_SAFE_INTEGER, `${name}.provenance.observedAt`),
+        scopeId: t2StringField(provenance.scopeId, { name: `${name}.provenance.scopeId`, maxBytes: 128 }),
+        runtimeId: t2StringField(provenance.runtimeId, { name: `${name}.provenance.runtimeId`, maxBytes: 128 }),
+        pageGeneration: t2IntegerField(provenance.pageGeneration, undefined, 1, Number.MAX_SAFE_INTEGER, `${name}.provenance.pageGeneration`),
+        documentEpoch: t2IntegerField(provenance.documentEpoch, undefined, 0, Number.MAX_SAFE_INTEGER, `${name}.provenance.documentEpoch`),
+      },
+    };
+    if (fact.rect !== undefined) out.rect = vision.validateCssRect(fact.rect, `${name}.rect`);
+    if (fact.containerRect !== undefined) out.containerRect = vision.validateCssRect(fact.containerRect, `${name}.containerRect`);
+    if (fact.visible !== undefined) out.visible = t2BooleanField(fact.visible, undefined, `${name}.visible`);
+    if (fact.hitSamples !== undefined) {
+      if (!Array.isArray(fact.hitSamples) || fact.hitSamples.length < 1 || fact.hitSamples.length > 25) {
+        throw t3Invalid(`${name}.hitSamples 必须是 1–25 项数组`, { path: `${name}.hitSamples` });
+      }
+      out.hitSamples = fact.hitSamples.map((sample, index) => {
+        const item = t2Object(sample, `${name}.hitSamples[${index}]`);
+        t2RejectUnknown(item, ['point', 'covered'], `${name}.hitSamples[${index}]`);
+        return {
+          point: vision.validatePoint(item.point, `${name}.hitSamples[${index}].point`),
+          covered: t2BooleanField(item.covered, undefined, `${name}.hitSamples[${index}].covered`),
+        };
+      });
+    }
+    if (fact.scroll !== undefined) {
+      const scroll = t2Object(fact.scroll, `${name}.scroll`);
+      t2RejectUnknown(scroll, ['scrollWidth', 'scrollHeight', 'clientWidth', 'clientHeight'], `${name}.scroll`);
+      out.scroll = {
+        scrollWidth: t2NumberField(scroll.scrollWidth, undefined, 0, Number.MAX_SAFE_INTEGER, `${name}.scroll.scrollWidth`),
+        scrollHeight: t2NumberField(scroll.scrollHeight, undefined, 0, Number.MAX_SAFE_INTEGER, `${name}.scroll.scrollHeight`),
+        clientWidth: t2NumberField(scroll.clientWidth, undefined, 0, Number.MAX_SAFE_INTEGER, `${name}.scroll.clientWidth`),
+        clientHeight: t2NumberField(scroll.clientHeight, undefined, 0, Number.MAX_SAFE_INTEGER, `${name}.scroll.clientHeight`),
+      };
+    }
+    if (fact.style !== undefined) {
+      const style = t2Object(fact.style, `${name}.style`);
+      const allowed = ['overflowX', 'overflowY', 'whiteSpace', 'textOverflow', 'lineClamp', 'color', 'backgroundColor'];
+      t2RejectUnknown(style, allowed, `${name}.style`);
+      if (Object.keys(style).length === 0) throw t3Invalid(`${name}.style 不能是空对象`, { path: `${name}.style` });
+      const outStyle = {};
+      if (style.overflowX !== undefined) {
+        if (!T3_OVERFLOW_VALUES.includes(style.overflowX)) throw t3Invalid(`${name}.style.overflowX 非法`, { path: `${name}.style.overflowX` });
+        outStyle.overflowX = style.overflowX;
+      }
+      if (style.overflowY !== undefined) {
+        if (!T3_OVERFLOW_VALUES.includes(style.overflowY)) throw t3Invalid(`${name}.style.overflowY 非法`, { path: `${name}.style.overflowY` });
+        outStyle.overflowY = style.overflowY;
+      }
+      if (style.whiteSpace !== undefined) {
+        if (!T3_WHITE_SPACE_VALUES.includes(style.whiteSpace)) throw t3Invalid(`${name}.style.whiteSpace 非法`, { path: `${name}.style.whiteSpace` });
+        outStyle.whiteSpace = style.whiteSpace;
+      }
+      if (style.textOverflow !== undefined) {
+        if (!T3_TEXT_OVERFLOW_VALUES.includes(style.textOverflow)) throw t3Invalid(`${name}.style.textOverflow 非法`, { path: `${name}.style.textOverflow` });
+        outStyle.textOverflow = style.textOverflow;
+      }
+      if (style.lineClamp !== undefined) outStyle.lineClamp = t2IntegerField(style.lineClamp, undefined, 0, Number.MAX_SAFE_INTEGER, `${name}.style.lineClamp`);
+      if (style.color !== undefined) outStyle.color = t3Rgb(style.color, `${name}.style.color`);
+      if (style.backgroundColor !== undefined) outStyle.backgroundColor = t3Rgba(style.backgroundColor, `${name}.style.backgroundColor`);
+      out.style = outStyle;
+    }
+    if (fact.textMetrics !== undefined) {
+      const metrics = t2Object(fact.textMetrics, `${name}.textMetrics`);
+      t2RejectUnknown(metrics, ['contentWidth', 'contentHeight', 'availableWidth', 'availableHeight'], `${name}.textMetrics`);
+      out.textMetrics = {
+        contentWidth: t2NumberField(metrics.contentWidth, undefined, 0, Number.MAX_SAFE_INTEGER, `${name}.textMetrics.contentWidth`),
+        contentHeight: t2NumberField(metrics.contentHeight, undefined, 0, Number.MAX_SAFE_INTEGER, `${name}.textMetrics.contentHeight`),
+        availableWidth: t2NumberField(metrics.availableWidth, undefined, 0, Number.MAX_SAFE_INTEGER, `${name}.textMetrics.availableWidth`),
+        availableHeight: t2NumberField(metrics.availableHeight, undefined, 0, Number.MAX_SAFE_INTEGER, `${name}.textMetrics.availableHeight`),
+      };
+    }
+    if (fact.presence !== undefined) {
+      const presence = t2Object(fact.presence, `${name}.presence`);
+      t2RejectUnknown(presence, ['expected', 'exists', 'searchComplete'], `${name}.presence`);
+      out.presence = {
+        expected: t2BooleanField(presence.expected, undefined, `${name}.presence.expected`),
+        exists: t2BooleanField(presence.exists, undefined, `${name}.presence.exists`),
+        searchComplete: t2BooleanField(presence.searchComplete, undefined, `${name}.presence.searchComplete`),
+      };
+    }
+    if (fact.allowOverflow !== undefined) out.allowOverflow = t2BooleanField(fact.allowOverflow, false, `${name}.allowOverflow`);
+    if (fact.allowTruncation !== undefined) out.allowTruncation = t2BooleanField(fact.allowTruncation, false, `${name}.allowTruncation`);
+    return out;
+  }
+
+  /** `browser_vision_check` root arguments: the whole batch is validated before any case runs. */
+  function t3CheckRequest(input) {
+    t2RejectUnknown(input, ['cases'], 'browser_vision_check');
+    if (!Array.isArray(input.cases)) throw t3Invalid('cases 必须是数组', { path: 'cases' });
+    if (input.cases.length < 1 || input.cases.length > T3_MAX_CASES) {
+      throw t3Invalid(`cases 必须是 1–${T3_MAX_CASES} 项`, { path: 'cases', count: input.cases.length });
+    }
+    const caseIds = new Set();
+    return input.cases.map((raw, index) => {
+      const name = `cases[${index}]`;
+      const item = t2Object(raw, name);
+      t2RejectUnknown(item, ['id', 'source', 'assertions', 'facts'], name);
+      const id = t2StringField(item.id, { name: `${name}.id`, maxBytes: 64 });
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(id)) throw t3Invalid(`${name}.id 必须是合法 Name`, { path: `${name}.id` });
+      if (caseIds.has(id)) throw t3Invalid(`cases[].id 重复：${id}`, { path: `${name}.id` });
+      caseIds.add(id);
+      if (item.source === undefined || item.source === null) throw t3Invalid(`${name}.source 必填`, { path: `${name}.source` });
+      if (!Array.isArray(item.assertions)) throw t3Invalid(`${name}.assertions 必须是数组`, { path: `${name}.assertions` });
+      if (item.assertions.length < 1 || item.assertions.length > T3_MAX_ASSERTIONS) {
+        throw t3Invalid(`${name}.assertions 必须是 1–${T3_MAX_ASSERTIONS} 项`, { path: `${name}.assertions`, count: item.assertions.length });
+      }
+      const assertionIds = new Set();
+      const assertions = item.assertions.map((assertion, assertionIndex) => {
+        const parsed = t3Assertion(assertion, `${name}.assertions[${assertionIndex}]`);
+        if (assertionIds.has(parsed.id)) throw t3Invalid(`${name}.assertions[].id 重复：${parsed.id}`, { path: `${name}.assertions[${assertionIndex}].id` });
+        assertionIds.add(parsed.id);
+        return parsed;
+      });
+      const rawFacts = item.facts === undefined ? [] : item.facts;
+      if (!Array.isArray(rawFacts)) throw t3Invalid(`${name}.facts 必须是数组`, { path: `${name}.facts` });
+      if (rawFacts.length > T3_MAX_FACTS) throw t3Invalid(`${name}.facts 最多 ${T3_MAX_FACTS} 项`, { path: `${name}.facts`, count: rawFacts.length });
+      const factIds = new Set();
+      const facts = rawFacts.map((fact, factIndex) => t3Fact(fact, `${name}.facts[${factIndex}]`, factIds));
+      return {
+        id,
+        source: vision.validateSource(item.source, `${name}.source`),
+        assertions,
+        facts,
+      };
+    });
+  }
+
+  function t3AssertionResult(assertion, status, reason, metrics, extra = {}) {
+    return {
+      id: assertion.id,
+      type: assertion.type,
+      severity: assertion.severity,
+      status,
+      reason,
+      metrics: metrics || {},
+      regions: Array.isArray(extra.regions) ? extra.regions : [],
+      factIds: Array.isArray(extra.factIds) ? extra.factIds : [],
+      diffProductId: extra.diffProductId ?? null,
+      errorCode: extra.errorCode ?? null,
+    };
+  }
+
+  function t3BlockedAssertion(assertion, error) {
+    const code = error && error.code ? error.code : 'INTERNAL';
+    return t3AssertionResult(assertion, 'BLOCKED', 'execution-error', {
+      errorCode: code,
+    }, { errorCode: code });
+  }
+
+  /** Fact fusion gate (§7.1): scope/runtime/page/document/time must all match the case image. */
+  function t3FactFor(runtime, resolved, assertion, factsById) {
+    if (!assertion.factId) return { fact: null, reason: null };
+    const fact = factsById.get(assertion.factId);
+    if (!fact) return { fact: null, reason: 'fact-not-provided' };
+    const prov = fact.provenance;
+    const scopeId = runtime.scope ? runtime.scope.id : null;
+    if (prov.scopeId !== scopeId || prov.runtimeId !== runtime.runtimeId
+      || prov.pageGeneration !== runtime.pageGeneration()
+      || prov.documentEpoch !== runtime.documentEpoch()) {
+      return { fact: null, reason: 'fact-stale-or-mismatch' };
+    }
+    const capturedAt = resolved.product ? resolved.product.capturedAt : null;
+    if (!Number.isFinite(capturedAt) || !Number.isFinite(prov.observedAt) || Math.abs(prov.observedAt - capturedAt) > 1000) {
+      return { fact: null, reason: 'fact-stale-or-mismatch' };
+    }
+    return { fact, reason: null };
+  }
+
+  /** ROI in document CSS (needed to intersect an external fact rect with the image region). */
+  function t3RegionDocumentCss(resolved, region) {
+    const mapping = resolved.product ? resolved.product.mapping : null;
+    if (!mapping) return null;
+    return vision.mapImageRectToDocument(mapping, region);
+  }
+
+  function t3RegionInsideRoi(region, image) {
+    return region.x >= 0 && region.y >= 0
+      && region.x + region.width <= image.width && region.y + region.height <= image.height;
+  }
+
+  /** Pixel-only layout/overflow signal: non-background components touching the ROI edges. */
+  async function t3EdgeTouchSignal(image, roi, budget, signal) {
+    const found = await vision.findInImageAsync(image, {
+      method: 'components', background: [255, 255, 255], tolerance: 16, minArea: 1, maxResults: 100,
+    }, { roi, ...t3AlgoOpts(budget, signal) }, t3AlgoOpts(budget, signal));
+    const candidates = Array.isArray(found && found.candidates) ? found.candidates : [];
+    let edgeTouchCount = 0;
+    for (const candidate of candidates) {
+      const box = candidate.region;
+      if (!box) continue;
+      if (box.x <= roi.x || box.y <= roi.y
+        || box.x + box.width >= roi.x + roi.width || box.y + box.height >= roi.y + roi.height) {
+        edgeTouchCount += 1;
+      }
+    }
+    return { edgeTouchCount, components: candidates.length };
+  }
+
+  /** Pixel-only occlusion signal: 4×4 grid, dominant quantized bucket ≥0.95 covering ≥ half ROI. */
+  function t3OcclusionSignal(image, roi) {
+    let coveredPixels = 0;
+    let maxDominantFraction = null;
+    for (let gy = 0; gy < 4; gy += 1) {
+      for (let gx = 0; gx < 4; gx += 1) {
+        const x0 = roi.x + Math.floor(gx * roi.width / 4);
+        const x1 = roi.x + Math.floor((gx + 1) * roi.width / 4);
+        const y0 = roi.y + Math.floor(gy * roi.height / 4);
+        const y1 = roi.y + Math.floor((gy + 1) * roi.height / 4);
+        if (x1 <= x0 || y1 <= y0) continue;
+        const buckets = new Map();
+        let nonEmpty = 0;
+        for (let y = y0; y < y1; y += 1) {
+          for (let x = x0; x < x1; x += 1) {
+            const offset = (y * image.width + x) * 4;
+            if (image.rgba[offset + 3] === 0) continue;
+            nonEmpty += 1;
+            const key = ((image.rgba[offset] >> 4) << 8) | ((image.rgba[offset + 1] >> 4) << 4) | (image.rgba[offset + 2] >> 4);
+            buckets.set(key, (buckets.get(key) || 0) + 1);
+          }
+        }
+        if (nonEmpty === 0) continue;
+        let dominant = 0;
+        for (const count of buckets.values()) dominant = Math.max(dominant, count);
+        const fraction = dominant / nonEmpty;
+        maxDominantFraction = maxDominantFraction === null ? fraction : Math.max(maxDominantFraction, fraction);
+        if (fraction >= 0.95) coveredPixels += (x1 - x0) * (y1 - y0);
+      }
+    }
+    const roiPixels = roi.width * roi.height;
+    return {
+      signal: roiPixels > 0 && coveredPixels >= roiPixels / 2 && maxDominantFraction !== null && maxDominantFraction >= 0.95,
+      dominantFraction: maxDominantFraction,
+      coveredPixels,
+      roiPixels,
+    };
+  }
+
+  /** Pixel-only truncation signal: Sobel edge pixels inside the ROI right/bottom 1px band. */
+  async function t3TruncationSignal(image, roi, budget, signal) {
+    const edges = await vision.edgeMaskAsync(image, 32, t3AlgoOpts(budget, signal));
+    let boundaryEdgePixels = 0;
+    const xEdge = roi.x + roi.width - 1;
+    const yEdge = roi.y + roi.height - 1;
+    for (let y = roi.y; y < roi.y + roi.height; y += 1) {
+      if (xEdge >= roi.x && edges[y * image.width + xEdge]) boundaryEdgePixels += 1;
+    }
+    for (let x = roi.x; x < roi.x + roi.width; x += 1) {
+      if (yEdge >= roi.y && edges[yEdge * image.width + x]) boundaryEdgePixels += 1;
+    }
+    return { boundaryEdgePixels, signal: boundaryEdgePixels > 0 };
+  }
+
+  /** Pixel-only color signal: fraction of opaque ROI pixels matching the expected RGB. */
+  function t3ColorSignal(image, roi, expectedColor, tolerance, minFraction) {
+    let sampledPixels = 0;
+    let matchingPixels = 0;
+    for (let y = roi.y; y < roi.y + roi.height; y += 1) {
+      for (let x = roi.x; x < roi.x + roi.width; x += 1) {
+        const offset = (y * image.width + x) * 4;
+        if (image.rgba[offset + 3] === 0) continue;
+        sampledPixels += 1;
+        const delta = Math.max(
+          Math.abs(image.rgba[offset] - expectedColor[0]),
+          Math.abs(image.rgba[offset + 1] - expectedColor[1]),
+          Math.abs(image.rgba[offset + 2] - expectedColor[2]),
+        );
+        if (delta <= tolerance) matchingPixels += 1;
+      }
+    }
+    const matchingFraction = sampledPixels === 0 ? 0 : matchingPixels / sampledPixels;
+    return {
+      sampledPixels,
+      matchingPixels,
+      matchingFraction,
+      signal: sampledPixels === 0 ? null : matchingFraction < minFraction,
+    };
+  }
+
+  /** Pixel-only missing signal: explicit query candidate count inside the ROI. */
+  async function t3MissingSignal(runtime, exec, image, roi, assertion, pins, budget, warnings) {
+    const templateResolved = await t3TemplateImage(runtime, exec, assertion.query, pins, budget);
+    const found = await vision.findInImageAsync(image, assertion.query, {
+      roi, templateImage: templateResolved ? templateResolved.image : null,
+      ...t3AlgoOpts(budget, exec.signal),
+    }, t3AlgoOpts(budget, exec.signal));
+    const candidates = Array.isArray(found && found.candidates) ? found.candidates : [];
+    return {
+      candidateCount: Number.isInteger(found && found.totalCandidates) ? found.totalCandidates : candidates.length,
+      candidates,
+      signal: candidates.length < assertion.minCount,
+    };
+  }
+
+  function t3RgbDelta(a, b) {
+    return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
+  }
+
+  function t3StyleBackground(fact) {
+    const background = fact && fact.style ? fact.style.backgroundColor : null;
+    if (!background) return null;
+    if (Array.isArray(background)) {
+      if (background.length !== 4) return null;
+      return { rgba: background, alpha: background[3] };
+    }
+    if (typeof background === 'object' && background && background.a !== undefined) {
+      return { rgba: [background.r, background.g, background.b, background.a], alpha: background.a };
+    }
+    return null;
+  }
+
+  /**
+   * One defect assertion (§7.2): pixel signal + optional external fact, with the required/advisory
+   * matrix. `metrics` only carries the bounded numeric/boolean fields named by the contract.
+   */
+  async function t3DefectAssertion(runtime, exec, testCase, assertion, resolved, factsById, pins, budget, warnings) {
+    const image = resolved.image;
+    const region = assertion.region;
+    if (!t3RegionInsideRoi(region, image)) {
+      throw t3Invalid(`${assertion.type} region 超出图像边界`, { path: `assertions[${assertion.id}].region` });
+    }
+    const severity = assertion.severity;
+    const required = severity === 'required';
+    const factMatch = t3FactFor(runtime, resolved, assertion, factsById);
+    const fact = factMatch.fact;
+    const factIds = fact ? [fact.id] : [];
+    const metricsBase = { pixelSignal: null, factsVerified: false, fusion: 'none', warnings };
+    // Every defect assertion cites its ROI as evidence (image px + document CSS when mapped).
+    const roiRegion = t3EvidenceRegion({
+      id: assertion.id,
+      role: 'roi',
+      imagePixels: region,
+      beforeDocumentCss: null,
+      afterDocumentCss: t3RegionDocumentCss(resolved, region),
+      area: region.width * region.height,
+    });
+    const degraded = (reason, extra = {}) => t3AssertionResult(assertion, 'INCONCLUSIVE', reason, {
+      ...metricsBase, ...extra,
+    }, { factIds, regions: [roiRegion] });
+    // Required defect rules need a live/capture lineage source with a usable mapping (§7.1).
+    if (required) {
+      if (!resolved.product || resolved.product.capturedAt === null || resolved.product.mapping === null) {
+        return degraded('source-not-live');
+      }
+    }
+    if (assertion.factId && factMatch.reason) {
+      const pixelSignal = await t3PixelSignal(runtime, exec, assertion, image, region, pins, budget, warnings);
+      return t3AssertionResult(assertion, required ? 'INCONCLUSIVE' : (pixelSignal.signal === true ? 'WARN' : 'INCONCLUSIVE'),
+        factMatch.reason, { ...metricsBase, ...pixelSignal.metrics, pixelSignal: pixelSignal.signal, fusion: 'pixels-only' },
+        { factIds: [] });
+    }
+    const pixelSignal = await t3PixelSignal(runtime, exec, assertion, image, region, pins, budget, warnings);
+    const pixelMetrics = { ...pixelSignal.metrics, pixelSignal: pixelSignal.signal };
+    if (assertion.type === 'layout') {
+      if (!fact || !fact.rect || !assertion.expectedRect) {
+        if (!required) return t3AssertionResult(assertion, pixelSignal.signal === true ? 'WARN' : 'INCONCLUSIVE', 'insufficient-facts', { ...metricsBase, ...pixelMetrics, fusion: 'pixels-only' }, { factIds, regions: [roiRegion] });
+        return degraded('insufficient-facts', pixelMetrics);
+      }
+      const regionCss = t3RegionDocumentCss(resolved, region);
+      if (!regionCss || !t3RectIntersects(fact.rect, regionCss)) return degraded('fact-region-mismatch', pixelMetrics);
+      const maxDeltaCss = Math.max(
+        Math.abs(fact.rect.x - assertion.expectedRect.x),
+        Math.abs(fact.rect.y - assertion.expectedRect.y),
+        Math.abs(fact.rect.width - assertion.expectedRect.width),
+        Math.abs(fact.rect.height - assertion.expectedRect.height),
+      );
+      const failed = maxDeltaCss > assertion.toleranceCss;
+      return t3AssertionResult(assertion, failed ? (required ? 'FAIL' : 'WARN') : 'PASS', 'layout-delta', {
+        ...metricsBase, ...pixelMetrics, fusion: 'external-facts',
+        maxDeltaCss, toleranceCss: assertion.toleranceCss, edgeTouchCount: pixelSignal.metrics.edgeTouchCount ?? null,
+      }, { factIds, regions: [roiRegion] });
+    }
+    if (assertion.type === 'occlusion') {
+      if (!fact || !fact.rect || fact.visible === undefined) {
+        if (!required) return t3AssertionResult(assertion, pixelSignal.signal === true ? 'WARN' : 'INCONCLUSIVE', 'insufficient-facts', { ...metricsBase, ...pixelMetrics, fusion: 'pixels-only' }, { factIds, regions: [roiRegion] });
+        return degraded('insufficient-facts', pixelMetrics);
+      }
+      if (fact.visible === false) return degraded('invisible', pixelMetrics);
+      const samples = Array.isArray(fact.hitSamples) ? fact.hitSamples : [];
+      const center = { x: fact.rect.x + fact.rect.width / 2, y: fact.rect.y + fact.rect.height / 2 };
+      const unique = new Map();
+      let hasCenter = false;
+      const quadrants = new Set();
+      for (const sample of samples) {
+        const key = sample.point.x + ':' + sample.point.y;
+        if (unique.has(key)) continue;
+        unique.set(key, sample);
+        if (sample.point.x < fact.rect.x || sample.point.y < fact.rect.y
+          || sample.point.x > fact.rect.x + fact.rect.width || sample.point.y > fact.rect.y + fact.rect.height) continue;
+        if (sample.point.x === center.x && sample.point.y === center.y) hasCenter = true;
+        quadrants.add((sample.point.x < center.x ? 'l' : 'r') + (sample.point.y < center.y ? 't' : 'b'));
+      }
+      if (unique.size < 5 || !hasCenter || quadrants.size < 4) {
+        if (!required) return t3AssertionResult(assertion, pixelSignal.signal === true ? 'WARN' : 'INCONCLUSIVE', 'insufficient-samples', { ...metricsBase, ...pixelMetrics, fusion: 'pixels-only' }, { factIds, regions: [roiRegion] });
+        return degraded('insufficient-samples', pixelMetrics);
+      }
+      let coveredSamples = 0;
+      for (const sample of unique.values()) if (sample.covered === true) coveredSamples += 1;
+      const coveredRatio = coveredSamples / unique.size;
+      const failed = coveredRatio > assertion.maxCoveredRatio;
+      return t3AssertionResult(assertion, failed ? (required ? 'FAIL' : 'WARN') : 'PASS', 'occlusion-ratio', {
+        ...metricsBase, ...pixelMetrics, fusion: 'external-facts',
+        samples: unique.size, coveredSamples, coveredRatio,
+        maxCoveredRatio: assertion.maxCoveredRatio,
+        dominantFraction: pixelSignal.metrics.dominantFraction ?? null,
+      }, { factIds, regions: [roiRegion] });
+    }
+    if (assertion.type === 'overflow') {
+      if (!fact || !fact.scroll || !fact.style || !fact.style.overflowX || !fact.style.overflowY) {
+        if (!required) return t3AssertionResult(assertion, pixelSignal.signal === true ? 'WARN' : 'INCONCLUSIVE', 'insufficient-facts', { ...metricsBase, ...pixelMetrics, fusion: 'pixels-only' }, { factIds, regions: [roiRegion] });
+        return degraded('insufficient-facts', pixelMetrics);
+      }
+      const regionCss = t3RegionDocumentCss(resolved, region);
+      if (!regionCss || !t3RectIntersects(fact.rect ?? regionCss, regionCss)) return degraded('fact-region-mismatch', pixelMetrics);
+      const overflowXCss = Math.max(0, fact.scroll.scrollWidth - fact.scroll.clientWidth);
+      const overflowYCss = Math.max(0, fact.scroll.scrollHeight - fact.scroll.clientHeight);
+      const allowOverflow = fact.allowOverflow === true;
+      const failX = overflowXCss > assertion.toleranceCss && fact.style.overflowX === 'visible' && !allowOverflow;
+      const failY = overflowYCss > assertion.toleranceCss && fact.style.overflowY === 'visible' && !allowOverflow;
+      const failed = failX || failY;
+      return t3AssertionResult(assertion, failed ? (required ? 'FAIL' : 'WARN') : 'PASS', 'overflow-scroll', {
+        ...metricsBase, ...pixelMetrics, fusion: 'external-facts',
+        overflowXCss, overflowYCss, toleranceCss: assertion.toleranceCss, allowed: allowOverflow,
+        edgeTouchCount: pixelSignal.metrics.edgeTouchCount ?? null,
+      }, { factIds, regions: [roiRegion] });
+    }
+    if (assertion.type === 'truncation') {
+      if (!fact || !fact.textMetrics || !fact.style) {
+        if (!required) return t3AssertionResult(assertion, pixelSignal.signal === true ? 'WARN' : 'INCONCLUSIVE', 'insufficient-facts', { ...metricsBase, ...pixelMetrics, fusion: 'pixels-only' }, { factIds, regions: [roiRegion] });
+        return degraded('insufficient-facts', pixelMetrics);
+      }
+      const regionCss = t3RegionDocumentCss(resolved, region);
+      if (!regionCss || !t3RectIntersects(fact.rect ?? regionCss, regionCss)) return degraded('fact-region-mismatch', pixelMetrics);
+      const excessWidthCss = Math.max(0, fact.textMetrics.contentWidth - fact.textMetrics.availableWidth);
+      const excessHeightCss = Math.max(0, fact.textMetrics.contentHeight - fact.textMetrics.availableHeight);
+      const clipX = ['hidden', 'clip'].includes(fact.style.overflowX);
+      const clipY = ['hidden', 'clip'].includes(fact.style.overflowY);
+      const lineClamp = Number.isInteger(fact.style.lineClamp) ? fact.style.lineClamp : 0;
+      const clipped = (excessWidthCss > assertion.toleranceCss && clipX)
+        || (excessHeightCss > assertion.toleranceCss && clipY)
+        || (lineClamp > 0 && excessHeightCss > assertion.toleranceCss);
+      const allowTruncation = fact.allowTruncation === true;
+      return t3AssertionResult(assertion, clipped && !allowTruncation ? (required ? 'FAIL' : 'WARN') : 'PASS', 'truncation-clip', {
+        ...metricsBase, ...pixelMetrics, fusion: 'external-facts',
+        excessWidthCss, excessHeightCss, clipped, allowed: allowTruncation,
+        toleranceCss: assertion.toleranceCss,
+        boundaryEdgePixels: pixelSignal.metrics.boundaryEdgePixels ?? null,
+      }, { factIds, regions: [roiRegion] });
+    }
+    if (assertion.type === 'color') {
+      const background = t3StyleBackground(fact);
+      const pixelMatch = pixelSignal.signal !== null && pixelSignal.signal === false;
+      if (!fact || !fact.rect || !background) {
+        if (!required) return t3AssertionResult(assertion, pixelSignal.signal === true ? 'WARN' : 'INCONCLUSIVE', 'insufficient-facts', { ...metricsBase, ...pixelMetrics, fusion: 'pixels-only' }, { factIds, regions: [roiRegion] });
+        return degraded('insufficient-facts', pixelMetrics);
+      }
+      const regionCss = t3RegionDocumentCss(resolved, region);
+      if (!regionCss) return degraded('mapping-unavailable', pixelMetrics);
+      const inside = regionCss.x >= fact.rect.x && regionCss.y >= fact.rect.y
+        && regionCss.x + regionCss.width <= fact.rect.x + fact.rect.width
+        && regionCss.y + regionCss.height <= fact.rect.y + fact.rect.height;
+      if (!inside) return degraded('fact-region-mismatch', pixelMetrics);
+      if (background.alpha !== 255) return degraded('transparent-background', pixelMetrics);
+      const styleMatches = t3RgbDelta(background.rgba, assertion.expectedColor) <= assertion.tolerance;
+      let status;
+      let reason;
+      if (pixelMatch && styleMatches) { status = 'PASS'; reason = 'color-consistent'; }
+      else if (!pixelMatch && !styleMatches) { status = required ? 'FAIL' : 'WARN'; reason = 'color-mismatch'; }
+      else { status = 'INCONCLUSIVE'; reason = 'conflicting-signals'; }
+      return t3AssertionResult(assertion, status, reason, {
+        ...metricsBase, ...pixelMetrics, fusion: 'external-facts',
+        sampledPixels: pixelSignal.metrics.sampledPixels,
+        matchingPixels: pixelSignal.metrics.matchingPixels,
+        matchingFraction: pixelSignal.metrics.matchingFraction,
+        minFraction: assertion.minFraction,
+        tolerance: assertion.tolerance,
+        styleMatches,
+      }, { factIds, regions: [roiRegion] });
+    }
+    // missing
+    const presence = fact ? fact.presence : null;
+    if (!presence || presence.expected !== true || presence.searchComplete !== true) {
+      if (!required) return t3AssertionResult(assertion, pixelSignal.signal === true ? 'WARN' : 'INCONCLUSIVE', 'insufficient-facts', { ...metricsBase, ...pixelMetrics, fusion: 'pixels-only' }, { factIds, regions: [roiRegion] });
+      return degraded('insufficient-facts', pixelMetrics);
+    }
+    const candidateCount = pixelSignal.metrics.candidateCount ?? 0;
+    const failed = candidateCount < assertion.minCount && presence.exists === false;
+    const passed = candidateCount >= assertion.minCount && presence.exists === true;
+    let status;
+    let reason;
+    if (failed) { status = required ? 'FAIL' : 'WARN'; reason = 'component-missing'; }
+    else if (passed) { status = 'PASS'; reason = 'component-present'; }
+    else { status = 'INCONCLUSIVE'; reason = 'conflicting-presence'; }
+    return t3AssertionResult(assertion, status, reason, {
+      ...metricsBase, ...pixelMetrics, fusion: 'external-facts',
+      candidateCount, minCount: assertion.minCount,
+      expected: presence.expected, exists: presence.exists, searchComplete: presence.searchComplete,
+    }, { factIds, regions: [roiRegion] });
+  }
+
+  /** Pixel signal for one defect type (advisory-only evidence; never a required conclusion). */
+  async function t3PixelSignal(runtime, exec, assertion, image, region, pins, budget, warnings) {
+    if (assertion.type === 'layout' || assertion.type === 'overflow') {
+      const signal = await t3EdgeTouchSignal(image, region, budget, exec.signal);
+      return { signal: signal.edgeTouchCount > 0, metrics: { edgeTouchCount: signal.edgeTouchCount, components: signal.components } };
+    }
+    if (assertion.type === 'occlusion') {
+      const signal = t3OcclusionSignal(image, region);
+      return {
+        signal: signal.signal,
+        metrics: {
+          dominantFraction: signal.dominantFraction,
+          coveredPixels: signal.coveredPixels,
+          roiPixels: signal.roiPixels,
+        },
+      };
+    }
+    if (assertion.type === 'truncation') {
+      const signal = await t3TruncationSignal(image, region, budget, exec.signal);
+      return { signal: signal.signal, metrics: { boundaryEdgePixels: signal.boundaryEdgePixels } };
+    }
+    if (assertion.type === 'color') {
+      const signal = t3ColorSignal(image, region, assertion.expectedColor, assertion.tolerance, assertion.minFraction);
+      return {
+        signal: signal.signal,
+        metrics: {
+          sampledPixels: signal.sampledPixels,
+          matchingPixels: signal.matchingPixels,
+          matchingFraction: signal.matchingFraction,
+        },
+      };
+    }
+    const signal = await t3MissingSignal(runtime, exec, image, region, assertion, pins, budget, warnings);
+    return { signal: signal.signal, metrics: { candidateCount: signal.candidateCount } };
+  }
+
+  /** Regression assertion (§2.7/§8.3): baseline is the before image, case source is after. */
+  async function t3RegressionAssertion(runtime, exec, assertion, resolved, pins, budget, warnings) {
+    const store = t3BaselineStore(runtime, exec);
+    let got;
+    try {
+      got = assertion.revision === undefined ? store.get(assertion.baseline) : store.get(assertion.baseline, assertion.revision);
+    } catch (error) {
+      if (error instanceof BrowserError && error.code === 'VISION_BASELINE_NOT_FOUND') {
+        return t3AssertionResult(assertion, 'BLOCKED', 'baseline-not-found', { warnings }, { errorCode: 'VISION_BASELINE_NOT_FOUND' });
+      }
+      throw error;
+    }
+    const baseline = t3BaselineGetResult(got);
+    if (!baseline.meta || !baseline.pngBytes) {
+      return t3AssertionResult(assertion, 'BLOCKED', 'baseline-not-found', { warnings }, { errorCode: 'VISION_BASELINE_NOT_FOUND' });
+    }
+    const beforeBytes = Buffer.isBuffer(baseline.pngBytes) ? baseline.pngBytes : Buffer.from(baseline.pngBytes);
+    const beforeDecoded = await t3Decode(beforeBytes, exec.signal, budget);
+    const afterImage = resolved.image;
+    if (beforeDecoded.width !== afterImage.width || beforeDecoded.height !== afterImage.height) {
+      return t3AssertionResult(assertion, 'BLOCKED', 'size-mismatch', {
+        before: { width: beforeDecoded.width, height: beforeDecoded.height },
+        after: { width: afterImage.width, height: afterImage.height },
+        warnings,
+      }, { errorCode: 'VISION_SIZE_MISMATCH' });
+    }
+    const beforeImage = { width: beforeDecoded.width, height: beforeDecoded.height, rgba: beforeDecoded.rgba };
+    const beforeMapping = baseline.meta.mapping ?? null;
+    const afterMapping = resolved.product ? resolved.product.mapping : null;
+    const mappingCompatible = Boolean(beforeMapping && afterMapping && vision.mappingCompatible(beforeMapping, afterMapping));
+    if (assertion.severity === 'required' && !mappingCompatible) {
+      // §8.3: a missing mapping is "mapping-unavailable"; two incompatible mappings is
+      // "mapping-incompatible". Either way no required PASS is claimed and no file is published.
+      const reason = !beforeMapping || !afterMapping ? 'mapping-unavailable' : 'mapping-incompatible';
+      return t3AssertionResult(assertion, 'BLOCKED', reason, {
+        mappingCompatible: false, warnings,
+      }, { errorCode: null });
+    }
+    if (!mappingCompatible) t3Warning(warnings, 'mapping-incompatible');
+    const region = assertion.region ?? { x: 0, y: 0, width: afterImage.width, height: afterImage.height };
+    if (!t3RegionInsideRoi(region, afterImage)) {
+      throw t3Invalid(`regression region 超出图像边界`, { path: `assertions[${assertion.id}].region` });
+    }
+    let masks = assertion.masks !== undefined ? assertion.masks
+      : Array.isArray(baseline.meta.masks) ? baseline.meta.masks : [];
+    t3ValidateMaskBounds(masks, afterImage);
+    let options = { ...T3_DEFAULT_DIFF_OPTIONS };
+    if (baseline.meta.options) options = { ...options, ...baseline.meta.options };
+    options = t3MergeResolved(options, assertion.options ?? null, vision.validateDiffOptions, 'options');
+    let thresholds = { ...T3_DEFAULT_THRESHOLDS };
+    if (baseline.meta.thresholds) thresholds = { ...thresholds, ...baseline.meta.thresholds };
+    thresholds = t3MergeResolved(thresholds, assertion.thresholds ?? null, vision.validateThresholds, 'thresholds');
+    if (!(thresholds.warnRatio <= thresholds.failRatio)) throw t3Invalid('thresholds 必须满足 0 ≤ warnRatio ≤ failRatio ≤ 1', { path: 'thresholds' });
+    const diff = await vision.diffImagesAsync(beforeImage, afterImage, {
+      region, masks, options, ...t3AlgoOpts(budget, exec.signal),
+    }, t3AlgoOpts(budget, exec.signal));
+    if (!diff || !diff.metrics || diff.metrics.comparedPixels === 0) {
+      return t3AssertionResult(assertion, 'BLOCKED', 'empty-comparison', { warnings }, { errorCode: 'VISION_EMPTY_COMPARISON' });
+    }
+    const ratioVerdict = t3RatioVerdict(diff.metrics.diffRatio, thresholds);
+    let status = ratioVerdict;
+    if (ratioVerdict === 'FAIL' && assertion.severity === 'advisory') status = 'WARN';
+    const highlight = Buffer.isBuffer(diff.highlight) ? diff.highlight : Buffer.from(diff.highlight ?? []);
+    const diffProduct = t3ProductPublic(t3AddProduct(runtime, {
+      bytes: highlight, width: beforeImage.width, height: beforeImage.height, sha256: t3Sha256(highlight),
+      rgbaSha256: null, kind: 'diff', mapping: null, actionable: false,
+      parentIds: [], operations: [{ op: 'diff', parameters: { resolvedOptions: options, resolvedThresholds: thresholds, resolvedMasks: masks } }],
+      capturedAt: null, provenance: t3Provenance(runtime, exec),
+    }));
+    const metrics = {
+      ...diff.metrics,
+      resolvedOptions: options,
+      resolvedThresholds: thresholds,
+      resolvedMasks: masks,
+      beforeSha256: t3Sha256(beforeBytes),
+      afterSha256: resolved.sha256,
+      baselineRevision: baseline.meta.revision,
+      headToken: baseline.meta.headToken ?? null,
+      mappingCompatible,
+      warnings,
+    };
+    return t3AssertionResult(assertion, status, 'ratio', metrics, {
+      diffProductId: diffProduct.productId,
+      regions: (Array.isArray(diff.regions) ? diff.regions : []).slice(0, T3_EVIDENCE_REGIONS).map((item) => t3EvidenceRegion({
+        id: item.id,
+        role: 'diff',
+        imagePixels: item.imagePixels ?? item.region ?? null,
+        beforeDocumentCss: mappingCompatible && beforeMapping && (item.imagePixels || item.region)
+          ? vision.mapImageRectToDocument(beforeMapping, item.imagePixels ?? item.region) : null,
+        afterDocumentCss: mappingCompatible && afterMapping && (item.imagePixels || item.region)
+          ? vision.mapImageRectToDocument(afterMapping, item.imagePixels ?? item.region) : null,
+        area: item.area,
+      })),
+    });
+  }
+
+  async function t3RunAssertion(runtime, exec, testCase, assertion, resolved, factsById, pins, budget, warnings) {
+    if (assertion.type === 'regression') {
+      return t3RegressionAssertion(runtime, exec, assertion, resolved, pins, budget, warnings);
+    }
+    return t3DefectAssertion(runtime, exec, testCase, assertion, resolved, factsById, pins, budget, warnings);
+  }
+
+  /** Run one case: resolve the source once, run every assertion, release the case pins. */
+  async function t3RunCase(runtime, exec, testCase, budget, warnings) {
+    const pins = [];
+    const assertionResults = [];
+    const incomplete = [];
+    let resolved = null;
+    const factsById = new Map(testCase.facts.map((fact) => [fact.id, fact]));
+    try {
+      resolved = await t3ResolveSource(runtime, exec, testCase.source, 'source', pins, budget);
+      for (const assertion of testCase.assertions) {
+        try {
+          assertionResults.push(await t3RunAssertion(runtime, exec, testCase, assertion, resolved, factsById, pins, budget, warnings));
+        } catch (error) {
+          if (error && ['ABORTED', 'CDP_TIMEOUT', 'CDP_DISCONNECTED'].includes(error.code)) throw error;
+          assertionResults.push(t3BlockedAssertion(assertion, error));
+        }
+      }
+    } catch (error) {
+      if (error && ['ABORTED', 'CDP_TIMEOUT', 'CDP_DISCONNECTED'].includes(error.code)) throw error;
+      for (const assertion of testCase.assertions) assertionResults.push(t3BlockedAssertion(assertion, error));
+      incomplete.push('source-unavailable');
+    } finally {
+      t3ReleasePins(runtime, pins);
+    }
+    return {
+      result: {
+        id: testCase.id,
+        sourceProductId: resolved && resolved.product ? resolved.product.productId : null,
+        assertions: assertionResults,
+        verdict: t3Verdict(assertionResults.map((item) => item.status)),
+        incomplete,
+      },
+      source: resolved ? t3EvidenceSource(resolved, 'source') : null,
+    };
+  }
+
+  register({
+    name: 'browser_vision_check',
+    description: 'T3 静态视觉回归/缺陷用例集：cases 1–20，每 case 1–32 assertions、0–64 facts，整批先做纯参数校验再逐 case 执行。'
+      + 'assertion.type=regression（与基线比较，不发布文件）或 layout/occlusion/overflow/truncation/color/missing（像素信号 + 调用方显式提供的外部事实融合）。'
+      + 'required 缺必需事实/来源不匹配返回 INCONCLUSIVE/BLOCKED，advisory 最多 WARN；regression 需兼容 mapping，baseline 缺失为 BLOCKED。'
+      + '返回 summary/verdict/exitCode（FAIL→1，无 FAIL 但 BLOCKED/INCONCLUSIVE→2，PASS/WARN→0），不调用 process.exit。'
+      + '不导航、不建/更新基线、不读 DOM（facts 由调用方提供并标记 trusted=false）。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['cases'],
+      properties: {
+        cases: {
+          type: 'array',
+          description: 'Case[]（1–20）：{id, source, assertions[1–32], facts?[0–64]}。',
+          minItems: 1,
+          maxItems: 20,
+          items: { type: 'object' },
+        },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      const runtime = exec.runtime;
+      const provenance = t3Provenance(runtime, exec);
+      const budget = t3NewBudget();
+      const warnings = [];
+      const caseResults = [];
+      const evidenceSources = [];
+      const evidenceFacts = [];
+      let request = null;
+      try {
+        request = t3CheckRequest(args && typeof args === 'object' ? args : {});
+        for (const testCase of request) {
+          const { result, source } = await t3RunCase(runtime, exec, testCase, budget, warnings);
+          caseResults.push(result);
+          if (source && !evidenceSources.some((entry) => entry.productId === source.productId)) {
+            evidenceSources.push(source);
+          }
+          for (const fact of testCase.facts) {
+            evidenceFacts.push({
+              id: fact.id,
+              sourceActionId: fact.provenance.sourceActionId,
+              observedAt: fact.provenance.observedAt,
+              documentEpoch: fact.provenance.documentEpoch,
+              trusted: false,
+            });
+          }
+        }
+        const summary = { pass: 0, warn: 0, fail: 0, inconclusive: 0, blocked: 0 };
+        for (const result of caseResults) {
+          for (const assertion of result.assertions) {
+            if (assertion.status === 'PASS') summary.pass += 1;
+            else if (assertion.status === 'WARN') summary.warn += 1;
+            else if (assertion.status === 'FAIL') summary.fail += 1;
+            else if (assertion.status === 'BLOCKED') summary.blocked += 1;
+            else summary.inconclusive += 1;
+          }
+        }
+        let verdict = t3Verdict(caseResults.map((result) => result.verdict));
+        let exitCode = verdict === 'FAIL' ? 1 : (verdict === 'BLOCKED' || verdict === 'INCONCLUSIVE') ? 2 : 0;
+        const evidenceRegions = [];
+        for (const result of caseResults) {
+          for (const assertion of result.assertions) {
+            for (const region of assertion.regions) evidenceRegions.push(region);
+          }
+        }
+        const evidence = t3Evidence({
+          operation: 'check',
+          provenance,
+          source: evidenceSources,
+          regions: evidenceRegions.slice(0, T3_EVIDENCE_REGIONS),
+          metrics: { summary, caseCount: caseResults.length, assertionCount: summary.pass + summary.warn + summary.fail + summary.inconclusive + summary.blocked, warnings },
+          facts: evidenceFacts,
+          verdict: { status: verdict, reason: 'summary' },
+          incomplete: caseResults.some((result) => result.incomplete.length > 0) ? ['case-incomplete'] : [],
+        });
+        t3BoundEvidence(evidence);
+        if (evidence.truncated && verdict === 'PASS') {
+          // Truncated evidence cannot support an unqualified PASS (contract §3.2).
+          verdict = 'INCONCLUSIVE';
+          exitCode = 2;
+          evidence.verdict = { status: verdict, reason: 'evidence-truncated' };
+          evidence.incomplete = [...evidence.incomplete, 'evidence-truncated'];
+        }
+        runtime.noteVisionOperation('check', verdict);
+        return {
+          ok: true,
+          cases: caseResults,
+          summary,
+          verdict,
+          exitCode,
+          evidence: { vision: evidence },
+        };
+      } catch (error) {
+        const evidence = t3Evidence({
+          operation: 'check',
+          provenance,
+          source: evidenceSources,
+          verdict: { status: 'BLOCKED', reason: 'error' },
+          metrics: {
+            errorCode: error && error.code ? error.code : 'INTERNAL',
+            completedCases: caseResults.length,
+            warnings,
+          },
+          facts: evidenceFacts,
+          incomplete: ['operation-failed'],
+        });
+        runtime.noteVisionOperation('check', null);
+        const thrown = t3ThrowWithEvidence(error, evidence);
+        // ABORTED / CDP disconnect / queue timeout: the already-finished cases travel with the
+        // original error (they are not re-judged and no further evidence is collected).
+        thrown.details = {
+          ...thrown.details,
+          completedCases: caseResults.map((result) => ({
+            id: result.id,
+            verdict: result.verdict,
+            assertions: result.assertions.map((assertion) => ({
+              id: assertion.id, type: assertion.type, severity: assertion.severity,
+              status: assertion.status, reason: assertion.reason, errorCode: assertion.errorCode,
+            })),
+          })),
+        };
+        throw thrown;
+      }
+    },
+  });
+
   register({
     name: 'browser_capabilities',
-    description: '查询 Web T1/T2 工具、运行态、隔离模式及证据限制；不会启动浏览器。',
+    description: '查询 Web T1/T2/T3 工具、运行态、隔离模式及证据限制；不会启动浏览器（不 ensure、不建目录、不生成 product、不申请租约）。'
+      + 'vision 段报告 T3 算法版本/工具/源类型/预算与最近一次真实视觉调用（observed），六个 web.t3.* 与聚合 web.t3.static-vision 按 BUSY 状态报告；T4 仍 unsupported。',
     parameters: { type: 'object', properties: {}, required: [] },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
@@ -6629,6 +9720,10 @@ export function apply(ctx) {
       // T2 surface: snapshot + the six structured actions. All of them are page operations (lazy
       // start, serial queue, single-owner lease) and all of them return structured evidence.
       const t2Tools = ['snapshot', 'click', 'type', 'scroll', 'fill_form', 'node_state', 'wait_for'];
+      // T3 surface: six static-vision tools. All of them enter the scope queue and the owner check
+      // (offline baseline list/get/delete included); only a live source or `act` starts a page.
+      const t3Tools = ['vision_image', 'vision_find', 'vision_compare', 'vision_act', 'vision_baseline', 'vision_check'];
+      const t3CapabilityIds = ['web.t3.image', 'web.t3.find', 'web.t3.compare', 'web.t3.act', 'web.t3.baseline', 'web.t3.check'];
       const diagnosticTools = ['state', 'capabilities'];
       const pageConstraints = ['page tools lazily start Chromium; startup may fail', 'single owner lease; shared page with panel'];
       const t2Constraints = [
@@ -6637,11 +9732,21 @@ export function apply(ctx) {
         'Trusted CDP input for click/type/form booleans; native select/range writes report eventSource=dom-control',
         'Every action returns version=1 structured evidence; no force/JS-click escape hatch and no pixel/visual judgement (T3)',
       ];
+      const t3Constraints = [
+        'static vision only: PNG processing, deterministic recognition, pixel diff and coordinate input; no VLM/OCR/semantic naming',
+        'sources are live capture / this scope product / managed baseline; no arbitrary path, URL, attachment id or caller base64',
+        'products are per workspace scope (16 images, 128 MiB total); page navigation keeps images readable but invalidates act',
+        'one delivered PNG per call under the P0 output rules (staging by default, 0600, no-clobber); evidence.vision.version=1',
+        'offline baseline list/get/delete and product sources never start Chromium; live sources and act do',
+        'T4 dynamic vision (frame sequences/animation timing) stays unsupported',
+      ];
       const diagnosticConstraints = ['diagnostic call; never starts Chromium or takes ownership'];
       const workspaceIsolation = registry.capabilities();
       // P0 capture facts. `observed` only ever comes from a real browser_screenshot of this Runtime
       // (relative paths and numbers only) — this call still starts nothing and takes no lease.
       const observation = runtime.captureObservation;
+      // T3 observation: the last real vision call of this Runtime (status/numbers only).
+      const visionObservation = runtime.visionObservation;
       const observedCapture = observation && typeof observation === 'object'
         ? {
           observedAt: observation.observedAt,
@@ -6677,6 +9782,10 @@ export function apply(ctx) {
             status: busy ? 'unavailable' : 'available',
             ...(busy ? { reason: 'BUSY: browser owned by another session' } : {}),
             constraints: t2Constraints })),
+          ...t3Tools.map((name, index) => ({ id: t3CapabilityIds[index], tool: 'browser_' + name,
+            status: busy ? 'unavailable' : 'available',
+            ...(busy ? { reason: 'BUSY: browser owned by another session' } : {}),
+            constraints: t3Constraints })),
           ...diagnosticTools.map((name) => ({ id: 'web.t1.' + name, tool: 'browser_' + name, status: 'available', constraints: diagnosticConstraints })),
           { id: 'web.t1.workspace-isolation', status: 'available',
             constraints: [
@@ -6702,7 +9811,11 @@ export function apply(ctx) {
               'Form support: textbox/checkbox/radio via trusted CDP input, combobox/slider via native setters (dom-control)',
               'No visual/pixel judgement: layout, occlusion cause or visual readability still needs T3; motion needs T4',
             ] },
-          ...['t3.static-vision', 't4.dynamic-vision', 't1.viewport-control', 't1.browser-extras'].map((id) => ({ id: 'web.' + id, status: 'unsupported', reason: 'Not implemented' })),
+          { id: 'web.t3.static-vision',
+            status: busy ? 'unavailable' : 'available',
+            ...(busy ? { reason: 'BUSY: browser owned by another session' } : {}),
+            constraints: t3Constraints },
+          ...['t4.dynamic-vision', 't1.viewport-control', 't1.browser-extras'].map((id) => ({ id: 'web.' + id, status: 'unsupported', reason: 'Not implemented' })),
         ],
         // P0 capture infrastructure (docs/capture-p0.md). Declared, not probed: reading this must
         // never start Chromium, create a page or take the lease. `observed` is the last real
@@ -6739,6 +9852,42 @@ export function apply(ctx) {
           limits: { maxRegionPixels: CAPTURE_LIMITS.maxOutputPixels },
           observed: observedCapture,
         },
+        // Web T3 static vision (docs/t3-vision.md §11). Declared, never probed: reading this must
+        // not start Chromium, create the baseline root or add a product. `observed` is the last real
+        // vision call of this Runtime and never contains an image, an absolute path or page text.
+        vision: {
+          version: 1,
+          algorithmVersion: T3_ALGORITHM_VERSION,
+          tools: [...T3_TOOL_NAMES],
+          sourceKinds: [...T3_SOURCE_KINDS],
+          limits: {
+            maxProducts: T3_LIMITS.maxProducts,
+            maxTotalBytes: T3_LIMITS.maxTotalBytes,
+            maxProductBytes: T3_LIMITS.maxProductBytes,
+            maxProductPixels: T3_LIMITS.maxProductPixels,
+            maxWorkingSetBytes: T3_LIMITS.maxWorkingSetBytes,
+            maxTemplateComparisons: T3_LIMITS.maxTemplateComparisons,
+            algorithmBudgetMs: T3_LIMITS.algorithmBudgetMs,
+            maxOutputPixels: T3_LIMITS.maxOutputPixels,
+            maxOutputBytes: T3_LIMITS.maxOutputBytes,
+            maxEvidenceBytes: T3_EVIDENCE_BYTES,
+            maxEvidenceRegions: T3_EVIDENCE_REGIONS,
+            maxCases: T3_MAX_CASES,
+            maxAssertionsPerCase: T3_MAX_ASSERTIONS,
+            maxFactsPerCase: T3_MAX_FACTS,
+            maxMasks: T3_MAX_MASKS,
+            maxAnnotations: T3_MAX_ANNOTATIONS,
+            maxPreprocess: T3_MAX_PREPROCESS,
+            actMaxAgeMs: T3_ACT_MAX_AGE_MS,
+          },
+          observed: visionObservation && typeof visionObservation === 'object'
+            ? {
+              observedAt: visionObservation.observedAt,
+              lastOperation: typeof visionObservation.lastOperation === 'string' ? visionObservation.lastOperation : null,
+              lastVerdict: typeof visionObservation.lastVerdict === 'string' ? visionObservation.lastVerdict : null,
+            }
+            : null,
+        },
         limits: {
           viewport: runtime.viewport,
           networkEntries: NETWORK_LIMIT,
@@ -6763,6 +9912,36 @@ export function apply(ctx) {
             defaultName: 'output/capture/<actionId>.png',
             env: 'DSH_UI_TESTING_CAPTURE_DIR',
             warnings: [...CAPTURE_WARNING_VOCABULARY],
+          },
+          vision: {
+            algorithmVersion: T3_ALGORITHM_VERSION,
+            coordinateSpaces: { image: 'image-px', document: 'document-css-px', input: 'viewport-css-px' },
+            sourceKinds: [...T3_SOURCE_KINDS],
+            productIdPattern: '^v1_[0-9a-f]{32}$',
+            productKinds: ['capture', 'derived', 'diff', 'baseline'],
+            maxProducts: T3_LIMITS.maxProducts,
+            maxTotalBytes: T3_LIMITS.maxTotalBytes,
+            maxProductBytes: T3_LIMITS.maxProductBytes,
+            maxProductPixels: T3_LIMITS.maxProductPixels,
+            algorithmBudgetMs: T3_LIMITS.algorithmBudgetMs,
+            maxTemplateComparisons: T3_LIMITS.maxTemplateComparisons,
+            evidence: { version: 1, maxBytes: T3_EVIDENCE_BYTES, maxRegions: T3_EVIDENCE_REGIONS },
+            check: { maxCases: T3_MAX_CASES, maxAssertions: T3_MAX_ASSERTIONS, maxFacts: T3_MAX_FACTS },
+            masks: T3_MAX_MASKS,
+            annotations: T3_MAX_ANNOTATIONS,
+            preprocess: T3_MAX_PREPROCESS,
+            act: { maxAgeMs: T3_ACT_MAX_AGE_MS, actions: ['move', 'click', 'drag'] },
+            warnings: [...T3_WARNING_VOCABULARY],
+            diff: { algorithm: 'yiq-v1', defaultOptions: { ...T3_DEFAULT_DIFF_OPTIONS }, defaultThresholds: { ...T3_DEFAULT_THRESHOLDS } },
+            baseline: { root: 'DSH_UI_TESTING_CAPTURE_DIR | workspace', scopeHash: 'sha256(scopeId).slice(0,32)', directory: 'output/vision-baselines', mode: { directory: '0700', file: '0600' }, actions: ['list', 'get', 'create', 'update', 'delete'] },
+            observed: visionObservation && typeof visionObservation === 'object'
+              ? {
+                observedAt: visionObservation.observedAt,
+                lastOperation: typeof visionObservation.lastOperation === 'string' ? visionObservation.lastOperation : null,
+                lastVerdict: typeof visionObservation.lastVerdict === 'string' ? visionObservation.lastVerdict : null,
+              }
+              : null,
+            notImplemented: ['T4 dynamic vision: frame sequences, animation timing, continuous visual reasoning'],
           },
           navigation: 'Document URLs and DNS checked; subresources are not a network sandbox',
           structuredGui: {

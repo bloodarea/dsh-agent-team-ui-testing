@@ -4,7 +4,7 @@
 
 ## 1. 范围与运行不变量
 
-P0 提供 Web T1–T4 可复用的**采集、校验、落盘与证据**基础设施。只扩展已有 `browser_screenshot`，不新增工具，工具总数仍为 16。P0 不实施视觉判断、基线差异、可读性判定、VLM 分析、连续帧或时序分析；`content_uniform` 等像素统计警告不是页面视觉 FAIL。T3/T4 仍 `unsupported`，不能因本契约、截图成功或高 DPI 输出而升级。
+P0 提供 Web T1–T4 可复用的**采集、校验、落盘与证据**基础设施。只扩展已有 `browser_screenshot`，不新增工具，P0 轮工具总数仍为 16（2026-11-01 第 7 轮 T3 另行新增 6 个视觉工具、总数 22，见 [t3-vision.md](t3-vision.md)；本契约不改变 P0 行为）。P0 不实施视觉判断、基线差异、可读性判定、VLM 分析、连续帧或时序分析；`content_uniform` 等像素统计警告不是页面视觉 FAIL。**P0 轮的 T3/T4 仍 `unsupported`**；T3 已由第 7 轮另行实现并由独立 56 条套件验收（仍不因本契约、截图成功或高 DPI 输出而升级），T4 仍 unsupported。
 
 沿用一个 headless Chromium/profile、每工作区一个 page Runtime，以及既有可信 exec scope、页面串行队列、single-owner-lease、BUSY 与取消清理。PNG 采集不替换 JPEG screencast 预览管线，不改面板视觉、文案或交互。只使用 CDP 与 Node 内建模块，保持 ESM、零新增运行时依赖。
 

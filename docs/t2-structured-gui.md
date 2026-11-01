@@ -241,7 +241,7 @@ snapshot 无 scope 时 targets=[]；有 scope 记录 scope 根；scroll 默认 d
 - `Accessibility.enable/getFullAXTree/getPartialAXTree` 提供语义，`DOM.describeNode/resolveNode` + `Runtime.callFunctionOn` 提供对象身份，rect/quads/viewport/hit-test 提供几何，`Input.dispatchMouseEvent/insertText/dispatchKeyEvent` 提供可信输入。节点操作用 objectId 和 CDP call arguments，不把 selector/text 拼接成 JS 源码。select/range/to-scroll 的 DOM 路径明确标 eventSource，不谎称可信输入。
 - 主 renderer 的 AX-backed shadow ref 可直接 resolve backendNodeId，不依赖 CSS 穿透；open shadow 的 composed ancestor、深层 activeElement 和 hit-test 必须处理。closed shadow/缺失 backend 身份/命中只能证明 host 时不保证支持，拒绝并建议 T3，不落到相似节点。
 - frame 首版严格主 frame。same-origin iframe 也只显示边界叶子，cross-origin iframe/OOPIF 不 attach/不遍历/不查内部 selector，不产生内部 ref；iframe 元素可查询状态，不支持将 click/type/form 送入其内部。未来跨帧须 renderer sessionId+frameId+documentEpoch 联合身份，backendNodeId 不是跨 renderer 全局 ID。
-- canvas/WebGL/图像文字、无可证明节点的 shadow/frame、颜色/布局/可读性等视觉判断升级 T3；overlay/hit-test 失败先明确动作失败，需视觉判断命中区或原因时 T3。动画/拖拽/持续变化和时序判断升级 T4。escalation 只是提示，当前 T3/T4 仍 unsupported，报告 BLOCKED/INCONCLUSIVE 或交已有 screenshot 给授权视觉能力/人工，不能伪造已完成视觉判定。
+- canvas/WebGL/图像文字、无可证明节点的 shadow/frame、颜色/布局/可读性等视觉判断升级 T3；overlay/hit-test 失败先明确动作失败，需视觉判断命中区或原因时 T3。动画/拖拽/持续变化和时序判断升级 T4。escalation 只是提示。**本文 T2 轮快照中的“T3/T4 仍 unsupported”已被第 7 轮取代**：T3 六个视觉工具（[t3-vision.md](t3-vision.md)）已实现并验收，仍不自动把 T2 失败变成视觉 PASS；T4 仍 unsupported，报告 BLOCKED/INCONCLUSIVE 或交已有 screenshot 给授权视觉能力/人工，不能伪造已完成视觉判定。
 - 不做 hover 专用工具、上传/下载、drag/drop、native select popup/文件选择器/权限窗口/JS dialog 管理、多标签/popup 接管、IME/composition、contenteditable 编辑器协议、触摸、截图 diff、独立证据文件包。native select/range 的结构赋值不能替代 popup/drag 测试；provider 图像可见性仍须专项验证。
 - 性能：输出限额不限制 getFullAXTree 的原生工作量，boxes 默认关闭，避免给非引用节点逐个 resolve；读数有界、object group 及时 release；串行输入不并发。采集中 page/document 代次改变整份废弃，不拼两页数据。
 

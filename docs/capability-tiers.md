@@ -11,7 +11,7 @@
 | **T3** | 静态视觉调试 | Screenshot、Computer Vision、坐标操作、图像差异分析 | UI 布局、颜色、遮挡、样式缺陷、Canvas、图表、静态截图操作 | 需要连续动作、动画或时间状态判断时进入 T4 | 高 |
 | **T4** | 动态视觉调试 | Screencast、帧序列、时间戳、视觉推理、鼠标键盘事件 | 动画、拖拽、复杂动态组件、过渡状态、连续画面分析 | 最高级：失败后输出诊断结果，交由 Agent 或人类裁决 | 最高 |
 
-选型对照与实现策略（“参考”只是对比对象，不代表已选定依赖或已完成集成）：T1 Playwright MCP / agent-browser / Chrome DevTools MCP，直接复用；T2 ego-lite / agent-browser / Playwright MCP，复用 + 统一节点协议；T3 Playwright MCP Vision / Sharp / Pixelmatch / Argos，复用算法、自研判定；T4 agent-browser 视频录制机制 / 自研动态视觉调度 / CDP Animation / rrweb / 按需 FFmpeg・OpenCV，复用采集、自研时序验证。
+选型对照与实现策略（“参考”只是对比对象，不代表已选定依赖；Web T3 已按纯 JavaScript 自研实现，未引入 Sharp/Pixelmatch/Argos 依赖）：T1 Playwright MCP / agent-browser / Chrome DevTools MCP，直接复用；T2 ego-lite / agent-browser / Playwright MCP，复用 + 统一节点协议；T3 Playwright MCP Vision / Sharp / Pixelmatch / Argos，参考算法、自研判定（现行实现见下方“对当前实现的含义”）；T4 agent-browser 视频录制机制 / 自研动态视觉调度 / CDP Animation / rrweb / 按需 FFmpeg・OpenCV，复用采集、自研时序验证。
 
 ## 每一级的完成门槛
 
@@ -35,9 +35,10 @@
 
 ## 对当前实现的含义
 
-调试视图通过无头 Chromium + CDP 同时提供 Web **T1**（程序化）与 **T2**（结构化 GUI）：
+调试视图通过无头 Chromium + CDP 同时提供 Web T1（程序化）、T2（结构化 GUI）与 T3（静态视觉）：
 
 - T1：9 个工具（导航、JS、截图、输入、网络、计算样式、独立 HTTP、状态、能力发现），现行契约与验收见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)、[t1-http-request.md](t1-http-request.md)。
-- P0共享采集：已有 `browser_screenshot` 增强为连续scale1–4、文档CSS region、PNG结构/尺寸/均匀统计、安全落盘和capture证据；默认暂存（dispose清理），out/persist:true/非空env显式持久；file区分绝对暂存/相对持久，能力observed不含绝对路径。C1–C14共14/14、142/142（[最终报告](../tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json)）。不新增工具，不因采集增强提升T3/T4状态；下方115项为历史。权威契约见 [capture-p0.md](capture-p0.md)，真实Chromium+fake ctx三次各13/13、115/115（[报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)）；provider与真实宿主P0重载仍NOT_RUN。
+- P0共享采集：已有 `browser_screenshot` 增强为连续scale1–4、文档CSS region、PNG结构/尺寸/均匀统计、安全落盘和capture证据；默认暂存（dispose清理），out/persist:true/非空env显式持久；file区分绝对暂存/相对持久，能力observed不含绝对路径。C1–C14共14/14、142/142（[最终报告](../tests/acceptance/runs/capture-p0-2026-11-01T07-35-21-142Z-176846/report.json)）。**P0 采集本身不构成 T3 判定**；T3 由新增六工具与独立验收另证（见下）。权威契约见 [capture-p0.md](capture-p0.md)，真实Chromium+fake ctx历史报告见 [t3-vision.md](t3-vision.md) 引用的证据；provider与真实宿主P0重载仍NOT_RUN。
 - T2：7 个工具（`browser_snapshot` + `click` / `type` / `scroll` / `fill_form` / `node_state` / `wait_for`），AX 语义树 + 单调 `eN` Ref + 可信输入 + `evidence.version=1`；契约与 38 条验收见 [t2-structured-gui.md](t2-structured-gui.md)，实现/验收状态见 [status.md](status.md)。T2 仍属主 frame + AX-backed open shadow，iframe 内部、closed shadow、原生 select popup/拖拽/上传下载/contenteditable/IME 与视觉判定不在范围内。
-- **T3/T4 未实现**：截图（T1 `browser_screenshot`）与可访问树都不是静态视觉定位/动态时序能力；当覆盖、canvas/WebGL、颜色/布局/可读性或需要判断命中区成因时，T2 只给 `escalation:"T3"` 提示，报告 BLOCKED/INCONCLUSIVE，不能由 T1/T2 的成功推定视觉验收通过。「选择元素」「打开调试工具」仍禁用，面板视觉未变。
+- **T3（静态视觉，已实现并通过进程内验收）**：6 个工具 `browser_vision_image` / `find` / `compare` / `act` / `baseline` / `check`（工具面共 22 = 9 T1 + 7 T2 + 6 T3）。纯 JavaScript、零 npm 依赖：PNG 编解码/裁剪/缩放/预处理/标注、YIQ 像素差异与相似度/差异区域高亮/动态 mask、color/components/edges/template 确定性识别、截图坐标的真实 CDP 输入（六步安全校验、失败零派发）、受管基线（不可变 revision + HEAD CAS + 墓碑）、回归与六类缺陷用例（像素信号 + 调用方显式 provenance facts；T3 不主动读 DOM）。权威契约 [t3-vision.md](t3-vision.md)；进程内验收 **56/56 criteria、389/389 required、exit 0**（[报告](../tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json)）。无 VLM/OCR/语义命名；真实宿主重启加载与 provider 图像可见性、T4 仍 NOT_RUN。
+- **T4 未实现**：动态视觉（screencast/帧序列/时间戳/时序推理）仍 unsupported；`browser_screenshot` 与 T3 的 before/after 静态两帧都不能证明动画/中间闪烁。面板视觉未变，「选择元素」「打开调试工具」仍禁用。

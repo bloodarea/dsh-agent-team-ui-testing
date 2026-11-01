@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH T3 Fixture</title>
+  <style>
+    /*
+     * Web T3 (static vision) deterministic target.
+     *
+     * Truth table: tests/ui_test_fixture/README.md §T3. Every box is absolutely positioned with
+     * integer CSS coordinates; there is no external resource, no random value and no automatic
+     * animation (the two animated elements only move after an explicit scene call).
+     *
+     * No borders / radii / shadows / gradients on any colour box: a T3 screenshot region must be
+     * exactly one flat RGB value, so anti-aliased edges would make the pixel truth ambiguous.
+     */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: rgb(255, 255, 255);
+    }
+    body {
+      height: 1600px;
+      position: relative;
+      font-family: monospace;
+      color: rgb(0, 0, 0);
+    }
+    .t3-box {
+      position: absolute;
+      box-sizing: border-box;
+      border: 0;
+      padding: 0;
+      margin: 0;
+    }
+    #t3-click {
+      left: 300px;
+      top: 40px;
+      width: 80px;
+      height: 60px;
+      background: rgb(255, 255, 255);
+      font: 16px/60px monospace;
+      text-align: center;
+      cursor: default;
+    }
+    #t3-overlay {
+      left: 320px;
+      top: 50px;
+      width: 40px;
+      height: 40px;
+      background: rgb(255, 0, 255);
+      display: none;
+      z-index: 5;
+    }
+    #t3-canvas {
+      left: 40px;
+      top: 140px;
+      width: 160px;
+      height: 80px;
+      display: block;
+    }
+    #t3-textimg {
+      left: 240px;
+      top: 140px;
+      width: 160px;
+      height: 60px;
+      display: block;
+    }
+    #t3-drag-source {
+      left: 280px;
+      top: 140px;
+      width: 40px;
+      height: 40px;
+      background: rgb(200, 200, 200);
+      cursor: default;
+    }
+    #t3-drop {
+      left: 380px;
+      top: 140px;
+      width: 80px;
+      height: 40px;
+      background: rgb(220, 220, 220);
+    }
+    #t3-flip {
+      left: 300px;
+      top: 240px;
+      width: 80px;
+      height: 60px;
+      background: rgb(255, 0, 0);
+      cursor: default;
+    }
+    #t3-moving {
+      left: 500px;
+      top: 240px;
+      width: 40px;
+      height: 40px;
+      background: rgb(255, 128, 0);
+    }
+    #t3-disabled {
+      left: 560px;
+      top: 240px;
+      width: 80px;
+      height: 40px;
+      border: 0;
+      padding: 0;
+      background: rgb(180, 180, 180);
+      font: 12px/40px monospace;
+      color: rgb(0, 0, 0);
+    }
+    #t3-inert {
+      left: 660px;
+      top: 240px;
+      width: 80px;
+      height: 40px;
+      background: rgb(230, 230, 230);
+    }
+    #t3-inert-btn {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 60px;
+      height: 20px;
+      border: 0;
+      padding: 0;
+      background: rgb(200, 220, 240);
+      font: 12px/20px monospace;
+    }
+    #t3-frame {
+      left: 760px;
+      top: 240px;
+      width: 160px;
+      height: 80px;
+      border: 0;
+      background: rgb(221, 238, 255);
+    }
+    #t3-css-patch {
+      left: 50px;
+      top: 50px;
+      width: 10px;
+      height: 10px;
+      background: rgb(0, 0, 0);
+      display: none;
+      z-index: 4;
+    }
+
+    /* ---- six defect containers (y = 400…750) plus their normal copies --------------------- */
+    #t3-layout,
+    #t3-layout-ok {
+      top: 420px;
+      width: 120px;
+      height: 40px;
+      background: rgb(0, 128, 0);
+    }
+    #t3-layout { left: 100px; }
+    #t3-layout-ok { left: 300px; }
+    #t3-occluded,
+    #t3-occluded-ok {
+      top: 470px;
+      width: 120px;
+      height: 40px;
+      background: rgb(0, 128, 128);
+    }
+    #t3-occluded { left: 100px; }
+    #t3-occluded-ok { left: 300px; }
+    #t3-occlude-cover {
+      left: 100px;
+      top: 470px;
+      width: 120px;
+      height: 40px;
+      background: rgb(255, 0, 255);
+      display: none;
+      z-index: 6;
+    }
+    #t3-overflow,
+    #t3-overflow-ok {
+      top: 520px;
+      width: 100px;
+      height: 40px;
+      background: rgb(255, 255, 255);
+    }
+    #t3-overflow { left: 100px; overflow: visible; }
+    #t3-overflow-ok { left: 300px; overflow: auto; }
+    .t3-overflow-child {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 150px;
+      height: 20px;
+      background: rgb(0, 0, 255);
+    }
+    #t3-truncated,
+    #t3-truncated-ok {
+      top: 570px;
+      height: 20px;
+      font: 14px/20px monospace;
+      color: rgb(0, 0, 0);
+      background: rgb(255, 255, 255);
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    #t3-truncated { left: 100px; width: 100px; }
+    #t3-truncated-ok { left: 300px; width: 480px; }
+    #t3-color,
+    #t3-color-ok {
+      top: 620px;
+      width: 80px;
+      height: 40px;
+    }
+    #t3-color { left: 100px; background: rgb(255, 0, 0); }
+    #t3-color-ok { left: 300px; background: rgb(255, 0, 0); }
+    #t3-color-conflict {
+      left: 420px;
+      top: 620px;
+      width: 80px;
+      height: 40px;
+      background: rgb(0, 0, 255);
+    }
+    #t3-color-conflict-inner {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 60px;
+      height: 20px;
+      background: rgb(255, 0, 0);
+    }
+    #t3-color-alpha {
+      left: 520px;
+      top: 620px;
+      width: 80px;
+      height: 40px;
+      background: rgba(255, 0, 0, 0.5);
+    }
+    #t3-missing-icon,
+    #t3-missing-ok {
+      top: 670px;
+      width: 20px;
+      height: 20px;
+      background: rgb(255, 0, 0);
+    }
+    #t3-missing-icon { left: 100px; }
+    #t3-missing-ok { left: 300px; }
+    #t3-flash {
+      left: 640px;
+      top: 620px;
+      width: 40px;
+      height: 40px;
+      background: rgb(0, 128, 128);
+    }
+  </style>
+</head>
+<body>
+  <!-- Row 1: pixel truth + click / drag / overlay / clock targets. -->
+  <div class="t3-box" id="t3-red" aria-label="red block" style="left:40px;top:40px;width:80px;height:60px;background:rgb(255,0,0)"></div>
+  <div class="t3-box" id="t3-blue" aria-label="blue block" style="left:160px;top:40px;width:80px;height:60px;background:rgb(0,0,255)"></div>
+  <div class="t3-box" id="t3-click" role="button" aria-label="click target" tabindex="0">0</div>
+  <div class="t3-box" id="t3-overlay" aria-label="overlay"></div>
+  <div class="t3-box" id="t3-clock" aria-label="clock" style="left:500px;top:40px;width:80px;height:20px;background:rgb(255,255,0)"></div>
+
+  <!-- Row 2: canvas / text image / drag pair / flip card / moving / disabled / inert / frame. -->
+  <canvas class="t3-box" id="t3-canvas" width="160" height="80" aria-label="two colour canvas"></canvas>
+  <canvas class="t3-box" id="t3-textimg" width="160" height="60" aria-label="text image"></canvas>
+  <div class="t3-box" id="t3-drag-source" aria-label="drag source"></div>
+  <div class="t3-box" id="t3-drop" aria-label="drop target"></div>
+  <div class="t3-box" id="t3-flip" role="button" aria-label="flip card" tabindex="0"></div>
+  <div class="t3-box" id="t3-moving" aria-label="moving target"></div>
+  <button class="t3-box" id="t3-disabled" type="button" disabled>disabled</button>
+  <div class="t3-box" id="t3-inert" inert aria-label="inert container"><button id="t3-inert-btn" type="button">inert</button></div>
+  <iframe class="t3-box" id="t3-frame" title="t3 frame" srcdoc="<!doctype html><html><body style=&quot;margin:0;background:rgb(221,238,255)&quot;><button id=&quot;t3-frame-btn&quot; style=&quot;position:absolute;left:40px;top:30px;width:80px;height:20px;border:0;padding:0;background:rgb(200,220,240)&quot;>frame</button></body></html>"></iframe>
+  <div class="t3-box" id="t3-css-patch" aria-hidden="true"></div>
+
+  <!-- Six defect containers + normal copies. -->
+  <div class="t3-box" id="t3-layout" aria-label="layout defect"></div>
+  <div class="t3-box" id="t3-layout-ok" aria-label="layout normal"></div>
+  <div class="t3-box" id="t3-occluded" aria-label="occlusion target"></div>
+  <div class="t3-box" id="t3-occluded-ok" aria-label="occlusion normal"></div>
+  <div class="t3-box" id="t3-occlude-cover" aria-label="occlusion cover"></div>
+  <div class="t3-box" id="t3-overflow" aria-label="overflow defect"><div class="t3-overflow-child"></div></div>
+  <div class="t3-box" id="t3-overflow-ok" aria-label="overflow normal"><div class="t3-overflow-child"></div></div>
+  <div class="t3-box" id="t3-truncated" aria-label="truncation defect">T3 truncation sample text that is longer than the box</div>
+  <div class="t3-box" id="t3-truncated-ok" aria-label="truncation normal">T3 truncation sample text that is longer than the box</div>
+  <div class="t3-box" id="t3-color" aria-label="colour defect"></div>
+  <div class="t3-box" id="t3-color-ok" aria-label="colour normal"></div>
+  <div class="t3-box" id="t3-color-conflict" aria-label="colour conflict"><div id="t3-color-conflict-inner"></div></div>
+  <div class="t3-box" id="t3-color-alpha" aria-label="colour alpha"></div>
+  <div class="t3-box" id="t3-missing-icon" aria-label="missing icon"></div>
+  <div class="t3-box" id="t3-missing-ok" aria-label="missing normal icon"></div>
+  <div class="t3-box" id="t3-flash" aria-label="flash target"></div>
+
+  <script>
+    /*
+     * Deterministic instrumentation + explicit scene control.
+     *
+     * `window.__t3` exists ONLY for acceptance evidence: the T3 vision tools must never read it
+     * (a page-side scene function is a test convenience, not product input). The suite reads it
+     * with browser_eval after driving the tools, and compares against the real DOM event stream
+     * (isTrusted / clientX / clientY / buttons / modifiers) rather than trusting a tool's report.
+     */
+    (function () {
+      'use strict';
+
+      var MAX_EVENTS = 300;
+      var canvas = document.getElementById('t3-canvas');
+      var textimg = document.getElementById('t3-textimg');
+      var clock = document.getElementById('t3-clock');
+      var overlay = document.getElementById('t3-overlay');
+      var cover = document.getElementById('t3-occlude-cover');
+      var layout = document.getElementById('t3-layout');
+      var overflow = document.getElementById('t3-overflow');
+      var truncated = document.getElementById('t3-truncated');
+      var colorBox = document.getElementById('t3-color');
+      var missingIcon = document.getElementById('t3-missing-icon');
+      var moving = document.getElementById('t3-moving');
+      var flash = document.getElementById('t3-flash');
+      var patch = document.getElementById('t3-css-patch');
+      var dragSource = document.getElementById('t3-drag-source');
+      var drop = document.getElementById('t3-drop');
+      var flip = document.getElementById('t3-flip');
+      var clickBox = document.getElementById('t3-click');
+
+      var zeroCounters = function () {
+        return {
+          moves: 0, downs: 0, ups: 0, clicks: 0, rightClicks: 0, middleClicks: 0,
+          dblclicks: 0, drops: 0, canvasClicks: 0, flipClicks: 0, clockToggles: 0, inertClicks: 0,
+        };
+      };
+
+      var t3 = {
+        events: [],
+        seq: 0,
+        maxEvents: MAX_EVENTS,
+        types: ['mousemove', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu'],
+        counters: zeroCounters(),
+        last: {},
+        scene: {
+          overlay: false,
+          occluder: 'none',
+          clock: 'yellow',
+          layoutX: 100,
+          overflow: 'visible',
+          truncation: 'defect',
+          colorBox: 'red',
+          missingIcon: 'present',
+          moving: false,
+          flashing: false,
+        },
+        reset: function () {
+          t3.events.length = 0;
+          t3.seq = 0;
+          t3.counters = zeroCounters();
+          t3.last = {};
+          return { events: t3.events.length, seq: t3.seq };
+        },
+        summary: function () {
+          var out = {};
+          t3.types.forEach(function (type) { out[type] = 0; });
+          t3.events.forEach(function (event) { out[event.type] = (out[event.type] || 0) + 1; });
+          return out;
+        },
+        showOverlay: function () { overlay.style.display = 'block'; t3.scene.overlay = true; },
+        hideOverlay: function () { overlay.style.display = 'none'; t3.scene.overlay = false; },
+        toggleClock: function () {
+          var next = t3.scene.clock === 'yellow' ? 'green' : 'yellow';
+          clock.style.background = next === 'yellow' ? 'rgb(255,255,0)' : 'rgb(0,255,0)';
+          t3.scene.clock = next;
+          t3.counters.clockToggles += 1;
+          return next;
+        },
+        moveLayout: function (x) {
+          layout.style.left = String(x) + 'px';
+          t3.scene.layoutX = x;
+          return layout.getBoundingClientRect().left;
+        },
+        showOccluder: function (mode) {
+          var m = mode || 'auto';
+          if (m === 'partial') {
+            cover.style.left = '150px';
+            cover.style.top = '470px';
+            cover.style.width = '50px';
+            cover.style.height = '25px';
+          } else {
+            cover.style.left = '100px';
+            cover.style.top = '470px';
+            cover.style.width = '120px';
+            cover.style.height = '40px';
+          }
+          cover.style.pointerEvents = m === 'none' ? 'none' : 'auto';
+          cover.style.display = 'block';
+          t3.scene.occluder = m;
+        },
+        hideOccluder: function () { cover.style.display = 'none'; t3.scene.occluder = 'none'; },
+        setOverflow: function (mode) {
+          var m = mode === 'auto' ? 'auto' : 'visible';
+          overflow.style.overflow = m;
+          t3.scene.overflow = m;
+        },
+        setTruncation: function (mode) {
+          var m = mode === 'clamp' ? 'clamp' : 'defect';
+          if (m === 'clamp') {
+            truncated.style.whiteSpace = 'normal';
+            truncated.style.overflow = 'hidden';
+            truncated.style.display = '-webkit-box';
+            truncated.style.webkitLineClamp = '1';
+            truncated.style.webkitBoxOrient = 'vertical';
+            truncated.style.height = '20px';
+          } else {
+            truncated.style.whiteSpace = 'nowrap';
+            truncated.style.overflow = 'hidden';
+            truncated.style.display = 'block';
+            truncated.style.webkitLineClamp = '';
+            truncated.style.webkitBoxOrient = '';
+            truncated.style.height = '20px';
+          }
+          t3.scene.truncation = m;
+        },
+        setColorBox: function (value) {
+          colorBox.style.background = value;
+          t3.scene.colorBox = value;
+        },
+        hideMissingIcon: function () { missingIcon.style.display = 'none'; t3.scene.missingIcon = 'hidden'; },
+        restoreMissingIcon: function () {
+          missingIcon.style.display = 'block';
+          missingIcon.style.background = 'rgb(255,0,0)';
+          t3.scene.missingIcon = 'present';
+        },
+        recolorMissingIcon: function () {
+          missingIcon.style.display = 'block';
+          missingIcon.style.background = 'rgb(0,0,255)';
+          t3.scene.missingIcon = 'recolored';
+        },
+        startMoving: function () {
+          if (t3.scene.moving) return;
+          t3.scene.moving = true;
+          var frame = 0;
+          var step = function () {
+            if (!t3.scene.moving) return;
+            frame = (frame + 1) % 120;
+            var offset = frame <= 60 ? frame : 120 - frame;
+            moving.style.transform = 'translateX(' + offset + 'px)';
+            window.requestAnimationFrame(step);
+          };
+          window.requestAnimationFrame(step);
+        },
+        stopMoving: function () {
+          t3.scene.moving = false;
+          moving.style.transform = 'none';
+        },
+        startFlash: function () {
+          if (t3.scene.flashing) return;
+          t3.scene.flashing = true;
+          var on = false;
+          t3.flashTimer = window.setInterval(function () {
+            on = !on;
+            flash.style.background = on ? 'rgb(255,0,255)' : 'rgb(0,128,128)';
+          }, 40);
+        },
+        stopFlash: function () {
+          t3.scene.flashing = false;
+          if (t3.flashTimer) window.clearInterval(t3.flashTimer);
+          t3.flashTimer = undefined;
+          flash.style.background = 'rgb(0,128,128)';
+        },
+        showCssPatch: function () { patch.style.display = 'block'; },
+        hideCssPatch: function () { patch.style.display = 'none'; },
+        resetScene: function () {
+          t3.stopMoving();
+          t3.stopFlash();
+          t3.hideOverlay();
+          t3.hideOccluder();
+          t3.setOverflow('visible');
+          t3.setTruncation('defect');
+          t3.setColorBox('rgb(255,0,0)');
+          t3.restoreMissingIcon();
+          t3.hideCssPatch();
+          if (t3.scene.clock !== 'yellow') {
+            t3.scene.clock = 'green';
+            t3.toggleClock();
+          }
+          t3.scene.layoutX = 100;
+          layout.style.left = '100px';
+          drawCanvas();
+          clickBox.textContent = '0';
+          flip.style.background = 'rgb(255,0,0)';
+        },
+      };
+
+      function targetId(element) {
+        if (!element || element.nodeType !== 1) return null;
+        if (element.id) return element.id;
+        var label = element.getAttribute && element.getAttribute('aria-label');
+        if (label) return 'aria:' + label;
+        var text = (element.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+        return element.tagName.toLowerCase() + (text ? ':' + text : '');
+      }
+
+      function record(event) {
+        var entry = {
+          type: event.type,
+          isTrusted: event.isTrusted === true,
+          clientX: typeof event.clientX === 'number' ? event.clientX : null,
+          clientY: typeof event.clientY === 'number' ? event.clientY : null,
+          button: typeof event.button === 'number' ? event.button : null,
+          buttons: typeof event.buttons === 'number' ? event.buttons : null,
+          detail: typeof event.detail === 'number' ? event.detail : null,
+          modifiers: {
+            ctrl: event.ctrlKey === true,
+            shift: event.shiftKey === true,
+            alt: event.altKey === true,
+            meta: event.metaKey === true,
+          },
+          target: targetId(event.target),
+          ts: Date.now(),
+        };
+        if (t3.events.length >= MAX_EVENTS) t3.events.shift();
+        t3.events.push(entry);
+        t3.seq += 1;
+        t3.last[entry.type] = entry;
+        var c = t3.counters;
+        if (entry.type === 'mousemove') c.moves += 1;
+        if (entry.type === 'mousedown') c.downs += 1;
+        if (entry.type === 'mouseup') c.ups += 1;
+        if (entry.type === 'click') c.clicks += 1;
+        if (entry.type === 'contextmenu') c.rightClicks += 1;
+        if (entry.type === 'mousedown' && entry.button === 1) c.middleClicks += 1;
+        if (entry.type === 'dblclick') c.dblclicks += 1;
+        return entry;
+      }
+
+      t3.types.forEach(function (type) {
+        window.addEventListener(type, record, true);
+      });
+
+      /* ---- deterministic page behaviour (all handlers are pure DOM, no network) ---- */
+      clickBox.addEventListener('click', function () {
+        var next = Number(clickBox.textContent || '0') + 1;
+        clickBox.textContent = String(next);
+      });
+
+      flip.addEventListener('click', function () {
+        t3.counters.flipClicks += 1;
+        var current = flip.style.background || '';
+        var isBlue = current.indexOf('0, 0, 255') !== -1 || current.indexOf('0,0,255') !== -1;
+        flip.style.background = isBlue ? 'rgb(255,0,0)' : 'rgb(0,0,255)';
+      });
+
+      var pressOrigin = null;
+      dragSource.addEventListener('mousedown', function () { pressOrigin = 't3-drag-source'; });
+      window.addEventListener('mousedown', function (event) {
+        if (event.target && event.target.id === 't3-drag-source') pressOrigin = 't3-drag-source';
+      }, true);
+      // A release anywhere else cancels the armed drag. This capture listener must NOT clear when
+      // the release lands on #t3-drop: the drop truth is recorded by the bubble handler below.
+      window.addEventListener('mouseup', function (event) {
+        var target = event.target && event.target.id;
+        if (target !== 't3-drop') pressOrigin = null;
+      }, true);
+      drop.addEventListener('mouseup', function (event) {
+        if (pressOrigin !== 't3-drag-source') return;
+        pressOrigin = null;
+        t3.counters.drops += 1;
+        t3.last.drop = {
+          type: 'drop',
+          isTrusted: event.isTrusted === true,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          target: 't3-drop',
+        };
+      });
+
+      // Inert sub-tree probe: a listener on an inert element must never fire. Any delivery proves
+      // the inert boundary was violated (this is evidence, not a product input).
+      document.getElementById('t3-inert-btn').addEventListener('click', function () {
+        t3.counters.inertClicks += 1;
+      });
+
+      canvas.addEventListener('click', function (event) {
+        t3.counters.canvasClicks += 1;
+        var rect = canvas.getBoundingClientRect();
+        var x = Math.round(event.clientX - rect.left) - 4;
+        var y = Math.round(event.clientY - rect.top) - 4;
+        var ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgb(0,0,0)';
+        ctx.fillRect(Math.max(0, Math.min(152, x)), Math.max(0, Math.min(72, y)), 8, 8);
+      });
+
+      function drawCanvas() {
+        var ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, 160, 80);
+        ctx.fillStyle = 'rgb(255,0,0)';
+        ctx.fillRect(0, 0, 80, 80);
+        ctx.fillStyle = 'rgb(0,0,255)';
+        ctx.fillRect(80, 0, 80, 80);
+      }
+
+      function drawTextImage() {
+        var ctx = textimg.getContext('2d');
+        ctx.fillStyle = 'rgb(255,255,255)';
+        ctx.fillRect(0, 0, 160, 60);
+        ctx.fillStyle = 'rgb(0,0,0)';
+        ctx.font = '24px monospace';
+        ctx.textBaseline = 'top';
+        ctx.fillText('T3 TEXT', 8, 18);
+      }
+
+      drawCanvas();
+      drawTextImage();
+
+      window.__t3 = t3;
+    })();
+  </script>
+</body>
+</html>

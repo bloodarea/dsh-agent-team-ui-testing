@@ -474,8 +474,9 @@ async function probeC1({ check, finding }) {
   try {
     const names = harness.toolNames();
     const expected = EXPECTED_TOOLS.map((tool) => tool.name);
-    check('实际注册恰好 16 个工具', names.length === 16 && JSON.stringify([...names].sort()) === JSON.stringify([...expected].sort()), {
-      expected: { count: 16, names: expected }, actual: { count: names.length, names },
+    // 22 = 9 T1 + 7 T2 + 6 T3 (docs/t3-vision.md §2.1); compared against harness EXPECTED_TOOLS.
+    check('实际注册恰好 22 个工具', names.length === expected.length && JSON.stringify([...names].sort()) === JSON.stringify([...expected].sort()), {
+      expected: { count: expected.length, names: expected }, actual: { count: names.length, names },
     });
     const problems = [];
     for (const tool of EXPECTED_TOOLS) {
@@ -489,7 +490,7 @@ async function probeC1({ check, finding }) {
       if (typeof definition.description !== 'string' || !definition.description.trim()) problems.push(`${tool.name}: description 为空`);
       if (typeof definition.execute !== 'function') problems.push(`${tool.name}: execute 不是函数`);
     }
-    check('16 个工具的 parameters/required/execute/description 与契约 §2.2 一致', problems.length === 0, { expected: [], actual: problems });
+    check('22 个工具的 parameters/required/execute/description 与契约 §2.2/§2.1 一致', problems.length === 0, { expected: [], actual: problems });
 
     const rawCdp = names.filter((name) => /cdp|devtools|protocol|runtime\.|page\./i.test(name));
     check('没有暴露原始 CDP/协议命令工具', rawCdp.length === 0, { expected: [], actual: rawCdp });
@@ -511,8 +512,8 @@ async function probeC1({ check, finding }) {
     });
     const caps = await call(harness, 'browser_capabilities', {}, execOf());
     const toolEntries = (caps.value?.capabilities || []).filter((item) => item.tool);
-    check('capabilities 覆盖全部 16 个工具（含 7 个 T2）', toolEntries.length === 16 && EXPECTED_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
-      expected: { count: 16 }, actual: toolEntries.map((item) => `${item.tool}:${item.status}`),
+    check('capabilities 覆盖全部 22 个工具（含 7 个 T2 + 6 个 T3）', toolEntries.length === EXPECTED_TOOLS.length && EXPECTED_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
+      expected: { count: EXPECTED_TOOLS.length }, actual: toolEntries.map((item) => `${item.tool}:${item.status}`),
     });
     finding({ id: 'C1-param-validation-before-start', severity: 'info', summary: '纯参数校验先于 ensure/派发（INVALID_ARGUMENT 后 running 仍为 false）已由 browser_state 实测确认。' });
   } finally {
@@ -551,9 +552,22 @@ async function probeC2({ check, finding }) {
     });
     const structured = capabilities.find((item) => item.id === 'web.t2.structured-dom');
     check('web.t2.structured-dom 单独 available', structured?.status === 'available' && !structured?.tool, { expected: { status: 'available' }, actual: structured });
-    check('T3/T4 仍 unsupported 且没有同名工具', ['t3', 't4'].every((tier) => capabilities.some((item) => item.id.toLowerCase().includes(tier) && item.status === 'unsupported'))
-      && capabilities.filter((item) => /t3|t4/.test(item.id.toLowerCase())).every((item) => !item.tool), {
-      expected: 'T3/T4 unsupported, no tool', actual: capabilities.filter((item) => /t3|t4/.test(item.id.toLowerCase())),
+    // T3 is implemented (docs/t3-vision.md §11): six tool projections + the static-vision aggregate
+    // are available; T4 still has no tool and stays unsupported. Strictly stronger than the pre-T3
+    // "T3/T4 unsupported" assertion.
+    const expectedT3Caps = [
+      ['web.t3.image', 'browser_vision_image'], ['web.t3.find', 'browser_vision_find'],
+      ['web.t3.compare', 'browser_vision_compare'], ['web.t3.act', 'browser_vision_act'],
+      ['web.t3.baseline', 'browser_vision_baseline'], ['web.t3.check', 'browser_vision_check'],
+    ];
+    const t3Problems = expectedT3Caps.filter(([id, tool]) => !capabilities.some((item) => item.id === id && item.tool === tool && item.status === 'available'));
+    const t3Aggregate = capabilities.find((item) => item.id === 'web.t3.static-vision');
+    const t4Entries = capabilities.filter((item) => /t4/i.test(item.id));
+    check('六项 web.t3.* 与 static-vision 聚合 available，T4 仍 unsupported 且没有同名工具',
+      t3Problems.length === 0 && t3Aggregate?.status === 'available' && !t3Aggregate?.tool
+        && t4Entries.length > 0 && t4Entries.every((item) => item.status === 'unsupported' && !item.tool), {
+      expected: [...expectedT3Caps.map(([id]) => `${id}:available`), 'web.t3.static-vision:available', 'T4 unsupported, no tool'],
+      actual: { problems: t3Problems, aggregate: t3Aggregate, t4: t4Entries },
     });
     const description = harness.tools.get('browser_capabilities')?.description || '';
     check('browser_capabilities 描述已覆盖 T1/T2（不再只说 Web T1）', /T1\s*\/\s*T2|T1\+T2|T1 和 T2|T1\/T2|T1与T2/i.test(description), {
@@ -2653,7 +2667,7 @@ async function probeC37({ harness, check, finding }) {
       problems.push({ tool: name, phase: 'render', issue: String(error?.message || error).slice(0, 160) });
     }
   }
-  check('16 个工具的成功值 + render 全部通过宿主 lossless 校验（无 undefined/NaN/-0）', problems.length === 0, { expected: [], actual: problems });
+  check('16 个 T1/T2 工具的成功值 + render 全部通过宿主 lossless 校验（无 undefined/NaN/-0）', problems.length === 0, { expected: [], actual: problems });
   const surfaceProblems = T1_SURFACE.filter((tool) => {
     const definition = harness.tools.get(tool.name);
     if (!definition) return true;
@@ -2668,7 +2682,7 @@ async function probeC37({ harness, check, finding }) {
     outputs.push({ name, ok: result.ok });
   }
   const allOk = outputs.every((item) => item.ok);
-  check('16 个工具连续调用两次均成功（无状态污染）', allOk, { expected: 'all ok', actual: outputs.filter((item) => !item.ok) });
+  check('16 个 T1/T2 工具连续调用两次均成功（无状态污染）', allOk, { expected: 'all ok', actual: outputs.filter((item) => !item.ok) });
   finding({ id: 'C37-external-suites', severity: 'info', summary: 'T1/HTTP/帧/安全主验收、runtime-faults、workspace-isolation、Skill/registry 由独立命令执行，结果记录在实施报告（本条只覆盖本进程内的 16 工具 lossless 与 T1 注册面）。' });
 }
 
@@ -2885,7 +2899,7 @@ async function main() {
 
   const probes = [
     { id: 'C1-registration', criteria: 1, title: '注册面 16 工具与参数校验', expected: '恰好 16 工具、required 与 §2.2 一致、纯参数错误 INVALID_ARGUMENT 且不启动浏览器', body: (ctx) => probeC1(ctx) },
-    { id: 'C2-cold-capabilities', criteria: 2, title: '冷启动能力报告', expected: '仅 state/capabilities 即可读 16 工具事实、web.t2.* 与 structured-dom available、T3/T4 unsupported、limits.structuredGui 正确', body: (ctx) => probeC2(ctx) },
+    { id: 'C2-cold-capabilities', criteria: 2, title: '冷启动能力报告', expected: '仅 state/capabilities 即可读 22 工具事实、web.t2.* 与 structured-dom available、web.t3.* 与 static-vision available、T4 unsupported、limits.structuredGui 正确', body: (ctx) => probeC2(ctx) },
     { id: 'C3-workspace-isolation', criteria: 3, title: '工作区隔离（page/ref/lease/network）', expected: '跨 workspace 的 ref 在另一侧 REF_STALE 且互不影响', body: (ctx) => probeC3(ctx) },
     { id: 'C4-semantic-snapshot', criteria: 4, title: '语义快照结构', expected: '标题/列表/表格/同名按钮/顺序保留、refs 与树一一对应、隐藏内容排除', body: (ctx) => probeC4({ harness, ...ctx }) },
     { id: 'C5-stable-digest', criteria: 5, title: '稳定摘要与 ref 复用', expected: '连续捕获 tree/digest 相同、snapshotId 递增、ref 复用且 provenance 为 minted', body: (ctx) => probeC5({ harness, ...ctx }) },
