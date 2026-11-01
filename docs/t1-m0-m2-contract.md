@@ -3,6 +3,8 @@
 > 索引：[index.md](index.md) · 更新于 2026-10-31（第 4 轮：独立 HTTP API 收口 + 输入/状态/清理修复）· 当前阶段：主机侧 `run.mjs` **22/22 组、303/303 必需项、0 failed/skip、exit=0**（Lead 独立复跑，报告 `runs/2026-10-31T13-08-56-816Z-277736/run-report.json`）；故障注入 16/16（连跑 3 次）；隔离宿主 `verify-3081` **22/22 PASS、exit=0**（报告 `runs/host-3081-1793452433416/report.json`）；真实 Agent 会话内第九工具调用与 provider 图像可见性 NOT_RUN。
 
 > **T2 说明（2026-11-01）**：第 6 轮已实现 Web T2 结构化 GUI（工具面 9 → 16），本文保留 T1 M0–M2 契约与历史验收，不重写。T2 契约见 [t2-structured-gui.md](t2-structured-gui.md)，现行能力/验收以 [status.md](status.md) 与运行注册表为准。
+>
+> **第 8 轮网络 P0（2026-11-01）见 [network-p0.md](network-p0.md)**：新增 7 个 `browser_network_*`（工具面 22 → 29，本文的 T1 九工具参数/返回/语义不变），网络采集/分析/链路/控制/证据/订阅的现行契约与验收口径以该文为准，本文不重写。
 
 本文是 [t1-issues-and-solutions.md](t1-issues-and-solutions.md) 推荐 M0–M2 的现行契约（该文已按「已解决/部分解决/未解决」重排）。旧审计见 [t1-infrastructure-audit.md](t1-infrastructure-audit.md)，其中旧工具数量、缺陷和运行实例状态仅代表历史快照。新结果必须附实际命令与输出后才能标为通过，不以本契约或静态 manifest 代替实测。
 

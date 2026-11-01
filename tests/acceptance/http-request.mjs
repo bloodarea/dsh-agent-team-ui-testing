@@ -16,7 +16,7 @@ import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
 import zlib from 'node:zlib';
-import { createHarness, scanPluginChromeProcesses, snapshotProfileDirs } from './harness.mjs';
+import { EXPECTED_TOOLS, createHarness, scanPluginChromeProcesses, snapshotProfileDirs } from './harness.mjs';
 
 const DSH_ROOT = process.env.DSH_ROOT || '<local-path>/.local/share/node/lib/node_modules/@deepseek-ai/dsh';
 const DSH_MODULES = join(DSH_ROOT, 'node_modules', '@deepseek-ai');
@@ -143,9 +143,11 @@ export async function httpRequestProbe({ check, finding, fixture }) {
   try {
     // --- P22.1 registration + defaults -----------------------------------------------------
     const names = harness.toolNames();
-    // 22 = 9 T1 + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1); the
+    // 29 = 9 T1 + 7 T2 + 6 T3 + 7 network (docs/network-p0.md §2); the count comes from the
+    // harness EXPECTED_TOOLS table so a new group cannot drift silently.
     // independent HTTP primitive must stay registered next to them and keep its own defaults.
-    check('P22.1 注册表恰有 22 个工具且含 browser_http_request', names.length === 22 && names.includes('browser_http_request'), { names });
+    check(`P22.1 注册表恰有 ${EXPECTED_TOOLS.length} 个工具且含 browser_http_request`,
+      names.length === EXPECTED_TOOLS.length && names.includes('browser_http_request'), { names, expected: EXPECTED_TOOLS.length });
     const health = await httpTool({ url: fixture.url + 'health' });
     check('P22.1 默认参数：GET/200/utf8/bodyBytes/无截断/无重定向',
       health.ok === true && health.value.status === 200 && health.value.method === 'GET'

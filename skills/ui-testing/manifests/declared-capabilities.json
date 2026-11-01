@@ -153,12 +153,12 @@
     ],
     "tiers_unchanged": "T3/T4 unsupported; no visual diff, thresholds, VLM or temporal analysis"
   },
-  "notice": "开发事实快照，不是运行时可用性声明。**注册表与 browser_capabilities 的实际结果优先于本文件与任何静态文档**。工具面 22 个 = T1 9 个（含独立 HTTP browser_http_request）+ T2 7 个（browser_snapshot/click/type/scroll/fill_form/node_state/wait_for）+ T3 6 个（browser_vision_image/find/compare/act/baseline/check）。T2 接口按 docs/t2-structured-gui.md（契约权威），当前为**优化构建**（快照冗余文本压缩 + `browser_scroll` 不自动滚入/稳定性硬化）：进程内套件 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json` 探针 38（pass 37 / fail 0 / notRun 1 = C38 套件边界）、必需检查 **260/260**、exit 0；真实宿主记录 `tests/acceptance/evidence/t2-real-host-2026-11-01.md` 的 14 行检查属**优化前构建**（pid <pid>，10:40:04 重载），已标「待真实宿主定向复验」，不得写成优化后已验。因此 7 个 web.t2.* 与聚合项 web.t2.structured-dom 记 verified（限于进程内 260 项 + 优化前真实宿主 14 行覆盖的行为）；未验证：优化构建的真实宿主定向复验 5 项、provider 图像可见性、仅 advisory 覆盖的 closed-shadow 不产生 ref 分支。 T3 静态视觉已实现并通过进程内验收：`tests/acceptance/t3-vision.mjs` criteria 56/56、requiredChecks **389/389**、failedChecks 0、notApplicable 3（均带 reason）、exit 0（报告 `tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json`，执行者复跑 `tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json` 同结果）；6 个 web.t3.* 与聚合项 web.t3.static-vision 记 verified。**真实宿主重载、provider 图像可见性、T4 与上述 3 条 N/A 仍未验证**，不得由进程内套件推定。",
+  "notice": "开发事实快照，不是运行时可用性声明。**注册表与 browser_capabilities 的实际结果优先于本文件与任何静态文档**。工具面 29 个 = T1 9 个（含独立 HTTP browser_http_request）+ T2 7 个（browser_snapshot/click/type/scroll/fill_form/node_state/wait_for）+ T3 6 个（browser_vision_image/find/compare/act/baseline/check）+ 网络 P0 7 个（browser_network_session/events/detail/trace/control/evidence/subscribe）。T2 接口按 docs/t2-structured-gui.md（契约权威），当前为**优化构建**（快照冗余文本压缩 + `browser_scroll` 不自动滚入/稳定性硬化）：进程内套件 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json` 探针 38（pass 37 / fail 0 / notRun 1 = C38 套件边界）、必需检查 **260/260**、exit 0；真实宿主记录 `tests/acceptance/evidence/t2-real-host-2026-11-01.md` 的 14 行检查属**优化前构建**（pid <pid>，10:40:04 重载），已标「待真实宿主定向复验」，不得写成优化后已验。因此 7 个 web.t2.* 与聚合项 web.t2.structured-dom 记 verified（限于进程内 260 项 + 优化前真实宿主 14 行覆盖的行为）；未验证：优化构建的真实宿主定向复验 5 项、provider 图像可见性、仅 advisory 覆盖的 closed-shadow 不产生 ref 分支。 T3 静态视觉已实现并通过进程内验收：`tests/acceptance/t3-vision.mjs` criteria 56/56、requiredChecks **389/389**、failedChecks 0、notApplicable 3（均带 reason）、exit 0（报告 `tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json`，执行者复跑 `tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json` 同结果）；6 个 web.t3.* 与聚合项 web.t3.static-vision 记 verified。**真实宿主重载、provider 图像可见性、T4 与上述 3 条 N/A 仍未验证**，不得由进程内套件推定。 网络 P0（第 8 轮，docs/network-p0.md 为权威契约）：工具面 22 → 29，新增 7 个 browser_network_*（session/events/detail/trace/control/evidence/subscribe）与聚合 web.network.p0，覆盖 HTTP/HTTPS 请求响应与头/体（按需、配额截断、读不到 available:false 不伪造）、WebSocket 双向帧、SSE、same-origin iframe 与 dedicated worker、统一时间轴与分析聚合、业务步骤链路、拦截/限速/断连/重放/Mock、JSONL+HAR 证据与多 Agent 独立订阅；旧 22 工具语义不变（截图只新增 capture.networkWindow，capture.version 仍 1）。**这 7 项与聚合项记 verified**，依据 Lead 独立串行复跑（同一最终代码）：`node tests/acceptance/network-p0.mjs` → criteria 52/52（pass 52 / fail 0）、requiredChecks 266、failedChecks 0、notRunChecks 8、exit 0，报告 `tests/acceptance/runs/2026-11-01T12-27-48-770Z-370586/run-report.json`；单测 `tests/network-p0.test.mjs` 43/43。**8 条 NOT_RUN 明确不算通过**：C1 HTTPS 独立验证（无本地 TLS 靶机，`limits.network.https=\"mechanism-identical\"`）、C2 二进制 body（靶机无二进制路由）、C5 service worker 采集（R1-21：attach 会暂停并破坏 register()；能力报 subTargets.service_worker=\"not-collected\"，shared_worker 同样 not-collected，OOPIF partial 未单独验证）、C20 单样本 p95（U 覆盖）、C35 被淘汰 body 三态（U 覆盖）、C37 modify-response（responseModification=false）、C52 外部四套件（由 T1 23/23+347/347、T2 37/38+1 NOT_RUN+261/261、T3 56/56+391/391、capture-p0 14/14+142/142 报告代证）、C52 真实宿主。**真实宿主 3080 未重启**（pid <pid>，17:24:28 启动早于本轮 index.js/network-p0.js 变更），重启后的网络冒烟、provider 与长连接稳定性仍 NOT_RUN；进程内套件不能替代真实宿主验收。",
   "platform": "web",
   "tier": "T1+T2+T3",
   "runtime_authority": "Agent 当前工具注册表决定可调用名字；browser_capabilities 根据实际运行态返回 available/unavailable/unsupported；browser_state 只诊断运行态。静态 tier/台账/本 manifest 都不构成可用性证明。",
   "source": "接口与限额来自 docs/t2-structured-gui.md §2/§3/§4/§5/§6（Lead 裁决的权威契约）；T1 事实来自 index.js 注册表与 Runtime 实现；不使用漂移行号",
-  "evidence": "【T3 静态视觉（verified）】`node tests/acceptance/t3-vision.mjs`（Lead 串行复跑，同一最终代码）→ `tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json`：criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0；执行者复跑 `tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json` 同结果。回归：T1 `run.mjs` 22/22、324/324（`2026-11-01T07-31-29-210Z-168725`）；T2 `t2-structured.mjs` 37/38+1 NOT_RUN（C38 套件边界）、260/260（`2026-11-01T07-33-10-505Z-170262`）；P0 `capture-p0.mjs` 14/14、142/142（`capture-p0-2026-11-01T07-35-21-142Z-176846`）；单测 vision 36/36 + 基线 52/52、capture 26/26、runtime-faults 16/16；check-skill 26/26、registry 17/17。未验证：真实宿主重载、provider 图像可见性、T4、3 条 N/A（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups）、本地 TOCTOU/网络 FS CAS。【历史】以下 T2/T1/P0 记录保持原文（T2 优化构建时点，工具面当时为 16）。 T2 优化构建（进程内，Lead 独立复跑 exit 0）: node tests/acceptance/t2-structured.mjs → `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`：probes 38（pass 37 / fail 0 / notRun 1 = C38 §9.38）、requiredChecks **260/260**（此前 233；C4 24、C6 8、C25 18、C26 8）、criteriaCovered 38、findings 5（info/advisory）、exit 0。优化效果（同一 /web-t2.html、默认参数，两次捕获 tree/digest 一致）：nodeCount 421→275（−34.7%）、tree UTF-8 14432→9254（−35.9%）、`- text` 行 232→91。T1 回归: node tests/acceptance/run.mjs → `tests/acceptance/runs/2026-11-01T03-41-59-200Z-41002/run-report.json`：22/22 探针、324/324、findings 1（info: P20 unmodifiedText INCONCLUSIVE）、exit 0。runtime-faults 16/16、check-skill 25/25、check-skill-registry 17/17（均 exit 0）；`node --check` 与 `git diff --check` 通过（Lead 记录）。T2 真实宿主: `tests/acceptance/evidence/t2-real-host-2026-11-01.md` **14/14 检查行通过，但属优化前构建（pid <pid>）**；同文件已追加「优化构建复验（待真实宿主重载）」小节，列出待定向复验 5 项。历史真实宿主/套件：`runs/2026-10-31T19-25-29-077Z-54114`（233/233，优化前）、`runs/2026-10-31T19-26-07-741Z-55458`（T1 324/324）、团队复跑 `runs/2026-10-31T19-21-26-010Z-49307`、`runs/2026-10-31T19-22-02-871Z-50749`。注册面/能力报告实测（真实 Cordis + 真 SkillRegistry 挂载 index.js，未启动 Chromium）：注册 16 个工具；capabilities 返回 22 项能力与 limits.structuredGui。",
+  "evidence": "【网络 P0（verified）】`node tests/acceptance/network-p0.mjs`（Lead 独立串行，同一最终代码）→ `tests/acceptance/runs/2026-11-01T12-27-48-770Z-370586/run-report.json`：criteriaTotal 52 / covered 52 / passed 52 / failed 0、requiredChecks 266、failedChecks 0、notRunChecks 8、exit 0；单测 `network-p0.test.mjs` 43/43。非回归同一时点：T1 `run.mjs` 23/23、347/347（`2026-11-01T12-39-01-545Z-382567`）；T2 `t2-structured.mjs` 37/38 + 1 NOT_RUN、261/261（`2026-11-01T12-40-39-213Z-384724`）；T3 `t3-vision.mjs` 56/56、391/391、notApplicable 3（`2026-11-01T12-43-30-666Z-391625`）；`capture-p0.mjs` 14/14、142/142（`capture-p0-2026-11-01T12-42-03-957Z-388489`）；runtime-faults 16/16、workspace-isolation 77/77、check-skill 27/27、registry 19/19；`node --check`/`git diff --check` 干净。未验证：真实宿主重启后网络冒烟与 provider/长连接稳定性（NOT_RUN）、C1 HTTPS、C2 二进制 body、C5 service worker、C20 单样本 p95、C35 淘汰 body 三态、C37 modify-response、OOPIF 未单独验证。 【T3 静态视觉（verified）】`node tests/acceptance/t3-vision.mjs`（Lead 串行复跑，同一最终代码）→ `tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json`：criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0；执行者复跑 `tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json` 同结果。回归：T1 `run.mjs` 22/22、324/324（`2026-11-01T07-31-29-210Z-168725`）；T2 `t2-structured.mjs` 37/38+1 NOT_RUN（C38 套件边界）、260/260（`2026-11-01T07-33-10-505Z-170262`）；P0 `capture-p0.mjs` 14/14、142/142（`capture-p0-2026-11-01T07-35-21-142Z-176846`）；单测 vision 36/36 + 基线 52/52、capture 26/26、runtime-faults 16/16；check-skill 26/26、registry 17/17。未验证：真实宿主重载、provider 图像可见性、T4、3 条 N/A（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups）、本地 TOCTOU/网络 FS CAS。【历史】以下 T2/T1/P0 记录保持原文（T2 优化构建时点，工具面当时为 16）。 T2 优化构建（进程内，Lead 独立复跑 exit 0）: node tests/acceptance/t2-structured.mjs → `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`：probes 38（pass 37 / fail 0 / notRun 1 = C38 §9.38）、requiredChecks **260/260**（此前 233；C4 24、C6 8、C25 18、C26 8）、criteriaCovered 38、findings 5（info/advisory）、exit 0。优化效果（同一 /web-t2.html、默认参数，两次捕获 tree/digest 一致）：nodeCount 421→275（−34.7%）、tree UTF-8 14432→9254（−35.9%）、`- text` 行 232→91。T1 回归: node tests/acceptance/run.mjs → `tests/acceptance/runs/2026-11-01T03-41-59-200Z-41002/run-report.json`：22/22 探针、324/324、findings 1（info: P20 unmodifiedText INCONCLUSIVE）、exit 0。runtime-faults 16/16、check-skill 25/25、check-skill-registry 17/17（均 exit 0）；`node --check` 与 `git diff --check` 通过（Lead 记录）。T2 真实宿主: `tests/acceptance/evidence/t2-real-host-2026-11-01.md` **14/14 检查行通过，但属优化前构建（pid <pid>）**；同文件已追加「优化构建复验（待真实宿主重载）」小节，列出待定向复验 5 项。历史真实宿主/套件：`runs/2026-10-31T19-25-29-077Z-54114`（233/233，优化前）、`runs/2026-10-31T19-26-07-741Z-55458`（T1 324/324）、团队复跑 `runs/2026-10-31T19-21-26-010Z-49307`、`runs/2026-10-31T19-22-02-871Z-50749`。【历史，T2 时点】注册面/能力报告实测（真实 Cordis + 真 SkillRegistry 挂载 index.js，未启动 Chromium）：注册 16 个工具；capabilities 返回 22 项能力与 limits.structuredGui；第 8 轮后注册面为 29。",
   "observations": [
     {
       "id": "t2-suite-green",
@@ -697,6 +697,61 @@
         "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
         "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
       }
+    },
+    {
+      "id": "web.network.session",
+      "status": "verified",
+      "tool": "browser_network_session",
+      "source_lines": "Runtime 网络会话管理（契约 docs/network-p0.md） §2.1",
+      "constraints": "action 必填 start|stop|status|reset；唯一的网络懒启动动作（仅 start）；同名 start 幂等 changed:false，运行中不同名 NET_SESSION_ACTIVE；status/reset 不启动浏览器；reset 只清内存并关闭本 scope 全部订阅（磁盘证据不动）；config 仅 start 生效（captureBodies/captureWebSocket/captureSse/captureWorkers、maxEvents/maxBodyBytes/maxTotalBytes/maxWsFrames、businessStatusPath、maskRules≤16）；启动走该工作区串行队列与 single-owner-lease，其他 owner 占用 BUSY。状态为验收前工程状态，Lead 复跑 network-p0.mjs 后再改 verified。 子目标采集按 R1-21：same-origin iframe + dedicated worker 已实证；OOPIF partial（未单独验证）；shared/service worker 不采集（attach 会暂停 SW 并破坏 register()），能力报 subTargets={workers:'page-attached',shared_worker:'not-collected',service_worker:'not-collected',oopif:'partial',partial:true,reason}，C5 的 service worker 子项 NOT_RUN。"
+    },
+    {
+      "id": "web.network.events",
+      "status": "verified",
+      "tool": "browser_network_events",
+      "source_lines": "网络事件读取/筛选/检索/聚合（契约 docs/network-p0.md） §2.2、§5",
+      "constraints": "只读、不启动浏览器、不加页面租约；view=summary|full|timeline|aggregate；limit 1–200（默认 50）；cursor 不透明且与 sinceSeq 二选一，指向已淘汰 seq 返回 gap；filter/search/groupBy/aggregate 上限公开；search 命中 body/ws/sse 只回脱敏预览片段，不回显原值；单次响应上限 200 条并置 truncated + cursor.next。"
+    },
+    {
+      "id": "web.network.detail",
+      "status": "verified",
+      "tool": "browser_network_detail",
+      "source_lines": "按 requestId/seq 取完整详情与按需 body（契约 docs/network-p0.md） §2.3",
+      "constraints": "requestId 与 seq 恰一；include 默认除 body 外全部；body 三态 captured|empty|unavailable，读不到即 available:false（NET_BODY_UNAVAILABLE），不伪造空体、不重试、不 ensure、不从旧缓冲补读；二进制 base64 且受 maxBodyBytes 截断并标 truncated；timing 缺项为 null 不给 0；hops 支持逐跳 detail；找不到 requestId/seq → NET_EVENT_NOT_FOUND。 C2 的二进制 body base64 子项与 C35 的「被配额淘汰 body 三态」子项在验收报告记 NOT_RUN（U 类由 tests/network-p0.test.mjs 覆盖）。"
+    },
+    {
+      "id": "web.network.trace",
+      "status": "verified",
+      "tool": "browser_network_trace",
+      "source_lines": "业务步骤/对象提取传递/跨请求关联/因果/证据链接（契约 docs/network-p0.md） §2.4、§6",
+      "constraints": "action 必填 begin-step|end-step|mark|link|window|query|reset，全部为 Host 内存操作、不启动浏览器；窗口内事件按 wallMs 派生 stepId（basis:temporal）且不改写事件；stepIds 显式链接与派生 stepId 并存；includeTemporal 默认 false（temporal 不作为因果回报）；同名步骤 NET_RULE_CONFLICT；步骤上限 200；对象传递只按显式规则、无命中不报。"
+    },
+    {
+      "id": "web.network.control",
+      "status": "verified",
+      "tool": "browser_network_control",
+      "source_lines": "拦截/改写/限速/断连/重放/Mock（契约 docs/network-p0.md） §2.5、§7",
+      "constraints": "action 必填；需要 page 的动作自行懒启动；throttle 与 offline 为组合状态（Kbps=1024bit/s，0=不限速），统一 Network.emulateNetworkConditions；规则≤32、同 id NET_RULE_CONFLICT、按顺序先命中先生效；hold≤64，超时自动 continue 并计 NET_CONTROL_TIMEOUT（不抛错）；Fetch.enable 只有一份配置，Document 导航守卫与用户规则共用单一 dispatcher，每请求恰好一次终结；reset 恢复网络条件并放行 held 但不得 Fetch.disable；modify-response 仅在 Chrome 实测支持 Fetch.continueResponse 时可用，否则如实报不支持（C37 子项 NOT_RUN）。 C37 的 modify-response 子项 NOT_RUN（能力报 responseModification=false，CDP 不支持 Fetch.continueResponse）；C38/C39/C40 由 B 类实证。"
+    },
+    {
+      "id": "web.network.evidence",
+      "status": "verified",
+      "tool": "browser_network_evidence",
+      "source_lines": "JSONL/HAR 导入导出、索引检索、链接与完整性（契约 docs/network-p0.md） §2.6、§8",
+      "constraints": "action 必填 export|import|index|search|link|integrity|clear|list；全部动作不启动浏览器；JSONL 为保真格式（每行一条标准化事件，导入保留 seq 空洞并置 complete:false），HAR 只保证 1.2 子集且未知数值用 -1；导出只回相对路径且必须在持久根内（NET_OUTPUT_ROOT_UNKNOWN/NET_OUTPUT_PATH_INVALID，0600/no-clobber）；import 生成 state:snapshot 离线会话，可分析/再导出但不可 control/replay（NET_CONTROL_UNAVAILABLE）；坏 HAR→NET_HAR_INVALID，坏行计入 skippedLines；integrity.complete 仅当 dropped/evicted/truncated 全 0 且无 gap。 C41–C44 由 B/U 类实证；JSONL 保真、HAR 仅 1.2 子集。"
+    },
+    {
+      "id": "web.network.subscribe",
+      "status": "verified",
+      "tool": "browser_network_subscribe",
+      "source_lines": "多 Agent 共享采集与独立订阅游标（契约 docs/network-p0.md） §2.7、§8.7",
+      "constraints": "action 必填 create|poll|ack|close|list；订阅者=调用方 agent 会话；每 scope 活动订阅上限 16、pin 硬上限 1000、poll limit 1–200；ack 前不丢只限 pin 预算内，超出给 gap/dropped 计数绝不静默，也不淘汰其他订阅已 pin 的事件；cursor/afterSeq 不得低于已投递水位、ackSeq 不得越过已交付边界（均 NET_RULE_INVALID）；他人订阅只报 NET_SUBSCRIPTION_FORBIDDEN；订阅不阻塞采集（背压只体现为 pin/dropped 计数与 integrity issue）。"
+    },
+    {
+      "id": "web.network.p0",
+      "status": "verified",
+      "source_lines": "网络 P0 聚合能力（采集/时序/分析/链路/控制/证据/订阅）+ docs/network-p0.md §1、§12、§13",
+      "constraints": "聚合声明：7 个 browser_network_* 工具面 22→29 后的网络层，旧 22 工具参数/返回/语义不变；只读/离线动作不启动浏览器（session.start 与需 page 的 control 才懒启动），session/control 变更走该工作区队列与 single-owner-lease；默认脱敏、配额与完整性计数公开、跨 scope 拒绝、订阅 owner-only；边界：G1.5 为 partial（popup 被既有目标策略阻断，无多标签/popup 采集）、HTTPS 未独立验收（能力报 https:\"mechanism-identical\"）、responseModification 条件支持、不做 MITM/CA/真实限速、HAR 仅 1.2 子集；真实宿主重启后的网络采集冒烟仍 NOT_RUN，进程内套件通过不得写成真实宿主已验证。 验收：Lead 独立串行 network-p0.mjs criteria 52/52（pass 52/fail 0）、requiredChecks 266、failedChecks 0、notRunChecks 8、exit 0，报告 tests/acceptance/runs/2026-11-01T12-27-48-770Z-370586/run-report.json；单测 43/43。8 条 NOT_RUN：C1 HTTPS、C2 二进制 body、C5 service worker、C20 单样本 p95、C35 淘汰 body 三态、C37 modify-response、C52 外部四套件（由 T1/T2/T3/capture-p0 报告代证）、C52 真实宿主。真实宿主 3080 未重启（pid <pid>，17:24:28 启动早于本轮变更），网络冒烟仍 NOT_RUN。"
     },
     {
       "id": "web.t4.dynamic-vision",

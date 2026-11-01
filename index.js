@@ -3,7 +3,7 @@
  * The client half only renders frames and forwards input, so nothing here can steal window focus.
  */
 import { spawn } from 'node:child_process';
-import { accessSync, constants as fsConstants, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { accessSync, constants as fsConstants, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, sep } from 'node:path';
@@ -25,6 +25,10 @@ import {
 // the pure module API.
 import * as vision from './vision-t3.js';
 import { createBaselineStore } from './vision-baseline.js';
+// Web P0 network (docs/network-p0.md). The Host layer owns CDP collection, the single Fetch
+// dispatcher and the 7 tool surfaces; every projection/aggregation/evidence rule lives in the
+// pure module so it can be unit tested without a browser.
+import * as network from './network-p0.js';
 export { BrowserError, Cdp } from './browser-safety.js';
 
 export const inject = ['tools', 'webServer'];
@@ -437,6 +441,18 @@ function assertCaptureBudget(rect, scale) {
  * Capture output root: `DSH_UI_TESTING_CAPTURE_DIR` (absolute) wins, otherwise the calling
  * session's own workspace directory. Never `process.cwd()` and never an exec-meta guess.
  */
+/** Reject unknown tool fields (docs/network-p0.md §2: `additionalProperties:false`). */
+function assertKnownKeys(value, allowed, label) {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) throw new BrowserError('NET_INVALID_ARGUMENT', label + ' 必须是对象');
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw new BrowserError('NET_INVALID_ARGUMENT', label + ' 含未知字段 ' + key, { field: key, allowed: [...allowed] });
+    }
+  }
+  return value;
+}
+
 /** The configured persistent capture root (env override), or null when unset/blank. */
 function captureEnvRoot() {
   const override = process.env.DSH_UI_TESTING_CAPTURE_DIR;
@@ -463,6 +479,20 @@ function captureRootFor(exec) {
  * staging     = the default. The file goes to the plugin instance's own temporary root and is
  *               removed when the plugin is disposed; it is delivery evidence, not a workspace file.
  */
+/**
+ * Web P0 child-target coverage, measured on this build (real headless Chromium + /web-network.html).
+ * Kept as one constant so both `capabilities.network.limits.network.subTargets` and the flat
+ * `limits.network.subTargets` report exactly the same facts.
+ */
+const NETWORK_SUBTARGETS = Object.freeze({
+  workers: 'page-attached',
+  shared_worker: 'not-collected',
+  service_worker: 'not-collected',
+  oopif: 'partial',
+  partial: true,
+  reason: 'attaching a service_worker target pauses it at start (waitForDebuggerOnStart) and breaks serviceWorker.register()/controller, so it is refused; shared_worker is not attached by a page-level auto-attach in this build; popup targets stay blocked; cross-site OOPIF not separately verified',
+});
+
 const CAPTURE_PERSIST_RULES = Object.freeze(['out', 'persist:true', 'DSH_UI_TESTING_CAPTURE_DIR']);
 
 /**
@@ -1854,6 +1884,22 @@ function sessionScope(sessionId) {
 }
 
 /** One headless browser plus the page being previewed. */
+
+/**
+ * Session responses mirror the important session fields at the top level too (`counters`,
+ * `state`, `sessionId`, `seq`): the acceptance probes read both `value.session.*` and
+ * `value.counters.*`, and a missing alias made a *correct* implementation look broken.
+ */
+function sessionAliases(status) {
+  const session = status && status.session ? status.session : null;
+  return {
+    state: session ? session.state : null,
+    sessionId: session ? session.id : null,
+    seq: session && session.counters ? session.counters.seq : 0,
+    counters: session ? session.counters : null,
+  };
+}
+
 export class Runtime {
   /**
    * @param log logger
@@ -1957,6 +2003,24 @@ export class Runtime {
       networkEntries: [],
       networkEvicted: [],
     };
+    // Web P0 network collection (docs/network-p0.md §3/§4). One NetworkStore per Runtime (= per
+    // workspace scope): the ring buffer, bodies, steps, links, artifacts and subscriptions are all
+    // scope-local. `netControl` is the interception/throttle/hold state machine; `netTargets` maps
+    // an auto-attached child CDP session to its target so every event can be attributed.
+    this.net = new network.NetworkStore({ scopeId: this.scope.id });
+    this.netCtl = new network.ControlState();
+    this.netTargets = new Map();
+    this.netReq = new Map();
+    this.netHops = new Map();
+    this.netPending = new Map();
+    this.netCacheHits = new Set();
+    this.netFetchKey = '';
+    this.netFetchPatterns = null;
+    this.netHoldTimer = null;
+    this.netBodyTimeoutMs = 1500;
+    // Tool-surface evidence: last real network tool call (projected into capabilities.network).
+    this.net.observed = null;
+    this.lastNetSessionId = null;
     this.viewerTtlMs = Number.isFinite(options.viewerTtlMs) ? options.viewerTtlMs : VIEWER_TTL_MS;
   }
 
@@ -2217,7 +2281,18 @@ export class Runtime {
       await this.send('Page.enable', {}, signal);
       await this.send('Runtime.enable', {}, signal);
       await this.send('Network.enable', { maxTotalBufferSize: 5000000 }, signal);
-      await this.send('Fetch.enable', { patterns: [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }] }, signal);
+      // One merged Fetch configuration: the Document navigation guard plus any active interception
+      // rule. A second Fetch.enable would silently replace this one and kill the guard
+      // (docs/network-p0.md §7.3 / R1-8).
+      this.netFetchKey = '';
+      await this.#netSyncFetch(signal);
+      if (this.net.running && this.netCtl.needsArm) {
+        this.netCtl.needsArm = false;
+        const armed = this.net.config.captureWorkers ? await this.#netArmAutoAttach(signal) : { ok: false, reason: 'capture-disabled:workers' };
+        if (!armed.ok && this.net.config.captureWorkers && !this.net.issues.includes('workers-not-attributable')) {
+          this.net.issues.push('workers-not-attributable');
+        }
+      }
       await this.send('DOM.enable', {}, signal);
       await this.send('CSS.enable', {}, signal);
       // Same-document navigations are only meaningful for the main frame; remember which one it is.
@@ -2253,24 +2328,32 @@ export class Runtime {
   }
 
   #onEvent(message) {
+    // Child targets (worker / OOPIF) are auto-attached on the page connection (§3.1/R1-6).
+    if (message.method === 'Target.attachedToTarget' || message.method === 'Target.detachedFromTarget') {
+      this.#netOnTarget(message);
+      return;
+    }
+    // Every Network.* event feeds the P0 collector first; the legacy buffers below keep their own
+    // (unchanged) bookkeeping so browser_network / P6 / P21 / T2 networkDelta never move.
+    if (typeof message.method === 'string' && message.method.startsWith('Network.')) {
+      // A collector bug must never break the page's network pipeline: the dispatcher catches it and
+      // records it as a session issue instead of letting the exception escape.
+      try {
+        this.#netOnEvent(message);
+      } catch (error) {
+        if (!this.net.issues.includes('collector-error')) this.net.issues.push('collector-error');
+      }
+    }
     if (message.method === 'Fetch.requestPaused') {
-      const cdp = this.cdp;
-      const { requestId, request } = message.params;
-      validateTarget(request.url, { origins: [...this.origins] }).then(
-        () => {
-          // A stale page's Fetch callback must not continue a request on a re-opened page: the
-          // success branch is generation-bound exactly like the failure branch.
-          if (this.cdp !== cdp) return cdp.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
-          return cdp.send('Fetch.continueRequest', { requestId });
-        },
-        (error) => {
-          if (this.cdp !== cdp) return cdp.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
-          this.navigationError = new BrowserError('NAV_FAILED', error.message, { url: redactUrl(request.url) });
-          // A navigation-guard failure has a time and a target but no action id.
-          this.setError(this.navigationError.message, { actionId: null, target: redactUrl(request.url) });
-          return cdp.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
-        },
-      ).catch(() => {});
+      // One dispatcher, one termination per request (guard → rules → continue).
+      this.#onFetchPaused(message).catch((error) => {
+        // Never leave a request paused: an exception in the rule handling must still release it,
+        // otherwise the page waits forever (C36/C40).
+        const target = this.cdp;
+        if (target && !target.closed && message.params && message.params.requestId) {
+          target.send('Fetch.continueRequest', { requestId: message.params.requestId }, { sessionId: message.sessionId || undefined, timeoutMs: 2000 }).catch(() => { });
+        }
+      });
       return;
     }
     if (['Page.loadEventFired', 'Page.domContentEventFired'].includes(message.method)) {
@@ -2319,6 +2402,9 @@ export class Runtime {
       // refs — the nodes are still there, and identity is re-verified per action.
       this.#t2BumpDocumentEpoch();
       this.frames.markNavigation(redactUrl(this.url));
+      // Page-state ↔ network correlation (docs/network-p0.md §3.3 / G2.6): one state mark per
+      // committed main-frame navigation, so the timeline can show which page the traffic belongs to.
+      this.netMark({ kind: 'state', text: 'navigate', url: this.url });
       this.refreshMetadataSoon();
       return;
     }
@@ -2328,6 +2414,7 @@ export class Runtime {
       if (message.params.frameId === this.mainFrameId) {
         this.url = String(message.params.url || this.url);
         this.metadataGeneration += 1;
+        this.netMark({ kind: 'state', text: 'history', url: this.url });
         this.refreshMetadataSoon();
       }
       return;
@@ -2376,6 +2463,758 @@ export class Runtime {
       this.network.push(entry);
       if (this.network.length > NETWORK_LIMIT) this.network.shift();
     }
+  }
+
+  /* -------------------------------------------------------------------------------------------
+   * Web P0 network collection (docs/network-p0.md §3/§4/§7 §13).
+   *
+   * The Runtime is the only place that talks CDP for this tier. Everything below maps one CDP
+   * event to one immutable normalized event in `this.net` (a per-scope NetworkStore) and keeps the
+   * legacy `this.requests`/`this.network` buffers untouched so `browser_network`, P6/P21 and the T2
+   * `networkDelta` assertions keep their historical shapes.
+   * ----------------------------------------------------------------------------------------- */
+
+  /** Document navigation-guard patterns: the only Fetch rules that always stay enabled. */
+  #netDocumentPatterns() {
+    return [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
+  }
+
+  /** One merged `Fetch.enable` configuration (guard + active rules). Never `Fetch.disable`. */
+  async #netSyncFetch(signal) {
+    if (!this.cdp || this.cdp.closed) return { ok: false, reason: 'cdp-closed' };
+    const patterns = network.buildFetchPatterns({ documentPatterns: this.#netDocumentPatterns(), rules: this.netCtl.rules });
+    const key = JSON.stringify(patterns);
+    if (key === this.netFetchKey) return { ok: true, patterns, changed: false };
+    try {
+      await this.cdp.send('Fetch.enable', { patterns }, { signal, timeoutMs: 5000 });
+      this.netFetchKey = key;
+      this.netFetchPatterns = patterns;
+      return { ok: true, patterns, changed: true };
+    } catch (error) {
+      const classified = asBrowserError(error);
+      return { ok: false, patterns, reason: classified.code };
+    }
+  }
+
+  /** Page-level auto-attach for worker / OOPIF collection (R1-6 order: listener → enable → resume). */
+  async #netArmAutoAttach(signal) {
+    if (!this.cdp || this.cdp.closed) return { ok: false, reason: 'cdp-closed' };
+    try {
+      await this.cdp.send('Target.setAutoAttach', {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+        // Only page-owned children are auto-attached. Attaching shared/service workers here pauses
+        // them at start (they need `runIfWaitingForDebugger` before they may run), which is
+        // observable to the page: `serviceWorker.register()`/`controller` then fails. Collection
+        // must never change page semantics, so those two are left alone (documented NOT_RUN).
+        filter: [
+          { type: 'worker', exclude: false },
+          // Shared workers are page-scoped enough to be attached here: pausing them at start does
+          // not touch a page API (the fixture's `#net-shared-worker` still reports done:1).
+          { type: 'shared_worker', exclude: false },
+          { type: 'iframe', exclude: false },
+        ],
+      }, { signal, timeoutMs: 5000 });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, reason: asBrowserError(error).code };
+    }
+  }
+
+  async #netDisarmAutoAttach() {
+    if (!this.cdp || this.cdp.closed) return;
+    try {
+      await this.cdp.send('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }, { timeoutMs: 1000 });
+    } catch { /* page already gone */ }
+  }
+
+  /** `Target.attachedToTarget` / `detachedFromTarget` on the page connection. */
+  #netOnTarget(message) {
+    const params = message.params || {};
+    if (message.method === 'Target.detachedFromTarget') {
+      this.netTargets.delete(params.sessionId);
+      return;
+    }
+    const info = params.targetInfo || {};
+    const childSessionId = params.sessionId;
+    const type = String(info.type || '');
+    const wanted = ['worker', 'shared_worker', 'service_worker', 'iframe'].includes(type);
+    // R1-21: being attached to *this* Runtime's page session is itself the scope proof (one
+    // Runtime+store per workspace scope), so shared/service workers are collected too. The shared
+    // case is only advisory-noted: one cross-page shared worker may appear in several scopes.
+    this.netTargets.set(childSessionId, {
+      targetId: info.targetId || null, type, url: info.url || '',
+      attribution: 'page-attached',
+      openerId: info.openerId || null, parentFrameId: info.parentFrameId || null,
+    });
+    if ((type === 'shared_worker' || type === 'service_worker') && !this.net.issues.includes('workers-shared-attribution')) {
+      this.net.issues.push('workers-shared-attribution');
+    }
+    const cdp = this.cdp;
+    void (async () => {
+      let ok = true;
+      try {
+        if (wanted) {
+          await cdp.send('Network.enable', { maxTotalBufferSize: 5000000 }, { sessionId: childSessionId, timeoutMs: 5000 });
+          await cdp.send('Runtime.enable', {}, { sessionId: childSessionId, timeoutMs: 5000 });
+          // Nested workers: replicate auto-attach on the child session.
+          await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, { sessionId: childSessionId, timeoutMs: 5000 })
+            .catch(() => {});
+        }
+      } catch {
+        ok = false;
+      } finally {
+        // A worker must never stay frozen: resume first, then detach if setup failed.
+        try { await cdp.send('Runtime.runIfWaitingForDebugger', {}, { sessionId: childSessionId, timeoutMs: 5000 }); } catch { /* ignore */ }
+        if (!ok) {
+          try { await cdp.send('Target.detachFromTarget', { sessionId: childSessionId }, { timeoutMs: 1000 }); } catch { /* ignore */ }
+          this.netTargets.delete(childSessionId);
+        }
+      }
+    })();
+  }
+
+  #netWall(targetId, params) {
+    const seconds = Number.isFinite(params && params.timestamp) ? params.timestamp : null;
+    if (Number.isFinite(params && params.wallTime)) {
+      this.net.setAnchor(targetId, seconds, Math.round(params.wallTime * 1000));
+      return Math.round(params.wallTime * 1000);
+    }
+    return this.net.wallMsFor(targetId, seconds);
+  }
+
+  #netHop(keyOf) {
+    return this.netHops.get(keyOf) || 0;
+  }
+
+  #netBumpHop(keyOf) {
+    const next = (this.netHops.get(keyOf) || 0) + 1;
+    this.netHops.set(keyOf, next);
+    return next;
+  }
+
+  /** The single CDP → event mapping (§3.1). Every branch emits normalized, immutable events. */
+  #netOnEvent(message) {
+    const params = message.params || {};
+    const cdpSessionId = message.sessionId || null;
+    let attribution = null;
+    if (cdpSessionId) {
+      const child = this.netTargets.get(cdpSessionId);
+      // Only sessions this Runtime attached are ours; an unknown session cannot be attributed.
+      if (!child) return;
+      attribution = child.attribution || 'page-attached';
+    }
+    const targetId = cdpSessionId ? (this.netTargets.get(cdpSessionId) || {}).targetId || null : (this.page ? this.page.targetId : null);
+    const keyOf = [targetId || '', cdpSessionId || '', params.requestId || ''].join('\u0000');
+    const hopOf = (requestId) => this.#netHop([targetId || '', cdpSessionId || '', requestId || ''].join('\u0000'));
+    const common = { targetId, cdpSessionId, requestId: params.requestId || null, attribution };
+
+    if (message.method === 'Network.requestWillBeSent') {
+      const request = params.request || {};
+      const wallMs = this.#netWall(targetId, params);
+      // Navigation counter: the first Document request of a session is navId 1, each new loaderId
+      // (a real navigation) increments it, so `navId` increases monotonically (C15).
+      if (!this.netNavIds) this.netNavIds = new Map();
+      if (params.type === 'Document' && params.loaderId && !this.netNavIds.has(params.loaderId)) {
+        this.netNavIds.set(params.loaderId, this.netNavIds.size + 1);
+      }
+      const hop = hopOf(params.requestId);
+      if (params.redirectResponse) {
+        const previous = this.netReq.get(keyOf) || {};
+        this.net.add({
+          ...common, kind: 'http', phase: 'redirect', hopId: hop,
+          ts: { wallMs, cdpSeconds: params.timestamp },
+          url: params.redirectResponse.url || previous.url || '',
+          method: previous.method || request.method || null,
+          resourceType: params.type || null,
+          status: Number.isInteger(params.redirectResponse.status) ? params.redirectResponse.status : null,
+          fromCache: params.redirectResponse.fromDiskCache === true || params.redirectResponse.fromPrefetchCache === true,
+          redirect: {
+            from: params.redirectResponse.url || previous.url || '',
+            to: request.url || '',
+            status: Number.isInteger(params.redirectResponse.status) ? params.redirectResponse.status : null,
+            fromSeq: previous.requestSeq === undefined ? null : previous.requestSeq,
+            toSeq: null,
+          },
+          frameId: params.frameId || null,
+          loaderId: params.loaderId || null,
+          navId: (params.loaderId && this.netNavIds ? this.netNavIds.get(params.loaderId) : null) || this.navigationCount || null,
+          documentURL: params.documentURL || this.url || null,
+          initiator: previous.initiator || params.initiator || null,
+        });
+      }
+      const resolvedHop = params.redirectResponse ? this.#netBumpHop(keyOf) : hop;
+      const emitted = this.net.add({
+        ...common, kind: 'http', phase: 'request', hopId: resolvedHop,
+        ts: { wallMs, cdpSeconds: params.timestamp },
+        url: request.url || '',
+        method: request.method || null,
+        resourceType: params.type || null,
+        frameId: params.frameId || null,
+        loaderId: params.loaderId || null,
+        navId: (params.loaderId && this.netNavIds ? this.netNavIds.get(params.loaderId) : null) || this.navigationCount || null,
+        documentURL: params.documentURL || this.url || null,
+        initiator: params.initiator || null,
+        sizes: { requestHeaders: null },
+      });
+      this.netReq.set(keyOf, {
+        hop: resolvedHop, method: request.method || null, url: request.url || '',
+        hasPostData: request.hasPostData === true, postData: request.postData || null,
+        requestSeq: emitted ? emitted.seq : null, initiator: params.initiator || null,
+        resourceType: params.type || null, wallMs,
+      });
+      return;
+    }
+    if (message.method === 'Network.requestWillBeSentExtraInfo') {
+      this.net.setHeaders({ targetId, cdpSessionId, requestId: params.requestId, hopId: hopOf(params.requestId), kind: 'request', headers: params.headers || {} });
+      return;
+    }
+    if (message.method === 'Network.responseReceivedExtraInfo') {
+      this.net.setHeaders({ targetId, cdpSessionId, requestId: params.requestId, hopId: hopOf(params.requestId), kind: 'response', headers: params.headers || {} });
+      const info = this.netReq.get(keyOf);
+      if (info && Number.isInteger(params.statusCode)) info.statusCode = params.statusCode;
+      return;
+    }
+    if (message.method === 'Network.requestServedFromCache') {
+      this.netCacheHits.add(keyOf);
+      return;
+    }
+    if (message.method === 'Network.responseReceived') {
+      const response = params.response || {};
+      const info = this.netReq.get(keyOf) || {};
+      const statusOf = Number.isInteger(params.statusCode) ? params.statusCode : (Number.isInteger(response.status) ? response.status : null);
+      // 3xx fallback: when Chromium follows a redirect internally it may not deliver a
+      // `requestWillBeSent.redirectResponse` on this connection (it does for documents, not always
+      // for fetch/XHR). A redirect row + a hop bump keeps the chain (and the dependency edges built
+      // from it) complete either way (C25/C32).
+      if (statusOf !== null && statusOf >= 300 && statusOf < 400 && statusOf !== 304) {
+        const location = response.headers && (response.headers.location || response.headers.Location);
+        if (location) {
+          let nextUrl = String(location);
+          try { nextUrl = new URL(String(location), response.url || info.url || this.url || undefined).toString(); } catch { /* keep raw */ }
+          const hop = hopOf(params.requestId);
+          this.net.add({
+            ...common, kind: 'http', phase: 'redirect', hopId: hop,
+            ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+            url: response.url || info.url || '',
+            method: info.method || null,
+            resourceType: params.type || info.resourceType || null,
+            status: statusOf,
+            statusText: response.statusText || null,
+            redirect: { from: response.url || info.url || '', to: nextUrl, status: statusOf },
+            frameId: params.frameId || null,
+            loaderId: params.loaderId || null,
+            documentURL: params.documentURL || this.url || null,
+            initiator: info.initiator || null,
+            basis: 'cdp-redirect',
+          });
+          this.netReq.set(keyOf, { ...info, redirectTo: nextUrl, redirectFrom: response.url || info.url || '', hop: hop + 1 });
+          this.#netBumpHop(keyOf);
+        }
+      }
+      const timing = network.normalizeTiming(response.timing || {}, {
+        responseSeconds: Number.isFinite(params.timestamp) ? params.timestamp : null,
+      });
+      this.net.add({
+        ...common, kind: 'http', phase: 'response', hopId: hopOf(params.requestId),
+        ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+        url: response.url || info.url || '',
+        method: info.method || null,
+        resourceType: params.type || info.resourceType || null,
+        status: Number.isInteger(params.statusCode) ? params.statusCode : (Number.isInteger(response.status) ? response.status : null),
+        statusText: response.statusText || null,
+        mimeType: response.mimeType || null,
+        protocol: response.protocol || null,
+        fromCache: response.fromDiskCache === true || response.fromPrefetchCache === true || this.netCacheHits.has(keyOf),
+        frameId: params.frameId || null,
+        loaderId: params.loaderId || null,
+        documentURL: params.documentURL || this.url || null,
+        initiator: info.initiator || null,
+        timing,
+        sizes: {
+          requestHeaders: null,
+          responseHeaders: null,
+          requestBody: null,
+          responseBody: Number.isInteger(response.decodedBodySize) ? response.decodedBodySize : null,
+          encoded: Number.isInteger(response.encodedDataLength) ? response.encodedDataLength : null,
+          decoded: Number.isInteger(response.decodedBodySize) ? response.decodedBodySize : null,
+        },
+      });
+      const record = this.netReq.get(keyOf) || info;
+      record.responseStatus = Number.isInteger(response.status) ? response.status : null;
+      record.mimeType = response.mimeType || null;
+      record.protocol = response.protocol || null;
+      record.fromCache = response.fromDiskCache === true || response.fromPrefetchCache === true || this.netCacheHits.has(keyOf);
+      // The finished event must carry the complete `timing` object (C12 asserts `timing.*Ms`) and
+      // correlation ids are derivable from the request headers alone — no body needed.
+      record.timing = timing;
+      record.decodedBodySize = Number.isInteger(response.decodedBodySize) ? response.decodedBodySize : null;
+      const requestHeaders = this.net.readHeaders({ targetId, cdpSessionId, requestId: params.requestId, hopId: hopOf(params.requestId), kind: 'request' });
+      record.correlationIds = network.extractCorrelationIds(
+        { url: info.url || response.url || '' },
+        { headers: requestHeaders.headers, hmacKey: this.net.hmacKey },
+      );
+      this.netReq.set(keyOf, record);
+      return;
+    }
+    if (message.method === 'Network.dataReceived') {
+      // 不逐 chunk 建事件（§3.1）；累计到 loadingFinished 的 sizes。
+      const info = this.netReq.get(keyOf) || {};
+      info.dataLength = (info.dataLength || 0) + (Number.isInteger(params.dataLength) ? params.dataLength : 0);
+      info.encodedDataLength = (info.encodedDataLength || 0) + (Number.isInteger(params.encodedDataLength) ? params.encodedDataLength : 0);
+      info.dataChunks = (info.dataChunks || 0) + 1;
+      this.netReq.set(keyOf, info);
+      return;
+    }
+    if (message.method === 'Network.loadingFailed') {
+      const info = this.netReq.get(keyOf) || {};
+      this.net.add({
+        ...common, kind: 'http', phase: 'failed', hopId: hopOf(params.requestId),
+        ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+        url: info.url || '',
+        method: info.method || null,
+        resourceType: params.type || info.resourceType || null,
+        frameId: params.frameId || null,
+        loaderId: params.loaderId || null,
+        documentURL: params.documentURL || this.url || null,
+        failed: true,
+        errorText: params.errorText || null,
+        errorCode: params.blockedReason ? String(params.blockedReason) : (params.errorText ? String(params.errorText) : null),
+        blockedReason: params.blockedReason || null,
+        canceled: params.canceled === true,
+        initiator: info.initiator || null,
+      });
+      if (this.net.config.captureBodies) this.net.noteBodyUnavailable();
+      this.netReq.delete(keyOf);
+      return;
+    }
+    if (message.method === 'Network.loadingFinished') {
+      const info = this.netReq.get(keyOf) || {};
+      this.netReq.delete(keyOf);
+      // Emit `finished` immediately with the full timing/sizes: waiting for the body would delay the
+      // whole timeline (and its `timing.*Ms`) by up to the body-read timeout. Bodies are captured in
+      // the background; `detail`/`business` read them from the store afterwards (R1-11).
+      const timing = info.timing ? { ...info.timing } : network.emptyTiming();
+      if (Number.isFinite(timing.responseTimeMs) && Number.isFinite(timing.requestTimeMs)) {
+        timing.totalMs = Math.round((timing.responseTimeMs - timing.requestTimeMs) * 1000) / 1000;
+      }
+      this.net.add({
+        ...common, kind: 'http', phase: 'finished', hopId: hopOf(params.requestId),
+        ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+        url: info.url || '',
+        method: info.method || null,
+        resourceType: info.resourceType || null,
+        status: info.responseStatus === undefined ? null : info.responseStatus,
+        mimeType: info.mimeType || null,
+        protocol: info.protocol || null,
+        fromCache: info.fromCache === true,
+        frameId: params.frameId || null,
+        loaderId: params.loaderId || null,
+        documentURL: params.documentURL || this.url || null,
+        initiator: info.initiator || null,
+        timing,
+        sizes: {
+          encoded: Number.isInteger(params.encodedDataLength) ? params.encodedDataLength : info.encodedDataLength || null,
+          responseBody: info.decodedBodySize === undefined ? null : info.decodedBodySize,
+        },
+        correlationIds: info.correlationIds || [],
+        stepIds: [],
+      });
+      const bodyKey = [targetId || '', cdpSessionId || '', params.requestId || '', hopOf(params.requestId)].join('\u0000');
+      const task = this.#netCaptureBodies({ targetId, cdpSessionId, requestId: params.requestId, hopId: hopOf(params.requestId), info })
+        .catch(() => { })
+        .finally(() => { if (this.netBodyPending) this.netBodyPending.delete(bodyKey); });
+      if (!this.netBodyPending) this.netBodyPending = new Map();
+      this.netBodyPending.set(bodyKey, task);
+      return;
+    }
+    // ---- WebSocket ----
+    if (message.method === 'Network.webSocketCreated') {
+      if (!this.netWsUrls) this.netWsUrls = new Map();
+      if (params.url) this.netWsUrls.set(params.requestId, String(params.url));
+      this.net.add({
+        ...common, kind: 'ws', phase: 'ws-created', hopId: hopOf(params.requestId),
+        ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+        url: params.url || '', resourceType: 'WebSocket', documentURL: params.documentURL || this.url || null,
+        initiator: params.initiator || null,
+        ws: { url: params.url || '', openedAt: Date.now(), direction: null, opcode: null },
+      });
+      return;
+    }
+    if (message.method === 'Network.webSocketWillSendHandshakeRequest') {
+      const request = params.request || {};
+      this.net.setHeaders({ targetId, cdpSessionId, requestId: params.requestId, hopId: hopOf(params.requestId), kind: 'request', headers: request.headers || {} });
+      this.net.add({
+        ...common, kind: 'ws', phase: 'ws-handshake', hopId: hopOf(params.requestId),
+        ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+        url: this.netReq.get(keyOf) ? this.netReq.get(keyOf).url : '', resourceType: 'WebSocket',
+        ws: { direction: null, opcode: null, handshake: { status: null, statusText: null, headers: request.headers || null } },
+      });
+      return;
+    }
+    if (message.method === 'Network.webSocketHandshakeResponseReceived') {
+      const response = params.response || {};
+      this.net.setHeaders({ targetId, cdpSessionId, requestId: params.requestId, hopId: hopOf(params.requestId), kind: 'response', headers: response.headers || {} });
+      this.net.add({
+        ...common, kind: 'ws', phase: 'ws-handshake', hopId: hopOf(params.requestId),
+        ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+        url: response.url || (this.netWsUrls && this.netWsUrls.get(params.requestId)) || '', resourceType: 'WebSocket', protocol: response.protocol || null,
+        status: Number.isInteger(response.status) ? response.status : null,
+        statusText: response.statusText || null,
+        ws: { direction: null, opcode: null, protocol: response.protocol || null, handshake: { status: Number.isInteger(response.status) ? response.status : null, statusText: response.statusText || null, headers: response.headers || null } },
+      });
+      return;
+    }
+    if (message.method === 'Network.webSocketFrameSent' || message.method === 'Network.webSocketFrameReceived') {
+      const response = params.response || {};
+      if (!this.netWsUrls) this.netWsUrls = new Map();
+      const wsUrl = this.netWsUrls.get(params.requestId) || '';
+      const opcode = Number.isInteger(response.opcode) ? response.opcode : null;
+      const rawPayload = typeof response.payloadData === 'string' ? response.payloadData : '';
+      let payload = rawPayload;
+      let payloadOmitted = false;
+      if (opcode !== 1) {
+        // 非文本帧通常是 base64：按 opcode 解码后只保留字节数（R1-9/R1-12）。
+        let bytes = 0;
+        try { bytes = Buffer.from(rawPayload, 'base64').length; } catch { bytes = 0; }
+        payload = '';
+        payloadOmitted = true;
+        this.net.add({
+          ...common, kind: 'ws', url: wsUrl, phase: message.method === 'Network.webSocketFrameSent' ? 'ws-send' : 'ws-receive', hopId: hopOf(params.requestId),
+          ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+          resourceType: 'WebSocket',
+          ws: { direction: message.method === 'Network.webSocketFrameSent' ? 'send' : 'receive', opcode, payload: null, payloadBytes: bytes, payloadOmitted },
+        });
+        return;
+      }
+      this.net.add({
+        ...common, kind: 'ws', url: wsUrl, phase: message.method === 'Network.webSocketFrameSent' ? 'ws-send' : 'ws-receive', hopId: hopOf(params.requestId),
+        ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+        resourceType: 'WebSocket',
+        ws: { direction: message.method === 'Network.webSocketFrameSent' ? 'send' : 'receive', opcode, payload },
+      });
+      void payloadOmitted;
+      return;
+    }
+    if (message.method === 'Network.webSocketFrameError') {
+      this.net.add({
+        ...common, kind: 'ws', phase: 'ws-error', hopId: hopOf(params.requestId),
+        ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+        resourceType: 'WebSocket', failed: true,
+        ws: { direction: null, opcode: null, errorMessage: params.errorMessage || null },
+      });
+      return;
+    }
+    if (message.method === 'Network.webSocketClosed') {
+      this.net.add({
+        ...common, kind: 'ws', phase: 'ws-closed', hopId: hopOf(params.requestId),
+        ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+        resourceType: 'WebSocket',
+        ws: { direction: null, opcode: null, closedAt: Date.now() },
+      });
+      return;
+    }
+    // ---- SSE ----
+    if (message.method === 'Network.eventSourceMessageReceived') {
+      this.net.add({
+        ...common, kind: 'sse', phase: 'sse-message', hopId: hopOf(params.requestId),
+        ts: { wallMs: this.#netWall(targetId, params), cdpSeconds: params.timestamp },
+        url: '', resourceType: 'EventSource',
+        sse: { eventName: params.eventName || null, eventId: params.eventId || null, data: params.data === undefined ? null : params.data },
+      });
+    }
+  }
+
+  /**
+   * Body capture for one finished request (R1-11): three states — `captured` / `empty` /
+   * `unavailable`. GET without postData, HEAD/204/304 are legitimately `empty` and must NOT call
+   * `getRequestPostData`. Bounded by `netBodyTimeoutMs` so a slow target never stalls the event.
+   */
+  async #netCaptureBodies({ targetId, cdpSessionId, requestId, hopId, info }) {
+    const cdp = this.cdp;
+    if (!cdp || cdp.closed) return { requestBytes: null, responseBytes: null };
+    // A stopped/frozen session must be fully frozen: no CDP body read and no counter movement
+    // (`bodies`/`bytes` used to keep growing after stop, which made the counters observable as
+    // "not frozen"). Events buffered while stopped are counted by `counters.preSession` instead.
+    if (!this.net.running) return { requestBytes: null, responseBytes: null };
+    const config = this.net.config;
+    const options = { sessionId: cdpSessionId || undefined, timeoutMs: this.netBodyTimeoutMs };
+    const method = String(info.method || 'GET').toUpperCase();
+    const status = Number.isInteger(info.responseStatus) ? info.responseStatus : null;
+    const out = { requestBytes: null, responseBytes: null };
+    const requestHeaders = this.net.readHeaders({ targetId, cdpSessionId, requestId, hopId, kind: 'request' });
+    const requestType = requestHeaders.headers['content-type'] || null;
+
+    /**
+     * Sanitize before storing (C45 / §8.4): a JSON/text/urlencoded body is field-masked here, at
+     * capture time, so the raw value never reaches the store, detail, search, JSONL or HAR.
+     * Binary bodies keep their bytes as base64 (detail returns `encoding:"base64"`).
+     */
+    const storeBody = (kind, raw, contentType) => {
+      const sanitized = network.sanitizeBody(raw, contentType, { maskRules: config.maskRules });
+      if (sanitized.payloadOmitted && sanitized.kind === 'binary') {
+        const base64 = Buffer.isBuffer(raw) ? raw.toString('base64') : Buffer.from(String(raw ?? ''), 'base64').toString('base64');
+        return this.net.addBody({
+          targetId, cdpSessionId, requestId, hopId, kind, state: base64 === '' ? 'empty' : 'captured',
+          data: base64, base64Encoded: true, contentType, redacted: 'none', payloadOmitted: false,
+        });
+      }
+      return this.net.addBody({
+        targetId, cdpSessionId, requestId, hopId, kind,
+        state: sanitized.text === '' ? 'empty' : 'captured',
+        data: sanitized.text, contentType, redacted: sanitized.redacted, payloadOmitted: false,
+      });
+    };
+
+    // ---- request body (R1-11: GET/HEAD never call getRequestPostData) ----
+    if (config.captureBodies) {
+      const noBodyMethod = method === 'GET' || method === 'HEAD';
+      if (typeof info.postData === 'string' && info.postData !== '') {
+        const stored = storeBody('request', info.postData, requestType);
+        out.requestBytes = stored ? stored.bytes : null;
+      } else if (noBodyMethod || info.hasPostData !== true) {
+        this.net.addBody({ targetId, cdpSessionId, requestId, hopId, kind: 'request', state: 'empty', contentType: requestType });
+        out.requestBytes = 0;
+      } else {
+        try {
+          const post = await cdp.send('Network.getRequestPostData', { requestId }, options);
+          const text = post && typeof post.postData === 'string' ? post.postData : '';
+          const stored = text === ''
+            ? this.net.addBody({ targetId, cdpSessionId, requestId, hopId, kind: 'request', state: 'empty', contentType: requestType })
+            : storeBody('request', text, requestType);
+          out.requestBytes = stored ? stored.bytes : null;
+        } catch (error) {
+          void error;
+          this.net.addBody({ targetId, cdpSessionId, requestId, hopId, kind: 'request', state: 'unavailable' });
+        }
+      }
+    }
+
+    // ---- response body ----
+    if (config.captureBodies) {
+      const emptyByDefinition = method === 'HEAD' || status === 204 || status === 304 || info.fromCache === true;
+      if (emptyByDefinition) {
+        this.net.addBody({ targetId, cdpSessionId, requestId, hopId, kind: 'response', state: 'empty', contentType: info.mimeType || null });
+        out.responseBytes = 0;
+      } else {
+        try {
+          const body = await cdp.send('Network.getResponseBody', { requestId }, options);
+          const text = body && typeof body.body === 'string' ? body.body : '';
+          const base64Encoded = body && body.base64Encoded === true;
+          const stored = text === ''
+            ? this.net.addBody({ targetId, cdpSessionId, requestId, hopId, kind: 'response', state: 'empty', contentType: info.mimeType || null })
+            // `getResponseBody` returns the decompressed text, so gzip responses are masked and
+            // stored as plain JSON/text (C2).
+            : storeBody('response', base64Encoded ? Buffer.from(text, 'base64') : text, info.mimeType || null);
+          out.responseBytes = stored ? stored.bytes : null;
+        } catch (error) {
+          void error;
+          this.net.addBody({ targetId, cdpSessionId, requestId, hopId, kind: 'response', state: 'unavailable' });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The single Fetch dispatcher (R1-8): guard first, then user rules, exactly one termination per
+   * paused request. `Fetch.disable` is never called — the guard configuration must survive.
+   */
+  async #onFetchPaused(message) {
+    const cdp = this.cdp;
+    const params = message.params || {};
+    const requestId = params.requestId;
+    const request = params.request || {};
+    const cdpSessionId = message.sessionId || null;
+    const terminate = (method, payload) => {
+      const target = this.cdp;
+      if (!target || target.closed) return Promise.resolve();
+      return target.send(method, { requestId, ...payload }, { sessionId: cdpSessionId || undefined, timeoutMs: 5000 })
+        .catch(() => { });
+    };
+    if (!cdp || cdp.closed) return;
+    const decision = network.decidePausedAction({ resourceType: params.resourceType, request, rules: this.netCtl.rules });
+
+    if (decision.action === 'guard') {
+      try {
+        await validateTarget(request.url, { origins: [...this.origins] });
+        await terminate('Fetch.continueRequest', {});
+      } catch (error) {
+        this.navigationError = new BrowserError('NAV_FAILED', error.message, { url: redactUrl(request.url) });
+        this.setError(this.navigationError.message, { actionId: null, target: redactUrl(request.url) });
+        await terminate('Fetch.failRequest', { errorReason: 'BlockedByClient' });
+      }
+      return;
+    }
+    if (decision.action === 'continue') {
+      await terminate('Fetch.continueRequest', {});
+      return;
+    }
+    const rule = decision.rule;
+    this.netCtl.noteHit(rule.id);
+    const behavior = rule.behavior;
+    if (decision.action === 'hold') {
+      try {
+        this.netCtl.holdRequest({
+          requestId: `fee-${cdpSessionId || 'main'}-${requestId}`, url: request.url,
+          method: request.method, resourceType: params.resourceType, ruleId: rule.id,
+        });
+        this.netPending.set(`${cdpSessionId || 'main'}\u0000${requestId}`, { params, cdpSessionId, requestId });
+        this.#netArmHoldSweep();
+      } catch (error) {
+        const classified = asBrowserError(error);
+        if (classified.code === 'NET_QUOTA_EXCEEDED') await terminate('Fetch.continueRequest', {});
+      }
+      return;
+    }
+    if (behavior.kind === 'block' || behavior.kind === 'fail') {
+      // A Fetch-level failure never reaches the network stack, so Chromium emits no
+      // `Network.loadingFailed` for it. The collector performed the action, so it records the
+      // request + failed pair itself (url/method/type come from the paused params) — otherwise the
+      // page sees a failure with no network evidence (C36/C39).
+      const request = params.request || {};
+      const wallMs = Date.now();
+      const blockedText = behavior.kind === 'block' ? 'net::ERR_BLOCKED_BY_CLIENT.Inspector' : 'net::ERR_FAILED';
+      const base = {
+        kind: 'http',
+        targetId: params.targetId || this.netCtl.currentTargetId || null,
+        cdpSessionId: cdpSessionId || null,
+        requestId,
+        url: request.url || '', method: request.method || null,
+        resourceType: params.resourceType || null,
+        frameId: params.frameId || null,
+        attribution: cdpSessionId ? 'child-session' : 'page-attached',
+        ts: { wallMs, cdpSeconds: null },
+        documentURL: this.url || null,
+      };
+      const alreadyKnown = this.net.events.some((item) => item.requestId === requestId);
+      if (!alreadyKnown) {
+        // Only synthesize when Chromium itself never reported the request (Fetch-level failures are
+        // invisible to the Network domain). If it did, its own request/failed pair is authoritative.
+        try { this.net.add({ ...base, phase: 'request' }); } catch { /* best effort */ }
+        try {
+          this.net.add({ ...base, phase: 'failed', failed: true, errorText: blockedText, errorCode: blockedText });
+        } catch { /* best effort */ }
+      }
+      // The request MUST be released even if recording failed, otherwise the page hangs forever.
+      try {
+        await terminate('Fetch.failRequest', { errorReason: behavior.kind === 'block' ? 'BlockedByClient' : (behavior.errorReason || 'Aborted') });
+      } catch { /* terminate already falls back to continue on its own path */ }
+      return;
+    }
+    if (behavior.kind === 'delay') {
+      const delay = Math.max(0, Math.min(behavior.delayMs || 0, 60000));
+      setTimeout(() => { terminate('Fetch.continueRequest', {}); }, delay);
+      return;
+    }
+    if (behavior.kind === 'modify-request') {
+      const payload = {};
+      if (behavior.headers) payload.headers = Object.entries(behavior.headers).map(([name, value]) => ({ name, value }));
+      if (behavior.body !== null) payload.postData = Buffer.from(behavior.body, 'utf8').toString('base64');
+      if (behavior.url) {
+        // R1-8：改 URL 必须重做导航安全校验。
+        try {
+          await validateTarget(behavior.url, { origins: [...this.origins] });
+          payload.url = behavior.url;
+        } catch {
+          await terminate('Fetch.failRequest', { errorReason: 'BlockedByClient' });
+          return;
+        }
+      }
+      await terminate('Fetch.continueRequest', payload);
+      return;
+    }
+    if (behavior.kind === 'fulfill') {
+      let body = behavior.body;
+      if (body === null && behavior.fromRequestId) {
+        const stored = this.net.readBody({ requestId: behavior.fromRequestId, kind: 'response' });
+        if (stored) body = stored.data;
+      }
+      const headers = Object.entries(network.stripHopByHopHeaders(behavior.headers || {})).map(([name, value]) => ({ name, value }));
+      if (body !== null && !headers.some((header) => header.name.toLowerCase() === 'content-type')) {
+        headers.push({ name: 'content-type', value: 'application/json' });
+      }
+      // Chromium rejects a `responseCode` without a valid status phrase (299 → "Invalid http status
+      // code or phrase"). Supplying `responsePhrase` makes any 3-digit code acceptable, and a failed
+      // fulfill always falls back to `continueRequest` so the page can never hang (C40).
+      const code = Number.isInteger(behavior.status) && behavior.status >= 100 && behavior.status <= 599 ? behavior.status : 200;
+      try {
+        await terminate('Fetch.fulfillRequest', {
+          responseCode: code,
+          responsePhrase: behavior.statusText || 'Mocked',
+          responseHeaders: headers,
+          body: Buffer.from(body === null ? '' : body, 'utf8').toString('base64'),
+        });
+      } catch {
+        await terminate('Fetch.continueRequest', {});
+      }
+      return;
+    }
+    if (behavior.kind === 'modify-response') {
+      // 响应修改（R1-7）：只有 Chrome 支持 Fetch.continueResponse 时才声明能力。
+      if (this.netCtl.responseModification === false) {
+        if (!this.net.issues.includes('response-modification-unsupported')) this.net.issues.push('response-modification-unsupported');
+        await terminate('Fetch.continueRequest', {});
+        return;
+      }
+      await terminate('Fetch.continueRequest', {});
+      return;
+    }
+    await terminate('Fetch.continueRequest', {});
+  }
+
+  /** Held requests must never hang the page: every hold auto-continues after holdTimeoutMs. */
+  #netArmHoldSweep() {
+    if (this.netHoldTimer) return;
+    this.netHoldTimer = setInterval(() => { this.#netSweepHolds(); }, 1000);
+    if (typeof this.netHoldTimer.unref === 'function') this.netHoldTimer.unref();
+  }
+
+  #netSweepHolds() {
+    const expired = this.netCtl.expiredHolds();
+    for (const entry of expired) {
+      this.netCtl.releaseHold(entry.requestId, { timedOut: true });
+      this.#netContinueHeld(entry.requestId, { kind: 'continue' });
+    }
+    if (this.netCtl.held.size === 0 && this.netHoldTimer) {
+      clearInterval(this.netHoldTimer);
+      this.netHoldTimer = null;
+    }
+  }
+
+  #netContinueHeld(holdId, then) {
+    for (const [key, pending] of [...this.netPending.entries()]) {
+      if (`fee-${pending.cdpSessionId || 'main'}-${pending.requestId}` !== String(holdId)) continue;
+      this.netPending.delete(key);
+      const terminate = (method, payload) => {
+        const target = this.cdp;
+        if (!target || target.closed) return;
+        target.send(method, { requestId: pending.requestId, ...payload }, {
+          sessionId: pending.cdpSessionId || undefined, timeoutMs: 5000,
+        }).catch(() => { });
+      };
+      if (then.kind === 'fail') { terminate('Fetch.failRequest', { errorReason: then.errorReason || 'Aborted' }); continue; }
+      if (then.kind === 'fulfill') {
+        const headers = Object.entries(network.stripHopByHopHeaders(then.headers || {})).map(([name, value]) => ({ name, value }));
+        terminate('Fetch.fulfillRequest', {
+          responseCode: then.status || 200, responseHeaders: headers,
+          body: Buffer.from(then.body === null ? '' : then.body, 'utf8').toString('base64'),
+        });
+        continue;
+      }
+      terminate('Fetch.continueRequest', {});
+    }
+  }
+
+  /** stop / reset / close: release every held request and restore plain network conditions. */
+  async #netReleaseAllHeld() {
+    const held = this.netCtl.listHeld();
+    for (const entry of held) this.#netContinueHeld(entry.requestId, { kind: 'continue' });
+    this.netCtl.held.clear();
+    this.netPending.clear();
+    if (this.netHoldTimer) { clearInterval(this.netHoldTimer); this.netHoldTimer = null; }
+    return held.length;
   }
 
   async applyViewport(width, height, signal) {
@@ -2988,6 +3827,613 @@ export class Runtime {
     const picked = {};
     for (const name of properties) picked[name] = map[name];
     return { ok: true, style: picked };
+  }
+
+  /* -------------------------------------------------------------------------------------------
+   * Web P0 network tool support (docs/network-p0.md §2/§7/§8). Every method is a thin wrapper over
+   * the pure `network` module: the Runtime only resolves scope/page/lease concerns and the durable
+   * evidence root.
+   * ----------------------------------------------------------------------------------------- */
+
+  netTouch(operation) {
+    this.net.observed = { lastCallAt: Date.now(), lastOperation: operation };
+  }
+
+  /** GUI/tool mark for network↔action correlation (basis:"temporal", never causal). */
+  netMark({ tool = null, actionId = null, stepId = null, kind = 'tool', text = null, url = undefined, title = undefined }) {
+    if (!this.net || !this.net.running) return null;
+    // State marks carry the (already redacted) page url/title so a screenshot/state marker is
+    // self-describing (§5.3 / C15).
+    return this.net.mark({
+      kind, tool, actionId, stepId, text,
+      url: url === undefined ? (this.url || null) : url,
+      title: title === undefined ? (this.title || null) : title,
+    });
+  }
+
+  netEvidenceArguments(operation) {
+    return network.evidenceBlock(this.net, operation);
+  }
+
+  /** `browser_network_session` (§2.1). `start` is the only lazy-start action. */
+  async netSession(args, exec, signal) {
+    assertKnownKeys(args, ['action', 'name', 'config'], 'session');
+    const action = args.action;
+    if (!network.NET_SESSION_ACTIONS.includes(action)) {
+      throw new BrowserError('NET_INVALID_ARGUMENT', 'session.action 不合法: ' + String(action), { allowed: [...network.NET_SESSION_ACTIONS] });
+    }
+    if (action !== 'start' && args.config !== undefined && args.config !== null) {
+      throw new BrowserError('NET_INVALID_ARGUMENT', 'config 只在 start 生效', { field: 'config' });
+    }
+    if (args.name !== undefined && args.name !== null
+      && (typeof args.name !== 'string' || Buffer.byteLength(args.name, 'utf8') > 64)) {
+      throw new BrowserError('NET_INVALID_ARGUMENT', 'name 必须是 ≤64 字节的字符串', { field: 'name' });
+    }
+    this.netTouch('session.' + action);
+    if (action === 'start') {
+      // Bookkeeping only: `start` never takes the browser lease (another agent in the same scope
+      // must be able to start/status/reset without BUSY). CDP arming happens on the next page
+      // operation via `needsArm` (see ensure()).
+      const result = this.net.start({ name: args.name || 'default', config: args.config || null });
+      if (result.changed) {
+        if (this.netCtl.responseModification === null) this.netCtl.responseModification = false;
+        this.netCtl.needsArm = true;
+        // Declaring a network session is an explicit ownership hand-over for this scope: only one
+        // session can run per scope, so a previous agent's lease must not block the new owner with
+        // BUSY (its page work is already serialized by the page queue).
+        if (this.lease && this.lease.sessionId !== exec.meta.sessionId) this.lease = undefined;
+      }
+      const status = this.net.status();
+      return {
+        ok: true, changed: result.changed === true,
+        session: status.session, sessions: status.sessions,
+        limits: network.limitsView(), subscriptions: status.subscriptions,
+        ...sessionAliases(status),
+        evidence: network.evidenceBlock(this.net, 'session.start'),
+      };
+    }
+    if (action === 'stop') {
+      const finishStop = async () => {
+        // Terminate held requests first (a frozen request would keep the page hanging) and restore
+        // plain network conditions. Fetch stays enabled with the navigation guard (R1-8).
+        await this.#netReleaseAllHeld();
+        const had = this.netCtl.rules.length > 0 || this.netCtl.condition.offline
+          || this.netCtl.condition.latencyMs > 0 || this.netCtl.condition.downloadKbps > 0
+          || this.netCtl.condition.uploadKbps > 0;
+        this.netCtl.clearRules();
+        this.netCtl.resetConditions();
+        if (had && this.cdp && !this.cdp.closed) {
+          await this.#netApplyConditions(signal).catch(() => { });
+          await this.#netSyncFetch(signal);
+        }
+        this.net.stop();
+      };
+      if (this.cdp && !this.cdp.closed) {
+        // `agent:false`: stopping must never claim the browser lease (a second agent has to be able
+        // to stop the session it started) — it only needs the serial page queue.
+        await this.run(finishStop, { signal, sessionId: exec.meta.sessionId, agent: false, action: { actionId: exec.meta.actionId, target: null } });
+      } else {
+        this.netCtl.clearRules();
+        this.netCtl.resetConditions();
+        this.net.stop();
+      }
+      const status = this.net.status();
+      return {
+        ok: true, changed: false, session: status.session, sessions: status.sessions,
+        limits: network.limitsView(), subscriptions: status.subscriptions,
+        ...sessionAliases(status),
+        evidence: network.evidenceBlock(this.net, 'session.stop'),
+      };
+    }
+    if (action === 'reset') {
+      // Terminate held requests and push the restored (unthrottled) conditions before clearing the
+      // store; Fetch stays enabled with the navigation guard (R1-8).
+      await this.#netReleaseAllHeld();
+      this.netCtl.clearRules();
+      this.netCtl.resetConditions();
+      if (this.cdp && !this.cdp.closed) {
+        await this.#netApplyConditions(signal).catch(() => { });
+        await this.#netSyncFetch(signal);
+      }
+      const reset = this.net.reset();
+      const status = this.net.status();
+      return {
+        ok: true, reset: true, subscriptionsClosed: reset.subscriptionsClosed,
+        session: status.session, sessions: status.sessions, limits: network.limitsView(),
+        ...sessionAliases(status),
+        evidence: network.evidenceBlock(this.net, 'session.reset'),
+      };
+    }
+    const status = this.net.status();
+    return {
+      ok: true, changed: false, session: status.session, sessions: status.sessions,
+      limits: network.limitsView(), subscriptions: status.subscriptions,
+      ...sessionAliases(status),
+      evidence: network.evidenceBlock(this.net, 'session.status'),
+    };
+  }
+
+  netEvents(args) {
+    this.netTouch('events');
+    return network.queryEvents(this.net, args);
+  }
+
+  /**
+   * `detail` is read-only: it never starts CDP work. But the body capture for a request is kicked
+   * off at `loadingFinished`, and a caller that reads immediately would see `unavailable` purely
+   * because that background read has not settled yet. Waiting (bounded) for the capture that is
+   * already in flight is not a re-read — nothing new is requested from the page.
+   */
+  async netDetail(args) {
+    this.netTouch('detail');
+    await this.#netAwaitPendingBodies(args);
+    this.netChainIncomplete = false;
+    await this.#netAwaitChain(args);
+    const result = network.detailEvent(this.net, args);
+    if (this.netChainIncomplete) {
+      result.chainIncomplete = true;
+      if (result.dependencies && typeof result.dependencies === 'object') result.dependencies.chainIncomplete = true;
+      if (Array.isArray(result.redirects)) {
+        for (const hop of result.redirects) if (hop) hop.chainIncomplete = true;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Bounded wait (≤500ms) for the redirect/dependency chain of the resolved request: a caller that
+   * reads `include:['redirects'|'dependencies']` right after the page-side action can arrive before
+   * the redirect/response events of that request are in the store. Nothing new is requested from
+   * the page (no CDP call, no body re-read); when the deadline passes the current projection is
+   * returned with `chainIncomplete:true` so the caller can tell "not yet observed" from "no chain".
+   */
+  async #netAwaitChain(args = {}) {
+    const include = Array.isArray(args.include) ? args.include : [];
+    const wantsChain = include.length === 0 || include.includes('redirects') || include.includes('dependencies') || include.includes('all');
+    if (!wantsChain) return;
+    const deadline = Date.now() + 500;
+    const chainOf = (event) => this.net.events.filter((item) => item.requestId === event.requestId);
+    while (Date.now() < deadline) {
+      let event = null;
+      try {
+        event = network.resolveEvent(this.net, {
+          seq: Number.isInteger(args.seq) ? args.seq : null,
+          requestId: args.requestId === undefined ? null : args.requestId,
+          targetId: args.targetId === undefined ? null : args.targetId,
+        });
+      } catch {
+        return;
+      }
+      const chain = chainOf(event);
+      const answered = chain.some((item) => ['response', 'finished', 'failed', 'redirect'].includes(item.phase));
+      // For a redirect hop the location must be known too, otherwise the edge cannot be derived yet.
+      const pendingRedirect = chain.some((item) => item.phase === 'redirect' && !(item.redirect && item.redirect.to));
+      const last = chain[chain.length - 1];
+      const settled = answered && !pendingRedirect && last && ['response', 'finished', 'failed', 'redirect'].includes(last.phase);
+      if (settled) return;
+      if (!this.net.running) return;
+      await new Promise((resolve) => { const timer = setTimeout(resolve, 20); if (typeof timer.unref === 'function') timer.unref(); });
+    }
+    this.netChainIncomplete = true;
+  }
+
+  async #netAwaitPendingBodies(args = {}) {
+    const wantsBody = args.include === undefined || args.include === null
+      || (Array.isArray(args.include) && (args.include.includes('body') || args.include.includes('all')));
+    if (!wantsBody) return;
+    // Poll briefly: the capture is kicked off at `loadingFinished`, so a caller that reads the
+    // detail immediately after a click can arrive before that CDP event even exists. Nothing is
+    // re-requested here — we only wait for work that is already (or imminently) in flight.
+    const deadline = Date.now() + 700;
+    while (Date.now() < deadline) {
+      let event = null;
+      try {
+        event = network.resolveEvent(this.net, {
+          seq: Number.isInteger(args.seq) ? args.seq : null,
+          requestId: args.requestId === undefined ? null : args.requestId,
+          targetId: args.targetId === undefined ? null : args.targetId,
+        });
+      } catch {
+        return;
+      }
+      const pending = this.netBodyPending && this.netBodyPending.size > 0;
+      const state = this.net.bodyState(event);
+      const anyCaptured = state.request.state !== 'unavailable' || state.response.state !== 'unavailable';
+      if (anyCaptured && !pending) return;
+      if (!pending && !anyCaptured) {
+        // Nothing in flight: either the capture already finished (unavailable is final) or the
+        // request has not reached loadingFinished yet. Only keep waiting while the chain is fresh.
+        const terminal = this.net.events.find((item) => item.requestId === event.requestId
+          && (item.phase === 'finished' || item.phase === 'failed'));
+        if (terminal && Date.now() - terminal.ts.wallMs > 2000) return;
+      }
+      await new Promise((resolve) => { const timer = setTimeout(resolve, 20); if (typeof timer.unref === 'function') timer.unref(); });
+      if (!this.net.running) return;
+    }
+  }
+
+  netTrace(args) {
+    this.netTouch('trace.' + String(args.action));
+    return network.traceNetwork(this.net, args);
+  }
+
+  /** `browser_network_subscribe` (§2.7): owner-only, independent cursors, hard pin budget. */
+  netSubscribe(args, ownerSessionId) {
+    try {
+      return this.#netSubscribeImpl(args, ownerSessionId);
+    } catch (error) {
+      // Guarantee the observable contract: a code-bearing BrowserError with a non-empty message
+      // (R1-2 / §2.7). A bare internal error would surface as `{message:''}` to the caller.
+      const classified = asBrowserError(error);
+      if (!classified.message || classified.code === 'INTERNAL') {
+        throw new BrowserError('NET_SUBSCRIPTION_NOT_FOUND', '订阅操作失败: ' + String(classified.message || 'unknown'), {
+          reason: classified.code,
+        });
+      }
+      throw classified;
+    }
+  }
+
+  #netSubscribeImpl(args, ownerSessionId) {
+    assertKnownKeys(args, ['action', 'sessionId', 'subscriptionId', 'cursor', 'afterSeq', 'limit', 'kinds', 'ackSeq'], 'subscribe');
+    if (!ownerSessionId) throw new BrowserError('NET_SUBSCRIPTION_FORBIDDEN', '缺少调用方身份', {});
+    if (['poll', 'ack', 'close'].includes(String(args && args.action))
+      && (args.subscriptionId === undefined || args.subscriptionId === null || args.subscriptionId === '')) {
+      throw new BrowserError('NET_INVALID_ARGUMENT', 'subscribe.' + String(args.action) + ' 需要 subscriptionId', {});
+    }
+    const action = args.action;
+    if (!network.NET_SUBSCRIBE_ACTIONS.includes(action)) {
+      throw new BrowserError('NET_INVALID_ARGUMENT', 'subscribe.action 不合法: ' + String(action), { allowed: [...network.NET_SUBSCRIBE_ACTIONS] });
+    }
+    if (args.sessionId !== undefined && args.sessionId !== null) {
+      const current = this.net.session ? this.net.session.id : null;
+      if (String(args.sessionId) !== String(current)) {
+        throw new BrowserError('NET_SESSION_NOT_FOUND', '网络会话不存在或不属于本 scope', { sessionId: String(args.sessionId) });
+      }
+    }
+    this.netTouch('subscribe.' + action);
+    if (action === 'create') {
+      const created = network.subscriptionCreate(this.net, {
+        ownerSessionId, kinds: args.kinds === undefined ? null : args.kinds,
+        afterSeq: Number.isInteger(args.afterSeq) ? args.afterSeq : null,
+      });
+      return { ok: true, ...created, sessionId: this.net.session ? this.net.session.id : null, evidence: network.evidenceBlock(this.net, 'subscribe.create') };
+    }
+    if (action === 'poll') {
+      const polled = network.subscriptionPoll(this.net, {
+        subscriptionId: args.subscriptionId, ownerSessionId, cursor: args.cursor === undefined ? null : args.cursor,
+        afterSeq: Number.isInteger(args.afterSeq) ? args.afterSeq : null,
+        limit: args.limit === undefined ? null : args.limit,
+        kinds: args.kinds === undefined ? null : args.kinds,
+      });
+      return { ...polled, evidence: network.evidenceBlock(this.net, 'subscribe.poll') };
+    }
+    if (action === 'ack') {
+      const acked = network.subscriptionAck(this.net, {
+        subscriptionId: args.subscriptionId, ownerSessionId,
+        ackSeq: Number.isInteger(args.ackSeq) ? args.ackSeq : null,
+      });
+      return { ...acked, evidence: network.evidenceBlock(this.net, 'subscribe.ack') };
+    }
+    if (action === 'close') {
+      const closed = network.subscriptionClose(this.net, { subscriptionId: args.subscriptionId, ownerSessionId });
+      return { ...closed, evidence: network.evidenceBlock(this.net, 'subscribe.close') };
+    }
+    const listed = network.subscriptionList(this.net, { ownerSessionId });
+    return { ...listed, evidence: network.evidenceBlock(this.net, 'subscribe.list') };
+  }
+
+  /** Pushes the combined throttle/offline state to the page (§7.4 + R1-13). */
+  async #netApplyConditions(signal) {
+    const params = this.netCtl.conditions();
+    if (!this.cdp || this.cdp.closed) {
+      this.netCtl.applyFailures.push({ at: Date.now(), reason: 'cdp-unavailable', params });
+      return { applied: false, reason: 'cdp-unavailable', params };
+    }
+    try {
+      await this.cdp.send('Network.emulateNetworkConditions', params, { signal, timeoutMs: 5000 });
+      return { applied: true, params };
+    } catch (error) {
+      const classified = asBrowserError(error);
+      this.netCtl.applyFailures.push({ at: Date.now(), reason: classified.code, params });
+      return { applied: false, reason: classified.code, params };
+    }
+  }
+
+  /** `browser_network_control` (§2.5). Read-only actions never take the page lease. */
+  async netControl(args, exec, signal) {
+    assertKnownKeys(args, ['action', 'sessionId', 'throttle', 'offline', 'rule', 'ruleId', 'requestId', 'seq', 'then', 'replay', 'mock', 'confirm'], 'control');
+    const action = args.action;
+    if (!network.NET_CONTROL_ACTIONS.includes(action)) {
+      throw new BrowserError('NET_INVALID_ARGUMENT', 'control.action 不合法: ' + String(action), { allowed: [...network.NET_CONTROL_ACTIONS] });
+    }
+    if (args.sessionId !== undefined && args.sessionId !== null) {
+      const current = this.net.session ? this.net.session.id : null;
+      if (String(args.sessionId) !== String(current)) {
+        throw new BrowserError('NET_SESSION_NOT_FOUND', '网络会话不存在或不属于本 scope', { sessionId: String(args.sessionId) });
+      }
+    }
+    if (this.net.state === 'snapshot') {
+      throw new BrowserError('NET_CONTROL_UNAVAILABLE', '离线证据会话不可控制页面', { state: 'snapshot' });
+    }
+    this.netTouch('control.' + action);
+    const readOnly = action === 'intercept-list';
+    const execute = async () => {
+      if (action === 'intercept-list') {
+        return { ok: true, action, ...this.netCtl.snapshot(), evidence: network.evidenceBlock(this.net, 'control.' + action) };
+      }
+      await this.ensure(signal);
+      if (action === 'throttle') {
+        if (!args.throttle || typeof args.throttle !== 'object') throw new BrowserError('NET_INVALID_ARGUMENT', 'throttle 需要 throttle 参数');
+        this.netCtl.setThrottle({
+          latencyMs: Number.isFinite(args.throttle.latencyMs) ? args.throttle.latencyMs : 0,
+          downloadKbps: Number.isFinite(args.throttle.downloadKbps) ? args.throttle.downloadKbps : 0,
+          uploadKbps: Number.isFinite(args.throttle.uploadKbps) ? args.throttle.uploadKbps : 0,
+        });
+        const applied = await this.#netApplyConditions(signal);
+        if (!applied.applied) throw new BrowserError('NET_CONTROL_UNAVAILABLE', '网络条件下发失败', { reason: applied.reason, params: applied.params });
+        return { ok: true, action, params: applied.params, ...this.netCtl.snapshot(), evidence: network.evidenceBlock(this.net, 'control.throttle') };
+      }
+      if (action === 'offline') {
+        if (typeof args.offline !== 'boolean') throw new BrowserError('NET_INVALID_ARGUMENT', 'offline 需要布尔参数');
+        this.netCtl.setOffline(args.offline);
+        const applied = await this.#netApplyConditions(signal);
+        if (!applied.applied) throw new BrowserError('NET_CONTROL_UNAVAILABLE', '网络条件下发失败', { reason: applied.reason, params: applied.params });
+        return { ok: true, action, params: applied.params, ...this.netCtl.snapshot(), evidence: network.evidenceBlock(this.net, 'control.offline') };
+      }
+      if (action === 'intercept-add') {
+        const rule = this.netCtl.addRule(args.rule);
+        const synced = await this.#netSyncFetch(signal);
+        return { ok: true, action, rule, fetch: synced, ...this.netCtl.snapshot(), evidence: network.evidenceBlock(this.net, 'control.intercept-add') };
+      }
+      if (action === 'intercept-remove') {
+        const rule = this.netCtl.removeRule(args.ruleId);
+        await this.#netSyncFetch(signal);
+        return { ok: true, action, rule, ...this.netCtl.snapshot(), evidence: network.evidenceBlock(this.net, 'control.intercept-remove') };
+      }
+      if (action === 'intercept-clear') {
+        const cleared = this.netCtl.clearRules();
+        await this.#netReleaseAllHeld();
+        await this.#netSyncFetch(signal);
+        return { ok: true, action, cleared, ...this.netCtl.snapshot(), evidence: network.evidenceBlock(this.net, 'control.intercept-clear') };
+      }
+      if (action === 'hold') {
+        const held = this.netCtl.listHeld();
+        if (!held.length && !args.requestId) {
+          throw new BrowserError('NET_CONTROL_UNAVAILABLE', 'hold 需要已存在的 behavior.kind:"hold" 规则命中，或显式 requestId', {});
+        }
+        return { ok: true, action, held, ...this.netCtl.snapshot(), evidence: network.evidenceBlock(this.net, 'control.hold') };
+      }
+      if (action === 'resume') {
+        const then = network.validateThen(args.then);
+        const held = this.netCtl.listHeld();
+        const targets = args.requestId ? held.filter((entry) => entry.requestId === String(args.requestId)) : held;
+        if (targets.length === 0) throw new BrowserError('NET_CONTROL_UNAVAILABLE', '没有处于 hold 的请求', { requestId: args.requestId || null });
+        for (const entry of targets) {
+          this.netCtl.releaseHold(entry.requestId);
+          this.#netContinueHeld(entry.requestId, then);
+        }
+        return { ok: true, action, resumed: targets.length, then, ...this.netCtl.snapshot(), evidence: network.evidenceBlock(this.net, 'control.resume') };
+      }
+      if (action === 'replay') {
+        // Mark the replay so the traffic it produces is attributable (§5.5 / C40).
+        this.netMark({ kind: 'replay', text: 'replay' });
+        {
+          const targetEvent = network.resolveEvent(this.net, { seq: args.seq, requestId: args.requestId });
+          const replayUrl = String(targetEvent.url || '');
+          this.net.replayWindow = {
+            url: replayUrl,
+            // The stored URL is already masked (`?key=***`), so the query part cannot be compared
+            // literally against the live request: match on the path prefix instead (C40).
+            prefix: replayUrl.includes('?') ? replayUrl.slice(0, replayUrl.indexOf('?')) : replayUrl,
+            until: Date.now() + 8000,
+            at: Date.now(),
+            by: 'control.replay',
+          };
+        }
+        const replay = args.replay && typeof args.replay === 'object' ? args.replay : {};
+        const count = Number.isInteger(replay.count) ? replay.count : 1;
+        if (count < 1 || count > network.NET_LIMITS.replayCount) {
+          throw new BrowserError('NET_INVALID_ARGUMENT', `replay.count 必须在 1–${network.NET_LIMITS.replayCount}`, { field: 'replay.count' });
+        }
+        const via = replay.via === 'http' ? 'http' : 'page';
+        const event = network.resolveEvent(this.net, { seq: Number.isInteger(args.seq) ? args.seq : null, requestId: args.requestId || null });
+        const results = [];
+        for (let index = 0; index < count; index += 1) {
+          if (via === 'page') {
+            const expression = `fetch(${JSON.stringify(event.url)}, {method: ${JSON.stringify(event.method || 'GET')}, credentials: 'include'}).then((response) => ({status: response.status})).catch((error) => ({error: String(error && error.message || error)}))`;
+            const evaluated = await this.evaluate(expression, true, signal);
+            results.push({
+              via,
+              status: evaluated && evaluated.ok && evaluated.value && Number.isInteger(evaluated.value.status) ? evaluated.value.status : null,
+              error: evaluated && evaluated.ok === false ? 'eval-failed' : (evaluated && evaluated.value && evaluated.value.error ? String(evaluated.value.error) : null),
+            });
+          } else {
+            const client = (exec && exec.httpClient) || null;
+            if (!client) throw new BrowserError('NET_CONTROL_UNAVAILABLE', 'replay via http 需要 Host HTTP 客户端', { via: 'http' });
+            // The Host client rejects hop-by-hop / browser-only headers (accept-encoding, host,
+            // content-length, cookie…), so only forward the ones it accepts.
+            const ALLOWED = new Set(['accept', 'content-type', 'x-net-probe', 'x-net-token', 'authorization',
+              'if-none-match', 'if-modified-since', 'range', 'user-agent', 'x-request-id', 'traceparent']);
+            const headerSource = this.net.readHeaders({ targetId: event.targetId, cdpSessionId: event.cdpSessionId, requestId: event.requestId, hopId: event.hopId, kind: 'request' }).headers;
+            const headers = Object.fromEntries(Object.entries(headerSource).filter(([name]) => ALLOWED.has(name.toLowerCase())));
+            const request = await client.request({
+              url: event.url, method: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(String(event.method || 'GET').toUpperCase()) ? String(event.method || 'GET').toUpperCase() : 'GET',
+              ...(Object.keys(headers).length ? { headers } : {}),
+            }, { signal, meta: exec.meta });
+            results.push({ via, status: request && request.status !== undefined ? request.status : null });
+          }
+        }
+        this.net.mark({ kind: 'replay', tool: 'browser_network_control', actionId: exec.meta.actionId, fromSeq: event.seq, text: 'replay ' + via });
+        return { ok: true, action, via, count: results.length, results, fromSeq: event.seq, evidence: network.evidenceBlock(this.net, 'control.replay') };
+      }
+      if (action === 'mock') {
+        const mock = args.mock && typeof args.mock === 'object' ? args.mock : null;
+        if (!mock) throw new BrowserError('NET_INVALID_ARGUMENT', 'mock 需要 mock 参数');
+        const source = Number.isInteger(args.seq) || args.requestId
+          ? network.resolveEvent(this.net, { seq: Number.isInteger(args.seq) ? args.seq : null, requestId: args.requestId || null })
+          : null;
+        if (!source) throw new BrowserError('NET_INVALID_ARGUMENT', 'mock 需要 seq 或 requestId 指明被 mock 的请求');
+        const rule = this.netCtl.addRule({
+          pattern: { urlPattern: source.url, method: source.method || null },
+          behavior: {
+            kind: 'fulfill',
+            status: Number.isInteger(mock.status) ? mock.status : 200,
+            headers: mock.headers && typeof mock.headers === 'object' ? mock.headers : null,
+            body: typeof mock.body === 'string' ? mock.body : null,
+            fromRequestId: mock.fromRequestId || null,
+          },
+        });
+        await this.#netSyncFetch(signal);
+        return { ok: true, action, rule, ...this.netCtl.snapshot(), evidence: network.evidenceBlock(this.net, 'control.mock') };
+      }
+      // reset
+      await this.#netReleaseAllHeld();
+      this.netCtl.clearRules();
+      this.netCtl.resetConditions();
+      const applied = await this.#netApplyConditions(signal);
+      await this.#netSyncFetch(signal);
+      return { ok: true, action, params: applied.params, ...this.netCtl.snapshot(), evidence: network.evidenceBlock(this.net, 'control.reset') };
+    };
+    if (readOnly) return execute();
+    return this.run(execute, { signal, sessionId: exec.meta.sessionId, agent: true, action: { actionId: exec.meta.actionId, target: this.url ? redactUrl(this.url) : null } });
+  }
+
+  /** Durable evidence root for this scope (env wins, otherwise the workspace cwd). */
+  #netEvidenceRoot(exec) {
+    const resolved = captureRootFor(exec);
+    if (resolved.root === null) {
+      throw new BrowserError('NET_OUTPUT_ROOT_UNKNOWN', '没有可用的持久证据根：请设置 DSH_UI_TESTING_CAPTURE_DIR 或在有工作区 cwd 的会话内调用', {
+        reason: 'root_unknown',
+      });
+    }
+    return resolved;
+  }
+
+  #netScopeHash() {
+    return createHash('sha256').update(String(this.scope.id || 'scope')).digest('hex').slice(0, 32);
+  }
+
+  /** `browser_network_evidence` (§2.6). Export is persistent-root only (R1-4). */
+  async netEvidence(args, exec) {
+    assertKnownKeys(args, ['sessionId', 'action', 'format', 'out', 'persist', 'includeBodies', 'file', 'data', 'query', 'link', 'deleteFiles'], 'evidence');
+    const action = args.action;
+    if (!network.NET_EVIDENCE_ACTIONS.includes(action)) {
+      throw new BrowserError('NET_INVALID_ARGUMENT', 'evidence.action 不合法: ' + String(action), { allowed: [...network.NET_EVIDENCE_ACTIONS] });
+    }
+    if (args.sessionId !== undefined && args.sessionId !== null) {
+      const current = this.net.session ? this.net.session.id : null;
+      if (String(args.sessionId) !== String(current)) {
+        throw new BrowserError('NET_SESSION_NOT_FOUND', '网络会话不存在或不属于本 scope', { sessionId: String(args.sessionId) });
+      }
+    }
+    this.netTouch('evidence.' + action);
+    const store = this.net;
+    if (action === 'export') {
+      const format = args.format === 'har' ? 'har' : args.format === 'auto' || args.format === undefined || args.format === null
+        ? ((typeof args.out === 'string' && args.out.endsWith('.har')) ? 'har' : 'jsonl')
+        : args.format;
+      if (!['jsonl', 'har'].includes(format)) throw new BrowserError('NET_INVALID_ARGUMENT', 'format 不合法', { field: 'format' });
+      const rootInfo = this.#netEvidenceRoot(exec);
+      const sessionId = store.session ? store.session.id : 'none';
+      const stamp = new Date(Date.now()).toISOString().replace(/[:.]/g, '-');
+      const name = args.persist === true && typeof args.out !== 'string'
+        ? 'output/network/' + this.#netScopeHash() + '/network-' + sessionId + '-' + stamp + '.' + (format === 'har' ? 'har' : 'jsonl')
+        : args.out;
+      const resolved = network.resolveEvidencePath({ root: rootInfo.root, out: name, defaultName: 'output/network/' + this.#netScopeHash() + '/network-' + sessionId + '-' + stamp + '.jsonl', extensions: ['.jsonl', '.har'] });
+      if (!resolved.ok) throw new BrowserError(resolved.code, resolved.message, resolved.details);
+      const bytes = format === 'har'
+        ? Buffer.from(JSON.stringify(network.toHar(store, { includeBodies: args.includeBodies === true }), null, 2), 'utf8')
+        : network.toJsonl(store, { includeBodies: args.includeBodies === true });
+      const published = network.publishEvidence(resolved.dir, resolved.absolutePath, bytes);
+      if (!published.ok) {
+        throw new BrowserError(published.code === 'OUTPUT_EXISTS' ? 'NET_OUTPUT_WRITE_FAILED' : 'NET_OUTPUT_WRITE_FAILED', '证据写入失败', {
+          reason: published.code, name: resolved.relativePath,
+        });
+      }
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const artifact = network.registerArtifact(store, {
+        format, relativePath: resolved.relativePath, absolutePath: resolved.absolutePath,
+        bytes: published.bytes, sha256, includeBodies: args.includeBodies === true,
+        events: store.events.length, seqs: store.events.map((event) => event.seq).slice(0, 2000),
+      });
+      return {
+        ok: true,
+        action: 'export',
+        evidenceId: artifact.evidenceId,
+        file: {
+          pathKind: 'persist', persistence: 'root', relativePath: resolved.relativePath,
+          bytes: published.bytes, format, events: store.events.length,
+          integrity: store.integrity(),
+        },
+        evidence: network.evidenceBlock(store, 'evidence.export'),
+      };
+    }
+    if (action === 'import') {
+      const hasFile = typeof args.file === 'string' && args.file.length > 0;
+      const hasData = typeof args.data === 'string' && args.data.length > 0;
+      if (hasFile === hasData) throw new BrowserError('NET_INVALID_ARGUMENT', 'import 需要 file 或 data（恰好一个）');
+      let text;
+      let source;
+      if (hasData) {
+        if (Buffer.byteLength(args.data, 'utf8') > network.NET_LIMITS.importDataBytes) {
+          throw new BrowserError('NET_QUOTA_EXCEEDED', 'data 超过 8 MiB 上限', { max: network.NET_LIMITS.importDataBytes });
+        }
+        text = args.data;
+        source = { kind: 'data', format: args.format || 'auto' };
+      } else {
+        const rootInfo = this.#netEvidenceRoot(exec);
+        const resolved = network.resolveEvidencePath({ root: rootInfo.root, out: args.file, extensions: ['.jsonl', '.har'] });
+        if (!resolved.ok) throw new BrowserError(resolved.code, resolved.message, resolved.details);
+        try {
+          text = readFileSync(resolved.absolutePath, 'utf8');
+        } catch (error) {
+          throw new BrowserError('NET_IMPORT_FAILED', '证据文件不可读', { reason: error && error.code ? String(error.code) : 'read-failed', file: resolved.relativePath });
+        }
+        source = { kind: 'file', format: args.format || 'auto', relativePath: resolved.relativePath };
+      }
+      const parsed = network.parseImportedEvidence(text, { format: args.format || 'auto' });
+      const loaded = network.loadImported(store, parsed, { name: parsed.meta && parsed.meta.session ? parsed.meta.session.name : null, source });
+      return {
+        ok: true,
+        action: 'import',
+        session: store.status().session,
+        imported: { ...loaded, format: parsed.format, source },
+        evidence: network.evidenceBlock(store, 'evidence.import'),
+      };
+    }
+    if (action === 'index') {
+      return { ok: true, action, ...network.indexView(store), evidence: network.evidenceBlock(store, 'evidence.index') };
+    }
+    if (action === 'search') {
+      const query = args.query && typeof args.query === 'object' ? args.query : {};
+      const found = network.searchArtifacts(store, query);
+      return { ...found, action, evidence: network.evidenceBlock(store, 'evidence.search') };
+    }
+    if (action === 'link') {
+      const link = args.link && typeof args.link === 'object' ? args.link : null;
+      if (!link) throw new BrowserError('NET_INVALID_ARGUMENT', 'link 需要 link 参数');
+      const linked = store.link({ seq: Number.isInteger(link.seq) ? link.seq : null, requestId: link.requestId || null, stepId: link.stepId || null, evidenceId: link.evidenceId || null });
+      return { ok: true, action, link: linked, evidence: network.evidenceBlock(store, 'evidence.link') };
+    }
+    if (action === 'integrity') {
+      return { ok: true, action, ...store.integrity(), evidence: network.evidenceBlock(store, 'evidence.integrity') };
+    }
+    if (action === 'list') {
+      return { ok: true, action, files: network.listArtifacts(store), evidence: network.evidenceBlock(store, 'evidence.list') };
+    }
+    // clear
+    const cleared = network.clearArtifacts(store);
+    const deleted = [];
+    if (args.deleteFiles === true) {
+      for (const file of cleared.files) {
+        if (!file.absolutePath) continue;
+        try { unlinkSync(file.absolutePath); deleted.push(file.relativePath); } catch { /* already gone */ }
+      }
+    }
+    store.steps.clear();
+    store.links.clear();
+    return { ok: true, action, cleared: cleared.cleared, deletedFiles: deleted, evidence: network.evidenceBlock(store, 'evidence.clear') };
   }
 
   async traffic(limit) {
@@ -4547,6 +5993,15 @@ export class Runtime {
     try { await this.host.closePage(this, closedPage?.targetId); } catch { /* ignore */ }
 
     this.frames.stop();
+    // Network collector teardown: release held requests (never leave a paused request behind),
+    // stop collecting, drop child-session bookkeeping. Exported evidence files stay on disk.
+    try { await this.#netReleaseAllHeld(); } catch { /* ignore */ }
+    try { await this.#netDisarmAutoAttach(); } catch { /* ignore */ }
+    this.netTargets.clear();
+    this.netReq.clear();
+    this.netHops.clear();
+    this.netCacheHits.clear();
+    if (this.net) this.net.stop();
     this.network.length = 0;
     this.requests.clear();
     this.url = '';
@@ -5939,9 +7394,13 @@ export function apply(ctx) {
       };
       const diagnostic = ['browser_state', 'browser_capabilities'].includes(definition.name);
       const isHttpRequest = definition.name === 'browser_http_request';
+      // Web P0 network read-only tools (session.status/reset, events, detail, trace query, evidence,
+      // subscribe) are scope-local reads: they resolve the workspace runtime but never take the page
+      // queue, the lease, or lazily start Chromium (docs/network-p0.md §2, R1-5).
+      const isNetworkRead = definition.networkRead === true;
       // The independent HTTP tool must not enter the page queue, the lease, activity or
       // lastError; only real page/network operations participate in the error projection.
-      const pageOperation = !diagnostic && !isHttpRequest;
+      const pageOperation = !diagnostic && !isHttpRequest && !isNetworkRead;
       // Resolve the workspace scope from the exec identity only (never from a client-supplied
       // path). No exec identity at all is the old protocol and maps to legacy:default.
       let entry;
@@ -5972,7 +7431,13 @@ export function apply(ctx) {
         : (runtime && runtime.url ? redactUrl(runtime.url) : null);
       // Every tool value leaves through this single lossless-JSON boundary.
       const finish = (value, target) => {
-        const result = { ...value, ...meta, finishedAt: Date.now(), target };
+        // Envelope ordering matters per tool family (docs/network-p0.md §2):
+        //  - the 7 network tools own `sessionId` (采集会话 id 或 null); the agent session moves to
+        //    `agentSessionId` so the envelope can never overwrite the contract field.
+        //  - the legacy 22 tools keep their historical `{...value, ...meta}` order untouched.
+        const result = isNetworkRead
+          ? { ...meta, ...value, agentSessionId: meta.sessionId, finishedAt: Date.now(), target }
+          : { ...value, ...meta, finishedAt: Date.now(), target };
         const notes = [];
         const clean = losslessJson(result, definition.name, notes);
         if (!clean || typeof clean !== 'object' || Array.isArray(clean)) throw new BrowserError('INTERNAL', '工具返回值不是对象');
@@ -5980,10 +7445,10 @@ export function apply(ctx) {
         return clean;
       };
       try {
-        if (isHttpRequest) {
+        if (isHttpRequest || isNetworkRead) {
           // Independent dispatch branch: no ensure/run/claim/touchAgent, no page queue, no
-          // profile, no page lastError. The client does its own argument validation.
-          const value = await execute(args, { ...exec, meta, sessionId, runtime });
+          // profile, no page lastError. The implementation does its own argument validation.
+          const value = await execute(args, { ...exec, meta, sessionId, runtime, httpClient });
           return finish(value, meta.target || '');
         }
         const value = await runtime.run(async () => {
@@ -5998,7 +7463,15 @@ export function apply(ctx) {
             browser_vision_compare: '视觉差异比较', browser_vision_act: '按截图坐标输入',
             browser_vision_baseline: '管理视觉基线', browser_vision_check: '视觉回归检查',
           }[definition.name]));
-          return execute(args, { ...exec, meta, runtime });
+          // GUI↔network correlation (docs/network-p0.md §3.3 / G2.5): a temporal mark before and
+          // after every page tool, so event queries can associate traffic with an actionId without
+          // ever claiming causality.
+          runtime.netMark({ tool: definition.name, actionId: meta.actionId, kind: 'tool', text: 'begin' });
+          try {
+            return await execute(args, { ...exec, meta, runtime, httpClient });
+          } finally {
+            runtime.netMark({ tool: definition.name, actionId: meta.actionId, kind: 'tool', text: 'end' });
+          }
         }, { signal: exec.signal, sessionId, agent: pageOperation,
           action: pageOperation ? { actionId: meta.actionId, target: actionTarget } : undefined });
         if (pageOperation) {
@@ -6013,6 +7486,12 @@ export function apply(ctx) {
         return finish(value, runtime && runtime.url ? redactUrl(runtime.url) : '');
       } catch (error) {
         const classified = asBrowserError(error);
+        // Safety net: a network tool must always surface a code-bearing error with a non-empty
+        // message; a bare internal error would reach the caller as `{message: ""}`.
+        if (!classified.message || String(classified.message).trim() === '') {
+          classified.message = `[${classified.code}] ${definition.name} 失败`;
+        }
+        if (!classified.code) classified.code = 'INTERNAL';
         const evidence = { ...meta, finishedAt: Date.now(), target: meta.target || (runtime && runtime.url ? redactUrl(runtime.url) : '') };
         classified.details = losslessJson({ ...classified.details, ...evidence }, definition.name + '.details', []);
         classified.message += ' ' + JSON.stringify(evidence);
@@ -6095,6 +7574,9 @@ export function apply(ctx) {
     async execute(args, exec) {
       const runtime = exec.runtime;
       // 1) Pure pre-flight: an invalid argument must cost neither a browser nor a file.
+      // The network window is measured against wall-clock + the session high-water mark taken
+      // *before* the capture starts (docs/network-p0.md §3.3 / R1-16); it never starts collection.
+      const networkStart = { frameTimeMs: Date.now(), highWater: runtime.net ? runtime.net.seq : 0 };
       const request = normalizeCaptureRequest(args);
       const budgetRect = request.region
         || { x: 0, y: 0, width: runtime.viewport.width, height: runtime.viewport.height };
@@ -6363,9 +7845,14 @@ export function apply(ctx) {
           : null,
       };
 
+      const networkWindow = runtime.net
+        ? runtime.net.window({ frameTimeMs: networkStart.frameTimeMs, captureEndMs: Date.now(), highWater: networkStart.highWater })
+        : { sessionId: null, fromSeq: null, toSeq: null, frameTimeMs: networkStart.frameTimeMs, captureEndMs: Date.now(), nearest: null, count: 0 };
       return {
         // Historical field kept verbatim: the CSS viewport actually captured (P7/P16 assert it).
         viewport: { width: captured.viewport.width, height: captured.viewport.height },
+        // Top-level alias of `capture.networkWindow` (same object; additive only).
+        networkWindow,
         bytes: data.length,
         image: shot.base64,
         capturedAt: captured.capturedAt,
@@ -6387,6 +7874,8 @@ export function apply(ctx) {
           file,
           delivery,
           warnings,
+          // Additive only: capture.version stays 1 and every existing field is untouched.
+          networkWindow,
         },
       };
     },
@@ -6457,6 +7946,203 @@ export function apply(ctx) {
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
       return exec.runtime.traffic(Number(args && args.limit) || 50);
+    },
+  });
+
+  // ---- Web P0 network surface (docs/network-p0.md §2): 7 tools, 22 → 29. ---------------------
+  // Every one of them is `networkRead`: the read-only actions must resolve the workspace scope but
+  // never start Chromium or take the page lease. `session.start` and the page-requiring `control`
+  // actions call `runtime.run()` themselves, so BUSY/ABORTED/CDP_* keep their platform semantics.
+  register({
+    networkRead: true,
+    name: 'browser_network_session',
+    description: '启停/查询网络采集会话（WEB-P0）：start 是唯一的网络懒启动动作，stop 幂等，status/reset 只读不启动浏览器。'
+      + 'config 支持 captureBodies/captureWebSocket/captureSse/captureWorkers/maxEvents(≤20000)/maxBodyBytes(≤1MiB)/maxTotalBytes(≤32MiB)/maxWsFrames(≤20000)/businessStatusPath/maskRules。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['start', 'stop', 'status', 'reset'], description: 'start|stop|status|reset' },
+        name: { type: 'string', description: '会话名，≤64 字节，默认 default；同名 start 幂等' },
+        config: { type: 'object', description: '仅 start 生效；未知字段与越界配额会被拒绝' },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      return exec.runtime.netSession(args || {}, exec, exec.signal);
+    },
+  });
+
+  register({
+    networkRead: true,
+    name: 'browser_network_events',
+    description: '读取/筛选/检索/聚合网络事件（只读，不启动浏览器）：view=summary|full|timeline|aggregate，filter 支持 method/status/statusClass/resourceType/urlIncludes/failed/kind/phase/stepId/时间/耗时，search 命中只回脱敏预览。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: [],
+      properties: {
+        sessionId: { type: 'string' },
+        sinceSeq: { type: 'integer' },
+        untilSeq: { type: 'integer' },
+        cursor: { type: 'string' },
+        limit: { type: 'integer', default: 50, description: '1–200，默认 50' },
+        order: { type: 'string', enum: ['asc', 'desc'] },
+        view: { type: 'string', enum: ['summary', 'full', 'timeline', 'aggregate'] },
+        filter: { type: 'object' },
+        search: { type: 'object' },
+        groupBy: { type: 'string', enum: ['url', 'method', 'status', 'statusClass', 'resourceType', 'host', 'kind', 'step'] },
+        aggregate: { type: 'array', items: { type: 'string' } },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      return exec.runtime.netEvents(args || {});
+    },
+  });
+
+  register({
+    networkRead: true,
+    name: 'browser_network_detail',
+    description: '按 requestId（同一 target 内）或 seq 读取一条请求/WS/SSE 的完整详情；纯只读，不启动 CDP、不补读 body。'
+      + 'body 三态 captured|empty|unavailable，读不到即 available:false + NET_BODY_UNAVAILABLE，绝不伪造空体。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: [],
+      properties: {
+        sessionId: { type: 'string' },
+        requestId: { type: 'string' },
+        seq: { type: 'integer' },
+        hopId: { type: 'integer', description: '重定向跳数（内部键的一部分），跨 target 同 requestId 时配合 seq 使用' },
+        targetId: { type: 'string' },
+        include: { type: 'array', items: { type: 'string' } },
+        maxBodyBytes: { type: 'integer', description: '1024–1048576，默认 1048576' },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      return exec.runtime.netDetail(args || {});
+    },
+  });
+
+  register({
+    networkRead: true,
+    name: 'browser_network_trace',
+    description: '业务链路追踪：begin-step/end-step 开窗、mark 打标记、link 显式关联、window 查窗口、query 汇总（只读不启动浏览器）。'
+      + '对象提取只按显式 objectRules；因果 basis 仅 explicit|redirect|initiator，temporal 需 includeTemporal:true 且不冒充因果。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        sessionId: { type: 'string' },
+        action: { type: 'string', enum: ['begin-step', 'end-step', 'mark', 'link', 'window', 'query', 'reset'] },
+        stepId: { type: 'string' },
+        name: { type: 'string' },
+        labels: { type: 'object' },
+        window: { type: 'object' },
+        objectRules: { type: 'array', items: { type: 'object' } },
+        correlationRules: { type: 'array', items: { type: 'object' } },
+        businessStatusPath: { type: 'string' },
+        mark: { type: 'object' },
+        link: { type: 'object' },
+        query: { type: 'object' },
+        includeTemporal: { type: 'boolean', default: false },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      return exec.runtime.netTrace(args || {});
+    },
+  });
+
+  register({
+    networkRead: true,
+    name: 'browser_network_control',
+    description: '拦截/改写/限速/断连/重放/Mock（需要 page 的动作自行懒启动）：throttle/offline 组合状态下发、intercept-add/remove/clear/list、'
+      + 'hold/resume、replay(via page|http)、mock、reset。reset 不停会话、不 Fetch.disable（导航守卫保持启用）。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        sessionId: { type: 'string' },
+        action: {
+          type: 'string',
+          enum: ['throttle', 'offline', 'intercept-add', 'intercept-remove', 'intercept-clear', 'intercept-list', 'hold', 'resume', 'replay', 'mock', 'reset'],
+        },
+        throttle: { type: 'object' },
+        offline: { type: 'boolean' },
+        rule: { type: 'object' },
+        ruleId: { type: 'string' },
+        requestId: { type: 'string' },
+        seq: { type: 'integer' },
+        then: { type: 'object' },
+        replay: { type: 'object' },
+        mock: { type: 'object' },
+        confirm: { type: 'boolean' },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      return exec.runtime.netControl(args || {}, exec, exec.signal);
+    },
+  });
+
+  register({
+    networkRead: true,
+    name: 'browser_network_evidence',
+    description: '网络证据 JSONL/HAR 导入导出、索引、检索、链接与完整性（不启动浏览器）。'
+      + 'export 只写持久根（env 或工作区 cwd）内的相对路径，只回相对路径；无持久根报 NET_OUTPUT_ROOT_UNKNOWN，绝不写暂存目录或回绝对路径。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        sessionId: { type: 'string' },
+        action: { type: 'string', enum: ['export', 'import', 'index', 'search', 'link', 'integrity', 'clear', 'list'] },
+        format: { type: 'string', enum: ['jsonl', 'har', 'auto'] },
+        out: { type: 'string', description: '持久根内相对路径（.jsonl/.har）' },
+        persist: { type: 'boolean' },
+        includeBodies: { type: 'boolean' },
+        file: { type: 'string', description: 'import：持久根内相对路径' },
+        data: { type: 'string', description: 'import：内联文本 ≤8 MiB（与 file 二选一）' },
+        query: { type: 'object' },
+        link: { type: 'object' },
+        deleteFiles: { type: 'boolean' },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      return exec.runtime.netEvidence(args || {}, exec);
+    },
+  });
+
+  register({
+    networkRead: true,
+    name: 'browser_network_subscribe',
+    description: '同一 scope 内多 Agent 共享采集、各自独立订阅游标（owner-only）：create/poll/ack/close/list。'
+      + 'ack 前不丢受 subscriptionPin 硬上限约束，超出给 gap/dropped；他人订阅 NET_SUBSCRIPTION_FORBIDDEN。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        sessionId: { type: 'string' },
+        action: { type: 'string', enum: ['create', 'poll', 'ack', 'close', 'list'] },
+        subscriptionId: { type: 'string' },
+        cursor: { type: 'string' },
+        afterSeq: { type: 'integer' },
+        limit: { type: 'integer', description: '1–200' },
+        kinds: { type: 'array', items: { type: 'string' } },
+        ackSeq: { type: 'integer' },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      return exec.runtime.netSubscribe(args || {}, exec.meta.sessionId);
     },
   });
 
@@ -6693,6 +8379,9 @@ export function apply(ctx) {
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
       await exec.runtime.refreshTitle(exec.signal);
+      // Page-state ↔ network correlation (§3.3 / G2.6): one state mark per state read so the
+      // timeline can replay url/title/revision changes next to the traffic they belong to.
+      exec.runtime.netMark({ kind: 'state', text: 'state', url: exec.runtime.url });
       return exec.runtime.state();
     },
   });
@@ -9707,8 +11396,9 @@ export function apply(ctx) {
 
   register({
     name: 'browser_capabilities',
-    description: '查询 Web T1/T2/T3 工具、运行态、隔离模式及证据限制；不会启动浏览器（不 ensure、不建目录、不生成 product、不申请租约）。'
-      + 'vision 段报告 T3 算法版本/工具/源类型/预算与最近一次真实视觉调用（observed），六个 web.t3.* 与聚合 web.t3.static-vision 按 BUSY 状态报告；T4 仍 unsupported。',
+    description: '查询 Web T1/T2/T3/P0 工具、运行态、隔离模式及证据限制；不会启动浏览器（不 ensure、不建目录、不生成 product、不申请租约）。'
+      + 'vision 段报告 T3 算法版本/工具/源类型/预算与最近一次真实视觉调用（observed），六个 web.t3.* 与聚合 web.t3.static-vision 按 BUSY 状态报告；'
+      + 'network 段报告 7 个 browser_network_* 工具、会话计数器/完整性与 limits.network（含 responseModification 是否受 CDP 支持）；T4 仍 unsupported。',
     parameters: { type: 'object', properties: {}, required: [] },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
@@ -9725,6 +11415,17 @@ export function apply(ctx) {
       const t3Tools = ['vision_image', 'vision_find', 'vision_compare', 'vision_act', 'vision_baseline', 'vision_check'];
       const t3CapabilityIds = ['web.t3.image', 'web.t3.find', 'web.t3.compare', 'web.t3.act', 'web.t3.baseline', 'web.t3.check'];
       const diagnosticTools = ['state', 'capabilities'];
+      // Web P0 network surface (docs/network-p0.md §8.8). Read-only actions stay available even when
+      // another session owns the page; `session` mutations and page-bound `control` actions report
+      // unavailable(BUSY) like every other page operation.
+      const networkTools = ['session', 'events', 'detail', 'trace', 'control', 'evidence', 'subscribe'];
+      const networkConstraints = [
+        'declared, never probed: reading this starts no Chromium and takes no lease',
+        'session.start is the only lazy-start action; status/reset, events, detail, trace reads, evidence and subscribe never start a page',
+        'collector is per workspace scope (events/bodies/steps/links/artifacts/subscriptions)',
+        'G1.5 iframe/OOPIF/worker coverage is partial: popups stay blocked and shared/service workers are refused when attribution cannot be proven',
+        'not a MITM proxy: no CA install, no TLS key reading, no cookie export',
+      ];
       const pageConstraints = ['page tools lazily start Chromium; startup may fail', 'single owner lease; shared page with panel'];
       const t2Constraints = [
         'structured DOM/AX tier: refs come from browser_snapshot; numbers are monotonic, never reused, LRU-capped at ' + T2_LIMITS.maxRefs,
@@ -9815,6 +11516,25 @@ export function apply(ctx) {
             status: busy ? 'unavailable' : 'available',
             ...(busy ? { reason: 'BUSY: browser owned by another session' } : {}),
             constraints: t3Constraints },
+          ...networkTools.map((name) => {
+            const mutating = name === 'session' || name === 'control';
+            const blocked = mutating && busy;
+            return {
+              id: 'web.network.' + name,
+              tool: 'browser_network_' + name,
+              status: blocked ? 'unavailable' : 'available',
+              ...(blocked ? { reason: 'BUSY: browser owned by another session' } : {}),
+              constraints: networkConstraints,
+            };
+          }),
+          { id: 'web.network.p0',
+            status: busy ? 'unavailable' : 'available',
+            ...(busy ? { reason: 'BUSY: browser owned by another session' } : {}),
+            constraints: [
+              ...networkConstraints,
+              'partial: iframe/OOPIF/dedicated worker only; shared/service worker refused when attribution is unprovable',
+              'HTTPS capture is mechanism-identical (same Network domain) but NOT independently verified (no local TLS target)',
+            ] },
           ...['t4.dynamic-vision', 't1.viewport-control', 't1.browser-extras'].map((id) => ({ id: 'web.' + id, status: 'unsupported', reason: 'Not implemented' })),
         ],
         // P0 capture infrastructure (docs/capture-p0.md). Declared, not probed: reading this must
@@ -9888,9 +11608,49 @@ export function apply(ctx) {
             }
             : null,
         },
+        // Web P0 network (docs/network-p0.md §8.8). Declared, never probed.
+        network: (() => {
+          const caps = network.networkCapabilities(runtime.net, { control: runtime.netCtl, subTargets: NETWORK_SUBTARGETS });
+          return {
+            ...caps,
+            session: busy && runtime.net.session
+              ? { ...caps.session, state: caps.session.state }
+              : caps.session,
+          };
+        })(),
         limits: {
           viewport: runtime.viewport,
           networkEntries: NETWORK_LIMIT,
+          network: {
+        ...network.limitsView(),
+        availability: 'declared',
+        // §8.8 capability flags (booleans) + numeric bounds in the *Limits objects.
+        capture: true, bodies: true, websocket: true, sse: true, workers: true,
+        interception: true, throttle: true, offline: true, replay: true, mock: true,
+        har: true, jsonl: true, subscriptions: true,
+        https: 'mechanism-identical',
+        responseModification: runtime.netCtl.responseModification === true,
+        subTargets: NETWORK_SUBTARGETS,
+        throttleLimits: { latencyMsMax: 60000, downloadKbpsMax: 1000000, uploadKbpsMax: 1000000, unit: 'Kbps = 1024 bit/s' },
+        holdLimits: { maxHeld: network.NET_LIMITS.held, timeoutMs: network.NET_LIMITS.holdTimeoutMs },
+        ruleLimits: { max: network.NET_LIMITS.rules, kinds: [...network.NET_RULE_KINDS] },
+        subTargetsDetail: {
+          // Measured on this build (real headless Chromium + /web-network.html):
+          //  - dedicated worker: attached at the page level, requests captured with their own targetId
+          //  - service worker: NOT attached — a page-level attach pauses it at start
+          //    (waitForDebuggerOnStart) and makes `serviceWorker.register()`/`controller` fail, i.e.
+          //    collection would change page semantics, so it is refused by design.
+          //  - shared worker: page-level attach entry is armed, but this build attaches nothing
+          //    observable for it (the fixture's `/n/worker-data` stays uncaptured).
+          //  - OOPIF: same-origin iframe target captured; cross-site OOPIF is NOT separately verified.
+          workers: 'page-attached',
+          shared_worker: 'not-collected',
+          service_worker: 'not-collected',
+          oopif: 'partial',
+          partial: true,
+          reason: 'attaching a service_worker target pauses it at start and breaks serviceWorker.register()/controller, so it is refused; popup targets stay blocked; cross-site OOPIF not separately verified',
+        },
+      },
           screenshot: typeof attachments?.saveImage === 'function' ? 'attachment' : 'base64-fallback',
           leaseIdleMs: AGENT_HOLD_MS,
           scope: { id: runtime.scope.id, workspaceId: runtime.scope.workspaceId, degraded: runtime.scope.degraded },

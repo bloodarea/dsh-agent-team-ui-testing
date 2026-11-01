@@ -16,9 +16,12 @@ Host (index.js + frame-source.js + frame-push.js)     Client (client.js)
 ├─ 每 Runtime：FrameSource（seq/epoch/时间戳/计数）     ├─ <img> 渲染 Blob URL（object-fit: contain）
 ├─ FramePush hub（同源 WS，40ms 合并、背压丢帧）        ├─ 指针/滚轮/键盘 → POST /input（带 scope）
 ├─ Network.enable → 每页请求环形缓冲                    ├─ 地址 → /navigate；刷新 → /reload；后退/前进 → /history
+├─ 第 8 轮网络 P0：Runtime 级全事件采集 + network-p0.js  │   （网络能力只走 Agent 工具，无新面板路由）
 ├─ Runtime.evaluate / DOM / CSS（每页）                ├─ /state 每 500ms（已认证 GUI 带 ui.address/ui.history/scope）
 └─ HTTP 路由 /plugins/ui-testing/*（按 scope 选实例）   └─ /metrics 每 2s 上报实测显示指标（viewer 心跳）
 ```
+
+**网络采集（第 8 轮补充）**：除既有 `Network.enable` 元数据环形缓冲（旧 `browser_network` 仍用它）外，Runtime 另建一套按 scope 隔离的网络事件库——`Network.*` 全事件、`Fetch` 单一 dispatcher、按需 `getRequestPostData/getResponseBody`、`Target.setAutoAttach` 子目标；纯逻辑（标准化/配额/分析/链路/规则/导入导出/订阅）在 `network-p0.js`。它**不新增面板 HTTP 路由、也不改 `client.js`**：只经 7 个 `browser_network_*` 工具访问，权威契约见 [network-p0.md](network-p0.md)。
 
 ## 帧管线
 
@@ -31,7 +34,7 @@ Host (index.js + frame-source.js + frame-push.js)     Client (client.js)
 
 ## HTTP 接口
 
-> 这些都是**同源 HTTP 路由**；`webServer` 层不做登录鉴权，默认只监听 loopback。Agent 侧只应使用 16 个结构化工具（9 T1 + 7 T2），不应直接调这些路由。M0–M2 现行契约与待验收项见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)，按工作区 scope 见 [workspace-isolation.md](workspace-isolation.md)。HTTP 错误保留 `error` 字符串并新增 `code/category/retryable`。
+> 这些都是**同源 HTTP 路由**；`webServer` 层不做登录鉴权，默认只监听 loopback。Agent 侧只应使用 29 个结构化工具（9 T1 + 7 T2 + 6 T3 + 7 network），不应直接调这些路由。M0–M2 现行契约与待验收项见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)，网络 P0 契约见 [network-p0.md](network-p0.md)，按工作区 scope 见 [workspace-isolation.md](workspace-isolation.md)。HTTP 错误保留 `error` 字符串并新增 `code/category/retryable`。
 
 **工作区 scope（第 5 轮）**：scoped HTTP 发 `X-UI-Testing-Scope-Version: 1` + 三选一 identity（`-Session-Id` / `-Scope: recent|unassigned` / `-Scope-Binding: <runtimeId>`）；WS 用 `?scopeVersion=1&sessionId=…` / `&scope=…` / `&binding=…`。无 scope 版本是 `legacy:default`。scoped 请求严格 owner-only（`connection.admit` + `browserPeer`），先鉴权后解析、零副作用；unknown session/binding 404、存储故障 503、非 owner 403、满 8 page `RUNTIME_LIMIT` 503。state/ui/工具结果带不含绝对路径的 `scope`。
 

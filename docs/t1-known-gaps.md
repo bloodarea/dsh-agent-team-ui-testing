@@ -16,13 +16,25 @@
 
 当前默认暂存、显式持久：persist:boolean=false；out/persist:true/非空env任一才持久，env非法不回退；其余含legacy无cwd均插件暂存，dispose清理。file新增pathKind/persistence/root/ephemeral，持久相对/暂存绝对；capabilities.observed只含persistence/relativePath|null。14/14、142/142（[最终报告](../tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json)），tmp不可写真实失败/SIGKILL仍NOT_RUN；下方115项为历史。
 
-本文其余第4轮实例/工具数/验收计数为历史快照，现行 **22 工具**状态见 [status.md](status.md)（T1 9 + T2 7 + T3 6；T3 见 [t3-vision.md](t3-vision.md)）。P0权威契约为 [capture-p0.md](capture-p0.md)：截图增加连续scale1–4（1.11合法）、文档CSS region、相对out、PNG CRC/尺寸拒绝、≤16M全量均匀/透明统计、安全0600/no-clobber落盘与附件metadata比较；不是T3判断。T3 的静态视觉判定由第 7 轮六个视觉工具与 56 条套件另证（进程内 56/56、389/389）。真实Chromium+fake ctx三次各13/13、115/115（[报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），T1回归22/22、324/324（[报告](../tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)）。仍未验证：真实宿主P0重载/provider视觉、瞬时布局影响；canvas源位图限制与本地TOCTOU边界仍在。原始PNG落盘不等于独立JSONL证据包。
+本文其余第4轮实例/工具数/验收计数为历史快照，现行 **29 工具**状态见 [status.md](status.md)（T1 9 + T2 7 + T3 6 + network P0 7）。P0权威契约为 [capture-p0.md](capture-p0.md)：截图增加连续scale1–4（1.11合法）、文档CSS region、相对out、PNG CRC/尺寸拒绝、≤16M全量均匀/透明统计、安全0600/no-clobber落盘与附件metadata比较；不是T3判断。T3 的静态视觉判定由第 7 轮六个视觉工具与 56 条套件另证（进程内 56/56、389/389）。**网络深度能力由第 8 轮 network P0 七工具另证**，权威契约 [network-p0.md](network-p0.md)（见下方「网络 P0 更新」）。真实Chromium+fake ctx三次各13/13、115/115（[报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），T1回归22/22、324/324（[报告](../tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)）。仍未验证：真实宿主P0重载/provider视觉、瞬时布局影响；canvas源位图限制与本地TOCTOU边界仍在。原始PNG落盘不等于独立JSONL证据包（网络 P0 的 JSONL/HAR 是另一套证据，见下）。
+
+## 网络 P0 更新（第 8 轮，2026-11-01）
+
+**P0 已实现并通过 Lead 独立串行验收（verified）**：`node tests/acceptance/network-p0.mjs` → criteria **52/52（pass 52 / fail 0）**、requiredChecks **266**、failedChecks **0**、notRunChecks **8**、exit 0（[run-report.json](../tests/acceptance/runs/2026-11-01T12-27-48-770Z-370586/run-report.json)）；单测 43/43。新增 7 个 `browser_network_*`（session/events/detail/trace/control/evidence/subscribe；工具面 22 → 29），这 7 个是纯新增、不属于契约 §1.2「旧 22 工具保持不变」；旧工具只做加法式增强（截图新增 `capture.networkWindow`、`capture.version` 仍 1；T2 加 mark 关联），`browser_network` 保持元数据语义不变。HTTP/HTTPS 请求与响应体、WebSocket 双向帧、SSE 事件、同主 page 的 iframe/OOPIF/Worker、重定向链与 initiator 进入标准化事件存储；另有分析聚合、业务步骤链路、拦截/改请求/限速/断连/重放/Mock、JSONL/HAR 导出、脱敏与多 Agent 独立订阅。契约 [network-p0.md](network-p0.md)，验收 `tests/acceptance/network-p0.mjs`（C1–C52）+ `tests/network-p0.test.mjs`，计数见 [status.md](status.md)「P0 网络基础设施（第 8 轮）」。
+
+**剩余缺口（不夸大）**：
+
+- **popup / 多标签 / 子目标**：`G1.5` 记 **partial**——same-origin iframe 与 dedicated worker 已实证；OOPIF 为 `partial`（未单独验证）；shared/service worker **不采集**（attach 会暂停 service worker 并破坏 `register()`，能力报 `subTargets.service_worker="not-collected"`，C5 子项 NOT_RUN）；popup 继续被既有目标策略阻断（`index.js` `#blockPopup`），不采 popup、不跨 scope 聚合，也没有标签页/窗口操作工具。
+- **HTTPS 未独立验收**：无本地 TLS 靶机、未配置自定义 CA，能力报告 `network.limits.network.https = "mechanism-identical"`（与 `responseModification` 并列的必报标量），C1 的 HTTPS 子项 NOT_RUN——机制相同不等于已验。
+- **`responseModification` 条件支持**：改响应头/状态只在 Chrome 实测支持 `Fetch.continueResponse` 时声明；不支持则 C37 的 `modify-response` 子项 NOT_RUN。`modify-request` 与 `fulfill` 是正例。
+- **真实宿主未重启**：3080（pid <pid>，17:24:28 启动）早于本轮 `index.js`/`network-p0.js` 变更，宿主未加载网络 P0；网络采集/控制/证据在真实宿主重启后的冒烟与 provider/长连接稳定性均 **NOT_RUN**。
+- 其它边界：shared/service worker 只在能证明 target/frame 父子归属时采（归属不明拒采并计 partial）；不做 MITM/不装 CA/不读 TLS 密钥；不做真实网络限速（只模拟 CDP 网络条件）；HAR 只保证 1.2 子集，WS/SSE 保真由 JSONL 断言。
 
 ## 0. 一分钟结论
 
 - **T1 五项主功能已全部有实现**：
   - JS 执行、CSSOM：verified（覆盖路径）。
-  - 原生事件、网络抓包：partial（边界见 §1）。
+  - 原生事件：partial（边界见 §1）；网络抓包：旧 `browser_network` 仍 partial，**深度采集/控制已由第 8 轮 network P0 七工具补齐**（见上方「网络 P0 更新」）。
   - **独立 HTTP API：已实现**（`browser_http_request`，契约见 [t1-http-request.md](t1-http-request.md)），P22 95/95 覆盖路径通过；**真实 Agent 会话内调用仍 NOT_RUN**。
 - 工具面 8 → **9 个**；`web.t1.http-request` 由 `unsupported` 变为 `available`；`web.t1.viewport-control`、`web.t1.browser-extras` 仍为 `unsupported`。
 - 本轮落地契约裁决四项：`browser_state` 错误归属与时效（`error/errorAt/errorActionId/errorTarget`）、`runtime-faults:208` 清理竞态（实现有界重试 + 测试 waitFor）、Chrome 可执行文件解析、`browser_input` 的 `commands`/`unmodifiedText`/`pointerType:pen` 页面级真值（pen 修前被 CDP 拒绝，已修）。
@@ -36,7 +48,7 @@
 | 导航 · `browser_navigate` | verified（覆盖路径） | URL/DNS/Document 重定向校验、`NAV_FAILED`、错误页检测、最终 URL 校验 | **不保证加载完成**（`Page.navigate` 在 commit 返回）；没有等待元素/等待网络空闲等条件等待；子资源不经过导航策略；只支持 http/https |
 | JS 执行 · `browser_eval` | verified（覆盖路径） | 主世界表达式、Promise、可序列化值、`undefined`、错误栈与行列信息 | **无 frame 选择**；受页面同源策略约束；大对象/类实例只能靠可序列化投影；不是 DOM 操作 API |
 | 原生事件 · `browser_input` | partial | CDP 真实 mouse/wheel/key/text；`modifiers`（数组或位掩码）、`virtualKeyCode`、`autoRepeat`、`location`、`isKeypad`；**本轮修好 `pointerType:pen`**（原实现传数字 1/2 被 CDP 拒绝为 INTERNAL，现按 `mouse|pen` 字符串派发，页面可读回 `PointerEvent.pointerType==="pen"`）；整批先校验后派发 | **无焦点管理工具、无 M3 高层动作**；`applied` 只是数量；`commands`（`selectAll` 已由页面 selection 读数验证）与 `unmodifiedText` 的**特有效果不可观察**，按 `INCONCLUSIVE/platform-no-visible-effect` 记录；无 IME/组合输入保证；无触屏/触控笔真实目标 |
-| 网络抓包 · `browser_network` | partial | CDP Network 事件、响应状态、`loadingFailed`、URL 脱敏、有界 300 条、跨 session BUSY | **无请求/响应头与正文**；**无拦截/改写/Mock/限速**；WebSocket/SSE 帧不做内容解析；不是 HAR/证据包；记录从运行时启动开始 |
+| 网络抓包 · `browser_network` | partial（旧工具；深度能力见第 8 轮 network P0） | CDP Network 事件、响应状态、`loadingFailed`、URL 脱敏、有界 300 条、跨 session BUSY | 本工具**仍无请求/响应头与正文、无拦截/改写/Mock/限速**、WS/SSE 不做内容解析——这些由 7 个 `browser_network_*` 提供（[network-p0.md](network-p0.md)，`G1.5` partial、HTTPS 与 `modify-response` NOT_RUN），不是本工具的能力；记录从运行时启动开始 |
 | 独立 HTTP · `browser_http_request` | verified（P22 覆盖路径；真实 Agent 会话 NOT_RUN） | Host 侧 node:http/https：默认 GET、5s 总超时（上限 20s）、64 KiB 保留上限（上限 1 MiB）、默认不跟随重定向（上限 5 跳）；每跳复用目标策略；HTTPS→HTTP 降级拒绝；无 cookie jar、危险头零派发；响应 headers 小写→string[]、敏感头 `["***"]`、URL 脱敏；utf8/base64、bodyBytes/bodyTruncated、不自动解压；`HTTP_TIMEOUT/HTTP_FAILED/HTTP_REDIRECT_LIMIT`；不启动 Chromium、不占租约、不进页面队列、不写页面 error | 不是完整网络沙箱（无 DNS pinning/代理隔离/全局配额）；不保证目标业务授权；正文与未知业务头仍可能敏感；**未在真实 Agent 会话内调用过**；HTTPS 降级用例仅在探针内用自签名证书 |
 | CSSOM · `browser_computed_style` | verified（覆盖路径） | 选择器首匹配元素的指定/完整 computedStyle；`TARGET_NOT_FOUND` 错误对象 | **只读 computedStyle**；**只取首个匹配**；无伪元素、iframe、Shadow DOM 目标；无布局盒模型/CSS 规则列表 |
 | 截图 · `browser_screenshot` | partial（P0采集覆盖路径通过，provider/宿主待验） | PNG/base64/hash/附件兼容；连续scale、文档CSS region、尺寸/CRC/均匀统计、安全相对路径落盘；capture与capabilities.observed，证据见上方P0更新 | 不自动按元素/整页推导region；无像素差异或视觉判定；canvas内部位图不会新增细节；附件metadata不自证provider可见性；C13不排除瞬时布局影响，TOCTOU非完整隔离 |
@@ -67,9 +79,9 @@
 
 - **跨工作区 Cookie/存储隔离**：已按 DSH 工作区隔离 page/URL/viewport/history/网络缓冲/队列/租约，但同一 Chromium/profile 下 Cookie、localStorage、IndexedDB、cache 仍共享；真实 Agent exec 身份链与两个 GUI 工作区已在隔离 3081 验收（见 workspace-isolation.md），provider 图像可见性仍 NOT_RUN。
 - **完整网络沙箱**：只拦 Document 导航并校验 DNS；子资源、页面 `fetch`、WebSocket 不受策略约束；独立 HTTP 也只做每次派发的目标校验，不做 DNS pinning/代理隔离。也防不住 DNS rebinding 时序。
-- **独立证据包**：当前证据依赖会话日志 + render 文本 + `tests/acceptance/evidence/` 整理件，不落 JSONL/独立文件包；落盘涉及 workspace 写入、清理与隐私授权。
+- **独立证据包**：T1/T2/T3 的证据仍依赖会话日志 + render 文本 + `tests/acceptance/evidence/` 整理件，不落 JSONL/独立文件包；落盘涉及 workspace 写入、清理与隐私授权。第 8 轮 network P0 补了网络事件侧的 JSONL/HAR（相对路径、仅持久根、0600/no-clobber、默认脱敏），但那是**网络证据**，不能替代页面/视觉证据包。
 - **输入完整性**：`commands`/`unmodifiedText` 在部分平台没有页面可见效果；IME/组合输入、触屏/触控笔、焦点管理都没有行为级保证；`pointerType:pen` 只证明事件类型，不证明物理触控笔/压感/触屏。
-- **网络观察的价值边界**：为了隐私不采正文/头；接口断言必须用独立 HTTP API，不靠扩张网络抓包。
+- **网络观察的价值边界**：旧 `browser_network` 为隐私不采正文/头；第 8 轮 network P0 按契约采集正文与头，但**默认脱敏**（敏感 query/头/字段 → `***`）且受配额截断，读不到返回 `available:false`。接口契约断言仍用独立 HTTP API，不靠抓包伪装成 HTTP 客户端。
 - **provider 可见性在宿主侧**：插件能证明“返回合法 image block”，不能证明 provider/VLM 一定消费；需要真实 provider 专项测试。
 - **frame 选择**：当前只有主页面上下文；跨 iframe/跨源 frame 的 eval/输入/CSSOM 都需要额外 target 模型。
 - **平台依赖**：Chrome 解析已改为 env → 既有 `/opt` → PATH（无 macOS 之外的额外猜测），spawn/启动超时映射为 `UNSUPPORTED`/`CDP_TIMEOUT`/`CDP_DISCONNECTED`；`Connection.requestRejection`、attachments 等宿主 API 仍没有 `engines.dsh` 约束，DSH 升级可能影响 T1。
@@ -99,6 +111,8 @@
 - 不要把 3081 的 HTTP/GUI 证据当 provider 图像可见性。
 - 不要把截图返回成功当界面验收通过。
 - 不要把 `unmodifiedText` 的 INCONCLUSIVE 写成“已验证”。
+- network P0 已 verified（52/52、266/266、8 NOT_RUN），但**不要把 8 条 NOT_RUN 说成通过**（C1 HTTPS、C2 二进制 body、C5 service worker、C20 单样本 p95、C35 淘汰 body 三态、C37 `modify-response`、C52 外部套件/真实宿主），也不要把 `G1.5` partial 说成“iframe/OOPIF/Worker/popup 全覆盖”，更不要把真实宿主写成已验证（3080 未重启）。
+- 不要把 `browser_network`（300 条元数据）当成 network P0 的采集/控制能力；也不要把 JSONL 导出当成断言通过。
 
 ## 7. 建议处理顺序（建议，不是承诺）
 

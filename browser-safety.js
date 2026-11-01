@@ -40,6 +40,25 @@ const TAXONOMY = {
   VISION_BASELINE_NOT_FOUND: ['vision', false], VISION_BASELINE_EXISTS: ['output', false],
   VISION_BASELINE_CONFLICT: ['concurrency', false],
   VISION_BASELINE_READ_FAILED: ['output', true], VISION_BASELINE_WRITE_FAILED: ['output', true],
+  // Web P0 network collection (docs/network-p0.md §2.9). Codes, categories and retryability are
+  // fixed by the contract table: `scope` = the session/store is not there, `action` = the cited
+  // event is gone, `resource` = a declared budget, `concurrency` = the page/session is owned
+  // elsewhere or an id/step name collides, `capability` = no CDP/page or an unsupported CDP call,
+  // `output`/`input` = the evidence file side, `authorization` = cross-agent/cross-scope access.
+  NET_SESSION_NOT_FOUND: ['scope', false], NET_SESSION_ACTIVE: ['concurrency', false],
+  NET_SESSION_NOT_ACTIVE: ['scope', true], NET_CONFIG_INVALID: ['input', false],
+  NET_EVENT_NOT_FOUND: ['action', false], NET_BODY_UNAVAILABLE: ['network', true],
+  NET_QUOTA_EXCEEDED: ['resource', false], NET_RULE_INVALID: ['input', false],
+  NET_RULE_CONFLICT: ['concurrency', false], NET_RULE_NOT_FOUND: ['input', false],
+  NET_CONTROL_UNAVAILABLE: ['capability', false], NET_CONTROL_TIMEOUT: ['timeout', true],
+  NET_EXPORT_FAILED: ['output', true], NET_IMPORT_FAILED: ['input', false],
+  NET_HAR_INVALID: ['input', false], NET_SUBSCRIPTION_NOT_FOUND: ['scope', false],
+  NET_SUBSCRIPTION_FORBIDDEN: ['authorization', false], NET_INTEGRITY_FAILED: ['integrity', false],
+  NET_SCOPE_FORBIDDEN: ['authorization', false],
+  // R1-5（docs/network-p0.md §13）：新 7 工具的参数/路径/根/写盘错误一律 NET_*，
+  // 只有 BUSY/ABORTED/CDP_*/RUNTIME_LIMIT 这些平台码可以透传。
+  NET_INVALID_ARGUMENT: ['input', false], NET_OUTPUT_ROOT_UNKNOWN: ['output', false],
+  NET_OUTPUT_PATH_INVALID: ['input', false], NET_OUTPUT_WRITE_FAILED: ['output', true],
 };
 export class BrowserError extends Error {
   constructor(code, message, details = {}) {

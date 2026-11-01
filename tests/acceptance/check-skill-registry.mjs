@@ -84,7 +84,12 @@ async function main() {
   record('真实 Context 已挂载真实 SkillRegistry（ctx.skills 可用）', typeof ctx.skills?.list === 'function' && typeof ctx.skills?.get === 'function', Object.keys(ctx.skills || {}));
 
   // Provide the services index.js declares via `export const inject = ['tools', 'webServer']`.
-  ctx.provide('tools', { register() { return () => {}; } });
+  // The tools stub records what the real plugin registers, so the registry-level run also proves
+  // the 29-tool surface (that count is otherwise only asserted through the fake-ctx harness).
+  const registeredTools = new Map();
+  ctx.provide('tools', {
+    register(definition) { registeredTools.set(definition.name, definition); return () => { registeredTools.delete(definition.name); }; },
+  });
   ctx.provide('webServer', { register() { return () => {}; } });
   record('已 provide tools / webServer 两个服务', Boolean(ctx.get('tools')) && Boolean(ctx.get('webServer')), [Boolean(ctx.get('tools')), Boolean(ctx.get('webServer'))]);
 
@@ -103,6 +108,18 @@ async function main() {
       if (list.some((skill) => skill.name === 'ui-testing')) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    const netTools = ['browser_network_session', 'browser_network_events', 'browser_network_detail',
+      'browser_network_trace', 'browser_network_control', 'browser_network_evidence', 'browser_network_subscribe'];
+    const toolNames = [...registeredTools.keys()];
+    record('真实 ctx.plugin 挂载后注册恰好 29 个 browser_* 工具（含 7 个 network 工具）', toolNames.length === 29
+      && toolNames.every((name) => name.startsWith('browser_')) && netTools.every((name) => registeredTools.has(name)),
+      { count: toolNames.length, network: netTools.filter((name) => registeredTools.has(name)) });
+    record('29 个注册工具都带 object 参数 schema 与 execute', toolNames.length === 29
+      && [...registeredTools.values()].every((definition) => definition.parameters?.type === 'object'
+        && Array.isArray(definition.parameters?.required) && typeof definition.execute === 'function'),
+      [...registeredTools.values()].filter((definition) => definition.parameters?.type !== 'object'
+        || !Array.isArray(definition.parameters?.required) || typeof definition.execute !== 'function').map((definition) => definition.name));
+
     const summary = list.find((entry) => entry.name === 'ui-testing');
     record('registry.list() 发现 ui-testing', Boolean(summary), summary || list.map((entry) => entry.name));
     record('registry.list() 标记 modelInvocable=true', summary?.invocation?.modelInvocable === true, summary?.invocation);

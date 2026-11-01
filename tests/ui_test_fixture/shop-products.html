@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH Shop Products</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 24px; font-family: Arial, "Noto Sans", sans-serif; color: rgb(17, 24, 39); background-color: rgb(255, 255, 255); }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p { margin: 4px 0; font-size: 14px; }
+    ul { margin: 8px 0; padding-left: 24px; font-size: 14px; }
+    li { margin: 2px 0; }
+    button { margin: 8px 8px 0 0; padding: 6px 12px; font-size: 14px; border: 1px solid rgb(156, 163, 175); border-radius: 6px; background-color: rgb(243, 244, 246); color: rgb(17, 24, 39); cursor: pointer; }
+    nav { margin-top: 12px; font-size: 13px; }
+  </style>
+</head>
+<body data-shop-stage="products">
+  <h1 id="shop-title">Shop Products</h1>
+  <p id="shop-stage">stage: products</p>
+  <p id="shop-status">loading</p>
+  <ul id="shop-products"></ul>
+  <button id="shop-pick-1" type="button">Pick Widget A</button>
+  <p id="shop-pick-hint">Clicking navigates to /shop/product.html?runId=chain-1&amp;productId=sku-1 (full page load).</p>
+  <script src="/shop/shop-ledger.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      var shop = window.__shop;
+      var list = document.getElementById('shop-products');
+      shop
+        .request('GET', '/api/shop/products?runId=' + encodeURIComponent(shop.runId))
+        .then(function (json) {
+          var products = (json.data && json.data.products) || [];
+          shop.products = products;
+          for (var i = 0; i < products.length; i += 1) {
+            var product = products[i];
+            var item = document.createElement('li');
+            item.id = 'shop-product-' + product.id;
+            item.textContent = product.id + '|' + product.name + '|' + product.price;
+            list.appendChild(item);
+          }
+          shop.markDone('products');
+        })
+        .catch(function () { /* recorded in shop.errors */ });
+      document.getElementById('shop-pick-1').addEventListener('click', function () {
+        location.href = '/shop/product.html?runId=' + encodeURIComponent(shop.runId) + '&productId=sku-1';
+      });
+    })();
+  </script>
+</body>
+</html>

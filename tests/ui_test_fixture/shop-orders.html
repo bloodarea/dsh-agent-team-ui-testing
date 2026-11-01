@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH Shop Orders</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 24px; font-family: Arial, "Noto Sans", sans-serif; color: rgb(17, 24, 39); background-color: rgb(255, 255, 255); }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p { margin: 4px 0; font-size: 14px; }
+    ul { margin: 8px 0; padding-left: 24px; font-size: 14px; }
+    li { margin: 2px 0; }
+    a { color: rgb(37, 99, 235); }
+  </style>
+</head>
+<body data-shop-stage="orders">
+  <h1 id="shop-title">Shop Orders</h1>
+  <p id="shop-stage">stage: orders</p>
+  <p id="shop-status">loading</p>
+  <p id="shop-orders-count">orders: 0</p>
+  <ul id="shop-orders"></ul>
+  <p id="shop-restart"><a id="shop-back-products" href="/shop/products.html?runId=chain-1">Back to products</a></p>
+  <script src="/shop/shop-ledger.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      var shop = window.__shop;
+      var list = document.getElementById('shop-orders');
+      shop
+        .request('GET', '/api/shop/orders/list?runId=' + encodeURIComponent(shop.runId))
+        .then(function (json) {
+          var orders = (json.data && json.data.orders) || [];
+          shop.orders = orders;
+          for (var i = 0; i < orders.length; i += 1) {
+            var order = orders[i];
+            var item = document.createElement('li');
+            item.id = 'shop-order-' + order.orderId;
+            item.textContent = order.orderId + '|' + order.status + '|' + order.total;
+            list.appendChild(item);
+          }
+          document.getElementById('shop-orders-count').textContent = 'orders: ' + orders.length;
+          shop.markDone('orders');
+        })
+        .catch(function () { /* recorded in shop.errors */ });
+    })();
+  </script>
+</body>
+</html>

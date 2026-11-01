@@ -1,13 +1,17 @@
 # T1/T2 Web 插件验收
 
-套件通过真实插件注册的 **16 个** `browser_*` 工具（9 个 T1 + 7 个 T2）与 HTTP handler，驱动插件自己的无头 Chromium 和仓库 loopback 靶机。进程归属通过 `/proc/<pid>/stat` 的父 PID 精确绑定当前测试 Node，profile 仅从这些进程登记；清理不会把并行运行的其他 DSH/验收 Chromium 算入本次。测试不操作用户 3080/3081 实例。M0–M2 的失败必须影响退出码；旧的缺能力、未脱敏、无隔离、无分类 finding 已改为必需断言。
+套件通过真实插件注册的 **29 个** `browser_*` 工具（9 个 T1 + 7 个 T2 + 6 个 T3 + 7 个 network）与 HTTP handler，驱动插件自己的无头 Chromium 和仓库 loopback 靶机。进程归属通过 `/proc/<pid>/stat` 的父 PID 精确绑定当前测试 Node，profile 仅从这些进程登记；清理不会把并行运行的其他 DSH/验收 Chromium 算入本次。测试不操作用户 3080/3081 实例。M0–M2 的失败必须影响退出码；旧的缺能力、未脱敏、无隔离、无分类 finding 已改为必需断言。
 
 ## 运行
 
 ```bash
-node tests/acceptance/run.mjs              # T1 主验收（P1–P22，含 16 工具注册面/能力/证据/宿主契约）
+node tests/acceptance/run.mjs              # T1 主验收（P1–P23，含 29 工具注册面/能力/证据/宿主契约与 network 工具面）
 node tests/acceptance/capture-p0.mjs       # P0 截图基础设施验收（C1–C14，真实Chromium/像素真值/默认暂存+显式持久）
 node tests/acceptance/t2-structured.mjs    # T2 结构化验收（docs/t2-structured-gui.md §9 的 38 条，C1–C38）
+node tests/acceptance/t3-vision.mjs        # T3 静态视觉验收（docs/t3-vision.md §9 的 56 条，C1–C56）
+node tests/acceptance/network-p0.mjs       # 网络 P0 验收（docs/network-p0.md §10 的 52 条，C1–C52）
+node tests/acceptance/network-chain.mjs    # 电商 5 页业务链路端到端（task-7，S1–S12）
+node --test tests/network-p0.test.mjs      # 网络 P0 纯算法/FS 单测（U 类，另被 network-p0.mjs 合并到同一批 C 号）
 node tests/acceptance/workspace-isolation.test.mjs
 node --test tests/acceptance/runtime-faults.test.mjs
 node tests/acceptance/check-skill.mjs
@@ -27,27 +31,28 @@ Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DS
 | 文件 | 内容 |
 | --- | --- |
 | [harness.mjs](harness.mjs) | 加载真实 `apply(ctx)`，捕获注册工具、HTTP/WS 路由；透传 `exec.agent.id`/`exec.signal`，收集错误分类与 render content；模拟 optional attachments 与 `agent/disposed` 事件。 |
-| [run.mjs](run.mjs) | P1–P13 主浏览器与帧管线回归，并集成 M0–M2、P20、P21 与 P22 探针；P1/P14/P16/P21 断言 16 工具面（9 T1 + 7 T2）。 |
+| [run.mjs](run.mjs) | P1–P13 主浏览器与帧管线回归，并集成 M0–M2、P20、P21、P22 与 P23 探针；P1/P14/P16/P21/P23 断言 29 工具面（9 T1 + 7 T2 + 6 T3 + 7 network）。 |
 | [capture-p0.mjs](capture-p0.mjs) | **P0 截图基础设施验收**：C1–C14覆盖默认暂存/显式持久与生命周期，以及默认/scale/region/小数 scale/文档坐标+滚动/帧管线/空白识别/安全写入/参数与结构化错误/附件对比/能力探测/清理与可重复性/`captureBeyondViewport` 布局稳定性；断言全部是 PNG 像素真值（`capture-p0.js` 独立解码）与文件事实。 |
 | [t2-structured.mjs](t2-structured.mjs) | **Web T2 验收套件**：按 `docs/t2-structured-gui.md` §9 的 38 条编号条件组织 C1–C38（snapshot/ref/selector/click/type/scroll/fill_form/node_state/wait_for/证据/错误/lease/隔离），真值为 `window.__t2` 的真实 DOM 事件与靶机 DOM。 |
 | [workspace-isolation.test.mjs](workspace-isolation.test.mjs) | 按 DSH 工作区 page 隔离：同 apply 一 Chromium 多 target、scope 身份链、URL/viewport/history/network 独立、同工作区 BUSY/跨工作区并发、close/abort/CDP 断线、scoped WS/frame/metrics、recent binding、owner-only、8 page/idle/viewer TTL、popup/Document 阻断。 |
 | [workspace-isolation-3081.mjs](workspace-isolation-3081.mjs) | 真实 3081：注册 workspace session scope、scoped HTTP/WS（真实 headless Chrome 页面内带 cookie）、A/B frame/close/recent binding、loaded build/PID/home 证据。 |
 | [gui-workspace-3081.mjs](gui-workspace-3081.mjs) | 真实 3081 GUI：创建两个注册工作区/会话，main MoreRow 捕获与右栏 session scope、A/B/A 请求/WS/frame 不串、隐藏右栏停播。 |
 | [address-history-3081.mjs](address-history-3081.mjs) | 真实 3081 GUI 地址/历史回归（scope 取自 main 面板当前 session，与 hostFetch 同一 runtime）。 |
-| [milestone-probes.mjs](milestone-probes.mjs) | P14–P19 能力发现（16 工具、七项 `web.t2.*` + `structured-dom` available、T3/T4 unsupported、`limits.structuredGui`）、lease、证据 envelope（含 7 个 T2 工具的 envelope + `evidence.version=1`）、截图附件/回退、取消/面板同锁、启动失败与目标策略。 |
+| [milestone-probes.mjs](milestone-probes.mjs) | P14–P19 能力发现（29 工具、七项 `web.t2.*` + `structured-dom` available、六项 `web.t3.*` + `static-vision` available、七项 `web.network.*` + `web.network.p0` 聚合、`limits.structuredGui`/`limits.network`、T4 unsupported）、lease、证据 envelope（含 7 个 T2 工具的 envelope + `evidence.version=1`）、截图附件/回退、取消/面板同锁、启动失败与目标策略。 |
 | [input-modifiers.mjs](input-modifiers.mjs) | P20 `browser_input` 功能键与修饰键：Tab/Shift+Tab 焦点、Ctrl+A 标志、`virtualKeyCode`→`e.keyCode`、位掩码/`autoRepeat`/mouse/wheel、老式最小调用、非法参数拒绝；真值为页面内捕获的 DOM 事件（经 `browser_eval` 读回）。 |
-| [host-contract.mjs](host-contract.mjs) | P21 宿主输出契约：按 `DSH_ROOT` 从 DSH 安装目录解析真实 `@deepseek-ai/dsh-util-values`，用 `snapshotJsonValue`/`isJsonValue` 断言 16 工具（9 T1 + 7 T2）返回值与 render content 为 lossless JSON（含 eval `undefined`/抛错、数字参数 args、无附件截图、失败网络条目、类实例附件的投影、T2 成功值/证据与 `TARGET_NOT_FOUND` 抛错详情）。解析不到真实包时退回内联等价校验器并记 finding，不静默冒充。 |
+| [host-contract.mjs](host-contract.mjs) | P21 宿主输出契约：按 `DSH_ROOT` 从 DSH 安装目录解析真实 `@deepseek-ai/dsh-util-values`，用 `snapshotJsonValue`/`isJsonValue` 断言全部 29 工具（含 4 个会真实执行的 network 工具）返回值与 render content 为 lossless JSON（含 eval `undefined`/抛错、数字参数 args、无附件截图、失败网络条目、类实例附件的投影、T2 成功值/证据与 `TARGET_NOT_FOUND` 抛错详情）。解析不到真实包时退回内联等价校验器并记 finding，不静默冒充。 |
 | [runtime-faults.test.mjs](runtime-faults.test.mjs) | CDP 故障注入和 Runtime 边界；使用 fake WebSocket、受控时钟与 fake CDP，避免等待真实 30 秒超时。 |
 | [http-request.mjs](http-request.mjs) | P22 独立 HTTP 请求：临时回环服务器、`http.request` 派发 spy、逐跳目标复验、字节/截断/压缩、脱敏与真实 lossless 校验；不启动 Chromium。 |
-| [check-skill.mjs](check-skill.mjs) | 16 工具与 Skill、台账（T1 台账必需、T2 台账为 INFO 直到 skill owner 落地）、manifest 一致性（tier=T1 或 T1+T2；T3/T4 必须 unsupported；T2 声明转必需当 manifest 已声明 T1+T2）；错误、lease、截图回退契约。 |
-| [check-skill-registry.mjs](check-skill-registry.mjs) | 真实 Cordis 注册、加载、resourceBase、render 和 dispose。 |
+| [check-skill.mjs](check-skill.mjs) | 29 工具与 Skill、台账（T1 台账必需、T2/T3 台账与 network 声明为 INFO 直到 skill owner 落地）、manifest 一致性（tier=T1/T1+T2/T1+T2+T3；T4 必须 unsupported；T2/T3 声明转必需当 manifest 已声明）；错误、lease、截图回退契约。 |
+| [network-chain.mjs](network-chain.mjs) | **电商 5 页业务链路端到端**（suite `acceptance-network-chain`，S1–S12）：真实插件 + 真实 headless Chromium 走 products→product→order→checkout→orders 五次全页导航，断言会话连续性、flow+5 阶段步、请求/响应内容、`x-correlation-id` 跨请求关联（valueHash 同组、`sameGroup≥5`）、业务对象与传播、轮询识别、导航 state mark 与 **SPA pushState 边界**、截图 `capture.networkWindow`、JSONL 证据导出（相对路径/0600/脱敏）、完整性、旧 `browser_network` 不回归；产出 `run-report.json`+`run.log`+人类可读 `chain-report.md`（阶段表：stage→requests→status→duration→orderId + 总请求/耗时/失败数），支持 `DSH_CHAIN_ONLY="S1,S4"`。 |
+| [check-skill-registry.mjs](check-skill-registry.mjs) | 真实 Cordis 注册、加载、resourceBase、render 和 dispose；同时捕获真实 `tools.register` 断言恰好 29 个工具（含 7 个 network）且都有 object 参数 schema 与 execute。 |
 | [real-browser-ws.mjs](real-browser-ws.mjs) | 可选隔离 DSH 的真实 GUI 帧管线回归。 |
 
 ## 主验收探针
 
 | ID | 必需行为 |
 | --- | --- |
-| P1 | 恰好 16 工具（9 T1 + 7 T2）、required 与 `docs/runtime-t1.md` + `docs/t2-structured-gui.md` §2.2 一致、schema、HTTP 路由、owner 诊断、未启动时 capability 可用。 |
+| P1 | 恰好 29 工具（9 T1 + 7 T2 + 6 T3 + 7 network）、required 与 `docs/runtime-t1.md` + `docs/t2-structured-gui.md` §2.2 + `docs/t3-vision.md` §2.1 + `docs/network-p0.md` §2 一致、schema、HTTP 路由、owner 诊断、未启动时 capability 可用。 |
 | P2 | loopback 导航成功；state URL/title 与页面一致；SPA 改标题可读；file 拒绝、不可达 `NAV_FAILED`、失败恢复。 |
 | P3 | 按值 JS/Promise/undefined；页面异常返回 `EVAL_ERROR` 对象及消息、stack、details。 |
 | P4 | CSS 精确值、全集；缺失元素返回 `TARGET_NOT_FOUND` 操作失败。 |
@@ -58,15 +63,16 @@ Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DS
 | P9 | 独立 apply 实例进程隔离；同工作区不同 session 受 single-owner-lease 约束，不同工作区 page 独立。 |
 | P10 | throw/操作失败/HTTP 均有 code/category/retryable；HTTP error 保持字符串；BrowserError 消息有 `[CODE]` 与 action 证据。 |
 | P11–P13 | WS hello/二进制帧、epoch/seq、鉴权/loopback、metrics、轮询回退、close 清理。 |
-| P14 | capability 实际服务探测、16 工具声明、七项 `web.t2.*` 与 `web.t2.structured-dom` available、T3/T4 unsupported、`limits.structuredGui` 限额；可跨会话诊断。 |
+| P14 | capability 实际服务探测、29 工具声明、七项 `web.t2.*` 与 `web.t2.structured-dom` available、六项 `web.t3.*` 与 `web.t3.static-vision` available、七项 `web.network.*` 与 `web.network.p0` 聚合、`limits.structuredGui`/`limits.network`（含 `https:mechanism-identical`、`responseModification` 布尔）、T4 仍 unsupported；可跨会话诊断。 |
 | P15 | 同工作区两会话仅一个拿 lease；6 个页面/网络工具拒绝其他 owner；diagnostic 不夺租约；disposed 匹配释放；未知 exec 走 legacy；跨工作区并发不受该租约影响。 |
-| P16 | 16 工具（含 7 个 T2，T2 额外要求 `evidence.version=1` 与 targets/incomplete/truncated/networkDelta/before/after）成功返回和 durable 文本均有 actionId/sessionId/startedAt/finishedAt/target/args；actionId 唯一；截图 hash/time/attachmentId；有服务 render image attachment、无服务明确 base64-fallback 并保留图片。 |
+| P16 | 29 工具（含 7 个 T2、7 个 network；T2 额外要求 `evidence.version=1` 与 targets/incomplete/truncated/networkDelta/before/after）成功返回和 durable 文本均有 actionId/sessionId/startedAt/finishedAt/target/args；actionId 唯一；截图 hash/time/attachmentId；有服务 render image attachment、无服务明确 base64-fallback 并保留图片。 |
 | P17 | signal 取消 1 秒内 `ABORTED`；返回前关闭旧浏览器、释放 owner；后续懒启动；长 eval 与面板输入/后续工具不交错。HTTP body 异步解析不规定其与工具的先后入队顺序。 |
 | P18 | `/bin/false` 注入启动失败；明确 BrowserError，无新增 profile 残留。 |
 | P19 | 工具及 HTTP 阻断 scheme/metadata/RFC1918/credentials/DSH 自身；合法 loopback 重定向成功，metadata 重定向失败；HTTP 200 后截断更新 failed/errorText 且不重复条目；window.open 的 secondary target 向被阻断 origin 发出 Document 请求计数为 0，原页仍可导航。 |
 | P20 | Tab 焦点前进（#inc→#name）、Shift+Tab 焦点回退；`commands:['selectAll']` 页面真值 selection 0/6（无 commands 对照 3/3）、`unmodifiedText` 只断言可见输入语义（特有作用不可观察记 INCONCLUSIVE）、`pointerType:'pen'` 页面 `PointerEvent.pointerType==='pen'` 与 mouse 对照；Ctrl+A 的 keydown `ctrlKey=true`/`key='a'`；`virtualKeyCode` 决定 `e.keyCode`（Tab=9/A=65）；整数位掩码 10 等价 ctrl+shift；`autoRepeat`→`e.repeat`；`location`/`isKeypad`（数字键盘 `e.location=3`、左 Shift `e.location=1`）；mouse/wheel 修饰键生效且点击副作用保持；老式最小 key/mouse 调用仍工作；非法修饰键名/类型/越界掩码/非法 `key.type`/非法 `pointerType` 抛 `INVALID_ARGUMENT` 且不向页面派发事件；schema 声明全部新字段。 |
-| P21 | 真实宿主校验器（`@deepseek-ai/dsh-util-values`，版本随安装走）对 16 工具成功值 + render content 断言 lossless JSON；用真实 `@deepseek-ai/dsh-tools` 的 `assertSupportedJsonSchema` 断言 16 个 `output.schema`（参数 schema 只要求 lossless + object/required，子集合规为提示性）；`browser_eval` 页面值 undefined、页面抛错（EVAL_ERROR 值）、`browser_network` 数字参数 args、无附件服务截图、loadingFailed 网络条目、工具抛错 details、附件类实例投影均可快照且无 `undefined` 属性；校验器解析失败时用内联等价实现并记 finding。 |
+| P21 | 真实宿主校验器（`@deepseek-ai/dsh-util-values`，版本随安装走）对全部 29 工具成功值 + render content 断言 lossless JSON；用真实 `@deepseek-ai/dsh-tools` 的 `assertSupportedJsonSchema` 断言 29 个 `output.schema`（参数 schema 只要求 lossless + object/required，子集合规为提示性）；`browser_eval` 页面值 undefined、页面抛错（EVAL_ERROR 值）、`browser_network` 数字参数 args、无附件服务截图、loadingFailed 网络条目、工具抛错 details、附件类实例投影均可快照且无 `undefined` 属性；校验器解析失败时用内联等价实现并记 finding。 |
 | P22 | 独立 `browser_http_request`：默认 GET/5s/64KiB、`ok:true≠2xx`、headers 小写→string[]、默认不跟随/显式跟随每跳复验、方法规则、超时/取消、阻断目标与重定向阻断零派发（`http.request` spy）、非法参数零副作用、正文截断/字节/base64/压缩、无 cookie jar、脱敏、证据 target 为初始 URL、真实 lossless、未启动/关闭态、卸载 ABORTED。 |
+| P23 | network P0 工具面（`docs/network-p0.md` §1.2.4/§2/§8.5/§8.8）：7 个 `browser_network_*` 注册与 required/schema 一致；无会话时 `session status`（`session:null`+limits）、`events`（空+`sessionId:null`）、`detail`/`subscribe`（NET_* 码）、`evidence index/integrity`、`trace query/window`、`control intercept-list` 全部可诊断且**不启动 Chromium**（无新 profile）；`control` 对其他 owner BUSY、只读查询不占租约；旧 `browser_network` 仍只回 `{ok,entries:[元数据]}` 白名单字段。 |
 
 ## T2 结构化验收探针（`t2-structured.mjs`，对应 `docs/t2-structured-gui.md` §9）
 
@@ -76,7 +82,7 @@ Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DS
 
 | ID | §9 | 覆盖 |
 | --- | --- | --- |
-| C1-registration | 1 | 16 工具注册面、§2.2 required、未知字段/目标冲突 INVALID_ARGUMENT、纯参数失败不启动 Chromium |
+| C1-registration | 1 | 29 工具注册面、§2.2 required、未知字段/目标冲突 INVALID_ARGUMENT、纯参数失败不启动 Chromium |
 | C2-cold-capabilities | 2 | 仅 state/capabilities 即可读事实、七项 `web.t2.*`+`structured-dom` available、T3/T4 unsupported、description 含 T1/T2、`limits.structuredGui` |
 | C3-workspace-isolation | 3 | 两个 workspace 的 page/ref/lease 独立：A 的 ref 在 B 为 REF_STALE 且不影响 A |
 | C4-semantic-snapshot | 4 | 标题/40 项列表/表格/同名 Save（3 个：2 个内容命名 + 1 个 aria-label owner）/顺序、refs 与树一一对应、display:none 与 aria-hidden 排除；**冗余文本压缩正负例**（嵌套同 role/同名冗余行不再输出、aria-label owner 与子文本都保留、分片文本 `Alpha Beta Gamma` 顺序与空格、同名 sibling 各留一份、长名 256 vs 子文本 475 保留更完整子表示、generic 文本区只留一份、相邻捕获 tree/digest 相同） |
@@ -112,8 +118,77 @@ Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DS
 | C34-failure-evidence | 34 | 六码 BrowserError（category/retryable/[CODE]/details.evidence）、hidden/covered 升级 T3、失败不关页面 |
 | C35-network-redaction | 35 | networkDelta seq 窗口/≤20 条/dropped、输入哨兵不泄露、value=null+valueRedacted、URL 脱敏、evidence ≤262144 |
 | C36-shadow-frame | 36 | open shadow 的 AX ref 可信点击、`__t2.shadow` 深层 isTrusted、CSS 不穿透、iframe 仅边界、closed shadow 无 ref |
-| C37-t1-host-regression | 37 | 进程内部分：16 工具成功值 + render 全部 lossless、T1 9 工具 surface 未放宽；其余回归由 run.mjs / runtime-faults / workspace-isolation / check-skill 单独执行 |
+| C37-t1-host-regression | 37 | 进程内部分：全部注册工具（29）成功值 + render 全部 lossless、T1 9 工具 surface 未放宽；其余回归由 run.mjs / runtime-faults / workspace-isolation / check-skill 单独执行 |
 | C38-real-host | 38 | **NOT_RUN**：需隔离 DSH 重新加载终版并在真实 Agent 会话执行（fake ctx 不能代替） |
+
+## 网络 P0 验收（`network-p0.mjs` + `network-p0.test.mjs`，对应 `docs/network-p0.md` §10）
+
+```bash
+node tests/acceptance/network-p0.mjs                    # B 类：真实插件 + 真实 headless Chromium + /n/* 靶机，C1–C52
+node tests/acceptance/network-p0.mjs --only C5,C10      # 调试子集（等价 DSH_NETWORK_ONLY="C5,C10"）
+node --test tests/network-p0.test.mjs                   # U 类：network-p0.js 纯函数/FS 单元
+```
+
+- 报告：`tests/acceptance/runs/<iso>-<pid>/run-report.json` + `run.log`；证据含导出的 JSONL/HAR、脱敏样例与 `networkWindow` 截图记录。每条 criterion 至少 3 个 required 检查，报告逐条给出 `criteria` 号、required/failed/NOT_RUN。
+- 退出码与既有套件一致：`0` 全部必需项通过、`1` 有必需项失败、`2` 套件无法运行（无可用 Chromium / U-runner 缺失 / 硬超时 / SIGINT 写 partial 报告）。
+- 环境变量：`DSH_NETWORK_ONLY="C5,C10"`（子集，仍标出被跳过的 criteria）、`DSH_NETWORK_TIMEOUT_MS`（默认 1500000）、`DSH_UI_TESTING_CHROME`（覆盖 Chromium）。
+- 只清理本次进程创建的浏览器/profile/临时证据根与 fixture；不触碰 3080/3081，不写仓库 `output/`，`runs/` 已在 `.gitignore`。U 类检查由 `tests/network-p0.test.mjs` 的 `runNetworkUnitChecks(check)` 提供并被合并到同一批 C 号（U 永不替代 B）。
+- 冻结口径：**C1 HTTPS 子项记 NOT_RUN**（无本地 TLS 靶机，能力报告 `capture.https:"mechanism-identical"`，不得写已验）；**C37 modify-response 按 CDP 能力如实**（不支持则 NOT_RUN，`responseModification:false`）；**C5 popup 断言是「仍被阻断 / 无新 page 采集 / 原 page 不受影响」**，能力记 partial。
+
+| ID | §10 | B 类覆盖要点 |
+| --- | --- | --- |
+| C1 | G1.1 | `/n/json`、`/n/slow`、`/n/status/404`、重定向、POST 的 request/response/finished 事件与页面真值；HTTPS 子项 NOT_RUN |
+| C2 | G1.2 | 请求体（JSON/form）与响应体（JSON/text/gzip 解压）可读；未捕获 `NET_BODY_UNAVAILABLE` 不伪造；截断计数 |
+| C3 | G1.3 | `/n/ws` 握手、`server-push-1`、echo 双向帧、关闭、opcode/方向/帧上限 |
+| C4 | G1.4 | `/n/sse` 3 条消息（eventName/eventId/data）、关流后 error 不崩、每条一条 sse 事件 |
+| C5 | G1.5 | iframe `/n/iframe-data` 与 Worker `/n/worker-data` 采集且 targetId/frameId 可区分；popup 仍被阻断、无新 page 采集、原 page 不受影响；能力 partial |
+| C6 | G1.6 | start 幂等 `changed:false`、stop 幂等、`status` 不启动浏览器、不同名冲突、reset 清空、seq 单调 |
+| C7 | G1.7 | request→response→finished 顺序与终态、loadingFailed 只 failed、redirect 链顺序、无重复 finished |
+| C8 | G1.8 | `/n/redirect/1→2→final` 的 from/to/status 与最终 URL；链长 ≤20 |
+| C9 | G1.9 | initiator.type/url 指向页面、requestId 父链、栈 ≤10 |
+| C10 | G2.1 | schema 字段/类型/枚举/ts 三时间、summary/full 投影；入店脱敏且不可变 |
+| C11 | G2.2 | http/ws/sse/marker 混排按时间升序、desc 只影响顺序、fromSeq/toSeq 准确 |
+| C12 | G2.3 | ttfb/total 与 `/n/slow` 实测一致、timing 缺项 null、wall/monotonic 同存 |
+| C13 | G2.4 | `#net-parallel` 3 并发重叠窗口、seq 顺序与完成顺序、聚合正确、无伪因果 |
+| C14 | G2.5 | `browser_click #net-fetch-json` 的 actionId mark 与新增事件时间关联；T2 `evidence.networkDelta` 仍在；`basis:"temporal"` |
+| C15 | G2.6 | navigate/reload 后 documentURL/navId/loaderId 变化、state mark、事件归属 |
+| C16 | G2.7 | `browser_screenshot` 证据含 `networkWindow`（frameTimeMs/nearest/fromSeq/toSeq）、nearest 在 ±250ms、原 capture 字段不变 |
+| C17 | G2.8 | begin/end-step 窗口内事件按 wallMs 归入、跨窗口归最早、不写回事件 |
+| C18 | G3.1 | query 重复键 / JSON / form / multipart / text / parseError；`/n/echo` 各形态与 header 上限 |
+| C19 | G3.2 | HTTP status+statusClass、业务码默认路径与显式 path、无业务码为 null、不猜语义 |
+| C20 | G3.3 | aggregate count/bytes/min/max/avg/p50/p95/failures；样本 <2 时 p95=max；incomplete 传播 |
+| C21 | G3.4 | `/n/status/500`、offline、fail 规则、blocked、canceled、timeout、cors 仅 suspect |
+| C22 | G3.5 | `#net-flaky` 首 503 后 200 标 retry、同请求标 duplicate、轮询标 polling、窗口阈值边界 |
+| C23 | G3.6 | traceparent/x-request-id/body traceId 提取为 hash、同链路分组、导出不含原值 |
+| C24 | G3.7 | method/status/statusClass/type/urlIncludes/failed/kind/step/时间/耗时过滤；search 命中与脱敏预览；groupBy/aggregate 上限 |
+| C25 | G3.8 | initiator 父子、redirect 链、same-url；detail 只回直接边；temporal 不当因果 |
+| C26 | G4.1 | 两步窗口分别统计、重叠窗口不重复计数、步骤上限 |
+| C27 | G4.2 | url-query/url-path/header/json-body/ws/sse 规则、propagate 命中、无命中不报 |
+| C28 | G4.3 | 同 correlation hash 分组、`detail.correlation` 同组数、不跨 scope |
+| C29 | G4.4 | businessCode/HTTP status 变化产生 states、无变化不产生、`basis:"observed"` |
+| C30 | G4.5 | begin/end 默认 now、显式 window、重复 begin/end、window 查询、重叠窗口归属 |
+| C31 | G4.6 | `#net-poll-start` 3 次识别 polling 间隔、end-step 后标 `asyncAfterClose`、不自动停页面定时器 |
+| C32 | G4.7 | explicit link / redirect / initiator 三种 basis；temporal 默认不返回；不写错 basis |
+| C33 | G4.8 | link seq↔evidenceId 幂等、trace.query/detail 返回 evidenceIds、截图/T2 actionId 关联 |
+| C34 | G5.1 | start→请求→stop→再请求、reset 后 counters 归零、stop 不关页面 |
+| C35 | G5.2 | 默认不读 body、include body 读取、已捕获/未捕获/已淘汰三态、不伪造 |
+| C36 | G5.3 | block → failed(BlockedByClient)、fail 规则 errorText、命中计数、Document 导航守卫仍生效 |
+| C37 | G5.4 | modify-request 改 header/url 被服务端回显、fulfill 给定状态/体、modify-response 按 CDP 如实（不支持 NOT_RUN） |
+| C38 | G5.5 | throttle latency 使 `/n/json` 显著变慢、Kbps 影响大 body、reset 恢复 |
+| C39 | G5.6 | offline 时请求失败事件、恢复后成功、异常不杀 page |
+| C40 | G5.7 | replay via page 页面真值 +1、via http 不带 Cookie、mock 返回指定响应且原记录不变 |
+| C41 | G6.1 | JSONL 落盘 0600/无覆盖/原子、meta/config 完整、暂存 vs 持久、异常根不回退 |
+| C42 | G6.2 | JSONL 往返、HAR 1.2 子集往返、includeBodies、坏行/坏 HAR 错误码 |
+| C43 | G6.3 | index/list/search 文件与内存证据、路径越界拒绝、deleteFiles 只删本 scope |
+| C44 | G6.4 | 截图 networkWindow 与 evidence.link 双向、detail.evidenceIds、无证据为 [] |
+| C45 | G6.5 | URL token/authorization/x-net-token/set-cookie/body 字段/WS/SSE 全程 `***`；导出/检索/错误无原值；maskRules 只追加 |
+| C46 | G6.6 | 两个 workspace scope 互不可见、跨 scope `NET_SCOPE_FORBIDDEN`、离线会话不可 control |
+| C47 | G6.7 | maxEvents 淘汰、maxBodyBytes 截断、maxTotalBytes 淘汰 body、订阅/held/规则/步骤超限 |
+| C48 | G6.8 | complete 条件、gaps/issue 枚举、cdp-disconnected、导入 partial、订阅 overflow、无「complete:true+丢数」 |
+| C49 | G6.9 | 同 scope 两 agent 独立 create/poll/ack、A ack 不影响 B、B poll 不重复、跨 agent FORBIDDEN、pin/gap |
+| C50 | 不变量 | 注册表 29 工具、7 个新工具 schema/required、capabilities.network 与 7 项 web.network.*、诊断不启动、旧 22 工具不变 |
+| C51 | 不变量 | 默认脱敏、路径限制、owner-only 订阅、控制需租约/只读不占、无绝对路径泄漏、无跨 scope 泄漏 |
+| C52 | 不变量 | T1/T2/T3/capture-p0 套件不回归、`node --check` 与 `git diff --check` 通过 |
 
 ## P0 截图验收与截图落盘隔离
 

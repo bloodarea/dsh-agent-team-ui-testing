@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH Shop Product</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 24px; font-family: Arial, "Noto Sans", sans-serif; color: rgb(17, 24, 39); background-color: rgb(255, 255, 255); }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p { margin: 4px 0; font-size: 14px; }
+    button { margin: 8px 8px 0 0; padding: 6px 12px; font-size: 14px; border: 1px solid rgb(156, 163, 175); border-radius: 6px; background-color: rgb(243, 244, 246); color: rgb(17, 24, 39); cursor: pointer; }
+  </style>
+</head>
+<body data-shop-stage="product">
+  <h1 id="shop-title">Shop Product</h1>
+  <p id="shop-stage">stage: product</p>
+  <p id="shop-status">loading</p>
+  <p id="shop-product-detail">pending</p>
+  <button id="shop-create-order" type="button">Create order</button>
+  <p id="shop-create-hint">POST /api/shop/orders then navigate to /shop/order.html?runId=chain-1&amp;productId=sku-1&amp;orderId=&lt;orderId&gt;.</p>
+  <script src="/shop/shop-ledger.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      var shop = window.__shop;
+      var productId = shop.query('productId', 'sku-1');
+
+      shop
+        .request('GET', '/api/shop/products/' + encodeURIComponent(productId))
+        .then(function (json) {
+          var product = (json.data && json.data.product) || null;
+          shop.product = product;
+          var detail = document.getElementById('shop-product-detail');
+          if (product) {
+            detail.textContent = product.id + '|' + product.name + '|' + product.price + '|' + product.stock;
+          } else {
+            detail.textContent = 'not-found';
+          }
+          shop.markDone('product');
+        })
+        .catch(function () { /* recorded in shop.errors */ });
+
+      document.getElementById('shop-create-order').addEventListener('click', function () {
+        document.getElementById('shop-create-order').disabled = true;
+        shop
+          .request('POST', '/api/shop/orders', { runId: shop.runId, productId: productId })
+          .then(function (json) {
+            var order = (json.data && json.data.order) || null;
+            shop.order = order;
+            if (!order || !order.orderId) {
+              shop.errors.push('missing-order-id');
+              document.getElementById('shop-create-order').disabled = false;
+              return;
+            }
+            location.href = '/shop/order.html?runId=' + encodeURIComponent(shop.runId)
+              + '&productId=' + encodeURIComponent(order.productId)
+              + '&orderId=' + encodeURIComponent(order.orderId);
+          })
+          .catch(function () {
+            document.getElementById('shop-create-order').disabled = false;
+          });
+      });
+    })();
+  </script>
+</body>
+</html>

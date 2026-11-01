@@ -63,6 +63,52 @@ export async function capabilityProbe({ harness, check }) {
     && Array.isArray(httpEntry.constraints) && httpEntry.constraints.length === 4
     && httpEntry.constraints.some((text) => /no Chromium startup/i.test(text)),
   { expected: { count: 9, http: 'available' }, actual: t1Tools.map((item) => `${item.id}:${item.status}`) });
+  // network P0 (docs/network-p0.md §2/§12): seven web.network.* tool projections + the
+  // web.network.p0 aggregate. Their tri-state must be one of available/unavailable/unsupported and
+  // the aggregate must not sit behind a tool. Storage-only tools are readable without Chromium, so
+  // in the idle state every projection is expected to be `available`.
+  const expectedNetwork = [
+    ['web.network.session', 'browser_network_session'], ['web.network.events', 'browser_network_events'],
+    ['web.network.detail', 'browser_network_detail'], ['web.network.trace', 'browser_network_trace'],
+    ['web.network.control', 'browser_network_control'], ['web.network.evidence', 'browser_network_evidence'],
+    ['web.network.subscribe', 'browser_network_subscribe'],
+  ];
+  const networkProblems = expectedNetwork.filter(([id, tool]) => !capabilities.some((item) => item.id === id
+    && item.tool === tool && ['available', 'unavailable', 'unsupported'].includes(item.status)));
+  const networkAvailable = expectedNetwork.filter(([id, tool]) => capabilities.some((item) => item.id === id && item.tool === tool && item.status === 'available'));
+  const networkAggregate = capabilities.find((item) => item.id === 'web.network.p0');
+  check('七项 web.network.* 投影到七工具（三态合法、idle 下 available）且 web.network.p0 聚合不带 tool',
+    networkProblems.length === 0 && networkAvailable.length === 7
+      && networkAggregate && ['available', 'unavailable', 'unsupported'].includes(networkAggregate.status) && !networkAggregate.tool, {
+    expected: [...expectedNetwork.map(([id]) => `${id}:available`), 'web.network.p0 聚合（无 tool）'],
+    actual: { problems: networkProblems, available: networkAvailable.length, aggregate: networkAggregate },
+  });
+  const networkSection = value?.network;
+  const networkLimits = networkSection?.limits || {};
+  const networkCapture = networkLimits.network || {};
+  // docs/network-p0.md §8.8 + C1: every limit is published, capture capabilities are booleans and
+  // HTTPS is reported as `mechanism-identical` (no local TLS fixture, so it must never read
+  // "verified"). `responseModification` must be an honest boolean.
+  check('capabilities.network 段声明 7 工具、limits 与逐项捕获能力（https=mechanism-identical，不声称已验证）', Boolean(networkSection)
+    && JSON.stringify([...(networkSection.tools || [])].sort()) === JSON.stringify(expectedNetwork.map(([, tool]) => tool).sort())
+    && networkLimits.maxEvents === 20000 && networkLimits.maxBodyBytes === 1048576
+    && networkLimits.maxTotalBytes === 33554432 && networkLimits.maxWsFrames === 20000
+    && networkLimits.subscriptionMax === 16 && networkLimits.subscriptionPin === 1000
+    && networkLimits.eventPageLimit === 200 && networkLimits.holdTimeoutMs === 30000
+    && networkCapture.capture === true && networkCapture.bodies === true && networkCapture.websocket === true
+    && networkCapture.sse === true && networkCapture.workers === true && networkCapture.interception === true
+    && typeof networkCapture.responseModification === 'boolean'
+    && networkCapture.throttle === true && networkCapture.offline === true
+    && networkCapture.replay === true && networkCapture.mock === true
+    && networkCapture.har === true && networkCapture.jsonl === true && networkCapture.subscriptions === true, {
+    expected: { tools: expectedNetwork.map(([, tool]) => tool), limits: 'docs/network-p0.md §8.8', https: 'mechanism-identical' }, actual: networkSection,
+  });
+  check('capabilities.network 如实把 HTTPS 记为 mechanism-identical（未独立验证）且 observed 只来自真实调用',
+    JSON.stringify(networkSection || {}).includes('mechanism-identical')
+      && !/https"\s*:\s*(true|"verified")/i.test(JSON.stringify(networkSection || {}))
+      && (networkSection?.observed === null || typeof networkSection?.observed === 'object'), {
+    expected: { https: 'mechanism-identical', observed: 'null | object' }, actual: { https: networkCapture.https, observed: networkSection?.observed },
+  });
   check('viewport-control/browser-extras 仍 unsupported 且没有同名工具',
     capabilities.filter((item) => /viewport-control|browser-extras/.test(item.id)).every((item) => item.status === 'unsupported' && !item.tool),
     { actual: capabilities.filter((item) => /viewport-control|browser-extras/.test(item.id)) });

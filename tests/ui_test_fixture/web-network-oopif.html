@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH Net Fixture OOPIF</title>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+    body {
+      margin: 24px;
+      font-family: Arial, "Noto Sans", sans-serif;
+      color: rgb(17, 24, 39);
+      background-color: rgb(255, 255, 255);
+    }
+    h1 {
+      font-size: 24px;
+      margin: 0 0 8px;
+    }
+    h2 {
+      font-size: 18px;
+      margin: 0 0 6px;
+    }
+    p {
+      margin: 4px 0;
+      font-size: 14px;
+    }
+    section {
+      margin: 8px 0;
+      padding: 8px 12px;
+      border: 1px solid rgb(209, 213, 219);
+      border-radius: 8px;
+    }
+    button {
+      margin: 0 8px 8px 0;
+      padding: 6px 12px;
+      font-size: 14px;
+      border: 1px solid rgb(156, 163, 175);
+      border-radius: 6px;
+      background-color: rgb(243, 244, 246);
+      color: rgb(17, 24, 39);
+      cursor: pointer;
+    }
+    #net-oopif-host {
+      margin-top: 8px;
+    }
+    #net-oopif-frame {
+      border: 1px solid rgb(209, 213, 219);
+      width: 600px;
+      height: 160px;
+    }
+    code {
+      font-family: "DejaVu Sans Mono", monospace;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <h1 id="net-oopif-title">DSH Net Fixture OOPIF</h1>
+  <p id="net-oopif-note">
+    Cross-site frame probe. The main document is served from <code>127.0.0.1</code>; the frame is
+    loaded from <code>http://localhost:&lt;same-port&gt;</code>, i.e. a <b>different site</b>, which is
+    the precondition for an out-of-process iframe (OOPIF).
+  </p>
+  <p id="net-oopif-status-line">status: <span id="net-oopif-status">idle</span></p>
+
+  <section id="net-section-oopif">
+    <h2 id="net-heading-oopif">Cross-site frame</h2>
+    <button id="net-oopif" type="button">Load cross-site iframe</button>
+    <div id="net-oopif-host"></div>
+  </section>
+
+  <script>
+    /*
+     * OOPIF probe page (docs/network-p0.md §13 / G1.5).
+     *
+     * Contract (tests/ui_test_fixture/README.md §NET.7):
+     *   - zero requests on load (no autoload);
+     *   - #net-oopif creates, and on later clicks reloads, an iframe with the FIXED id
+     *     `net-oopif-frame` whose src is `http://localhost:<location.port>/web-network-frame.html`
+     *     (same fixture port, different host => different site);
+     *   - window.__net.oopif = {created, loaded, messages}: `created` counts (re)loads, `loaded`
+     *     counts the frame's `load` events (cross-origin safe), `messages` records the frame's
+     *     postMessage payloads;
+     *   - the frame's own fetch truth stays on window.__netFrame inside the frame
+     *     (`{version,done,status,body}`, body {from:"iframe-data",ok:true}).
+     *
+     * Whether Chrome puts that frame in a separate process is NOT decided by this page: it depends
+     * on site isolation being enabled for the browser (headless defaults can differ). If the frame
+     * appears in-process, the OOPIF sub-case must be recorded NOT_RUN instead of claimed.
+     */
+    (function () {
+      'use strict';
+
+      var net = {
+        version: 1,
+        fixture: 'dsh-ui-testing',
+        oopif: { created: 0, loaded: 0, messages: [] },
+        reset: reset,
+        summary: summary
+      };
+      window.__net = net;
+
+      function syncStatus() {
+        var el = document.getElementById('net-oopif-status');
+        if (el) el.textContent = net.oopif.loaded > 0 ? 'loaded' : net.oopif.created > 0 ? 'loading' : 'idle';
+      }
+
+      document.getElementById('net-oopif').addEventListener('click', function () {
+        net.oopif.created += 1;
+        var host = document.getElementById('net-oopif-host');
+        var existing = document.getElementById('net-oopif-frame');
+        if (existing) {
+          // Re-assigning src (instead of appendChild) forces a real reload of the cross-site frame.
+          existing.src = existing.src;
+          syncStatus();
+          return;
+        }
+        var frame = document.createElement('iframe');
+        frame.id = 'net-oopif-frame';
+        frame.title = 'net oopif frame';
+        frame.src = 'http://localhost:' + location.port + '/web-network-frame.html';
+        frame.addEventListener('load', function () {
+          net.oopif.loaded += 1;
+          syncStatus();
+        });
+        host.appendChild(frame);
+        syncStatus();
+      });
+
+      window.addEventListener('message', function (event) {
+        var data = event.data;
+        if (!data || data.type !== 'net-iframe-result') return;
+        net.oopif.messages.push({ origin: event.origin, status: data.status, body: data.body || null });
+      });
+
+      function reset() {
+        net.oopif.created = 0;
+        net.oopif.loaded = 0;
+        net.oopif.messages.length = 0;
+        var frame = document.getElementById('net-oopif-frame');
+        if (frame) frame.remove();
+        syncStatus();
+      }
+
+      function summary() {
+        return {
+          oopif: {
+            created: net.oopif.created,
+            loaded: net.oopif.loaded,
+            messages: net.oopif.messages.length
+          }
+        };
+      }
+
+      syncStatus();
+    })();
+  </script>
+</body>
+</html>

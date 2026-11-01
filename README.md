@@ -6,7 +6,7 @@ Help AI agents operate, inspect, test, and verify Web, desktop, Android, TUI and
 **English** | [简体中文](README_zh.md)
 
 > [!IMPORTANT]
-> **Project status: architecture / pre-release.** The Web channel — **T1 programmatic, T2 structured GUI and T3 static vision** (22 agent tools) — is implemented and covered by acceptance suites that drive a real Chromium. The other eight planned environments are not implemented and stay disabled in the runtime picker. The plugin is linked locally, not published to npm: there is no released package, compatibility matrix or official release. Verification state, counts and open gaps: [docs/status.md](docs/status.md).
+> **Project status: architecture / pre-release.** The Web channel — **T1 programmatic, T2 structured GUI, T3 static vision and P0 infrastructure — image input + network capture —** (29 agent tools) — is implemented and covered by acceptance suites that drive a real Chromium. The other eight planned environments are not implemented and stay disabled in the runtime picker. The plugin is linked locally, not published to npm: there is no released package, compatibility matrix or official release. Verification state, counts and open gaps: [docs/status.md](docs/status.md).
 
 ## What is this?
 
@@ -36,19 +36,43 @@ Coding agents can produce UI code without being able to answer: **"Does the fini
 
 ## Implemented today: Web (Chromium)
 
-One plugin runs a single shared headless Chromium per host and gives every DSH workspace its own page, URL, viewport, history, network buffer and lease; cookies and storage are shared per Chromium profile. The agent surface is **22 tools** across three capability tiers:
+One plugin runs a single shared headless Chromium per host and gives every DSH workspace its own page, URL, viewport, history, network buffer and lease; cookies and storage are shared per Chromium profile. The agent surface is **29 tools** across three capability tiers plus the two-part P0 infrastructure (image input and network capture):
 
 | Tier | Tools | Capabilities |
 | --- | --- | --- |
 | **T1** programmatic | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_state` `browser_capabilities` | Navigation, JavaScript execution, console/network inspection, independent HTTP requests, computed styles, screenshots, raw mouse/wheel/keyboard events, capability reporting |
 | **T2** structured GUI | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | Snapshot → ref targeting, trusted CDP actions, forms, node state and waits; every call returns structured evidence and typed errors |
 | **T3** static vision | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | Crop/zoom/preprocess/annotate PNGs, deterministic colour/component/edge/template finders, YIQ diff, coordinate input, managed baselines, regression and layout/occlusion/overflow/truncation/colour/missing-component assertions |
+| **P0-A image input** (capture-p0, enhances the T1 screenshot tool) | `browser_screenshot` | Continuous `scale` 1–4 and document-CSS `region`, PNG structure/CRC/size/uniformity validation, safe staged or persisted files, `capture.version=1` evidence and optional network time-window linkage |
+| **P0-B network capture** (network-p0) | `browser_network_session` `browser_network_events` `browser_network_detail` `browser_network_trace` `browser_network_control` `browser_network_evidence` `browser_network_subscribe` | Capture (HTTP/HTTPS bodies, WebSocket, SSE, iframe/OOPIF/Worker), timeline, analysis and aggregation, business-step traces, interception/throttling/replay/mock, JSONL+HAR evidence and per-agent subscriptions |
 
 T3 is an in-house, dependency-free JavaScript stack (own PNG codec, YIQ diff and finders; no Sharp, Pixelmatch or Argos). `browser_capabilities` reports what the host actually serves — six `web.t3.*` entries plus the `web.t3.static-vision` aggregate — while `web.t4.*` remains `unsupported`.
 
-### Screenshots and evidence files
+### P0 infrastructure: two independent parts
 
-`browser_screenshot` accepts optional continuous `scale` (1–4) and a `region` in document CSS pixels. PNGs are staged in a plugin-instance directory by default (mode 0600, never overwriting an existing file) and removed when the plugin is disposed; pass `out`, `persist:true`, or set `DSH_UI_TESTING_CAPTURE_DIR` to keep them under a persistent root. Screenshots are not redacted — review the content before sharing. T3 baselines live under `<root>/output/vision-baselines/<scopeHash>/` with immutable revisions, HEAD compare-and-swap and tombstones.
+P0 is **not one feature**; it is two separately contracted and separately accepted capabilities:
+
+- **P0-A — image input stream / screenshot capture** (`capture-p0.js`, contract [docs/capture-p0.md](docs/capture-p0.md)): `browser_screenshot` with continuous `scale` 1–4, document-CSS `region`, PNG structure/CRC/dimension/uniformity checks, safe staging plus explicit persistence, `capture.version=1` evidence and attachment metadata, and a `capture.networkWindow` time link to P0-B. Acceptance: `capture-p0.mjs` → 14/14 probes, 142/142 required, exit 0.
+- **P0-B — network capture / business-chain debugging** (`network-p0.js`, contract [docs/network-p0.md](docs/network-p0.md)): seven `browser_network_*` tools covering capture, timeline, analysis, business traces, control and evidence. Acceptance: `network-p0.mjs` → 52/52 criteria, 266 required, 0 failed, 8 explicit NOT_RUN, exit 0; plus the 5-page shop-chain scenario `network-chain.mjs` → 12/12, 49 required, exit 0.
+
+They are independent: P0-A alone does **not** establish T3 static-vision judgement, and P0-B alone does **not** establish T4 dynamic vision. Both are in-process Chromium results; the real-host restart smoke for the network half remains **NOT_RUN**.
+
+### P0-B: network capture and debugging (network-p0)
+
+Seven `browser_network_*` tools turn the old metadata-only `browser_network` into a debugging engine, in six capability classes:
+
+- **Capture** — HTTP/HTTPS request and response metadata plus bodies on demand (`available:false` when a body cannot be read, never faked), WebSocket frames both directions, SSE events, same-page iframe/OOPIF/Worker targets attached via `Target.setAutoAttach`, lifecycle, redirect chains and initiator stacks.
+- **Timeline** — `NET_PROTOCOL_VERSION=1` events on one monotonic axis, wall/monotonic timestamps, durations, and correlation with T2 actions, page state and screenshots.
+- **Analysis** — parameter parsing, HTTP and business status codes, duration statistics (p50/p95), errors/retries/duplicates, correlation identifiers as hashes, filtering/search/grouping/aggregation, dependency edges.
+- **Trace** — business steps with time windows, object extraction and propagation, cross-request correlation, state changes, polling detection and causality metadata (`explicit|redirect|initiator|temporal`).
+- **Control** — start/stop, on-demand detail, interception (block/fail/modify-request/fulfill/delay/hold), throttle/offline, replay and mock. `Fetch.enable` stays a single configuration shared with the existing Document navigation guard.
+- **Evidence** — JSONL (lossless) and HAR 1.2 subset export/import, in-memory and file index/search, screenshot linkage, default redaction of sensitive URLs/headers/fields, quotas with explicit `evicted`/`dropped`/`truncated` counters, and independent per-agent subscriptions with pin budgets.
+
+Authority contract: [docs/network-p0.md](docs/network-p0.md) (tool schemas, event schema, quotas, `NET_*` errors, fixture routes, acceptance C1–C52). **Acceptance (Lead, serial, same final code):** `node tests/acceptance/network-p0.mjs` → **52/52 criteria covered, pass 52 / fail 0**, requiredChecks **266**, failedChecks **0**, notRunChecks **8**, exit 0 ([run-report.json](tests/acceptance/runs/2026-11-01T12-27-48-770Z-370586/run-report.json)); unit `tests/network-p0.test.mjs` **43/43**. The eight NOT_RUN items are not passes: C1 HTTPS, C2 binary body (no binary fixture route), C5 service worker collection (`R1-21`: attaching pauses it and breaks `register()`), C20 single-sample p95 (covered by unit checks), C35 quota-evicted body states (unit checks), C37 `modify-response` (capability reports `responseModification=false`), C52 external suites (covered by the T1/T2/T3/capture-p0 reports below), C52 real host. Sub-targets are honest: `limits.network.subTargets = {workers:'page-attached', shared_worker:'not-collected', service_worker:'not-collected', oopif:'partial', partial:true}`. `limits.network.https` is the scalar `"mechanism-identical"` (not independently verified: no local TLS fixture). **In-process ≠ real host:** the restarted-host smoke for the seven network tools is **NOT_RUN** (the 3080 host started before this round's changes).
+
+### P0-A: image input stream — screenshots and evidence files (capture-p0)
+
+`browser_screenshot` accepts optional continuous `scale` (1–4) and a `region` in document CSS pixels. PNGs are staged in a plugin-instance directory by default (mode 0600, never overwriting an existing file) and removed when the plugin is disposed; pass `out`, `persist:true`, or set `DSH_UI_TESTING_CAPTURE_DIR` to keep them under a persistent root. Screenshot evidence also gains a `capture.networkWindow` block (frame/capture times, `fromSeq`/`toSeq`, `nearest`) when a network session exists — `capture.version` stays **1** and the other capture fields keep their meaning. Screenshots are not redacted — review the content before sharing. Acceptance: `node tests/acceptance/capture-p0.mjs` → **14/14 probes, 142/142 required, 0 failed, exit 0**. T3 baselines live under `<root>/output/vision-baselines/<scopeHash>/` with immutable revisions, HEAD compare-and-swap and tombstones.
 
 ### Current limits
 
@@ -57,8 +81,10 @@ T3 is an in-house, dependency-free JavaScript stack (own PNG codec, YIQ diff and
 - **Attachments are not provider visibility.** A returned image attachment does not prove the model received it at full resolution.
 - **Some checks are unobservable.** Blink truncates CDP mouse coordinates to integers and inert subtrees do not participate in hit-testing, so those sub-checks are recorded as NOT_APPLICABLE instead of passed.
 - **Web only.** Desktop, Android, TUI, HarmonyOS, games and 3D are planned; the runtime picker keeps them disabled.
+- **Network P0 boundaries.** Sub-target capture is **partial** (`G1.5`): same-origin iframe and dedicated worker are proven; OOPIF is `partial` (not separately verified); shared and service workers are **not collected** (attaching a service worker pauses it and breaks `register()`); popups stay blocked by the existing target policy and there is no multi-tab capture. HTTPS is not independently verified (no local TLS fixture), `responseModification` is conditional on Chrome support, real bandwidth shaping is only CDP emulation, and HAR export is a 1.2 subset (JSONL is the lossless format). Bodies and headers are redacted by default but are not a general secret detector.
+- **In-process ≠ real host.** The network suite drives a fake plugin context plus a real Chromium; the restarted-host smoke for the seven network tools is **NOT_RUN**.
 
-The repository also ships acceptance suites that drive a real Chromium in-process (`tests/acceptance/`) and pure-algorithm unit tests for the PNG codec, YIQ diff and baselines. Current results and open gaps: [docs/status.md](docs/status.md).
+The repository also ships acceptance suites that drive a real Chromium in-process (`tests/acceptance/`) and pure-algorithm unit tests for the PNG codec, YIQ diff, baselines and network event model. Current results and open gaps: [docs/status.md](docs/status.md).
 
 ## Planned scope
 
@@ -66,7 +92,7 @@ Nine runtime environments are planned; only Web is implemented so far.
 
 | Environment | Current status | Candidate integration approach | Intended coverage |
 | --- | --- | --- | --- |
-| **Web** (Chromium) | **T1 + T2 + T3 implemented**; T4 not implemented (debug view available) | Chromium, Chrome DevTools Protocol (CDP), DOM/accessibility APIs | Navigation, forms, responsive layouts, console/network inspection, screenshots, interactions, static visual analysis and coordinate input |
+| **Web** (Chromium) | **T1 + T2 + T3 + P0 network implemented**; T4 not implemented (debug view available) | Chromium, Chrome DevTools Protocol (CDP), DOM/accessibility APIs | Navigation, forms, responsive layouts, console/network inspection, deep network capture/tracing, screenshots, interactions, static visual analysis and coordinate input |
 | **Windows desktop** | Planned, not implemented (picker disabled) | Windows UI Automation (UIA) and platform-approved input/capture mechanisms | Native controls, window state, user journeys, screenshots |
 | **Linux desktop** | Planned, not implemented (picker disabled) | Accessibility interfaces and compositor/desktop-specific automation | Native controls and GUI workflows; actual coverage depends on X11/Wayland and permissions |
 | **macOS desktop** | Planned, not implemented (picker disabled) | macOS Accessibility (AXUIElement) plus system capture/input APIs (TCC authorization required) | Native controls, window state, user journeys, screenshots; full unattended automation is not an initial commitment |
@@ -159,9 +185,11 @@ flowchart TD
     G --> V[DSH sidebar viewer]
     M --> P[Capability selection: T1 / T2 / T3 / T4]
     P --> B[Web adapter: Chromium / CDP]
+    B --> N[Network P0: capture / timeline / trace / control / evidence]
     P --> D[Desktop adapter: Windows / Linux]
     P --> R[Android adapter: device / emulator]
     B --> E[Observations and evidence]
+    N --> E
     D --> E
     R --> E
     E --> X[Assertions and test report]
@@ -205,7 +233,7 @@ These are **planned work items**, not claims of completion. Ordering may change 
 
 - [ ] **R0 — Feasibility:** audit DSH plugin/sidebar interfaces, upstream licenses, test target capabilities and security boundaries.
 - [ ] **R1 — Web foundation:** retain workspace/context/tab management, background Chromium execution and viewer independence.
-- [ ] **R2 — Test core:** add typed test sessions, T1–T4 capability selection, actions, observations, assertions and evidence reports. _(Web T1–T3 delivered: programmatic channel, structured GUI and static vision, each with an acceptance suite. T4 and the cross-environment test core remain open.)_
+- [ ] **R2 — Test core:** add typed test sessions, T1–T4 capability selection, actions, observations, assertions and evidence reports. _(Web T1–T3 plus P0 network delivered: programmatic channel, structured GUI, static vision and network capture/tracing, each with an acceptance suite. T4 and the cross-environment test core remain open.)_
 - [ ] **R3 — Collaboration:** implement agent/team authorization, target ownership, human takeover and concurrent test scheduling.
 - [ ] **R4 — Desktop:** validate Windows/Linux adapters, accessibility/input/capture options, permissions and focus constraints.
 - [ ] **R5 — Android:** validate device/emulator lifecycle, UI hierarchy, interaction, screenshots and failure reporting.
@@ -226,6 +254,7 @@ node tests/acceptance/run.mjs            # T1 programmatic
 node tests/acceptance/t2-structured.mjs  # T2 structured GUI
 node tests/acceptance/t3-vision.mjs      # T3 static vision
 node tests/acceptance/capture-p0.mjs     # screenshot capture infrastructure
+node tests/acceptance/network-p0.mjs     # network P0 (capture/timeline/trace/control/evidence)
 ```
 
 The repository ships no product screenshots; the legacy `banner.png` / `banner_zh.png` assets were removed and nothing here should be presented as a capability demo.
@@ -249,6 +278,7 @@ The repository ships no product screenshots; the legacy `banner.png` / `banner_z
 | [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | T2 contract, ref protocol and tool semantics |
 | [docs/t3-vision.md](docs/t3-vision.md) | T3 contract, algorithms and verdict rules |
 | [docs/capture-p0.md](docs/capture-p0.md) | Screenshot capture contract |
+| [docs/network-p0.md](docs/network-p0.md) | P0 network contract: seven tools, event schema, quotas, `NET_*` errors, fixture routes and acceptance C1–C52 |
 
 ## Relationship to other projects
 

@@ -6,7 +6,7 @@
 [English](README.md) | **简体中文**
 
 > [!IMPORTANT]
-> **项目状态：架构设计 / 预发布。** Web 通道——**T1 程序化、T2 结构化 GUI 与 T3 静态视觉**（共 22 个 Agent 工具）——已实现，并由驱动真实 Chromium 的验收套件覆盖；其余 8 个规划中的运行环境尚未实现，界面选择器里保持置灰。插件目前以本地 link 方式安装，未发布到 npm：仍没有已发布的安装包、兼容性矩阵或正式 Release。验收状态、计数与未完成项见 [docs/status.md](docs/status.md)。
+> **项目状态：架构设计 / 预发布。** Web 通道——**T1 程序化、T2 结构化 GUI、T3 静态视觉与 P0 基础设施——图片输入流 + 网络抓包**（共 29 个 Agent 工具）——已实现，并由驱动真实 Chromium 的验收套件覆盖；其余 8 个规划中的运行环境尚未实现，界面选择器里保持置灰。插件目前以本地 link 方式安装，未发布到 npm：仍没有已发布的安装包、兼容性矩阵或正式 Release。验收状态、计数与未完成项见 [docs/status.md](docs/status.md)。
 
 ## 这是什么项目？
 
@@ -36,19 +36,43 @@ AI 编程 Agent 可以生成界面代码，却很难可靠地回答：**最终�
 
 ## 已实现：Web 通道（Chromium）
 
-同一个插件在每台主机上运行一个共享的无头 Chromium，并为每个 DSH 工作区提供独立的 page、URL、视口、历史、网络缓冲和租约；Cookie 与存储按 Chromium profile 共享。Agent 可用的是 **22 个工具**，分属三层能力：
+同一个插件在每台主机上运行一个共享的无头 Chromium，并为每个 DSH 工作区提供独立的 page、URL、视口、历史、网络缓冲和租约；Cookie 与存储按 Chromium profile 共享。Agent 可用的是 **29 个工具**，分属三层能力加两项 P0 基础设施（图片输入流与网络抓包）：
 
 | 层级 | 工具 | 能力 |
 | --- | --- | --- |
 | **T1** 程序化 | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_state` `browser_capabilities` | 导航、执行 JavaScript、Console/Network 检查、独立 HTTP 请求、计算样式、截图、原始鼠标/滚轮/键盘事件、能力探测 |
 | **T2** 结构化 GUI | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | snapshot → ref 定位、真实 CDP 操作、表单、节点状态与等待；每次调用都返回结构化证据与分类错误 |
 | **T3** 静态视觉 | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | 截图裁剪/缩放/预处理/标注、颜色/连通域/边缘/模板确定性识别、YIQ 差异、坐标交互、受管基线、回归与布局/遮挡/溢出/截断/颜色/组件缺失断言 |
+| **P0-A 图片输入流**（capture-p0，增强 T1 截图工具） | `browser_screenshot` | 连续 `scale` 1–4 与文档 CSS `region`、PNG 结构/CRC/尺寸/均匀性校验、安全暂存与显式持久、`capture.version=1` 证据与附件元数据、可选网络时间窗关联 |
+| **P0-B 网络抓包**（network-p0） | `browser_network_session` `browser_network_events` `browser_network_detail` `browser_network_trace` `browser_network_control` `browser_network_evidence` `browser_network_subscribe` | 采集（HTTP/HTTPS 请求响应体、WebSocket、SSE、iframe/OOPIF/Worker）、时间轴、分析与聚合、业务链路、拦截/限速/重放/Mock、JSONL+HAR 证据与多 Agent 独立订阅 |
 
 T3 是自研、零第三方依赖的纯 JavaScript 实现（自带 PNG 编解码、YIQ 差异与识别算法，不依赖 Sharp、Pixelmatch、Argos）。`browser_capabilities` 报告宿主实际提供的能力——6 项 `web.t3.*` 与聚合 `web.t3.static-vision`；`web.t4.*` 仍为 `unsupported`。
 
-### 截图与证据文件
+### P0 基础设施：两项独立能力
 
-`browser_screenshot` 支持可选的连续 `scale`（1–4）与**文档 CSS 像素**的 `region`。默认把 PNG 暂存到插件实例目录（权限 0600、不覆盖同名文件），插件销毁时清理；显式传入 `out`、`persist:true` 或设置 `DSH_UI_TESTING_CAPTURE_DIR` 才会持久到指定根目录。截图不做脱敏，分享前请自行检查内容。T3 基线存放在 `<root>/output/vision-baselines/<scopeHash>/`，使用不可变 revision、HEAD CAS 与墓碑删除。
+P0 **不是单一功能**，而是两项各自有契约、各自独立验收的能力：
+
+- **P0-A — 图片输入流 / 截图采集**（`capture-p0.js`，契约 [docs/capture-p0.md](docs/capture-p0.md)）：`browser_screenshot` 支持连续 `scale` 1–4、文档 CSS `region`、PNG 结构/CRC/尺寸/均匀性校验、安全暂存与显式持久、`capture.version=1` 证据与附件元数据，并可与 P0-B 的网络时间窗关联（`capture.networkWindow`）。验收：`capture-p0.mjs` → 14/14 probes、142/142 required、exit 0。
+- **P0-B — 网络抓包 / 业务链路调试**（`network-p0.js`，契约 [docs/network-p0.md](docs/network-p0.md)）：7 个 `browser_network_*` 工具，覆盖采集、时间轴、分析、业务链路、控制与证据。验收：`network-p0.mjs` → 52/52 criteria、266 required、0 failed、8 条显式 NOT_RUN、exit 0；另有 5 页电商链路场景 `network-chain.mjs` → 12/12、49 required、exit 0。
+
+两者互相独立：P0-A 本身**不构成** T3 静态视觉判定，P0-B 本身**不构成** T4 动态视觉判定。两者均为进程内真实 Chromium 结果；网络半边的真实宿主重启冒烟仍为 **NOT_RUN**。
+
+### P0-B：网络抓包与调试（network-p0）
+
+7 个 `browser_network_*` 把原来只有元数据的 `browser_network` 扩展成一套调试引擎，覆盖六类能力：
+
+- **采集**：HTTP/HTTPS 请求与响应元数据及按需正文（读不到返回 `available:false`，绝不伪造）、WebSocket 双向帧、SSE 事件、同主 page 的 iframe/OOPIF/Worker（`Target.setAutoAttach`）、生命周期、重定向链与 initiator。
+- **时序**：`NET_PROTOCOL_VERSION=1` 标准事件与统一单调时间轴、墙钟/单调时间戳、耗时，并与 T2 动作、页面状态、截图关联。
+- **分析**：参数解析、HTTP 与业务状态码、耗时统计（p50/p95）、错误/重试/重复、脱敏后的关联标识 hash、筛选/检索/分组/聚合、依赖关系。
+- **链路**：业务步骤窗口、业务对象提取与传递、跨请求关联、状态变化、轮询识别与因果元数据（`explicit|redirect|initiator|temporal`）。
+- **控制**：启停、按需详情、拦截（block/fail/modify-request/fulfill/delay/hold）、限速/断连、重放与 Mock；`Fetch.enable` 仍只有一份配置，与既有 Document 导航守卫共用单一 dispatcher。
+- **证据**：JSONL（保真）与 HAR 1.2 子集导入导出、内存与文件索引检索、截图关联、默认脱敏（敏感 URL/头/字段 → `***`）、配额与 `evicted`/`dropped`/`truncated` 计数、多 Agent 独立订阅与 pin 预算。
+
+权威契约见 [docs/network-p0.md](docs/network-p0.md)（工具 schema、事件 schema、配额、`NET_*` 错误、靶机路由与验收 C1–C52）。**验收（Lead 独立串行，同一最终代码）**：`node tests/acceptance/network-p0.mjs` → **criteria 52/52 覆盖、pass 52 / fail 0**、requiredChecks **266**、failedChecks **0**、notRunChecks **8**、exit 0（[run-report.json](tests/acceptance/runs/2026-11-01T12-27-48-770Z-370586/run-report.json)）；单测 `tests/network-p0.test.mjs` **43/43**。**8 条 NOT_RUN 不算通过**：C1 HTTPS、C2 二进制 body（靶机无二进制路由）、C5 service worker 采集（`R1-21`：attach 会暂停它并破坏 `register()`）、C20 单样本 p95（U 类覆盖）、C35 被配额淘汰 body 三态（U 类覆盖）、C37 `modify-response`（能力报 `responseModification=false`）、C52 外部四套件（由下述 T1/T2/T3/capture-p0 报告代证）、C52 真实宿主。子目标如实：`limits.network.subTargets = {workers:'page-attached', shared_worker:'not-collected', service_worker:'not-collected', oopif:'partial', partial:true}`——same-origin iframe 与 dedicated worker 已实证，OOPIF 未单独验证，shared/service worker 不采集，popup 仍被既有目标策略阻断。`limits.network.https` 是必报标量 `"mechanism-identical"`（无本地 TLS 靶机，未独立验证），与 `responseModification` 并列。**进程内 ≠ 真实宿主**：重启宿主后的七个网络工具冒烟仍 **NOT_RUN**（3080 启动早于本轮变更）。
+
+### P0-A：图片输入流——截图与证据文件（capture-p0）
+
+`browser_screenshot` 支持可选的连续 `scale`（1–4）与**文档 CSS 像素**的 `region`。默认把 PNG 暂存到插件实例目录（权限 0600、不覆盖同名文件），插件销毁时清理；显式传入 `out`、`persist:true` 或设置 `DSH_UI_TESTING_CAPTURE_DIR` 才会持久到指定根目录。截图证据在有网络会话时新增 `capture.networkWindow`（帧/截图时间、`fromSeq`/`toSeq`、`nearest`），`capture.version` 仍为 **1**，其余 capture 字段语义不变。截图不做脱敏，分享前请自行检查内容。T3 基线存放在 `<root>/output/vision-baselines/<scopeHash>/`，使用不可变 revision、HEAD CAS 与墓碑删除。
 
 ### 当前限制
 
@@ -57,8 +81,10 @@ T3 是自研、零第三方依赖的纯 JavaScript 实现（自带 PNG 编解码
 - **附件不等于模型可见。** 工具返回图像附件，不代表 provider 以原始分辨率把图像交给了模型。
 - **有些检查不可观测。** Blink 会把 CDP 鼠标坐标截断为整数、inert 子树不参与 hit-test，因此这两类子项记为 NOT_APPLICABLE 而不是通过。
 - **仅 Web。** 桌面、Android、TUI、HarmonyOS、游戏与 3D 仍为规划，运行环境选择器里保持置灰。
+- **网络 P0 边界。** 子目标采集为 **partial**（`G1.5`）：same-origin iframe 与 dedicated worker 已实证；OOPIF 为 `partial`（未单独验证）；shared/service worker **不采集**（attach 会暂停并破坏 `register()`）；popup 继续被既有目标策略阻断，也没有多标签/popup 采集；HTTPS 未独立验收（无本地 TLS 靶机）；`responseModification` 取决于 Chrome 是否支持；带宽限制只是 CDP 模拟；HAR 是 1.2 子集（JSONL 才是保真格式）。正文与头默认脱敏，但不是通用秘密检测器。
+- **进程内 ≠ 真实宿主。** 网络套件用 fake ctx + 真实 Chromium；重启宿主后的七个网络工具冒烟仍 **NOT_RUN**。
 
-仓库还提供在进程内驱动真实 Chromium 的验收套件（`tests/acceptance/`），以及针对 PNG 编解码、YIQ 差异与基线的纯算法单测。当前结果与未完成项见 [docs/status.md](docs/status.md)。
+仓库还提供在进程内驱动真实 Chromium 的验收套件（`tests/acceptance/`），以及针对 PNG 编解码、YIQ 差异、基线与网络事件模型的纯算法单测。当前结果与未完成项见 [docs/status.md](docs/status.md)。
 
 ## 规划支持范围
 
@@ -66,7 +92,7 @@ T3 是自研、零第三方依赖的纯 JavaScript 实现（自带 PNG 编解码
 
 | 运行环境 | 当前状态 | 候选技术路线 | 目标能力 |
 | --- | --- | --- | --- |
-| **Web**（Chromium） | **T1 + T2 + T3 已实现**；T4 未实现（面板可用） | Chromium、Chrome DevTools Protocol（CDP）、DOM/Accessibility API | 页面导航、表单、响应式布局、Console/Network、截图、交互、静态视觉分析与坐标输入 |
+| **Web**（Chromium） | **T1 + T2 + T3 + P0 网络已实现**；T4 未实现（面板可用） | Chromium、Chrome DevTools Protocol（CDP）、DOM/Accessibility API | 页面导航、表单、响应式布局、Console/Network、深度网络采集与链路追踪、截图、交互、静态视觉分析与坐标输入 |
 | **Windows 桌面** | 规划中，未实现（置灰） | Windows UI Automation（UIA）及系统允许的输入/采集接口 | 原生控件、窗口状态、界面流程和截图 |
 | **Linux 桌面** | 规划中，未实现（置灰） | 无障碍接口及桌面环境适配能力 | 原生控件、GUI 流程；实际支持范围受 X11/Wayland 与权限影响 |
 | **macOS 桌面** | 规划中，未实现（置灰） | macOS Accessibility（AXUIElement）及系统截屏/输入接口（需 TCC 授权） | 原生控件、窗口状态、界面流程和截图；初期不承诺完整无人值守自动化 |
@@ -159,9 +185,11 @@ flowchart TD
     G --> V[DSH Sidebar 查看器]
     M --> P[T1 / T2 / T3 / T4 能力选择]
     P --> B[Web 适配器: Chromium / CDP]
+    B --> N[网络 P0: 采集 / 时间轴 / 链路 / 控制 / 证据]
     P --> D[桌面适配器: Windows / Linux]
     P --> R[Android 适配器: 设备 / 模拟器]
     B --> E[观察与证据]
+    N --> E
     D --> E
     R --> E
     E --> X[断言与测试报告]
@@ -205,7 +233,7 @@ flowchart TD
 
 - [ ] **R0 — 可行性：** 审计 DSH 插件/Sidebar 接口、上游许可证、目标平台能力与安全边界。
 - [ ] **R1 — Web 基础：** 保留工作区/上下文/标签页管理、后台 Chromium 执行与查看器解耦。
-- [ ] **R2 — 测试核心：** 实现类型化测试会话、T1–T4 能力选择、操作、观察、断言与证据报告。_（已交付 Web T1–T3：程序化通道、结构化 GUI 与静态视觉，各自带验收套件；T4 与跨运行环境测试核心仍未完成。）_
+- [ ] **R2 — 测试核心：** 实现类型化测试会话、T1–T4 能力选择、操作、观察、断言与证据报告。_（已交付 Web T1–T3 与 P0 网络：程序化通道、结构化 GUI、静态视觉与网络采集/链路，各自带验收套件；T4 与跨运行环境测试核心仍未完成。）_
 - [ ] **R3 — 协作控制：** 实现单/多 Agent 授权、目标归属、人工接管与并发测试协调。
 - [ ] **R4 — 桌面应用：** 验证 Windows/Linux 的无障碍、输入、截图、权限与焦点约束。
 - [ ] **R5 — Android：** 验证设备/模拟器生命周期、UI 节点、交互、截图与错误报告。
@@ -226,6 +254,7 @@ node tests/acceptance/run.mjs            # T1 程序化
 node tests/acceptance/t2-structured.mjs  # T2 结构化 GUI
 node tests/acceptance/t3-vision.mjs      # T3 静态视觉
 node tests/acceptance/capture-p0.mjs     # 截图采集基础设施
+node tests/acceptance/network-p0.mjs     # 网络 P0（采集/时间轴/链路/控制/证据）
 ```
 
 仓库不含产品截图；旧版 `banner.png` / `banner_zh.png` 已移除，仓库内容不应被当作能力演示。
@@ -249,6 +278,7 @@ node tests/acceptance/capture-p0.mjs     # 截图采集基础设施
 | [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | T2 契约、Ref 协议与工具语义 |
 | [docs/t3-vision.md](docs/t3-vision.md) | T3 契约、算法与判定规则 |
 | [docs/capture-p0.md](docs/capture-p0.md) | 截图采集契约 |
+| [docs/network-p0.md](docs/network-p0.md) | P0 网络契约：七个工具、事件 schema、配额、`NET_*` 错误、靶机路由与验收 C1–C52 |
 
 ## 与配套项目的关系
 

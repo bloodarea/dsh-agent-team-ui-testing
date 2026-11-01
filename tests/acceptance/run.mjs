@@ -351,14 +351,15 @@ async function probe1ToolSurface({ harness, check, finding }) {
   const expectedNames = EXPECTED_TOOLS.map((tool) => tool.name);
   const actualNames = harness.toolNames();
 
-  // 22 = 9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2)
-  //      + 6 T3 (docs/t3-vision.md §2.1). Counted against EXPECTED_TOOLS so the T3 surface cannot
-  //      drift silently; the "same names" assertion below still proves nothing extra was registered.
-  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（9 T1 + 7 T2 + 6 T3）`, actualNames.length === EXPECTED_TOOLS.length, {
+  // 29 = 9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2)
+  //      + 6 T3 (docs/t3-vision.md §2.1) + 7 network (docs/network-p0.md §2). Counted against
+  //      EXPECTED_TOOLS so a group surface cannot drift silently; the "same names" assertion
+  //      below still proves nothing extra was registered.
+  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（9 T1 + 7 T2 + 6 T3 + 7 network）`, actualNames.length === EXPECTED_TOOLS.length, {
     expected: { count: EXPECTED_TOOLS.length, names: expectedNames },
     actual: { count: actualNames.length, names: actualNames },
   });
-  check('工具名与 docs/runtime-t1.md 完全一致（无缺失、无多余）', JSON.stringify([...actualNames].sort()) === JSON.stringify([...expectedNames].sort()), {
+  check('工具名与 docs/runtime-t1.md + t2/t3/network 契约完全一致（无缺失、无多余）', JSON.stringify([...actualNames].sort()) === JSON.stringify([...expectedNames].sort()), {
     expected: [...expectedNames].sort(),
     actual: [...actualNames].sort(),
   });
@@ -417,6 +418,165 @@ async function probe1ToolSurface({ harness, check, finding }) {
   const capabilities = await harness.invoke('browser_capabilities');
   check('独立 capability 工具在未启动时可诊断且不启动浏览器', capabilities.ok && capabilities.value?.ok === true && capabilities.value?.runtime?.running === false,
     { expected: { ok: true, runtime: { running: false } }, actual: capabilities.error || capabilities.value });
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * P23 — network P0 surface (docs/network-p0.md §2): 7 new tools, their schemas, offline
+ * diagnostics that must not start Chromium, NET_* error classification, control BUSY against a
+ * live owner, and proof that the 22 pre-existing tools keep their old behaviour.
+ * ---------------------------------------------------------------------------------------------- */
+
+const netExec = (id) => ({ agent: { id } });
+const netError = (result) => result?.error || result?.value?.error || {};
+
+/** Every network failure must be a structured BrowserError with a NET_* code, never INTERNAL. */
+function netFailureProblem(result) {
+  const error = netError(result);
+  const problems = [];
+  if (result?.ok === true && result?.value?.ok === true) problems.push('unexpected success');
+  if (error.name !== 'BrowserError') problems.push(`name=${error.name}`);
+  if (typeof error.code !== 'string' || !error.code) problems.push(`code=${error.code}`);
+  if (typeof error.code === 'string' && error.code === 'INTERNAL') problems.push('code degraded to INTERNAL');
+  if (typeof error.category !== 'string' || !error.category) problems.push(`category=${error.category}`);
+  if (typeof error.retryable !== 'boolean') problems.push(`retryable=${error.retryable}`);
+  if (typeof error.code === 'string' && error.code && !String(error.message || '').startsWith(`[${error.code}]`)) problems.push('message lacks [CODE] prefix');
+  return problems;
+}
+
+async function probe23NetworkSurface({ harness, createHarness, fixture, check, finding }) {
+  const { NETWORK_TOOLS, LEGACY_TOOLS } = await import(pathToFileURL(join(HERE, 'harness.mjs')).href);
+  const names = harness.toolNames();
+  const networkNames = NETWORK_TOOLS.map((tool) => tool.name);
+  const missing = networkNames.filter((name) => !names.includes(name));
+  check('network 组恰好 7 个工具且全部注册', NETWORK_TOOLS.length === 7 && missing.length === 0, {
+    expected: { count: 7, names: networkNames }, actual: { missing, registered: names },
+  });
+  check('network 组工具名不与旧 22 工具重名', LEGACY_TOOLS.every((tool) => !networkNames.includes(tool.name))
+    && new Set(names).size === names.length, { expected: 'disjoint + unique', actual: { legacy: LEGACY_TOOLS.length, network: networkNames } });
+
+  const schemaProblems = [];
+  for (const tool of NETWORK_TOOLS) {
+    const definition = harness.tools.get(tool.name);
+    if (!definition) { schemaProblems.push(`${tool.name}: 未注册`); continue; }
+    if (typeof definition.execute !== 'function') schemaProblems.push(`${tool.name}: execute 不是函数`);
+    if (!definition.parameters || definition.parameters.type !== 'object') schemaProblems.push(`${tool.name}: parameters.type != object`);
+    const required = (definition.parameters?.required || []).slice().sort();
+    if (JSON.stringify(required) !== JSON.stringify(tool.required.slice().sort())) {
+      schemaProblems.push(`${tool.name}: required=${JSON.stringify(required)}，期望 ${JSON.stringify(tool.required)}`);
+    }
+    if (typeof definition.description !== 'string' || !definition.description.trim()) schemaProblems.push(`${tool.name}: description 为空`);
+    if (!definition.parameters?.properties || Object.keys(definition.parameters.properties).length === 0) schemaProblems.push(`${tool.name}: parameters.properties 为空`);
+  }
+  check('network 7 工具的 parameters/required/execute/description 与契约 §2 一致', schemaProblems.length === 0, {
+    expected: NETWORK_TOOLS, actual: { problems: schemaProblems },
+  });
+  const rawCdp = networkNames.filter((name) => /cdp|devtools|protocol|page\.|runtime\./i.test(name));
+  check('network 组没有暴露原始 CDP/协议命令工具', rawCdp.length === 0, { expected: [], actual: rawCdp });
+
+  // A private harness: taking an owner lease here must not disturb the main suite's session.
+  const net = await createHarness({ name: 'P23-network' });
+  try {
+    const profilesBefore = new Set(await snapshotProfiles());
+    // Contract §1.2.4/§2: every one of these actions is documented as diagnostic/offline and must
+    // NOT start Chromium. Argument shapes follow §2.2/§2.3/§2.4/§2.5/§2.6/§2.7 verbatim.
+    const diagnostics = [
+      ['browser_network_session', { action: 'status' }],
+      ['browser_network_session', { action: 'reset' }],
+      ['browser_network_events', {}],
+      ['browser_network_detail', { seq: 999 }],
+      ['browser_network_evidence', { action: 'index' }],
+      ['browser_network_evidence', { action: 'integrity' }],
+      ['browser_network_subscribe', { action: 'poll', subscriptionId: 'sub-missing' }],
+      ['browser_network_subscribe', { action: 'list' }],
+      ['browser_network_trace', { action: 'query' }],
+      ['browser_network_trace', { action: 'window' }],
+      ['browser_network_control', { action: 'intercept-list' }],
+    ];
+    const results = [];
+    for (const [tool, args] of diagnostics) results.push({ tool, args, result: await net.invoke(tool, args, netExec('net-diagnostics')) });
+    const spawned = (await snapshotProfiles()).filter((dir) => !profilesBefore.has(dir));
+    check(`未启动 Chromium 时 ${diagnostics.length} 个 network 诊断调用全部不启动浏览器（无新 profile）`,
+      spawned.length === 0, { expected: [], actual: spawned });
+    const state = await net.invoke('browser_state', {}, netExec('net-diagnostics'));
+    check('network 诊断后运行态仍 running=false（诊断不代驾页面）', state.ok && state.value?.running === false,
+      { expected: { running: false }, actual: state.value });
+
+    const sessionStatus = results.find((item) => item.tool === 'browser_network_session' && item.args.action === 'status');
+    const statusValue = sessionStatus?.result.value || {};
+    // §2.1: no session → session:null (never an error), limits always reported.
+    check('browser_network_session status 在无会话时返回 session:null + limits（不抛错、不启动浏览器）',
+      sessionStatus?.result.ok === true && statusValue.ok === true && statusValue.session === null
+        && statusValue.limits && Number.isInteger(statusValue.limits.maxEvents),
+      { expected: { ok: true, session: null, limits: { maxEvents: 20000 } }, actual: sessionStatus?.result.error || statusValue });
+    const eventsValue = results.find((item) => item.tool === 'browser_network_events')?.result.value || {};
+    check('browser_network_events 在无会话时返回空结果并置 sessionId:null（§2 公共约定）',
+      eventsValue.ok === true && eventsValue.sessionId === null && Array.isArray(eventsValue.events) && eventsValue.events.length === 0,
+      { expected: { ok: true, sessionId: null, events: [] }, actual: eventsValue });
+
+    const unstructured = results.filter(({ result }) => result.ok !== true && netFailureProblem(result).length > 0);
+    check('诊断/域失败一律是结构化 BrowserError（不出现非结构化异常、不降级 INTERNAL）', unstructured.length === 0, {
+      expected: 'structured BrowserError with code/category/retryable + [CODE] message',
+      actual: unstructured.map(({ tool, args, result }) => ({ tool, args, error: result.error })),
+    });
+    // §2.9: detail without a session is a network-domain failure; a missing subscription is a
+    // subscription-domain failure. Both must be NET_*, never INTERNAL/INVALID_ARGUMENT.
+    const domainCodes = results
+      .filter(({ tool, args }) => (tool === 'browser_network_detail' && args.seq)
+        || (tool === 'browser_network_subscribe' && args.subscriptionId))
+      .map(({ tool, args, result }) => ({ tool, args, code: netError(result).code, ok: result.ok }));
+    check('不存在的会话/订阅用 NET_* 码分类（不落 INTERNAL）', domainCodes.length === 2
+      && domainCodes.every((item) => /^NET_/.test(String(item.code || ''))), { expected: 'both NET_*', actual: domainCodes });
+
+    // Owner contention (§8.5): session changes and control actions need the owner lease. Reading the
+    // legacy traffic buffer does NOT take the lease, so acquire it with a real page tool first.
+    const ownerUrl = (fixture && fixture.url ? fixture.url : 'http://127.0.0.1:1/') + 'blank.html';
+    const ownerTakeover = await net.invoke('browser_navigate', { url: ownerUrl }, netExec('net-owner'));
+    const owner = ownerTakeover;
+    // A mutating control action is the one that needs the owner lease; read-only listing stays
+    // available to everyone (§8.5 只读查询不占租约).
+    const noopThrottle = { action: 'throttle', throttle: { latencyMs: 0 } };
+    const controlFromOther = await net.invoke('browser_network_control', noopThrottle, netExec('net-other-owner'));
+    const controlOwner = await net.invoke('browser_network_control', noopThrottle, netExec('net-owner'));
+    check('browser_network_control（写动作 throttle）在其他 owner 下 BUSY，owner 自身可执行', owner.ok
+      && controlFromOther.threw === true && netError(controlFromOther).code === 'BUSY'
+      && controlOwner.ok === true && controlOwner.value?.ok !== false, {
+      expected: { otherOwner: 'BUSY', owner: 'ok' },
+      actual: { owner: owner.error || { ok: owner.value?.ok, entries: owner.value?.entries?.length }, other: controlFromOther.error, self: controlOwner.error || controlOwner.value },
+    });
+    const listFromOther = await net.invoke('browser_network_control', { action: 'intercept-list' }, netExec('net-other-owner'));
+    check('只读 control（intercept-list）不占租约，其他会话可读', listFromOther.ok === true
+      && listFromOther.value?.ok !== false, { expected: { readonlyControl: 'ok' }, actual: listFromOther.error || { ok: listFromOther.value?.ok } });
+    const readFromOther = await net.invoke('browser_network_events', {}, netExec('net-other-owner'));
+    check('只读事件查询不占租约（其他会话可读，§8.5）', readFromOther.ok === true,
+      { expected: 'ok', actual: readFromOther.error || { ok: readFromOther.value?.ok } });
+    const blockedMutation = await net.invoke('browser_network_control', { action: 'throttle', throttle: { latencyMs: 0 } }, netExec('net-other-owner'));
+    check('control 的写操作对其他 owner 同样 BUSY 且不改变网络状态', blockedMutation.threw === true && netError(blockedMutation).code === 'BUSY',
+      { expected: 'BUSY', actual: blockedMutation.error });
+
+    // Legacy compatibility: the pre-existing browser_network keeps its exact metadata body.
+    const legacy = await net.invoke('browser_network', { limit: 5 }, netExec('net-owner'));
+    const legacyKeys = Object.keys(legacy.value || {}).sort();
+    // §2.8 keeps the legacy body `{entries:[metadata]}` (wrapped by the shared action envelope); `ok`
+    // is not required, the envelope fields are allowed to grow.
+    const envelopeKeys = ['actionId', 'sessionId', 'startedAt', 'tool', 'args', 'scope', 'target', 'finishedAt'];
+    check('旧 browser_network 仍返回 {entries:[元数据]}（envelope 允许携带 actionId 等，不要求 ok）',
+      legacy.ok && Array.isArray(legacy.value?.entries)
+        && legacyKeys.every((key) => key === 'entries' || key === 'capturedAt' || key === 'note' || envelopeKeys.includes(key)),
+      { expected: { entries: 'Array', envelope: 'actionId/sessionId/…' }, actual: { keys: legacyKeys, entries: legacy.value?.entries?.length } });
+    const legacyEntryKeys = ['at', 'blockedReason', 'canceled', 'errorText', 'failed', 'method', 'redacted', 'status', 'type', 'url'];
+    const legacyAllowed = (legacy.value?.entries || []).every((entry) => Object.keys(entry).every((key) => legacyEntryKeys.includes(key)));
+    check('旧 browser_network 条目仍是元数据白名单（不因网络 P0 加入 body/headers）', legacyAllowed, {
+      expected: legacyEntryKeys, actual: (legacy.value?.entries || []).slice(0, 2),
+    });
+    finding({
+      id: 'P23-network-surface',
+      summary: 'network 组 7 工具注册/schema/离线诊断/域错误分类/owner BUSY 与旧 browser_network 元数据形状在本探针内核对；C1–C52 的语义断言由 tests/acceptance/network-p0.mjs 覆盖。',
+      evidence: { diagnostics: results.map(({ tool, args, result }) => ({ tool, args, ok: result.ok, code: netError(result).code })) },
+    });
+  } finally {
+    try { await net.closeBrowser(); } catch { /* cleanup must not mask results */ }
+    await net.dispose();
+  }
 }
 
 async function probe2Navigate({ harness, check, finding, observations }) {
@@ -1568,7 +1728,13 @@ async function main() {
     helpers: harnessModule,
   };
 
-  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 22 个 browser_* 工具（9 T1 + 7 T2 + 6 T3），名称/参数 schema 与 docs/runtime-t1.md + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
+  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 29 个 browser_* 工具（9 T1 + 7 T2 + 6 T3 + 7 network），名称/参数 schema 与 docs/runtime-t1.md + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 + docs/network-p0.md §2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
+  await runProbe({
+    id: 'P23-network-surface',
+    title: 'network P0 工具面（注册/schema/离线诊断/owner/BUSY/旧工具不变）',
+    group: 'network',
+    expected: 'network 组 7 工具注册且 required/schema 与 docs/network-p0.md §2 一致；未启动时 session(status/reset)/events/detail/evidence/subscribe/control(status) 可诊断且不启动 Chromium；域错误为 NET_* 结构化 BrowserError（不降级 INTERNAL）；control 在其他 owner 下 BUSY 且写操作零副作用；旧 22 工具（含 browser_network 元数据白名单）行为不变',
+  }, ({ check, finding }) => probe23NetworkSurface({ harness: harnessA, createHarness: state.createHarness, fixture: state.fixture, check, finding }));
   await runProbe({ id: 'P2-navigate-state', title: '导航与运行态', group: 'navigation', expected: 'fixture 可导航，state.url/running 正确，state.title 反映文档标题；file:// 被拒；不可达地址产生错误字符串' }, ({ check, finding }) => probe2Navigate({ harness: harnessA, check, finding, observations }));
   await runProbe({ id: 'P3-eval', title: '页面 JS 执行', group: 'js', expected: '#counter 初始 "0"；{ok,value,type} 形态；页面抛异常返回 {ok:false,error}；支持 awaitPromise' }, ({ check, finding }) => probe3Eval({ harness: harnessA, check, finding, observations }));
   await runProbe({ id: 'P4-computed-style', title: '计算样式', group: 'css', expected: '#style-target 的 color/font-size/font-weight/padding 精确命中；不存在 selector 返回 {ok:false,error}' }, ({ check, finding }) => probe4ComputedStyle({ harness: harnessA, check, finding, observations }));
@@ -1603,11 +1769,11 @@ async function main() {
   }, ({ check, finding, skip }) => probe13MetricsFallback({ harness: harnessA, httpServer: state.httpServer, check, finding, skip, observations }));
 
   const milestones = await import('./milestone-probes.mjs');
-  await runProbe({ id: 'P14-capabilities', title: '运行时能力发现', group: 'M2', expected: '16 工具声明、运行时服务探测、http-request available、七项 web.t2.* 与 structured-dom available、T3/T4 unsupported' }, ({ check }) => milestones.capabilityProbe({ harness: harnessA, check }));
+  await runProbe({ id: 'P14-capabilities', title: '运行时能力发现', group: 'M2', expected: '29 工具声明、运行时服务探测、http-request available、七项 web.t2.* 与 structured-dom available、六项 web.t3.* 与 static-vision available、七项 web.network.* 与 p0 聚合可用状态、T4 unsupported' }, ({ check }) => milestones.capabilityProbe({ harness: harnessA, check }));
   await runProbe({ id: 'P15-owner-lease', title: '会话 lease、读取隔离与 disposed', group: 'M1', expected: '只有一个 owner、所有页面/网络访问校验、只读诊断跨会话、disposed 释放' }, ({ check }) => milestones.leaseProbe({ check }));
   await runProbe({ id: 'P19-target-policy', title: '导航目标与重定向安全', group: 'M1', expected: '工具/HTTP 阻断非法目标、loopback 放行、重定向目标重新校验' }, ({ check }) => milestones.targetPolicyProbe({ harness: harnessA, check, fixture: state.fixture }));
   await navigateAndWait(harnessA, state.fixture.url, { expectedTitle: 'DSH UI Testing Fixture' });
-  await runProbe({ id: 'P16-action-evidence', title: '操作 envelope 与截图附件/回退', group: 'M2', expected: '16 工具（含 7 个 T2）每次成功调用返回并 render envelope + evidence、截图 hash/time、附件和 base64 两条路径' }, ({ check }) => milestones.evidenceProbe({ harness: harnessA, check }));
+  await runProbe({ id: 'P16-action-evidence', title: '操作 envelope 与截图附件/回退', group: 'M2', expected: '29 工具（含 7 个 T2、7 个 network）每次成功调用返回并 render envelope + evidence、截图 hash/time、附件和 base64 两条路径' }, ({ check }) => milestones.evidenceProbe({ harness: harnessA, check }));
   await runProbe({ id: 'P17-cancel-serial', title: '取消与面板同锁串行', group: 'M0/M1', expected: 'signal 取消 1s 内 ABORTED，后续可恢复，面板输入与 Agent 不交错' }, ({ check }) => milestones.cancellationProbe({ harness: harnessA, check, fixture: state.fixture }));
   await runProbe({ id: 'P18-startup-failure', title: '启动失败清理', group: 'M0', expected: '错误明确、无 profile 遗留' }, ({ check }) => milestones.startupFailureProbe({ check }));
 
@@ -1631,7 +1797,7 @@ async function main() {
     id: 'P21-host-output-contract',
     title: '宿主输出契约（lossless JSON）',
     group: 'host-contract',
-    expected: '16 工具（含 7 个 T2）成功值与 render content 通过真实 snapshotJsonValue；eval undefined/抛错/number 参数/无附件截图/失败网络条目/抛错 details/类实例附件/T2 证据均无 undefined 且可快照',
+    expected: '全部 29 工具（含 7 个 network）成功值与 render content 通过真实 snapshotJsonValue；eval undefined/抛错/number 参数/无附件截图/失败网络条目/抛错 details/类实例附件/T2 证据/network 工具值均无 undefined 且可快照',
   }, async ({ check, finding }) => {
     await hostContract.hostOutputContractProbe({ harness: harnessA, check, finding, fixture: state.fixture });
     await hostContract.attachmentProjectionProbe({ createHarness, check });

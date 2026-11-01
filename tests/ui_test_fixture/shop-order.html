@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH Shop Order</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 24px; font-family: Arial, "Noto Sans", sans-serif; color: rgb(17, 24, 39); background-color: rgb(255, 255, 255); }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p { margin: 4px 0; font-size: 14px; }
+    button { margin: 8px 8px 0 0; padding: 6px 12px; font-size: 14px; border: 1px solid rgb(156, 163, 175); border-radius: 6px; background-color: rgb(243, 244, 246); color: rgb(17, 24, 39); cursor: pointer; }
+  </style>
+</head>
+<body data-shop-stage="order">
+  <h1 id="shop-title">Shop Order</h1>
+  <p id="shop-stage">stage: order</p>
+  <p id="shop-status">loading</p>
+  <p id="shop-order-detail">pending</p>
+  <button id="shop-checkout" type="button">Go to checkout</button>
+  <script src="/shop/shop-ledger.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      var shop = window.__shop;
+      var orderId = shop.query('orderId', 'ORD-chain-1-1');
+      var productId = shop.query('productId', 'sku-1');
+
+      shop
+        .request('GET', '/api/shop/orders?orderId=' + encodeURIComponent(orderId))
+        .then(function (json) {
+          var order = (json.data && json.data.order) || null;
+          shop.order = order;
+          var detail = document.getElementById('shop-order-detail');
+          detail.textContent = order
+            ? order.orderId + '|' + order.status + '|' + order.total
+            : 'not-found';
+          shop.markDone('order');
+        })
+        .catch(function () { /* recorded in shop.errors */ });
+
+      document.getElementById('shop-checkout').addEventListener('click', function () {
+        location.href = '/shop/checkout.html?runId=' + encodeURIComponent(shop.runId)
+          + '&productId=' + encodeURIComponent(productId)
+          + '&orderId=' + encodeURIComponent(orderId);
+      });
+    })();
+  </script>
+</body>
+</html>

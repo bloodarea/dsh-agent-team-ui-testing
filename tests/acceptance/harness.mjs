@@ -32,13 +32,14 @@ import { fileURLToPath } from 'node:url';
 import { apply } from '../../index.js';
 
 /**
- * The tool surface implemented by index.js: the 9 T1 tools frozen in docs/runtime-t1.md plus the
- * 7 Web T2 structured-GUI tools frozen in docs/t2-structured-gui.md §2.2 (16 total).
+ * The tool surface implemented by index.js, 29 tools:
+ *   9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2)
+ * + 6 T3 (docs/t3-vision.md §2.1) + 7 network P0 (docs/network-p0.md §2).
  *
  * `required` is the *registered JSON schema* required array only. The contract's runtime
- * constraints (exactly one of ref/selector, exactly one of direction/to, wait condition legality)
- * are NOT expressible as a required array - they are validated at execution time - so
- * `required: []` here never means "no arguments allowed".
+ * constraints (exactly one of ref/selector, exactly one of direction/to, wait condition legality,
+ * network `action` enumerations) are NOT expressible as a required array - they are validated at
+ * execution time - so `required: []` here never means "no arguments allowed".
  */
 export const EXPECTED_TOOLS = Object.freeze([
   // --- T1 (docs/runtime-t1.md) -------------------------------------------------------------
@@ -69,6 +70,17 @@ export const EXPECTED_TOOLS = Object.freeze([
   Object.freeze({ name: 'browser_vision_act', required: ['productId', 'action', 'point'] }),
   Object.freeze({ name: 'browser_vision_baseline', required: ['action'] }),
   Object.freeze({ name: 'browser_vision_check', required: ['cases'] }),
+  // --- network P0 (docs/network-p0.md §2) --------------------------------------------------
+  // `action` is required by every tool whose behaviour is action-dispatched; `events`, `detail`
+  // and the diagnostic-only tools take no required argument (their runtime constraints, e.g.
+  // "events needs since or cursor", are enforced at execution time).
+  Object.freeze({ name: 'browser_network_session', required: ['action'] }),
+  Object.freeze({ name: 'browser_network_events', required: [] }),
+  Object.freeze({ name: 'browser_network_detail', required: [] }),
+  Object.freeze({ name: 'browser_network_trace', required: ['action'] }),
+  Object.freeze({ name: 'browser_network_control', required: ['action'] }),
+  Object.freeze({ name: 'browser_network_evidence', required: ['action'] }),
+  Object.freeze({ name: 'browser_network_subscribe', required: ['action'] }),
 ]);
 
 /** The seven Web T2 tools declared in docs/t2-structured-gui.md §2.2. */
@@ -83,9 +95,24 @@ export const T3_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => [
   'browser_vision_act', 'browser_vision_baseline', 'browser_vision_check',
 ].includes(tool.name)));
 
-/** The nine Web T1 tools kept unchanged by the T2/T3 work. */
+/** The seven network P0 tools declared in docs/network-p0.md §2. */
+export const NETWORK_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => [
+  'browser_network_session', 'browser_network_events', 'browser_network_detail',
+  'browser_network_trace', 'browser_network_control', 'browser_network_evidence',
+  'browser_network_subscribe',
+].includes(tool.name)));
+
+/** The nine Web T1 tools kept unchanged by the T2/T3/network work. */
 export const T1_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => !T2_TOOLS.some((t2) => t2.name === tool.name)
-  && !T3_TOOLS.some((t3) => t3.name === tool.name)));
+  && !T3_TOOLS.some((t3) => t3.name === tool.name)
+  && !NETWORK_TOOLS.some((net) => net.name === tool.name)));
+
+/**
+ * The 22 tools that existed before the network P0 round (T1 + T2 + T3). Suites that assert
+ * "the old surface did not regress" compare against this list instead of the full 29, so the
+ * historical assertion keeps its original strength while the new group is asserted separately.
+ */
+export const LEGACY_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => !NETWORK_TOOLS.some((net) => net.name === tool.name)));
 
 export const PROFILE_PREFIX = 'dsh-ui-testing-';
 

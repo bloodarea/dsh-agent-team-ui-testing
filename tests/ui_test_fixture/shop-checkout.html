@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH Shop Checkout</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 24px; font-family: Arial, "Noto Sans", sans-serif; color: rgb(17, 24, 39); background-color: rgb(255, 255, 255); }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p { margin: 4px 0; font-size: 14px; }
+    button { margin: 8px 8px 0 0; padding: 6px 12px; font-size: 14px; border: 1px solid rgb(156, 163, 175); border-radius: 6px; background-color: rgb(243, 244, 246); color: rgb(17, 24, 39); cursor: pointer; }
+  </style>
+</head>
+<body data-shop-stage="checkout">
+  <h1 id="shop-title">Shop Checkout</h1>
+  <p id="shop-stage">stage: checkout</p>
+  <p id="shop-status">loading</p>
+  <p id="shop-checkout-status">pending</p>
+  <p id="shop-poll-count">polls: 0</p>
+  <p id="shop-spa-state">spa: not-pushed</p>
+  <button id="shop-spa-route" type="button">Simulate SPA route</button>
+  <button id="shop-go-orders" type="button">Go to my orders</button>
+  <script src="/shop/shop-ledger.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      var shop = window.__shop;
+      var orderId = shop.query('orderId', 'ORD-chain-1-1');
+
+      function render() {
+        var checkout = shop.checkout;
+        var statusEl = document.getElementById('shop-checkout-status');
+        if (checkout) {
+          statusEl.textContent = checkout.orderId + '|' + checkout.status + '|' + checkout.paidAt;
+        }
+        document.getElementById('shop-poll-count').textContent = 'polls: ' + shop.polls.length
+          + (shop.polls.length ? ' [' + shop.polls.join(',') + ']' : '');
+        if (shop.spa.pushed) {
+          document.getElementById('shop-spa-state').textContent = 'spa: pushed ' + shop.spa.pushedPath;
+        }
+      }
+
+      // One poll every 30 ms, three polls in total (identical URL each time, on purpose: this is
+      // the polling pattern the acceptance engine must recognise).
+      function poll(index) {
+        return shop
+          .request('GET', '/api/shop/orders/status?orderId=' + encodeURIComponent(orderId))
+          .then(function (json) {
+            shop.polls.push(json.data && json.data.status);
+            render();
+            if (index >= 2) {
+              shop.markDone('checkout');
+              return null;
+            }
+            return new Promise(function (resolve) { setTimeout(resolve, 30); }).then(function () {
+              return poll(index + 1);
+            });
+          });
+      }
+
+      shop
+        .request('POST', '/api/shop/checkout', { runId: shop.runId, orderId: orderId, payMethod: 'card' })
+        .then(function (json) {
+          shop.checkout = json.data || null;
+          render();
+          return poll(0);
+        })
+        .catch(function () { /* recorded in shop.errors */ });
+
+      document.getElementById('shop-spa-route').addEventListener('click', function () {
+        // Same-document routing: pushState to /shop/checkout/step2, then one more status GET
+        // (that GET keeps documentURL = checkout.html — the acceptance engine sees this boundary).
+        shop.pushRoute('/shop/checkout/step2?orderId=' + encodeURIComponent(orderId));
+        render();
+        shop
+          .request('GET', '/api/shop/orders/status?orderId=' + encodeURIComponent(orderId))
+          .then(function (json) {
+            shop.spa.status = json.data && json.data.status;
+            document.getElementById('shop-spa-state').textContent = 'spa: pushed '
+              + shop.spa.pushedPath + ' status=' + shop.spa.status;
+          })
+          .catch(function () { /* recorded in shop.errors */ });
+      });
+
+      document.getElementById('shop-go-orders').addEventListener('click', function () {
+        location.href = '/shop/orders.html?runId=' + encodeURIComponent(shop.runId)
+          + '&orderId=' + encodeURIComponent(orderId);
+      });
+    })();
+  </script>
+</body>
+</html>

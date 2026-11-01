@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH Net Fixture Frame</title>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+    body {
+      margin: 12px;
+      font-family: Arial, "Noto Sans", sans-serif;
+      color: rgb(17, 24, 39);
+      background-color: rgb(255, 255, 255);
+    }
+    h1 {
+      font-size: 16px;
+      margin: 0 0 8px;
+    }
+    p {
+      margin: 4px 0;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body data-net-frame="pending">
+  <h1 id="net-frame-title">DSH Net Fixture Frame</h1>
+  <p id="net-frame-status">pending</p>
+  <p id="net-frame-marker">net-frame</p>
+  <script>
+    /*
+     * iframe target for the network fixture. It performs exactly one same-origin fetch of
+     * /n/iframe-data on load, mirrors the result into window.__netFrame / body[data-net-frame],
+     * and posts {type:"net-iframe-result", status, body} to the parent (targetOrigin = this
+     * document's origin, so nothing is ever broadcast to a foreign frame).
+     *
+     * Served at both /web-network-frame.html and /n/iframe.html (same bytes, one truth).
+     * Truth table: tests/ui_test_fixture/README.md §NET.
+     */
+    (function () {
+      'use strict';
+
+      var frame = { version: 1, done: false, status: null, body: null, error: null };
+      window.__netFrame = frame;
+
+      function setStatus(text, flag) {
+        document.body.dataset.netFrame = flag;
+        var el = document.getElementById('net-frame-status');
+        if (el) el.textContent = text;
+      }
+
+      function report(payload) {
+        try {
+          // targetOrigin "*" on purpose: this document is also embedded cross-site by
+          // /web-network-oopif.html (iframe on http://localhost:<port> inside a 127.0.0.1 page),
+          // where location.origin would address the wrong parent origin and be dropped. The
+          // payload is fixed public fixture JSON (no secrets); same-origin parents still see
+          // event.origin === location.origin and keep their own origin checks.
+          parent.postMessage(payload, '*');
+        } catch (error) {
+          /* Loaded top-level: no parent to notify, the ledger on window.__netFrame still holds. */
+        }
+      }
+
+      fetch('/n/iframe-data', { cache: 'no-store' })
+        .then(function (response) {
+          return response.json().then(function (body) {
+            frame.done = true;
+            frame.status = response.status;
+            frame.body = body;
+            setStatus('ok', 'ok');
+            report({ type: 'net-iframe-result', status: response.status, body: body });
+          });
+        })
+        .catch(function (error) {
+          frame.error = String((error && error.message) || error);
+          setStatus('error', 'error');
+          report({ type: 'net-iframe-result', status: 0, error: frame.error });
+        });
+    })();
+  </script>
+</body>
+</html>

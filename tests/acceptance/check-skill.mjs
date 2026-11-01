@@ -10,10 +10,10 @@
  *     registers (no invented capabilities, no Playwright/Puppeteer tool names);
  *   - knowledge/web/t1-capability-ledger.md exists, uses only known status values, and does not
  *     claim the unsupported http-request capability as available;
- *   - the T2 (docs/t2-structured-gui.md) surface is consistent: index.js registers 16 tools
- *     (9 T1 + 7 T2), a T2 ledger exists, and the manifest declares T2 as supported while T3/T4
- *     stay unsupported. The manifest/ladger half is *optional* until the skill owner lands the
- *     T1+T2 manifest and t2-capability-ledger.md; until then it is reported as INFO, never faked.
+ *   - the composed surface is consistent: index.js registers 29 tools (9 T1 + 7 T2 + 6 T3
+ *     + 7 network), the T1 ledger exists, and the manifest declares T2/T3 as supported while T4
+ *     stays unsupported. The manifest/ledger halves for T2, T3 and network P0 are *optional* until
+ *     the skill owner lands them (task-5); until then they are reported as INFO, never faked.
  *
  * SKIP (exit 0) when skills/ does not exist yet (task-1 not started / not merged).
  * Exit codes: 0 pass or skip, 1 structural failure.
@@ -82,8 +82,8 @@ async function main() {
   const indexSource = await readFile(INDEX_FILE, 'utf8');
   const actualTools = new Set();
   for (const match of indexSource.matchAll(/name:\s*'((?:browser_)[a-z0-9_]+)'/g)) actualTools.add(match[1]);
-  // 22 = 9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2)
-  //      + 6 T3 (docs/t3-vision.md §2.1).
+  // 29 = 9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2)
+  //      + 6 T3 (docs/t3-vision.md §2.1) + 7 network (docs/network-p0.md §2).
   const expectedTools = [
     'browser_navigate', 'browser_eval', 'browser_screenshot', 'browser_input', 'browser_network',
     'browser_computed_style', 'browser_http_request', 'browser_state', 'browser_capabilities',
@@ -91,9 +91,13 @@ async function main() {
     'browser_node_state', 'browser_wait_for',
     'browser_vision_image', 'browser_vision_find', 'browser_vision_compare',
     'browser_vision_act', 'browser_vision_baseline', 'browser_vision_check',
+    'browser_network_session', 'browser_network_events', 'browser_network_detail',
+    'browser_network_trace', 'browser_network_control', 'browser_network_evidence',
+    'browser_network_subscribe',
   ];
-  record('index.js 中可解析出 22 个实际注册的 browser_* 工具（9 T1 + 7 T2 + 6 T3）',
-    actualTools.size === 22 && expectedTools.every((name) => actualTools.has(name)), [...actualTools]);
+  record('index.js 中可解析出 29 个实际注册的 browser_* 工具（9 T1 + 7 T2 + 6 T3 + 7 network）',
+    actualTools.size === 29 && expectedTools.every((name) => actualTools.has(name))
+      && [...actualTools].every((name) => expectedTools.includes(name)), [...actualTools]);
 
   // 2. Frontmatter.
   const raw = await readFile(SKILL_FILE, 'utf8');
@@ -117,7 +121,7 @@ async function main() {
   // 4. Tool names in SKILL.md are all real (no invented/Playwright names).
   const mentionedTools = new Set([...body.matchAll(/browser_[a-z0-9_]+/g)].map((match) => match[0]));
   const inventedTools = [...mentionedTools].filter((name) => !actualTools.has(name));
-  record('SKILL.md 中出现的每个 browser_* 工具名都是 index.js 实际注册的 22 个之一', inventedTools.length === 0, { mentioned: [...mentionedTools], invented: inventedTools });
+  record('SKILL.md 中出现的每个 browser_* 工具名都是 index.js 实际注册的 29 个之一', inventedTools.length === 0, { mentioned: [...mentionedTools], invented: inventedTools });
 
   // 5. Ledger.
   record('knowledge/web/t1-capability-ledger.md 存在', existsSync(LEDGER_FILE), relative(REPO_ROOT, LEDGER_FILE));
@@ -183,6 +187,17 @@ async function main() {
       tier.includes('T3') && t3ToolOps.length === 6 && Boolean(t3Aggregate)
         && t3Ops.every((op) => op.status !== 'unsupported'),
       { tier: manifest.tier, t3ToolOperations: t3ToolOps.map((op) => `${op.id}:${op.tool}:${op.status}`), aggregate: t3Aggregate?.status });
+    // network P0 half: seven web.network.* tool projections + the web.network.p0 aggregate. Reported
+    // as INFO until the skill owner flips tier to T1+T2+T3 and declares the operations (task-5);
+    // never faked here.
+    const netOps = (manifest.operations || []).filter((op) => String(op.id || '').startsWith('web.network.'));
+    const netToolOps = netOps.filter((op) => typeof op.tool === 'string' && op.tool.length > 0);
+    const netAggregate = netOps.find((op) => op.id === 'web.network.p0');
+    record('manifest 声明 network P0（7 项 web.network 工具操作 + web.network.p0 聚合，状态非 unsupported，不得写 verified 以外的越权断言）',
+      netToolOps.length === 7 && Boolean(netAggregate) && netOps.every((op) => op.status !== 'unsupported')
+        && netOps.every((op) => ALLOWED_STATUSES.has(op.status)),
+      { tier: manifest.tier, networkToolOperations: netToolOps.map((op) => `${op.id}:${op.tool}:${op.status}`), aggregate: netAggregate?.status },
+      { optional: true });
   }
 
   return failSummary();

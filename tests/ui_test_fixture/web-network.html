@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH Net Fixture</title>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+    body {
+      margin: 24px;
+      font-family: Arial, "Noto Sans", sans-serif;
+      color: rgb(17, 24, 39);
+      background-color: rgb(255, 255, 255);
+    }
+    h1 {
+      font-size: 24px;
+      margin: 0 0 8px;
+    }
+    h2 {
+      font-size: 18px;
+      margin: 0 0 6px;
+    }
+    p {
+      margin: 4px 0;
+      font-size: 14px;
+    }
+    section {
+      margin: 8px 0;
+      padding: 8px 12px;
+      border: 1px solid rgb(209, 213, 219);
+      border-radius: 8px;
+    }
+    button {
+      margin: 0 8px 8px 0;
+      padding: 6px 12px;
+      font-size: 14px;
+      border: 1px solid rgb(156, 163, 175);
+      border-radius: 6px;
+      background-color: rgb(243, 244, 246);
+      color: rgb(17, 24, 39);
+      cursor: pointer;
+    }
+    #net-iframe-host {
+      margin-top: 8px;
+    }
+    #net-iframe-el {
+      border: 1px solid rgb(209, 213, 219);
+      width: 600px;
+      height: 160px;
+    }
+    code {
+      font-family: "DejaVu Sans Mono", monospace;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <h1 id="net-title">DSH Net Fixture</h1>
+  <p id="net-note">
+    Deterministic network target. Every button issues a real request; the page-side ledger
+    <code>window.__net</code> records the truth (no CDP needed). Nothing fires on load.
+  </p>
+  <p id="net-status-line">status: <span id="net-status">idle</span></p>
+
+  <section id="net-section-http">
+    <h2 id="net-heading-http">HTTP</h2>
+    <button id="net-fetch-json" type="button">Fetch JSON</button>
+    <button id="net-post-json" type="button">POST JSON</button>
+    <button id="net-post-form" type="button">POST form</button>
+    <button id="net-redirect" type="button">Follow redirect</button>
+    <button id="net-500" type="button">Trigger 500</button>
+    <button id="net-slow" type="button">Slow request (300 ms)</button>
+    <button id="net-large" type="button">Large body (20 KB)</button>
+    <button id="net-flaky" type="button">Flaky (2 calls)</button>
+  </section>
+
+  <section id="net-section-poll">
+    <h2 id="net-heading-poll">Polling</h2>
+    <button id="net-poll-start" type="button">Start polling</button>
+    <button id="net-poll-stop" type="button">Stop polling</button>
+  </section>
+
+  <section id="net-section-token">
+    <h2 id="net-heading-token">Token URL</h2>
+    <button id="net-token" type="button">Send token URL</button>
+  </section>
+
+  <section id="net-section-parallel">
+    <h2 id="net-heading-parallel">Parallel</h2>
+    <button id="net-parallel" type="button">Parallel ×3</button>
+  </section>
+
+  <section id="net-section-ws">
+    <h2 id="net-heading-ws">WebSocket</h2>
+    <button id="net-ws-connect" type="button">Connect WebSocket</button>
+    <button id="net-ws-send" type="button">Send WebSocket text</button>
+  </section>
+
+  <section id="net-section-sse">
+    <h2 id="net-heading-sse">Server-Sent Events</h2>
+    <button id="net-sse-start" type="button">Start SSE</button>
+    <button id="net-sse-stop" type="button">Stop SSE</button>
+  </section>
+
+  <section id="net-section-worker">
+    <h2 id="net-heading-worker">Worker</h2>
+    <button id="net-worker" type="button">Run worker</button>
+  </section>
+
+  <section id="net-section-shared-sw">
+    <h2 id="net-heading-shared-sw">Shared worker / Service worker</h2>
+    <button id="net-shared-worker" type="button">Run shared worker</button>
+    <button id="net-sw-register" type="button">Register service worker</button>
+    <button id="net-sw-fetch" type="button">Service worker fetch</button>
+  </section>
+
+  <section id="net-section-iframe">
+    <h2 id="net-heading-iframe">Iframe</h2>
+    <button id="net-iframe" type="button">Load iframe</button>
+    <div id="net-iframe-host"></div>
+  </section>
+
+  <script>
+    /*
+     * Network fixture page + page-side truth ledger.
+     *
+     * Contract (tests/ui_test_fixture/README.md §NET):
+     *   - every button id / label is fixed and used by acceptance selectors;
+     *   - no request is issued on load (no autoload, no timer, no clock/random payload);
+     *   - window.__net records method/url/trigger sequence/status/body for every request, plus
+     *     WS sent+received text, SSE payloads, worker/iframe completion — without CDP;
+     *   - window.__net.reset() clears PAGE-SIDE counters only: it does not close the WebSocket or
+     *     the EventSource and does not reset the server-side /n/flaky counter (call
+     *     /n/flaky?key=page&reset=1 to replay the first-503 behaviour).
+     */
+    (function () {
+      'use strict';
+
+      var TOKEN = 'SECRET_netfixture01';
+      var AUTH = 'Bearer SECRET_netfixture02';
+
+      var net = {
+        version: 1,
+        fixture: 'dsh-ui-testing',
+        seq: 0,
+        pending: 0,
+        requests: [],
+        byTrigger: {},
+        ws: { connects: 0, opens: 0, errors: 0, closes: 0, sent: [], received: [] },
+        sse: { starts: 0, stops: 0, errors: 0, events: [], lastEventId: null, closeReason: null },
+        worker: { started: 0, done: 0, messages: [] },
+        sharedWorker: { started: 0, done: 0, port: 'shared', error: null, messages: [] },
+        serviceWorker: { registered: false, controller: false, done: 0, error: null, messages: [] },
+        iframe: { started: 0, done: 0, messages: [] },
+        poll: { active: false, count: 0, values: [] },
+        reset: reset,
+        summary: summary
+      };
+      window.__net = net;
+
+      function syncStatus() {
+        var el = document.getElementById('net-status');
+        if (el) el.textContent = net.pending > 0 ? 'busy' : 'idle';
+      }
+
+      function pathOf(raw) {
+        try {
+          var url = new URL(String(raw), location.href);
+          return url.pathname + url.search;
+        } catch (error) {
+          return String(raw);
+        }
+      }
+
+      function begin(trigger, method, url) {
+        var record = {
+          seq: net.seq + 1,
+          trigger: trigger,
+          method: method,
+          url: url,
+          status: null,
+          ok: null,
+          body: null,
+          error: null,
+          finalUrl: null
+        };
+        net.seq = record.seq;
+        net.requests.push(record);
+        if (!net.byTrigger[trigger]) net.byTrigger[trigger] = [];
+        net.byTrigger[trigger].push(record);
+        net.pending += 1;
+        syncStatus();
+        return record;
+      }
+
+      function settle(record, response, body) {
+        record.status = response.status;
+        record.ok = response.ok;
+        record.body = body;
+        record.finalUrl = pathOf(response.url);
+        net.pending -= 1;
+        syncStatus();
+        return record;
+      }
+
+      function fail(record, error) {
+        record.status = 0;
+        record.ok = false;
+        record.error = String((error && error.message) || error);
+        net.pending -= 1;
+        syncStatus();
+        return record;
+      }
+
+      function readBody(response) {
+        var type = (response.headers.get('content-type') || '').toLowerCase();
+        if (type.indexOf('application/json') >= 0) return response.json();
+        return response.text();
+      }
+
+      function send(trigger, method, url, init) {
+        var options = init || {};
+        options.method = method;
+        options.cache = 'no-store';
+        var record = begin(trigger, method, url);
+        return fetch(url, options)
+          .then(function (response) {
+            return readBody(response).then(function (body) {
+              return settle(record, response, body);
+            });
+          })
+          .catch(function (error) {
+            return fail(record, error);
+          });
+      }
+
+      /* ------------------------------------------- HTTP ------------------------------------------- */
+
+      document.getElementById('net-fetch-json').addEventListener('click', function () {
+        send('fetch-json', 'GET', '/n/json?from=page&n=1');
+      });
+
+      document.getElementById('net-post-json').addEventListener('click', function () {
+        send('post-json', 'POST', '/n/echo', {
+          headers: {
+            'content-type': 'application/json',
+            'x-net-probe': 'net-probe-1',
+            'x-net-token': TOKEN,
+            authorization: AUTH
+          },
+          body: JSON.stringify({ hello: 'world', n: 1 })
+        });
+      });
+
+      document.getElementById('net-post-form').addEventListener('click', function () {
+        var form = new FormData();
+        form.append('a', '1');
+        form.append('b', 'two');
+        form.append('file', new Blob(['file-body-1'], { type: 'text/plain' }), 'net-file.txt');
+        send('post-form', 'POST', '/n/echo', { body: form });
+      });
+
+      document.getElementById('net-redirect').addEventListener('click', function () {
+        send('redirect', 'GET', '/n/redirect/1');
+      });
+
+      document.getElementById('net-500').addEventListener('click', function () {
+        send('status-500', 'GET', '/n/status/500');
+      });
+
+      document.getElementById('net-slow').addEventListener('click', function () {
+        send('slow', 'GET', '/n/slow?ms=300');
+      });
+
+      document.getElementById('net-large').addEventListener('click', function () {
+        send('large', 'GET', '/n/large?bytes=20000');
+      });
+
+      document.getElementById('net-flaky').addEventListener('click', function () {
+        // Two serial calls on purpose: the first one per key answers 503, the second one 200.
+        send('flaky', 'GET', '/n/flaky?key=page').then(function () {
+          return send('flaky', 'GET', '/n/flaky?key=page');
+        });
+      });
+
+      /* ------------------------------------------ Polling ----------------------------------------- */
+
+      var pollTimer = null;
+
+      function stopPoll() {
+        if (pollTimer) clearTimeout(pollTimer);
+        pollTimer = null;
+        net.poll.active = false;
+      }
+
+      document.getElementById('net-poll-start').addEventListener('click', function () {
+        if (pollTimer) return;
+        net.poll.active = true;
+        net.poll.count = 0;
+        net.poll.values.length = 0;
+        var step = function (value) {
+          if (!net.poll.active) return;
+          net.poll.count = value;
+          net.poll.values.push(value);
+          send('poll-' + value, 'GET', '/n/poll?n=' + value).then(function () {
+            if (!net.poll.active) return;
+            if (value >= 3) {
+              stopPoll();
+              return;
+            }
+            pollTimer = setTimeout(function () {
+              step(value + 1);
+            }, 30);
+          });
+        };
+        pollTimer = setTimeout(function () {
+          step(1);
+        }, 30);
+      });
+
+      document.getElementById('net-poll-stop').addEventListener('click', function () {
+        stopPoll();
+      });
+
+      /* ------------------------------------------- Token ------------------------------------------ */
+
+      document.getElementById('net-token').addEventListener('click', function () {
+        send('token', 'GET', '/n/token?token=' + encodeURIComponent(TOKEN));
+      });
+
+      /* ------------------------------------------ Parallel ---------------------------------------- */
+
+      document.getElementById('net-parallel').addEventListener('click', function () {
+        for (var index = 1; index <= 3; index += 1) {
+          send('parallel-' + index, 'GET', '/n/json?p=' + index);
+        }
+      });
+
+      /* ----------------------------------------- WebSocket ---------------------------------------- */
+
+      var socket = null;
+      var wsSentCount = 0;
+
+      document.getElementById('net-ws-connect').addEventListener('click', function () {
+        if (socket && (socket.readyState === 0 || socket.readyState === 1)) return;
+        net.ws.connects += 1;
+        socket = new WebSocket('ws://' + location.host + '/n/ws');
+        socket.addEventListener('open', function () {
+          net.ws.opens += 1;
+        });
+        socket.addEventListener('message', function (event) {
+          net.ws.received.push(String(event.data));
+        });
+        socket.addEventListener('error', function () {
+          net.ws.errors += 1;
+        });
+        socket.addEventListener('close', function () {
+          net.ws.closes += 1;
+        });
+      });
+
+      document.getElementById('net-ws-send').addEventListener('click', function () {
+        wsSentCount += 1;
+        var text = 'client-hello-' + wsSentCount;
+        if (!socket || socket.readyState !== 1) {
+          // Not open yet: never fake a send, just record that the click found no open socket.
+          net.ws.errors += 1;
+          return;
+        }
+        socket.send(text);
+        net.ws.sent.push(text);
+      });
+
+      /* ---------------------------------------- EventSource --------------------------------------- */
+
+      var source = null;
+
+      document.getElementById('net-sse-start').addEventListener('click', function () {
+        if (source) return;
+        net.sse.starts += 1;
+        net.sse.closeReason = null;
+        source = new EventSource('/n/sse');
+        source.addEventListener('tick', function (event) {
+          net.sse.events.push({ id: event.lastEventId, event: event.type, data: event.data });
+          net.sse.lastEventId = event.lastEventId;
+        });
+        source.addEventListener('error', function () {
+          net.sse.errors += 1;
+          // The fixture ends the stream after the third event; close so EventSource does not
+          // auto-reconnect and the ledger stays deterministic.
+          if (source) {
+            source.close();
+            source = null;
+            net.sse.closeReason = 'server';
+          }
+        });
+      });
+
+      document.getElementById('net-sse-stop').addEventListener('click', function () {
+        net.sse.stops += 1;
+        if (source) {
+          source.close();
+          source = null;
+        }
+        net.sse.closeReason = 'user';
+      });
+
+      /* ------------------------------------------- Worker ----------------------------------------- */
+
+      document.getElementById('net-worker').addEventListener('click', function () {
+        net.worker.started += 1;
+        var worker = new Worker('/n/worker.js');
+        worker.addEventListener('message', function (event) {
+          net.worker.done += 1;
+          net.worker.messages.push(event.data);
+          worker.terminate();
+        });
+        worker.addEventListener('error', function (event) {
+          net.worker.messages.push({ source: 'worker', status: 0, error: String(event.message || 'worker-error') });
+        });
+      });
+
+      /* ------------------------------- Shared worker / Service worker ----------------------------- */
+
+      document.getElementById('net-shared-worker').addEventListener('click', function () {
+        net.sharedWorker.started += 1;
+        try {
+          var shared = new SharedWorker('/n/shared-worker.js');
+          shared.port.addEventListener('message', function (event) {
+            var data = event.data || {};
+            net.sharedWorker.messages.push(data);
+            if (data.phase === 'done') net.sharedWorker.done += 1;
+            if (data.phase === 'error') net.sharedWorker.error = String(data.error || 'shared-worker-error');
+          });
+          shared.port.start();
+        } catch (error) {
+          // SharedWorker is same-origin only; a failure is recorded, never thrown at the page.
+          net.sharedWorker.error = String((error && error.message) || error);
+        }
+      });
+
+      document.getElementById('net-sw-register').addEventListener('click', function () {
+        if (!('serviceWorker' in navigator)) {
+          net.serviceWorker.error = 'service-worker-unavailable';
+          return;
+        }
+        navigator.serviceWorker
+          .register('/n/sw.js', { scope: '/' })
+          .then(function (registration) {
+            net.serviceWorker.registered = true;
+            net.serviceWorker.scope = registration.scope;
+            // `ready` resolves once an active worker controls this scope; controller may still be
+            // null on the very first registration, hence the separate controller read below.
+            return navigator.serviceWorker.ready;
+          })
+          .then(function () {
+            net.serviceWorker.controller = !!navigator.serviceWorker.controller;
+          })
+          .catch(function (error) {
+            // Registration is allowed to fail (no secure context, browser restriction, ...).
+            net.serviceWorker.registered = false;
+            net.serviceWorker.error = String((error && error.message) || error);
+          });
+        navigator.serviceWorker.addEventListener('controllerchange', function () {
+          net.serviceWorker.controller = !!navigator.serviceWorker.controller;
+        });
+        navigator.serviceWorker.addEventListener('message', function (event) {
+          var data = event.data || {};
+          if (!data || (data.source !== 'service-worker' && data.type !== 'net-sw-result')) return;
+          net.serviceWorker.messages.push(data);
+          if (data.phase === 'done') net.serviceWorker.done += 1;
+          if (data.phase === 'error') net.serviceWorker.error = String(data.error || 'service-worker-error');
+        });
+      });
+
+      document.getElementById('net-sw-fetch').addEventListener('click', function () {
+        if (!('serviceWorker' in navigator)) {
+          net.serviceWorker.error = 'service-worker-unavailable';
+          return;
+        }
+        var controller = navigator.serviceWorker.controller;
+        net.serviceWorker.controller = !!controller;
+        if (!controller) {
+          // Nothing to post to yet: record it instead of faking success.
+          net.serviceWorker.error = 'no-controller';
+          return;
+        }
+        controller.postMessage({ type: 'net-sw-fetch' });
+      });
+
+      /* ------------------------------------------- Iframe ----------------------------------------- */
+
+      document.getElementById('net-iframe').addEventListener('click', function () {
+        net.iframe.started += 1;
+        var host = document.getElementById('net-iframe-host');
+        var existing = document.getElementById('net-iframe-el');
+        if (existing) existing.remove();
+        var frame = document.createElement('iframe');
+        frame.id = 'net-iframe-el';
+        frame.src = '/web-network-frame.html';
+        frame.title = 'net frame';
+        host.appendChild(frame);
+      });
+
+      window.addEventListener('message', function (event) {
+        if (event.origin !== location.origin) return;
+        var data = event.data;
+        if (!data || data.type !== 'net-iframe-result') return;
+        net.iframe.done += 1;
+        net.iframe.messages.push({ status: data.status, body: data.body || null, error: data.error || null });
+      });
+
+      /* ------------------------------------------ Ledger ------------------------------------------ */
+
+      function reset() {
+        net.seq = 0;
+        net.pending = 0;
+        net.requests.length = 0;                                  // keep array identity
+        var keys = Object.keys(net.byTrigger);
+        for (var i = 0; i < keys.length; i += 1) delete net.byTrigger[keys[i]];
+        net.ws.connects = 0;
+        net.ws.opens = 0;
+        net.ws.errors = 0;
+        net.ws.closes = 0;
+        net.ws.sent.length = 0;
+        net.ws.received.length = 0;
+        net.sse.starts = 0;
+        net.sse.stops = 0;
+        net.sse.errors = 0;
+        net.sse.events.length = 0;
+        net.sse.lastEventId = null;
+        net.sse.closeReason = null;
+        net.worker.started = 0;
+        net.worker.done = 0;
+        net.worker.messages.length = 0;
+        net.sharedWorker.started = 0;
+        net.sharedWorker.done = 0;
+        net.sharedWorker.error = null;
+        net.sharedWorker.messages.length = 0;
+        net.serviceWorker.registered = false;
+        net.serviceWorker.controller = false;
+        net.serviceWorker.done = 0;
+        net.serviceWorker.error = null;
+        net.serviceWorker.messages.length = 0;
+        net.iframe.started = 0;
+        net.iframe.done = 0;
+        net.iframe.messages.length = 0;
+        net.poll.active = false;
+        net.poll.count = 0;
+        net.poll.values.length = 0;
+        syncStatus();
+      }
+
+      function summary() {
+        var statuses = {};
+        var triggers = Object.keys(net.byTrigger);
+        for (var i = 0; i < triggers.length; i += 1) {
+          statuses[triggers[i]] = net.byTrigger[triggers[i]].map(function (record) {
+            return record.status;
+          });
+        }
+        return {
+          requests: net.requests.length,
+          pending: net.pending,
+          statuses: statuses,
+          ws: {
+            connects: net.ws.connects,
+            opens: net.ws.opens,
+            errors: net.ws.errors,
+            closes: net.ws.closes,
+            sent: net.ws.sent.length,
+            received: net.ws.received.length
+          },
+          sse: {
+            starts: net.sse.starts,
+            stops: net.sse.stops,
+            errors: net.sse.errors,
+            events: net.sse.events.length
+          },
+          worker: { started: net.worker.started, done: net.worker.done },
+          sharedWorker: { started: net.sharedWorker.started, done: net.sharedWorker.done, port: 'shared', error: net.sharedWorker.error },
+          serviceWorker: {
+            registered: net.serviceWorker.registered,
+            controller: net.serviceWorker.controller,
+            done: net.serviceWorker.done,
+            error: net.serviceWorker.error
+          },
+          iframe: { started: net.iframe.started, done: net.iframe.done },
+          poll: { active: net.poll.active, count: net.poll.count }
+        };
+      }
+
+      syncStatus();
+    })();
+  </script>
+</body>
+</html>

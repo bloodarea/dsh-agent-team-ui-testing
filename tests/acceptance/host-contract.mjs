@@ -216,6 +216,12 @@ export async function hostOutputContractProbe({ harness, check, finding, fixture
     ['browser_input', { events: [] }],
     ['browser_screenshot', {}],
     ['browser_http_request', { url: fixture.url + 'health' }],
+    // network P0 (docs/network-p0.md §2): every one of the seven tools is snapshotted by the host
+    // too, so a `undefined` own property in any of them fails the whole agent call.
+    ['browser_network_session', { action: 'status' }],
+    ['browser_network_events', { limit: 5 }],
+    ['browser_network_subscribe', { action: 'create' }],
+    ['browser_network_control', { action: 'intercept-list' }],
   ];
 
   const values = [];
@@ -282,7 +288,7 @@ export async function hostOutputContractProbe({ harness, check, finding, fixture
       expected: { code: 'TARGET_NOT_FOUND', evidenceVersion: 1 },
       actual: { code: t2Failure.error?.code, evidenceVersion: t2Failure.error?.details?.evidence?.version, message: String(t2Failure.error?.message || '').slice(0, 160) },
     });
-  check('全部工具（22）的 render content 都能通过宿主快照（成功结果与失败结果都算）', renderProblems.length === 0, {
+  check(`全部工具（${harness.toolDefinitions().length}）的 render content 都能通过宿主快照（成功结果与失败结果都算）`, renderProblems.length === 0, {
     expected: [],
     actual: renderProblems,
   });
@@ -374,7 +380,7 @@ export async function hostOutputContractProbe({ harness, check, finding, fixture
       try { dshTools.assertSupportedJsonSchema(definition.output.schema); }
       catch (error) { outputProblems.push(`${definition.name}: ${String(error?.message || error).slice(0, 240)}`); }
     }
-    check('全部工具（22）的 output.schema 全部通过宿主 assertSupportedJsonSchema', outputProblems.length === 0,
+    check(`全部工具（${harness.toolDefinitions().length}）的 output.schema 全部通过宿主 assertSupportedJsonSchema`, outputProblems.length === 0,
       { expected: [], actual: outputProblems });
   }
   const parameterProblems = [];
@@ -389,7 +395,7 @@ export async function hostOutputContractProbe({ harness, check, finding, fixture
       catch (error) { parameterSubsetProblems.push(`${definition.name}: ${String(error?.message || error).slice(0, 160)}`); }
     }
   }
-  check('全部工具（22）的参数 schema 可快照且根为 object/required 数组', parameterProblems.length === 0,
+  check(`全部工具（${harness.toolDefinitions().length}）的参数 schema 可快照且根为 object/required 数组`, parameterProblems.length === 0,
     { expected: [], actual: parameterProblems });
   check('提示：参数 schema 也落在宿主白名单子集（非必需，仅收紧）', parameterSubsetProblems.length === 0,
     { expected: [], actual: parameterSubsetProblems }, { advisory: true });
