@@ -32,9 +32,10 @@ import { fileURLToPath } from 'node:url';
 import { apply } from '../../index.js';
 
 /**
- * The tool surface implemented by index.js, 29 tools:
- *   9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2)
- * + 6 T3 (docs/t3-vision.md §2.1) + 7 network P0 (docs/network-p0.md §2).
+ * The tool surface implemented by index.js, 30 tools:
+ *   10 T1 (docs/runtime-t1.md + docs/viewport-control.md §7 `browser_viewport`)
+ * + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
+ * + 7 network P0 (docs/network-p0.md §2).
  *
  * `required` is the *registered JSON schema* required array only. The contract's runtime
  * constraints (exactly one of ref/selector, exactly one of direction/to, wait condition legality,
@@ -52,6 +53,9 @@ export const EXPECTED_TOOLS = Object.freeze([
   Object.freeze({ name: 'browser_http_request', required: ['url'] }),
   Object.freeze({ name: 'browser_state', required: [] }),
   Object.freeze({ name: 'browser_capabilities', required: [] }),
+  // Shared viewport (docs/viewport-control.md §7): `action` is the only registered required field;
+  // "get accepts no other field / set needs at least one view field" is enforced at execution time.
+  Object.freeze({ name: 'browser_viewport', required: ['action'] }),
   // --- T2 (docs/t2-structured-gui.md §2.2) ------------------------------------------------
   Object.freeze({ name: 'browser_snapshot', required: [] }),
   Object.freeze({ name: 'browser_click', required: [] }),
@@ -102,15 +106,16 @@ export const NETWORK_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => [
   'browser_network_subscribe',
 ].includes(tool.name)));
 
-/** The nine Web T1 tools kept unchanged by the T2/T3/network work. */
+/** The Web T1 tools (9 original + `browser_viewport`), excluded from every newer group. */
 export const T1_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => !T2_TOOLS.some((t2) => t2.name === tool.name)
   && !T3_TOOLS.some((t3) => t3.name === tool.name)
   && !NETWORK_TOOLS.some((net) => net.name === tool.name)));
 
 /**
- * The 22 tools that existed before the network P0 round (T1 + T2 + T3). Suites that assert
- * "the old surface did not regress" compare against this list instead of the full 29, so the
- * historical assertion keeps its original strength while the new group is asserted separately.
+ * The tools that existed before the network P0 round (T1 + T2 + T3, 23 after the viewport round).
+ * Suites that assert "the old surface did not regress" compare against this list instead of the
+ * full 30, so the historical assertion keeps its original strength while the new group is
+ * asserted separately.
  */
 export const LEGACY_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => !NETWORK_TOOLS.some((net) => net.name === tool.name)));
 

@@ -10,14 +10,30 @@
 
 **两条踩坑提醒**：① `verify-3081.mjs` 顶层直接执行，不要用 `import()` 做"语法检查"，否则会真实驱动 3081（现已加 import 守卫）；② fake-ctx 验收不经过宿主的 lossless JSON 校验，真实会话里截图/网络/eval 曾因此整体失败——新增工具或改返回体必须过 P21。
 
+## 0. 共享视口验收（第 9 轮，2026-11-01）
+
+```bash
+node tests/acceptance/viewport.mjs      # Host 共享视口：注册/冷启动诊断/预设与 patch/scale-only/滚动/CAS/BUSY/HTTP/截图比例/T3 live/投影（11 probes、107 required）
+node tests/acceptance/viewport-gui.mjs  # 隔离 DSH GUI：尺寸栏 X/Y/滚轮/fit/坐标映射/滚轮缩放/窄面板（73 checks，5 条 NOT_RUN）
+```
+
+- **`viewport.mjs`** 用 fake Cordis ctx 驱动真实 `index.js` + 真实 Chromium + 仓库 loopback 靶机；断言全部落在页面真值（`innerWidth/innerHeight`、`devicePixelRatio`、`visualViewport.scale`、`scrollX/Y`、固定元素 rect）、解码后的 PNG 事实、**计数过的 CDP 命令**（"没有发 override" 是测出来的，不是推断）或纯 JSON 形状，不采信"工具说成功了"。报告写入 `tests/acceptance/runs/viewport-<ISO>-<pid>/`。
+- **`viewport-gui.mjs`** 自己起一个**私有隔离 DSH 实例**（临时 `DSH_HOME`、复制 web profile、`node_modules` 软链、随机端口，示例端口 40219/42413），用无头 Chrome 打开 `更多 → 调试视图` 面板做真实 DOM/事件断言；报告记录隔离端口、`clientJs`/`indexJs` 指纹、`loadedBuildMatchesWorkspace` 与"是否读取过 3080/3081"（`environment.isolatedDsh`/`build`/`servedClient`），截图落到 `tests/acceptance/evidence/viewport-gui-<ISO>/`（4 PNG + `SUMMARY.md`）。它**不需要也不允许**重启或驱动 3080/3081。
+- **串行、单驱动者**：两个套件各起自己的 Chromium/DSH，但仍要求一次只跑一个验收（不要与 T1/T2/T3/P0/网络套件并行），否则端口、profile 与 CPU 抢占会让计数不可信。跑 GUI 套件期间不要动用户的 3080/3081 面板。
+- **推荐顺序（终验实测可用）**：`viewport.mjs` → `viewport-gui.mjs` → `capture-p0.mjs` → `t2-structured.mjs` → `t3-vision.mjs` → `network-p0.mjs` → `network-chain.mjs` → `run.mjs` → `workspace-isolation.test.mjs` → `runtime-faults.test.mjs` → `check-skill.mjs` → `check-skill-registry.mjs`，每条跑完再跑下一条；报告按 `tests/acceptance/runs/<时间>-<pid>/` 与 `tests/acceptance/evidence/` 归档，数字以当次报告为准。
+- **当前结果（终版代码，Lead 独立终验 2026-11-01 16:19–16:45）**：`viewport.mjs` **11/11 probes、107/107 requiredChecks、0 failed、exit 0**（Lead `runs/viewport-2026-11-01T16-19-36-641Z-564516`；执行者连跑两次 `...16-13-39-758Z-559039`、`...16-13-53-771Z-559488`）；`viewport-gui.mjs` **73/73 PASS、0 FAIL、5 NOT_RUN、exit 0**（Lead `runs/viewport-gui-2026-11-01T16-25-59-658Z-576275`，证据 `tests/acceptance/evidence/viewport-gui-2026-11-01T16-25-59-658Z/`；执行者两次 `...16-09-04-966Z-554236`、`...16-10-07-443Z-555424`）。同一轮非回归：`run.mjs` 23/23、349/349；`capture-p0.mjs` 14/14、142/142；`t2-structured.mjs` 37/38+1 NOT_RUN、261/261；`t3-vision.mjs` 56/56、391/391（notApplicable 3）；`network-p0.mjs` 52/52、266/266（8 NOT_RUN）；`network-chain.mjs` 12/12、49（1 NOT_RUN）；`workspace-isolation` 77/77；`runtime-faults` 16/16；`check-skill` 30/30、`check-skill-registry` 19/19——全部 exit 0。**逐项报告路径见 [status.md](status.md)「Lead 独立终验」**（本节不重复维护计数，避免漂移）。
+- **5 条 GUI NOT_RUN 的原因**（不算通过）：agent 归因（GUI 只能走 HTTP v1，Host 记 `source=gui`；归因由 Host H2 覆盖）、letterbox 零派发（实测帧无 band）、旧 Host 降级（套件只起带 `ui.view` 的新 Host）、GUI 侧 `expectedRevision` 冲突（Host H5 覆盖）、宽高变更后几何屏障只到 best-effort（帧协议未扩展）。
+- **真实宿主仍 NOT_RUN**（与 H9 screencast 时序、GUI 5 条归属、provider 图像可见性并列为本轮唯一未验证项）：3080（pid <pid>）本轮未重启，30 工具、`ui.view`、`browser_viewport` 与面板 X/Y 在真实 Agent 会话都没有验证；**隔离 DSH GUI 是验收证据，不能冒充 3080**。要补证需用户重启 3080 后在新会话跑一次 `browser_capabilities`（30 工具）+ `browser_viewport get/set` + 面板 X/Y 读数。
+
 ## 1. 主机侧验收（不启动 DSH）
 
 ```bash
-node tests/acceptance/run.mjs                    # 主验收：22 组 / 303 项必需检查（含 P22 独立 HTTP 95 项）
+node tests/acceptance/run.mjs                    # 主验收：23 组 / 349 项必需检查（含 P22 独立 HTTP 95 项；工具面 30）
+node tests/acceptance/viewport.mjs                # 共享视口 Host 套件：11 probes / 107 项必需检查
 node tests/acceptance/workspace-isolation.test.mjs # 按工作区 page 隔离：77 项（真实 Chromium + fake ctx；含 scope/lease/frame/idle/上限/身份矩阵）
 node --test tests/acceptance/runtime-faults.test.mjs  # CDP 故障注入与 Runtime 边界（16 项；rm 竞态已修，DNS 用注入 resolve 固定）
-node tests/acceptance/check-skill.mjs            # Skill 结构/引用/工具名一致性（23 项）
-node tests/acceptance/check-skill-registry.mjs   # 真实 DSH SkillRegistry 注册/发现/加载（17 项）
+node tests/acceptance/check-skill.mjs            # Skill 结构/引用/工具名/清单一致性（30 项）
+node tests/acceptance/check-skill-registry.mjs   # 真实 DSH SkillRegistry 注册/发现/加载（19 项，含 30 工具面）
 node tests/acceptance/verify-3081.mjs            # 真实隔离宿主 legacy HTTP 集成（22 项，含认证/UI 投影与输入回归）
 DSH_3081_HOME=/tmp/dsh-utb-home node tests/acceptance/workspace-isolation-3081.mjs # 真实 3081：17 项 scope/WS/frame/close
 DSH_3081_HOME=/tmp/dsh-utb-home node tests/acceptance/gui-workspace-3081.mjs       # 真实 3081 GUI：两个注册工作区/会话、main/右栏 scope、WS、隐藏停播

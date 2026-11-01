@@ -66,6 +66,8 @@ window.__ModuleLoader__.load({
       if (!response.ok || payload.ok === false) {
         const error = new Error(payload.error || ('运行时请求失败：' + response.status));
         error.code = payload.code;
+        // The safe numeric view (if any) lets a revision conflict adopt the real state.
+        error.payload = payload;
         throw error;
       }
       return payload;
@@ -123,6 +125,91 @@ window.__ModuleLoader__.load({
     /** 左下角控制权状态：空闲 / 人类接管 / Agent 操作中。 */
     const MODE_LABEL = { idle: '空闲', human: '人类接管', agent: 'Agent 操作中' };
 
+    /**
+     * 视口共享状态（Host `ui.view`）的边界。`scalePercent` 是本面板的手动范围；
+     * Host 的 `view.scale` 是 0.1–2.0 的共享比例（Agent 截图默认密度），不启用页面缩放/DPR。
+     */
+    const VIEW_LIMITS = {
+      width: [200, 4096],
+      height: [200, 4096],
+      scroll: [0, 10000000],
+      scalePercent: [10, 200],
+    };
+    /** 尺寸栏数值滚轮：向上增、向下减；Alt 优先于 Shift。 */
+    const WHEEL_STEPS = {
+      width: { normal: 10, shift: 100, alt: 1 },
+      height: { normal: 10, shift: 100, alt: 1 },
+      x: { normal: 10, shift: 100, alt: 1 },
+      y: { normal: 10, shift: 100, alt: 1 },
+      scale: { normal: 5, shift: 10, alt: 1 },
+    };
+    /** 本地编辑合并窗口与尺寸变更后的输入暂停上限（best-effort，帧协议不变）。 */
+    const VIEW_DEBOUNCE_MS = 120;
+    const GEOMETRY_WAIT_MS = 250;
+    const POINTER_EPSILON = 0.001;
+    const FRAME_WHEEL_LINE_CSS_PX = 16;
+
+    function clampNumber(value, min, max) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return min;
+      return Math.max(min, Math.min(max, number));
+    }
+
+    /** `ui.view` (v1) from any Host snapshot shape; null for an old Host without shared view. */
+    function viewOf(payload) {
+      if (!payload || typeof payload !== 'object') return null;
+      const state = payload.state && typeof payload.state === 'object' ? payload.state : payload;
+      const ui = state && state.ui && typeof state.ui === 'object' ? state.ui : null;
+      const view = ui && ui.view && typeof ui.view === 'object' && Number(ui.view.version) === 1 ? ui.view : null;
+      return view;
+    }
+
+    /** `ui.viewMeta` / `ui.observed` companions of the same snapshot. */
+    function viewCompanionsOf(payload) {
+      const state = payload && payload.state && typeof payload.state === 'object' ? payload.state : payload;
+      const ui = state && state.ui && typeof state.ui === 'object' ? state.ui : null;
+      return {
+        viewMeta: ui && ui.viewMeta && typeof ui.viewMeta === 'object' ? ui.viewMeta : null,
+        observed: ui && ui.observed && typeof ui.observed === 'object' ? ui.observed : null,
+      };
+    }
+
+    /**
+     * Painted image rect for `object-fit: contain; object-position: 50% 50%` (contract §5.1).
+     * `rect` is the img content box in *host* CSS px (border/padding already excluded by the
+     * layout), natural* are the decoded frame pixels. The host window DPR never enters this
+     * formula: event.clientX/Y, getBoundingClientRect and the target viewport are all CSS px.
+     */
+    function paintedRect(rect, naturalW, naturalH) {
+      const nw = Number(naturalW) || 0;
+      const nh = Number(naturalH) || 0;
+      if (!nw || !nh || !rect || !(Number(rect.width) > 0) || !(Number(rect.height) > 0)) return null;
+      const k = Math.min(Number(rect.width) / nw, Number(rect.height) / nh);
+      const width = nw * k;
+      const height = nh * k;
+      return {
+        left: Number(rect.left) + (Number(rect.width) - width) / 2,
+        top: Number(rect.top) + (Number(rect.height) - height) / 2,
+        width,
+        height,
+        naturalW: nw,
+        naturalH: nh,
+      };
+    }
+
+    /**
+     * One wheel delta in *target page* CSS px. deltaMode is fixed, not guessed:
+     * 0 = host CSS px, 1 = 16 CSS px per line, 2 = one page (painted rect) per unit.
+     */
+    function frameWheelDelta(delta, mode, paintedSize, viewportSize) {
+      const raw = Number(delta) || 0;
+      if (!raw) return 0;
+      if (!(paintedSize > 0) || !(viewportSize > 0)) return 0;
+      if (Number(mode) === 1) return raw * FRAME_WHEEL_LINE_CSS_PX * (viewportSize / paintedSize);
+      if (Number(mode) === 2) return raw * viewportSize;
+      return raw * (viewportSize / paintedSize);
+    }
+
     const CSS = `
 .utb { height: 100%; min-height: 0; display: flex; flex-direction: column; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
 .utb * { box-sizing: border-box; }
@@ -150,9 +237,13 @@ window.__ModuleLoader__.load({
 .utb-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; font: inherit; text-align: left; color: var(--dsw-alias-label-primary); background: transparent; border: 0; border-radius: 6px; cursor: pointer; }
 .utb-menu-item:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
 .utb-menu-item:disabled { color: var(--dsw-alias-label-secondary); opacity: .6; cursor: not-allowed; }
-.utb-size { display: flex; align-items: center; gap: 8px; padding: 6px 8px; flex: 0 0 auto; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.utb-size { display: flex; align-items: center; gap: 8px; padding: 6px 8px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
 .utb-num { width: 62px; height: 26px; padding: 0 6px; font: inherit; font-size: 12px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; }
-.utb-size-left, .utb-size-right { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.utb-num:disabled { opacity: .55; cursor: not-allowed; }
+.utb-size-left { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; }
+.utb-size-right { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; flex-wrap: wrap; row-gap: 4px; justify-content: flex-end; min-width: 0; }
+.utb-pos { width: 58px; }
+.utb-pos-label { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 .utb-preset { height: 24px; padding: 0 10px; font: inherit; font-size: 12px; line-height: 22px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; cursor: pointer; white-space: nowrap; }
 .utb-preset:hover { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l2); }
 .utb-preset[aria-pressed="true"] { color: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); }
@@ -160,7 +251,7 @@ window.__ModuleLoader__.load({
 .utb-check { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 .utb-dim { font-variant-numeric: tabular-nums; }
 .utb-num.utb-zoom { width: 54px; text-align: right; }
-.utb-stage { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; background: var(--dsw-alias-bg-layer-2); }
+.utb-stage { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; align-items: safe center; justify-content: safe center; background: var(--dsw-alias-bg-layer-2); }
 .utb-box { flex: 0 0 auto; overflow: hidden; background: var(--dsw-alias-bg-base); }
 .utb-box[data-fitted="true"] { box-shadow: 0 0 0 1px var(--dsw-alias-border-l2); }
 .utb-frame { display: block; border: 0; background: #fff; }
@@ -680,6 +771,8 @@ window.__ModuleLoader__.load({
       const [sizing, setSizing] = React.useState(false);
       const [width, setWidth] = React.useState('393');
       const [height, setHeight] = React.useState('852');
+      const [posX, setPosX] = React.useState('0');
+      const [posY, setPosY] = React.useState('0');
       const [fit, setFit] = React.useState(true);
       const [zoom, setZoom] = React.useState('100');
       const [room, setRoom] = React.useState({ w: 0, h: 0 });
@@ -692,7 +785,6 @@ window.__ModuleLoader__.load({
       const [shot, setShot] = React.useState('');
       const [remote, setRemote] = React.useState({ mode: 'idle', activity: '', url: '', running: false });
       const [transportKind, setTransportKind] = React.useState('poll');
-      const lastMove = React.useRef(0);
       const [fps, setFps] = React.useState(0);
       const [frameMs, setFrameMs] = React.useState(0);
       const [activity, setActivity] = React.useState('无进行中的操作');
@@ -714,6 +806,38 @@ window.__ModuleLoader__.load({
       const requestGenerationRef = React.useRef(0);
       const retiredRuntimeRef = React.useRef('');
       const pendingRef = React.useRef({ active: false, editVersion: 0, address: '' });
+      // ---- Shared viewport state (Host `ui.view`) -------------------------------------------
+      // The Host view is authoritative; every input below is only an edit draft. `dirty` protects
+      // a field from being overwritten by the 500ms state poll while the user edits it.
+      const viewRef = React.useRef(null);
+      const viewMetaRef = React.useRef(null);
+      const observedRef = React.useRef(null);
+      // Per-field edit state: `null` = follows the Host, a number = the user's own draft value
+      // (NaN for an illegible draft). Storing the value lets adoption clear the flag as soon as the
+      // Host has caught up, without ever comparing against a stale render closure.
+      const viewDirtyRef = React.useRef({ x: null, y: null, width: null, height: null, scale: null });
+      const viewEditRef = React.useRef({ x: 0, y: 0, width: 0, height: 0, scale: 0 });
+      // Edit version produced by a size-bar wheel notch per field. A rejected wheel patch must not
+      // freeze the input on a value the Host never accepted (a typed draft is still preserved).
+      const viewWheelRef = React.useRef({ x: 0, y: 0, width: 0, height: 0, scale: 0 });
+      // Which size-bar field currently holds the caret (used by blur/commit, not by the poll).
+      const viewFocusRef = React.useRef('');
+      const viewFirstBindRef = React.useRef({ epoch: -1, done: false });
+      const selfViewRevisionRef = React.useRef(0);
+      const viewQueueRef = React.useRef(null);
+      const viewTimerRef = React.useRef(0);
+      const viewInFlightRef = React.useRef(false);
+      const viewQueuedRef = React.useRef(null);
+      // Displayed-frame geometry: the mapping and the post-resize input barrier both read it.
+      const frameGeomRef = React.useRef(null);
+      const pendingGeomRef = React.useRef(null);
+      const dragRef = React.useRef({ active: false, pointerId: -1, x: 0, y: 0 });
+      const hoverAtRef = React.useRef(0);
+      const fitRef = React.useRef(true);
+      const stageWheelRef = React.useRef(null);
+      const sizeWheelRef = React.useRef(null);
+      const frameImgRef = React.useRef(null);
+      const sizeBarRef = React.useRef(null);
 
       // Immutable scope/binding for this generation. A `recent` identity is pinned to the Host
       // runtime id returned by the first /state (or /ensure); `binding` is empty until then.
@@ -860,6 +984,8 @@ window.__ModuleLoader__.load({
         if (!pendingRef.current.active && !dirtyRef.current) {
           setDraft(nextUi ? String(nextUi.address || '') : String(next.url || ''));
         }
+        // The shared view (when the Host has one) is adopted through the same accepted snapshot.
+        acceptView(next);
         return true;
       }
 
@@ -895,6 +1021,572 @@ window.__ModuleLoader__.load({
         editVersionRef.current += 1;
         setDraft(acceptedAddress());
         setError('');
+      }
+
+      /* ----------------------------------------------------------------------------------------
+       * Shared viewport state (Host `ui.view`).
+       *
+       * The Host view is authoritative for width/height/x/y/scale; every size-bar input is only
+       * an edit draft. `fit` is a *local display preference*: it is never published, so opening a
+       * panel can never change the Agent's default screenshot density. Agent (or another panel's)
+       * changes cancel the local fit and are adopted as-is.
+       * -------------------------------------------------------------------------------------- */
+
+      /** CSS viewport of the accepted shared view; local drafts are the old-Host fallback. */
+      function acceptedViewSize() {
+        const view = viewRef.current;
+        if (view && Number.isFinite(Number(view.width)) && Number.isFinite(Number(view.height))) {
+          return { w: Number(view.width), h: Number(view.height) };
+        }
+        return { w: pageSize.w, h: pageSize.h };
+      }
+
+      /** Real scroll position: Host observed metrics first, then the last accepted view. */
+      function observedScroll() {
+        const observed = observedRef.current;
+        const view = viewRef.current;
+        const pick = (axis) => {
+          const fact = observed ? Number(observed[axis]) : NaN;
+          if (Number.isFinite(fact)) return fact;
+          const accepted = view ? Number(view[axis]) : NaN;
+          return Number.isFinite(accepted) ? accepted : 0;
+        };
+        return { x: pick('x'), y: pick('y') };
+      }
+
+      function formatScroll(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return '0';
+        return String(Math.round(number * 100) / 100);
+      }
+
+      /** Local fit ratio (contract §4.3): fit is display-only and clamped to the manual range. */
+      function fitScaleValue() {
+        const size = acceptedViewSize();
+        if (!(room.w > 24) || !(room.h > 24)) return 1;
+        const ratio = Math.min(1, (room.w - 48) / size.w, (room.h - 24) / size.h);
+        return clampNumber(ratio, VIEW_LIMITS.scalePercent[0] / 100, 1);
+      }
+
+      /**
+       * Show the accepted view in every input the user is not editing right now.
+       *
+       * Only an *edited* draft (dirty) is protected — the same rule the address bar uses. Merely
+       * placing the caret in a field must not freeze it: a field that was focused but never
+       * edited would otherwise keep showing a value the shared view has already moved away from.
+       */
+      function syncViewDrafts() {
+        const view = viewRef.current;
+        if (!view) return;
+        const dirty = viewDirtyRef.current;
+        const scroll = observedScroll();
+        if (dirty.width === null) setWidth(String(Number(view.width) || 200));
+        if (dirty.height === null) setHeight(String(Number(view.height) || 200));
+        if (dirty.x === null) setPosX(formatScroll(scroll.x));
+        if (dirty.y === null) setPosY(formatScroll(scroll.y));
+        if (dirty.scale === null && !fitRef.current) {
+          setZoom(String(Math.round(clampNumber(Number(view.scale) * 100, VIEW_LIMITS.scalePercent[0], VIEW_LIMITS.scalePercent[1]))));
+        }
+      }
+
+      /**
+       * Clear the edit flag of a field whose draft already equals the accepted truth (e.g. a wheel
+       * step the Host has now applied). A field the user is still changing keeps its flag.
+       */
+      function clearCaughtUpDrafts(view) {
+        const dirty = viewDirtyRef.current;
+        const accepted = {
+          width: Number(view.width),
+          height: Number(view.height),
+          scale: Number(view.scale) * 100,
+        };
+        for (const field of ['width', 'height', 'scale']) {
+          const draftValue = dirty[field];
+          if (draftValue === null) continue;
+          if (Number.isFinite(draftValue) && Math.abs(draftValue - accepted[field]) <= 0.001) dirty[field] = null;
+        }
+      }
+
+      /**
+       * Adopt one Host view. An Agent change (or another panel's `gui` write) wins over the local
+       * fit preference; a page-driven scroll only moves x/y and keeps fit.
+       */
+      function adoptView(view, viewMeta, observed) {
+        if (!view || typeof view !== 'object') return;
+        const previous = viewRef.current;
+        viewRef.current = view;
+        if (viewMeta !== undefined) viewMetaRef.current = viewMeta || null;
+        if (observed !== undefined) observedRef.current = observed || null;
+        const source = String(view.source || '');
+        // Only a *content change* by someone else cancels the local fit; an unchanged poll must not
+        // (otherwise a user could never keep 适应窗口 checked while state is polled every 500ms).
+        const revisionChanged = !previous || Number(previous.revision) !== Number(view.revision);
+        const external = source === 'agent'
+          || (source === 'gui' && Number(view.revision) !== Number(selfViewRevisionRef.current));
+        if (external && revisionChanged) {
+          fitRef.current = false;
+          setFit(false);
+        }
+        if (previous && (Number(previous.width) !== Number(view.width) || Number(previous.height) !== Number(view.height))) {
+          pendingGeomRef.current = { since: Date.now() };
+        }
+        clearCaughtUpDrafts(view);
+        syncViewDrafts();
+      }
+
+      /** Ingest the view part of one accepted Host snapshot (first binding included). */
+      function acceptView(payload) {
+        const state = payload && payload.state && typeof payload.state === 'object' ? payload.state : payload;
+        const ui = state && state.ui && typeof state.ui === 'object' ? state.ui : null;
+        // A snapshot without the GUI projection says nothing about the shared view: leave the
+        // last accepted view (and the legacy fallback) untouched.
+        if (!ui) return;
+        const view = viewOf(state);
+        if (!view) {
+          // Old Host (no shared view): keep the legacy local width/height path untouched.
+          viewRef.current = null;
+          observedRef.current = null;
+          return;
+        }
+        maybeInitialViewPush(view);
+        const companions = viewCompanionsOf(state);
+        adoptView(view, companions.viewMeta, companions.observed);
+      }
+
+      /**
+       * First binding of one scope generation: a cold/default Host view is replaced ONCE by this
+       * panel's historical local default (393×852 @100%), which keeps the product behaviour of a
+       * newly opened panel. Any other source is authoritative and is adopted without a write.
+       */
+      function maybeInitialViewPush(view) {
+        const first = viewFirstBindRef.current;
+        if (first.epoch !== scopeEpoch || first.done) return;
+        first.done = true;
+        if (String(view.source || '') !== 'default') return;
+        const dirty = viewDirtyRef.current;
+        dirty.width = 393;
+        dirty.height = 852;
+        dirty.scale = 100;
+        setWidth('393');
+        setHeight('852');
+        queueViewPatch({ width: 393, height: 852, scale: 1 });
+      }
+
+      /** Merge one field patch into the 120ms trailing debounce (at most one request in flight). */
+      function queueViewPatch(patch) {
+        if (!patch || typeof patch !== 'object') return;
+        viewQueueRef.current = Object.assign({}, viewQueueRef.current || {}, patch);
+        if (viewTimerRef.current) window.clearTimeout(viewTimerRef.current);
+        viewTimerRef.current = window.setTimeout(() => { flushViewPatch(); }, VIEW_DEBOUNCE_MS);
+      }
+
+      /**
+       * Send the merged patch. A new Host gets the v1 body (`version`/`expectedRevision`, per-field
+       * patch); an old Host keeps the legacy `{width,height}` body and its old semantics.
+       */
+      async function flushViewPatch() {
+        viewTimerRef.current = 0;
+        const patch = viewQueueRef.current;
+        viewQueueRef.current = null;
+        if (!patch) return;
+        if (viewInFlightRef.current) {
+          viewQueuedRef.current = Object.assign({}, viewQueuedRef.current || {}, patch);
+          return;
+        }
+        if (!readyRef.current) return;
+        const accepted = viewRef.current;
+        const scopeNow = scopeRef.current;
+        const signal = abortRef.current ? abortRef.current.signal : undefined;
+        const body = {};
+        if (accepted) {
+          body.version = 1;
+          if (Number.isFinite(Number(accepted.revision))) body.expectedRevision = Number(accepted.revision);
+          Object.assign(body, patch);
+        } else {
+          body.width = Number.isFinite(Number(patch.width)) ? Number(patch.width) : pageSize.w;
+          body.height = Number.isFinite(Number(patch.height)) ? Number(patch.height) : pageSize.h;
+        }
+        const submitted = {};
+        for (const field of Object.keys(patch)) submitted[field] = viewEditRef.current[field];
+        viewInFlightRef.current = true;
+        try {
+          const payload = await callHost('viewport', body, { scope: scopeNow, signal });
+          if (payload && payload.view) {
+            selfViewRevisionRef.current = Number(payload.view.revision);
+            adoptView(payload.view, payload.viewMeta, payload.observed);
+          }
+          if (payload && payload.state) ingestHostState(payload.state);
+          for (const field of Object.keys(submitted)) {
+            if (viewEditRef.current[field] === submitted[field]) viewDirtyRef.current[field] = null;
+          }
+          clearSettledWheelDrafts(submitted);
+          syncViewDrafts();
+        } catch (error) {
+          if (error && error.name === 'AbortError') return;
+          const code = error && error.code ? String(error.code) : '';
+          // A revision conflict keeps a *typed* draft (the user must resubmit it explicitly) but a
+          // rejected wheel notch is not a draft: showing a value the Host never accepted would lie
+          // about the shared view, so that field snaps back to the accepted truth.
+          const details = error && error.payload && error.payload.details ? error.payload.details : null;
+          const conflictView = (details && details.view) || null;
+          if (conflictView) {
+            selfViewRevisionRef.current = Number(conflictView.revision);
+            adoptView(conflictView, undefined, undefined);
+          }
+          clearSettledWheelDrafts(submitted);
+          if (code) logViewReject(code);
+          syncViewDrafts();
+        } finally {
+          viewInFlightRef.current = false;
+          if (viewQueuedRef.current) {
+            viewQueueRef.current = Object.assign({}, viewQueueRef.current || {}, viewQueuedRef.current);
+            viewQueuedRef.current = null;
+            flushViewPatch();
+          }
+        }
+      }
+
+      /**
+       * A wheel notch is a fire-and-forget adjustment, not a draft: once the request settled (in
+       * either direction) the field must follow the Host again. A typed draft keeps its flag until
+       * the user commits or cancels it.
+       */
+      function clearSettledWheelDrafts(submitted) {
+        for (const field of Object.keys(submitted)) {
+          const wheelVersion = viewWheelRef.current[field];
+          if (wheelVersion && viewEditRef.current[field] === wheelVersion) {
+            viewDirtyRef.current[field] = null;
+          }
+        }
+      }
+
+      function logViewReject(code) {
+        console.warn('ui-testing: viewport patch rejected (' + code + ')');
+      }
+
+      function noteViewEdit(field, draftValue) {
+        viewEditRef.current[field] += 1;
+        viewWheelRef.current[field] = 0;
+        viewDirtyRef.current[field] = Number.isFinite(Number(draftValue)) && String(draftValue).trim() !== ''
+          ? Number(draftValue)
+          : NaN;
+      }
+
+      /** Numeric value of one field as the Host last accepted it (null when unknown). */
+      function hostFieldValue(field) {
+        const view = viewRef.current;
+        if (!view) return null;
+        if (field === 'scale') return Number(view.scale) * 100;
+        if (field === 'width') return Number(view.width);
+        if (field === 'height') return Number(view.height);
+        const scroll = observedScroll();
+        if (field === 'x') return scroll.x;
+        if (field === 'y') return scroll.y;
+        return null;
+      }
+
+      /** Legal draft → number, otherwise null (nothing is sent for an illegal intermediate state). */
+      function fieldLegal(field, text) {
+        const raw = String(text === undefined || text === null ? '' : text).trim();
+        if (!raw) return null;
+        const number = Number(raw);
+        if (!Number.isFinite(number)) return null;
+        if (field === 'width' || field === 'height') {
+          const range = VIEW_LIMITS[field];
+          if (!Number.isInteger(number) || number < range[0] || number > range[1]) return null;
+          return number;
+        }
+        if (field === 'x' || field === 'y') {
+          const range = VIEW_LIMITS.scroll;
+          if (number < range[0] || number > range[1]) return null;
+          return Math.round(number * 100) / 100;
+        }
+        if (field === 'scale') {
+          const range = VIEW_LIMITS.scalePercent;
+          if (number < range[0] || number > range[1]) return null;
+          return Math.round(number);
+        }
+        return null;
+      }
+
+      function patchForField(field, numeric) {
+        if (field === 'scale') return { scale: Math.round(numeric) / 100 };
+        const patch = {};
+        patch[field] = numeric;
+        return patch;
+      }
+
+      function pushField(field, numeric) {
+        // An old Host (no shared view) has no scale/x/y field: its ratio stays a local preference,
+        // so only width/height are ever written through the legacy `{width,height}` body.
+        if (!viewRef.current && field !== 'width' && field !== 'height') return;
+        if (field === 'width' || field === 'height') pendingGeomRef.current = { since: Date.now() };
+        queueViewPatch(patchForField(field, numeric));
+      }
+
+      function changeSizeField(field, value) {
+        if (field === 'width') setWidth(value); else setHeight(value);
+        const numeric = fieldLegal(field, value);
+        noteViewEdit(field, numeric === null ? value : numeric);
+        if (numeric !== null) pushField(field, numeric);
+      }
+
+      function changePositionField(field, value) {
+        if (field === 'x') setPosX(value); else setPosY(value);
+        const numeric = fieldLegal(field, value);
+        noteViewEdit(field, numeric === null ? value : numeric);
+      }
+
+      function changeScaleField(value) {
+        fitRef.current = false;
+        setFit(false);
+        setZoom(value);
+        const numeric = fieldLegal('scale', value);
+        noteViewEdit('scale', numeric === null ? value : numeric);
+        if (numeric !== null) pushField('scale', numeric);
+      }
+
+      /** Enter/blur: commit a legal draft; an illegal draft reverts to the accepted Host fact. */
+      function commitViewField(field) {
+        if (field === 'scale' && fitRef.current) {
+          // The input currently displays the *local* fit percentage: there is no manual draft to
+          // commit, so focusing and leaving it must not cancel fit or publish a ratio.
+          viewDirtyRef.current.scale = null;
+          viewFocusRef.current = '';
+          return;
+        }
+        const text = field === 'x' ? posX
+          : field === 'y' ? posY
+            : field === 'width' ? width
+              : field === 'height' ? height
+                : zoom;
+        const numeric = fieldLegal(field, text);
+        if (numeric === null) {
+          cancelViewField(field);
+          return;
+        }
+        const hostValue = hostFieldValue(field);
+        const base = hostValue === null ? numeric : hostValue;
+        const unchanged = Math.abs(numeric - base) < 0.0001;
+        if (field === 'scale') {
+          fitRef.current = false;
+          setFit(false);
+        }
+        viewDirtyRef.current[field] = null;
+        viewFocusRef.current = '';
+        if (!unchanged) pushField(field, numeric);
+        syncViewDrafts();
+      }
+
+      function cancelViewField(field) {
+        viewDirtyRef.current[field] = null;
+        viewFocusRef.current = '';
+        syncViewDrafts();
+      }
+
+      function sizeFieldKey(event, field) {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          commitViewField(field);
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          cancelViewField(field);
+        }
+      }
+
+      /** One size-bar wheel notch: bounded step, clamp, then the same debounced patch path. */
+      function stepViewField(field, direction, event) {
+        const steps = WHEEL_STEPS[field];
+        if (!steps) return;
+        if ((field === 'x' || field === 'y') && !viewRef.current) return;
+        const alt = Boolean(event && event.altKey);
+        const shift = Boolean(event && event.shiftKey) && !alt;
+        const step = alt ? steps.alt : shift ? steps.shift : steps.normal;
+        let base;
+        if (field === 'scale' && fitRef.current) {
+          base = Math.round(fitScaleValue() * 100);
+        } else {
+          const text = field === 'x' ? posX
+            : field === 'y' ? posY
+              : field === 'width' ? width
+                : field === 'height' ? height
+                  : zoom;
+          const legal = fieldLegal(field, text);
+          if (legal !== null) base = legal;
+          else {
+            const hostValue = hostFieldValue(field);
+            base = hostValue === null ? Number(text) || 0 : hostValue;
+          }
+        }
+        const range = field === 'scale' ? VIEW_LIMITS.scalePercent
+          : field === 'width' ? VIEW_LIMITS.width
+            : field === 'height' ? VIEW_LIMITS.height
+              : VIEW_LIMITS.scroll;
+        const next = clampNumber(base + direction * step, range[0], range[1]);
+        const rounded = field === 'scale' ? Math.round(next) : Math.round(next * 100) / 100;
+        if (field === 'x') setPosX(String(rounded));
+        else if (field === 'y') setPosY(String(rounded));
+        else if (field === 'width') setWidth(String(rounded));
+        else if (field === 'height') setHeight(String(rounded));
+        else {
+          fitRef.current = false;
+          setFit(false);
+          setZoom(String(rounded));
+        }
+        noteViewEdit(field, rounded);
+        viewWheelRef.current[field] = viewEditRef.current[field];
+        pushField(field, rounded);
+      }
+
+      function onSizeWheel(event) {
+        const node = event.target && event.target.closest ? event.target.closest('[data-utb-field]') : null;
+        if (!node) return;
+        const field = node.getAttribute('data-utb-field');
+        if (!WHEEL_STEPS[field]) return;
+        if (event.ctrlKey || event.metaKey) {
+          // Ctrl/Meta+wheel never edits a size field. It is still consumed here: letting the
+          // browser default run would step a focused `input[type=number]` natively (a second,
+          // unsynchronised write path). Browser zoom stays available everywhere else in the panel.
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.deltaY) return;
+        markHuman();
+        stepViewField(field, event.deltaY < 0 ? 1 : -1, event);
+      }
+
+      /** Current painted rect of the displayed frame (contract §5.1); null disables input. */
+      function frameGeometry() {
+        const img = frameImgRef.current;
+        if (!img) return null;
+        return paintedRect(img.getBoundingClientRect(), img.naturalWidth, img.naturalHeight);
+      }
+
+      /** Is the displayed frame provably the accepted viewport? */
+      function geometryMatches(size) {
+        const frame = frameGeomRef.current;
+        if (!frame || !(frame.naturalW > 0) || !(frame.naturalH > 0)) return false;
+        const pageWidth = Number(frame.pageWidth);
+        const pageHeight = Number(frame.pageHeight);
+        if (Number.isFinite(pageWidth) && pageWidth > 0 && Number.isFinite(pageHeight) && pageHeight > 0) {
+          return Math.abs(pageWidth - size.w) <= 1 && Math.abs(pageHeight - size.h) <= 1;
+        }
+        return Math.abs(frame.naturalW / frame.naturalH - size.w / size.h) <= 0.02;
+      }
+
+      /**
+       * Pause pointer/wheel input after a width/height change while the displayed frame cannot be
+       * proven to match the accepted viewport. Best-effort and bounded (≤250ms); the frame protocol
+       * is not extended, so this is a barrier, not a guarantee.
+       */
+      function inputGeomReady() {
+        const pending = pendingGeomRef.current;
+        if (!pending) return true;
+        if (!geometryMatches(acceptedViewSize())) {
+          if (Date.now() - pending.since >= GEOMETRY_WAIT_MS) {
+            pendingGeomRef.current = null;
+            return true;
+          }
+          return false;
+        }
+        pendingGeomRef.current = null;
+        return true;
+      }
+
+      /** Event → target page CSS point in the accepted viewport (half-open painted rect). */
+      function mapEventPoint(event, geom) {
+        const size = acceptedViewSize();
+        const u = (event.clientX - geom.left) / geom.width;
+        const v = (event.clientY - geom.top) / geom.height;
+        return {
+          inside: u >= 0 && u < 1 && v >= 0 && v < 1,
+          x: clampNumber(u * size.w, 0, Math.max(0, size.w - POINTER_EPSILON)),
+          y: clampNumber(v * size.h, 0, Math.max(0, size.h - POINTER_EPSILON)),
+        };
+      }
+
+      function frameInputReady() {
+        return readyRef.current && !writesPausedRef.current && inputGeomReady();
+      }
+
+      function onFramePointerDown(event) {
+        if (!frameInputReady()) return;
+        if (event.button !== 0) return;
+        const geom = frameGeometry();
+        if (!geom) return;
+        const point = mapEventPoint(event, geom);
+        if (!point.inside) return; // letterbox: zero dispatch
+        event.preventDefault();
+        event.currentTarget.focus();
+        dragRef.current = { active: true, pointerId: event.pointerId, x: point.x, y: point.y };
+        try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+        sendEvents([{ kind: 'mouse', type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 }]);
+      }
+
+      function onFramePointerMove(event) {
+        if (!readyRef.current || writesPausedRef.current) return;
+        const drag = dragRef.current;
+        const dragging = drag.active && drag.pointerId === event.pointerId;
+        if (!dragging && !inputGeomReady()) return;
+        const geom = frameGeometry();
+        if (!geom) return;
+        const point = mapEventPoint(event, geom);
+        if (!dragging && !point.inside) return;
+        const now = Date.now();
+        if (now - hoverAtRef.current < 60) return;
+        hoverAtRef.current = now;
+        if (dragging) dragRef.current = { active: true, pointerId: event.pointerId, x: point.x, y: point.y };
+        sendEvents([{ kind: 'mouse', type: 'mouseMoved', x: point.x, y: point.y, buttons: dragging ? 1 : 0 }]);
+      }
+
+      /** The release is dispatched even when the pointer left the image (no stuck button). */
+      function onFramePointerUp(event) {
+        const drag = dragRef.current;
+        if (!drag.active || drag.pointerId !== event.pointerId) return;
+        dragRef.current = { active: false, pointerId: -1, x: drag.x, y: drag.y };
+        const geom = frameGeometry();
+        const point = geom ? mapEventPoint(event, geom) : null;
+        if (point) sendEvents([{ kind: 'mouse', type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 }]);
+        try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
+      }
+
+      /** Best-effort release for pointercancel / lost capture / blur while dragging. */
+      function releaseFrameDrag() {
+        const drag = dragRef.current;
+        if (!drag.active) return;
+        dragRef.current = { active: false, pointerId: -1, x: drag.x, y: drag.y };
+        sendEvents([{ kind: 'mouse', type: 'mouseReleased', x: drag.x, y: drag.y, button: 'left', buttons: 0, clickCount: 1 }]);
+      }
+
+      function onFrameWheel(event) {
+        if (!frameInputReady()) return;
+        const geom = frameGeometry();
+        if (!geom) return;
+        const point = mapEventPoint(event, geom);
+        if (!point.inside) return; // only inside the painted frame prevents host scrolling
+        event.preventDefault();
+        event.stopPropagation();
+        markHuman();
+        const size = acceptedViewSize();
+        sendEvents([{
+          kind: 'wheel',
+          x: point.x,
+          y: point.y,
+          deltaX: frameWheelDelta(event.deltaX, event.deltaMode, geom.width, size.w),
+          deltaY: frameWheelDelta(event.deltaY, event.deltaMode, geom.height, size.h),
+        }]);
+      }
+
+      function onStageWheel(event) {
+        const target = event.target;
+        if (!target || !target.closest || !target.closest('.utb-frame')) return;
+        if (event.ctrlKey || event.metaKey) return; // host/browser zoom stays with the shell
+        onFrameWheel(event);
       }
 
       React.useEffect(() => {
@@ -941,6 +1633,23 @@ window.__ModuleLoader__.load({
           try { URL.revokeObjectURL(objectUrl); } catch { /* ignore */ }
         }
         frameMetaRef.current.clear();
+        // A new scope generation must never inherit the previous runtime's shared view, drafts,
+        // frame geometry or in-flight size request.
+        if (viewTimerRef.current) window.clearTimeout(viewTimerRef.current);
+        viewTimerRef.current = 0;
+        viewQueueRef.current = null;
+        viewQueuedRef.current = null;
+        viewInFlightRef.current = false;
+        viewRef.current = null;
+        viewMetaRef.current = null;
+        observedRef.current = null;
+        viewDirtyRef.current = { x: null, y: null, width: null, height: null, scale: null };
+        viewFocusRef.current = '';
+        viewFirstBindRef.current = { epoch: scopeEpoch, done: false };
+        selfViewRevisionRef.current = 0;
+        frameGeomRef.current = null;
+        pendingGeomRef.current = null;
+        dragRef.current = { active: false, pointerId: -1, x: 0, y: 0 };
         displayTimes.current = [];
         displayLatencies.current = [];
         displayedRef.current = 0;
@@ -1143,8 +1852,18 @@ window.__ModuleLoader__.load({
       }, [scopeEpoch, ready, visible]);
 
       function onFrameLoad(event) {
-        const source = event.currentTarget.currentSrc || event.currentTarget.src;
+        const image = event.currentTarget;
+        const source = image.currentSrc || image.src;
         const meta = frameMetaRef.current.get(source);
+        // The mapping and the post-resize barrier both read the *displayed* frame: decoded
+        // natural* plus the capture-time CSS page size (never the screencast metadata width).
+        frameGeomRef.current = {
+          naturalW: Number(image.naturalWidth) || 0,
+          naturalH: Number(image.naturalHeight) || 0,
+          pageWidth: meta ? Number(meta.pageWidth) : NaN,
+          pageHeight: meta ? Number(meta.pageHeight) : NaN,
+          at: Date.now(),
+        };
         if (!meta) return;
         frameMetaRef.current.delete(source);
         window.requestAnimationFrame(() => {
@@ -1158,24 +1877,25 @@ window.__ModuleLoader__.load({
           displayedRef.current += 1;
         });
       }
-      React.useEffect(() => {
-        if (!sizing || !visible || !ready || identity.paused) return undefined;
-        const scopeNow = scopeRef.current;
-        const signal = abortRef.current ? abortRef.current.signal : undefined;
-        const handle = window.setTimeout(() => {
-          callHost('viewport', { width: pageSize.w, height: pageSize.h }, { scope: scopeNow, signal }).catch(() => {});
-        }, 120);
-        return () => window.clearTimeout(handle);
-      }, [sizing, pageSize.w, pageSize.h, scopeEpoch, ready, visible, identity.paused]);
 
-      function pagePoint(event) {
-        const rect = event.currentTarget.getBoundingClientRect();
-        if (!rect.width || !rect.height) return { x: 0, y: 0 };
-        return {
-          x: Math.round(((event.clientX - rect.left) / rect.width) * pageSize.w),
-          y: Math.round(((event.clientY - rect.top) / rect.height) * pageSize.h),
-        };
-      }
+      // Native, non-passive wheel listeners: React's root `wheel` listener is passive, so a
+      // `preventDefault()` there cannot stop the host page/number input from scrolling or
+      // stepping. Both handlers are re-read from refs so a listener installed once never goes stale.
+      React.useEffect(() => {
+        const node = stage.current;
+        if (!node || typeof node.addEventListener !== 'function') return undefined;
+        const listener = (event) => { if (stageWheelRef.current) stageWheelRef.current(event); };
+        node.addEventListener('wheel', listener, { passive: false });
+        return () => node.removeEventListener('wheel', listener);
+      }, []);
+      React.useEffect(() => {
+        const node = sizeBarRef.current;
+        if (!sizing || !node || typeof node.addEventListener !== 'function') return undefined;
+        const listener = (event) => { if (sizeWheelRef.current) sizeWheelRef.current(event); };
+        node.addEventListener('wheel', listener, { passive: false });
+        return () => node.removeEventListener('wheel', listener);
+      }, [sizing]);
+
       function sendEvents(events) {
         if (!readyRef.current || writesPausedRef.current) return;
         const signal = abortRef.current ? abortRef.current.signal : undefined;
@@ -1264,7 +1984,14 @@ window.__ModuleLoader__.load({
             })
           : callHost('ensure', {}, { scope: scopeNow, signal });
         ensure
-          .then(() => callHost('viewport', { width: pageSize.w, height: pageSize.h }, { scope: scopeNow, signal }))
+          .then((payload) => {
+            // A Host with a shared view is authoritative: navigation must not re-apply this
+            // panel's local 393×852. Only an old Host (no ui.view) keeps the legacy write.
+            const sharedView = viewOf(payload && payload.state ? payload.state : payload)
+              || viewOf(payload);
+            if (sharedView) return null;
+            return callHost('viewport', { width: pageSize.w, height: pageSize.h }, { scope: scopeNow, signal });
+          })
           .then(() => callHost('navigate', { url: parsed.href }, { scope: scopeNow, signal }))
           .then((payload) => {
             // A newer action superseded this submit: its response must not touch loading/error.
@@ -1336,25 +2063,42 @@ window.__ModuleLoader__.load({
           });
       }
 
-      const w = Math.max(200, Math.min(4096, Number(width) || 200));
-      const ht = Math.max(200, Math.min(4096, Number(height) || 200));
-      const fitScale = sizing && room.w > 24 && room.h > 24 ? Math.min(1, (room.w - 48) / w, (room.h - 24) / ht) : 1;
-      const manualPercent = Math.max(10, Math.min(200, Number(zoom) || 100));
-      const scale = sizing ? (fit ? fitScale : manualPercent / 100) : 1;
-      /** 手动改比例时关闭自动适配；重新勾选“适应窗口”恢复自动。 */
+      // The Host view (when shared) is the display truth; local drafts only feed a legacy Host and
+      // the in-progress edit. `fit` stays a local preference: the box always renders W×scale,
+      // including while the size bar is collapsed (contract §4.3).
+      const viewSync = Boolean(viewRef.current);
+      const displaySize = acceptedViewSize();
+      const w = displaySize.w;
+      const ht = displaySize.h;
+      const fitScale = fitScaleValue();
+      const manualPercent = clampNumber(Number(zoom) || 100, VIEW_LIMITS.scalePercent[0], VIEW_LIMITS.scalePercent[1]);
+      const scale = fit ? fitScale : manualPercent / 100;
+      /** 手动改比例时关闭自动适配并同步共享比例；重新勾选“适应窗口”只恢复本地自动适配。 */
       function changeFit(checked) {
+        fitRef.current = checked;
         setFit(checked);
-        if (!checked) setZoom(String(Math.round((sizing ? fitScale : 1) * 100)));
+        if (checked) {
+          viewDirtyRef.current.scale = null;
+          syncViewDrafts();
+          return;
+        }
+        // Unchecking fit is a display-preference change only: the input falls back to the
+        // shared Host ratio (or the local fit ratio on an old Host) without publishing.
+        const view = viewRef.current;
+        const percent = view
+          ? Math.round(clampNumber(Number(view.scale) * 100, VIEW_LIMITS.scalePercent[0], VIEW_LIMITS.scalePercent[1]))
+          : Math.round(fitScale * 100);
+        viewDirtyRef.current.scale = null;
+        setZoom(String(percent));
       }
       function changeZoom(value) {
-        setFit(false);
-        setZoom(value);
+        changeScaleField(value);
       }
       function commitZoom() {
-        const numeric = Number(zoom);
-        const clamped = Number.isFinite(numeric) ? Math.max(10, Math.min(200, Math.round(numeric))) : 100;
-        setZoom(String(clamped));
+        commitViewField('scale');
       }
+      stageWheelRef.current = onStageWheel;
+      sizeWheelRef.current = onSizeWheel;
       const button = (label, children, onClick, disabled, extra) =>
         h('button', Object.assign({ type: 'button', className: 'utb-btn', title: label, 'aria-label': label, onClick, disabled }, extra || {}), children);
 
@@ -1395,7 +2139,7 @@ window.__ModuleLoader__.load({
               openUrl
                 ? h('a', { className: 'utb-menu-item', role: 'menuitem', href: openUrl, target: '_blank', rel: 'noopener noreferrer', style: { textDecoration: 'none' }, onClick: () => setMenu(false) }, '在默认浏览器中打开')
                 : h('button', { type: 'button', className: 'utb-menu-item', role: 'menuitem', disabled: true }, '在默认浏览器中打开')))),
-        sizing && h('div', { className: 'utb-size' },
+        sizing && h('div', { className: 'utb-size', ref: sizeBarRef },
           h('div', { className: 'utb-size-left', role: 'group', 'aria-label': '分辨率预设' },
             PRESETS.map((preset) => h('button', {
               key: preset.id,
@@ -1403,64 +2147,120 @@ window.__ModuleLoader__.load({
               className: 'utb-preset',
               title: `${preset.label} ${preset.w} × ${preset.h}`,
               'aria-pressed': w === preset.w && ht === preset.h,
-              onClick: () => { setWidth(String(preset.w)); setHeight(String(preset.h)); },
+              onClick: () => {
+                changeSizeField('width', String(preset.w));
+                changeSizeField('height', String(preset.h));
+              },
             }, preset.label))),
           h('span', { className: 'utb-gap' }),
           h('div', { className: 'utb-size-right' },
-            h('input', { className: 'utb-num', type: 'number', min: 200, max: 4096, value: width, 'aria-label': '视口宽度（像素）', onChange: (e) => setWidth(e.target.value), onBlur: () => setWidth(String(w)) }),
+            h('span', { className: 'utb-pos-label', 'aria-hidden': true }, 'X'),
+            h('input', {
+              className: 'utb-num utb-pos',
+              type: 'number',
+              min: VIEW_LIMITS.scroll[0],
+              max: VIEW_LIMITS.scroll[1],
+              step: 10,
+              value: posX,
+              'data-utb-field': 'x',
+              'aria-label': '视口 X 坐标（像素）',
+              title: viewSync
+                ? '页面顶层滚动位置 X（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
+                : '旧 Host 不支持视口坐标同步',
+              disabled: !viewSync,
+              onChange: (e) => changePositionField('x', e.target.value),
+              onFocus: () => { viewFocusRef.current = 'x'; },
+              onBlur: () => { viewFocusRef.current = ''; commitViewField('x'); },
+              onKeyDown: (e) => sizeFieldKey(e, 'x'),
+            }),
+            h('span', { className: 'utb-pos-label', 'aria-hidden': true }, 'Y'),
+            h('input', {
+              className: 'utb-num utb-pos',
+              type: 'number',
+              min: VIEW_LIMITS.scroll[0],
+              max: VIEW_LIMITS.scroll[1],
+              step: 10,
+              value: posY,
+              'data-utb-field': 'y',
+              'aria-label': '视口 Y 坐标（像素）',
+              title: viewSync
+                ? '页面顶层滚动位置 Y（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
+                : '旧 Host 不支持视口坐标同步',
+              disabled: !viewSync,
+              onChange: (e) => changePositionField('y', e.target.value),
+              onFocus: () => { viewFocusRef.current = 'y'; },
+              onBlur: () => { viewFocusRef.current = ''; commitViewField('y'); },
+              onKeyDown: (e) => sizeFieldKey(e, 'y'),
+            }),
+            h('input', {
+              className: 'utb-num',
+              type: 'number',
+              min: VIEW_LIMITS.width[0],
+              max: VIEW_LIMITS.width[1],
+              value: width,
+              'data-utb-field': 'width',
+              'aria-label': '视口宽度（像素）',
+              title: '视口宽度（200–4096 px）；滚轮调整（Shift ×10，Alt ×1）',
+              onChange: (e) => changeSizeField('width', e.target.value),
+              onFocus: () => { viewFocusRef.current = 'width'; },
+              onBlur: () => { viewFocusRef.current = ''; commitViewField('width'); },
+              onKeyDown: (e) => sizeFieldKey(e, 'width'),
+            }),
             h('span', { 'aria-hidden': true }, '×'),
-            h('input', { className: 'utb-num', type: 'number', min: 200, max: 4096, value: height, 'aria-label': '视口高度（像素）', onChange: (e) => setHeight(e.target.value), onBlur: () => setHeight(String(ht)) }),
+            h('input', {
+              className: 'utb-num',
+              type: 'number',
+              min: VIEW_LIMITS.height[0],
+              max: VIEW_LIMITS.height[1],
+              value: height,
+              'data-utb-field': 'height',
+              'aria-label': '视口高度（像素）',
+              title: '视口高度（200–4096 px）；滚轮调整（Shift ×10，Alt ×1）',
+              onChange: (e) => changeSizeField('height', e.target.value),
+              onFocus: () => { viewFocusRef.current = 'height'; },
+              onBlur: () => { viewFocusRef.current = ''; commitViewField('height'); },
+              onKeyDown: (e) => sizeFieldKey(e, 'height'),
+            }),
             h('span', null, 'px'),
-            h('label', { className: 'utb-check' }, h('input', { type: 'checkbox', checked: fit, onChange: (e) => changeFit(e.target.checked) }), '适应窗口'),
+            h('label', { className: 'utb-check', title: '适应窗口仅本地显示，不改变共享比例/Agent 截图比例' },
+              h('input', { type: 'checkbox', checked: fit, onChange: (e) => changeFit(e.target.checked) }),
+              '适应窗口'),
             h('input', {
               className: 'utb-num utb-zoom',
               type: 'number',
-              min: 10,
-              max: 200,
+              min: VIEW_LIMITS.scalePercent[0],
+              max: VIEW_LIMITS.scalePercent[1],
               step: 5,
               value: fit ? String(Math.round(fitScale * 100)) : zoom,
+              'data-utb-field': 'scale',
               'aria-label': '预览缩放比例（百分比）',
-              title: '预览缩放比例；手动修改会关闭适应窗口（10–200%）',
+              title: fit
+                ? '适应窗口仅本地显示，不改变共享比例/Agent 截图比例'
+                : '预览缩放比例（10–200%）；手动修改会关闭适应窗口，并作为共享比例（Agent 截图默认密度）',
               onChange: (e) => changeZoom(e.target.value),
-              onBlur: commitZoom,
+              onFocus: () => { viewFocusRef.current = 'scale'; },
+              onBlur: () => { viewFocusRef.current = ''; commitZoom(); },
+              onKeyDown: (e) => sizeFieldKey(e, 'scale'),
             }),
             h('span', { className: 'utb-dim', 'aria-hidden': true }, '%'))),
         h('div', { className: 'utb-stage', ref: stage },
           activeUrl
             ? (shot
-              ? h('div', { className: 'utb-box', 'data-fitted': sizing && fit && scale < 1 ? 'true' : 'false', style: sizing ? { width: w * scale, height: ht * scale } : { width: '100%', height: '100%' } },
+              ? h('div', { className: 'utb-box', 'data-fitted': fit && scale < 1 ? 'true' : 'false', style: { width: w * scale, height: ht * scale } },
                 h('img', {
                   className: 'utb-frame',
+                  ref: frameImgRef,
                   src: shot,
                   alt: '内嵌浏览器画面',
                   onLoad: onFrameLoad,
                   tabIndex: 0,
                   draggable: false,
-                  style: { display: 'block', width: '100%', height: '100%', objectFit: 'contain', userSelect: 'none', touchAction: 'none' },
-                  onPointerDown: (event) => {
-                    event.preventDefault();
-                    event.currentTarget.focus();
-                    const point = pagePoint(event);
-                    sendEvents([{ kind: 'mouse', type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 }]);
-                    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ignore */ }
-                  },
-                  onPointerUp: (event) => {
-                    const point = pagePoint(event);
-                    sendEvents([{ kind: 'mouse', type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 }]);
-                    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
-                  },
-                  onPointerMove: (event) => {
-                    const now = Date.now();
-                    if (now - lastMove.current < 60) return;
-                    lastMove.current = now;
-                    const point = pagePoint(event);
-                    sendEvents([{ kind: 'mouse', type: 'mouseMoved', x: point.x, y: point.y, buttons: event.buttons ? 1 : 0 }]);
-                  },
-                  onWheel: (event) => {
-                    event.preventDefault();
-                    const point = pagePoint(event);
-                    sendEvents([{ kind: 'wheel', x: point.x, y: point.y, deltaX: event.deltaX, deltaY: event.deltaY }]);
-                  },
+                  style: { display: 'block', width: '100%', height: '100%', objectFit: 'contain', objectPosition: '50% 50%', userSelect: 'none', touchAction: 'none' },
+                  onPointerDown: onFramePointerDown,
+                  onPointerUp: onFramePointerUp,
+                  onPointerMove: onFramePointerMove,
+                  onPointerCancel: releaseFrameDrag,
+                  onLostPointerCapture: releaseFrameDrag,
                   onKeyDown: (event) => {
                     if (event.metaKey || event.ctrlKey || event.altKey) return;
                     event.preventDefault();

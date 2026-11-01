@@ -21,12 +21,12 @@ T3 是**静态视觉调试**：对有限张静态 PNG 做处理、确定性识�
 所有工具源图只能是下面的 `Source`。禁止任意文件路径、URL、附件 ID、调用方 base64 和 Buffer 输入；不从附件服务反读图像。已有 `browser_screenshot` 不隐式新增 productId；要使用同一画面，先调用 `browser_vision_image` 取得 product，再执行 T1/T2 动作并取得第二 product。
 
 ```text
-Source = {kind:"live", scale?:number=1, region?:CssRect}
+Source = {kind:"live", scale?:number, region?:CssRect}   # 省略 scale = 本次调用冻结的共享 view.scale（cold 1）
        | {kind:"product", productId:string}
        | {kind:"baseline", name:Name, revision?:integer}
 ```
 
-`live` 沿用 P0 单次原始 PNG 截图路径、连续 scale∈[1,4]、文档 CSS region 和固定 runtime DSF=1；未给 region 时为现场 layout viewport。不使用预览 JPEG，不改变 viewport、滚动或 DPR，不重复截图择优。源图作为内部 P0 采集可以直接进入内存 store，不因截图本身创建文件；其采集证据标记 `file:null`，不是变更已有 `browser_screenshot` 的暂存行为。
+`live` 沿用 P0 单次原始 PNG 截图路径、显式 `scale∈[0.1,4]`（省略时跟随共享 `view.scale`，见 [viewport-control.md](viewport-control.md) §6.1）、文档 CSS region 和固定 runtime DSF=1；未给 region 时为现场 layout viewport。不使用预览 JPEG，不改变 viewport、滚动或 DPR，不重复截图择优。源图作为内部 P0 采集可以直接进入内存 store，不因截图本身创建文件；其采集证据标记 `file:null`，不是变更已有 `browser_screenshot` 的暂存行为。
 
 product store 按可信工作区 scope 隔离，属于插件实例；与当前 page 生命周期分离。每 scope 最多 **16 张、合计 128 MiB 编码 PNG、单张 32 MiB 编码 PNG、单图 16,000,000 像素**；RGBA 临时工作集另限 256 MiB（估算所有同时存活缓冲，包括比较双图、输出、标签图，分配前检查），单操作模板候选像素比较次数上限 50,000,000。不得通过压缩比绕过像素与解码预算，解压前限制 inflate 输出长度为预期扫描行字节数，避免压缩炸弹。同步循环每最多 65,536 像素/比较迭代检查取消，并让出事件循环；每工具调用的累计CPU算法墙钟预算5,000ms（从首次解码开始，跨check的所有case共享；不含队列、启动、CDP或磁盘等待），超限抛VISION_TIMEOUT，不交付半成品；已完成case通过错误details保留。现有30000ms工具wrapper保留，check不设置无界批次或绕开wrapper。
 
@@ -54,7 +54,7 @@ ID 为 `v1_<32位小写hex随机数>`，由 cryptographic randomBytes 生成，�
     "PixelRect": {"type":"object","additionalProperties":false,"required":["x","y","width","height"],"properties":{"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}}},
     "Point": {"type":"object","additionalProperties":false,"required":["x","y"],"properties":{"x":{"type":"number","minimum":0},"y":{"type":"number","minimum":0}}},
     "Source": {"oneOf":[
-      {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"live"},"scale":{"type":"number","minimum":1,"maximum":4},"region":{"$ref":"#/$defs/Rect"}}},
+      {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"live"},"scale":{"type":"number","minimum":0.1,"maximum":4},"region":{"$ref":"#/$defs/Rect"}}},
       {"type":"object","additionalProperties":false,"required":["kind","productId"],"properties":{"kind":{"const":"product"},"productId":{"type":"string","pattern":"^v1_[0-9a-f]{32}$"}}},
       {"type":"object","additionalProperties":false,"required":["kind","name"],"properties":{"kind":{"const":"baseline"},"name":{"type":"string","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"},"revision":{"type":"integer","minimum":1}}}
     ]},

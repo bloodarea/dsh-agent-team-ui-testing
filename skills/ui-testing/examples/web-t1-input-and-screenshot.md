@@ -1,6 +1,6 @@
 # 示例 · 点击、文本输入、状态观察与截图
 
-> 展示本插件 29 个工具（T1 9 + T2 7 + T3 6 + network P0 7，本文只用 T1）中的调用形状；业务返回示例省略统一 action 元数据；输出为示意，**未在本仓库运行**，不构成验证证据。输入坐标为当前视口CSS px；截图region为文档CSS px，两者按采集前scroll转换。
+> 展示本插件 30 个工具（T1 10 + T2 7 + T3 6 + network P0 7，本文只用 T1）中的调用形状；业务返回示例省略统一 action 元数据；输出为示意，**未在本仓库运行**，不构成验证证据。输入坐标为当前视口CSS px；截图region为文档CSS px，两者按采集前scroll转换。
 
 ## 1. 点击一个按钮
 
@@ -100,7 +100,7 @@ browser_screenshot {
 }
 ```
 
-scale允许连续1–4；输出尺寸由round(css×scale)计算，最多16M像素。返回capture记录PNG实际尺寸/CRC/sizeCheck、纯JSON mapping、anomaly、file的pathKind/persistence/root/ephemeral及path/hash、delivery及warnings；不要根据示例编造这些字段值。persist:boolean默认false；本例提供out即持久（即使persist:false），也可persist:true使用持久默认名output/capture/<actionId>.png。无out/persist:true/非空env时默认插件实例暂存，绝对path、dispose清理，不写工作区；file含pathKind/persistence/root/ephemeral，持久路径相对env或cwd根，observed只persistence/relativePath|null。已有同名报OUTPUT_EXISTS，换名重试；legacy无cwd默认暂存，持久无根报root_unknown。DSF固定1；DPR未知null；headlessSource来自product/userAgent。原始base64/落盘同一字节，附件compare='attachment-metadata'缺字段不能推断相同；完整路径/legacy/env约束见 [安全边界](../references/core/safety.md)。均匀图只是警告，canvas内部位图不增加源细节，C13前后不变不排除瞬时布局影响。
+scale允许显式连续0.1–4（省略时跟随共享view.scale，cold 1）；输出尺寸由round(css×scale)计算，最多16M像素。返回capture记录PNG实际尺寸/CRC/sizeCheck、纯JSON mapping、anomaly、file的pathKind/persistence/root/ephemeral及path/hash、delivery及warnings；不要根据示例编造这些字段值。persist:boolean默认false；本例提供out即持久（即使persist:false），也可persist:true使用持久默认名output/capture/<actionId>.png。无out/persist:true/非空env时默认插件实例暂存，绝对path、dispose清理，不写工作区；file含pathKind/persistence/root/ephemeral，持久路径相对env或cwd根，observed只persistence/relativePath|null。已有同名报OUTPUT_EXISTS，换名重试；legacy无cwd默认暂存，持久无根报root_unknown。DSF固定1；DPR未知null；headlessSource来自product/userAgent。原始base64/落盘同一字节，附件compare='attachment-metadata'缺字段不能推断相同；完整路径/legacy/env约束见 [安全边界](../references/core/safety.md)。均匀图只是警告，canvas内部位图不增加源细节，C13前后不变不排除瞬时布局影响。
 
 ## 5. 失败与停止
 

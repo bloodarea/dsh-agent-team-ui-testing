@@ -339,8 +339,16 @@ export function validatePoint(value, label = 'point') {
   return { x, y };
 }
 
+/**
+ * `Source` 校验（契约 §1.1）。
+ *
+ * `scale` **保留“省略”**：省略时规范化结果里没有 `scale` 字段，由 Host 在本次调用的队列内
+ * 解析一次当前 `view.scale`（cold 时 1）。这里绝不能填 1，否则 Host 无法区分“调用方显式要 1”
+ * 与“调用方没说话”，默认截图比例就永远跟着固定值而不是共享视口（docs/viewport-control.md §6.1，
+ * Lead 冻结 2026-11-01）。显式 scale 的合法范围同步扩到下界 0.1。
+ */
 export function validateSource(value, label = 'source') {
-  if (value === undefined) return { kind: 'live', scale: 1 };
+  if (value === undefined) return { kind: 'live' };
   const source = assertObject(value, label);
   const kind = source.kind;
   if (kind !== 'live' && kind !== 'product' && kind !== 'baseline') {
@@ -348,8 +356,9 @@ export function validateSource(value, label = 'source') {
   }
   if (kind === 'live') {
     assertAllowedKeys(source, ['kind', 'scale', 'region'], label);
-    const scale = readNumber(source, 'scale', label, { min: 1, max: 4, fallback: 1 });
-    const normalized = { kind: 'live', scale };
+    const scale = readNumber(source, 'scale', label, { min: 0.1, max: 4 });
+    const normalized = { kind: 'live' };
+    if (scale !== undefined) normalized.scale = scale;
     if (hasOwn(source, 'region')) normalized.region = validateCssRect(source.region, `${label}.region`);
     return normalized;
   }

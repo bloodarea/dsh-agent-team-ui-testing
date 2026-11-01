@@ -5,7 +5,7 @@
 ```text
 package.json          DSH bundle 清单：dsh.bundle.patch + dsh.client（platform: web）；files 含 index.js/client.js/frame-*/browser-safety.js/capture-p0.js/**network-p0.js**/vision-t3.js/vision-baseline.js/cordis.patch.yml/locale/icon/skills
 cordis.patch.yml      插入一行 plugin：id = ui-testing-browser
-index.js              Host 半边：BrowserHost（单 Chromium/profile、多 page）、按 DSH 工作区的 RuntimeRegistry、租约/串行队列、scoped HTTP 路由、独立 HTTP 客户端、29 工具（9 T1 + 7 T2 + 6 T3 + 7 network）与内置 Skill；并承担网络全事件采集（Runtime 级 Network/Fetch 订阅、按需 body、子目标 setAutoAttach）与 browser_capabilities.network 报告
+index.js              Host 半边：BrowserHost（单 Chromium/profile、多 page）、按 DSH 工作区的 RuntimeRegistry、租约/串行队列、scoped HTTP 路由、独立 HTTP 客户端、30 工具（10 T1 + 7 T2 + 6 T3 + 7 network）、每 Runtime 的权威共享 view（宽高/x/y/比例/来源/版本 + 实时观测）与内置 Skill；并承担网络全事件采集（Runtime 级 Network/Fetch 订阅、按需 body、子目标 setAutoAttach）与 browser_capabilities.network 报告
 browser-safety.js     BrowserError/CDP、错误分类（含 REF_STALE/TARGET_NOT_UNIQUE/NOT_INTERACTABLE/WAIT_TIMEOUT、T3 的 VISION_* 码与网络 P0 的 NET_* 码）、取消/定时器清理、URL 脱敏与目标/DNS 校验
 network-p0.js         P0 网络纯 JS 核心：事件/会话存储、标准化与有界配额、分析与统计、业务链路窗口、拦截/限速/重放规则、JSONL/HAR 导入导出与证据索引、订阅游标（零 npm 依赖，不直接持有 CDP）
 capture-p0.js         P0 采集基础设施：PNG 结构/CRC/解码、全量均匀/透明统计、尺寸校验、纯 JSON 映射投影、安全路径与原子 no-clobber 写入
@@ -13,7 +13,7 @@ vision-t3.js          T3 纯算法：PNG RGBA 编解码、crop/resize/预处理/
 vision-baseline.js    T3 受管基线：scopeHash 根、不可变 revision、head 规范 JSON、CAS 提交/墓碑、只读 list/get、故障注入点
 frame-source.js       Host 帧缓存：最新帧/元数据/捕获统计（与传输、UI 解耦）
 frame-push.js         Host 同源 WebSocket 推帧：单 upgrade dispatcher、按 scope 绑定 pusher、握手、合并推送、背压丢帧、鉴权、清理
-client.js             全部 UI（React，无 JSX，用 h()）；内含 UI-free 的 createFrameTransport
+client.js             全部 UI（React，无 JSX，用 h()）；内含 UI-free 的 createFrameTransport；共享 view 的采纳/草稿/滚轮/fit/painted-rect 坐标映射/帧几何屏障
 locale/{en,zh}.json   插件显示名与描述
 icon.svg              插件图标
 skills/ui-testing/    内置 Skill（SKILL.md + references/examples/templates/knowledge/manifests）
@@ -29,7 +29,7 @@ docs/                 项目记忆（本目录）；按工作区隔离的契约�
 - **Snapshot/Ref 引擎**：`Accessibility.getFullAXTree` 建语义树并按规则压缩/截断；给可解析 Element 分配单调 `eN`，ref 表按 Runtime 隔离、2000 项 LRU、跨快照按 `(documentEpoch, backendNodeId)` 复用；跨文档提交/上下文丢失/close 清空。
 - **目标解析与 actionability**：`ref`/唯一 `selector` → `DOM.resolveNode` + 身份复验 → 单次 `Runtime.callFunctionOn` 读 NodeState（可见/启用/可编辑/checked/expanded/focused/bbox/hit-test，含 open shadow 的 composed 命中）→ 自动滚动 + 稳定性确认 → CDP 真实输入派发。
 - **证据**：统一 `evidence.version=1` 结构（provenance/targets/before/after/dispatch/networkDelta/escalation/incomplete），成功放结果、失败放 `BrowserError.details`；输入文本与可编辑 value 永不回显。
-- **能力报告**：`browser_capabilities` 报 T2/T3/network 各段工具项（注册表共 29 工具）、`web.t2.*`、`web.t3.*`、`web.network.*` 与 `limits.structuredGui/limits.vision/limits.network`，T4 仍 `unsupported`。
+- **能力报告**：`browser_capabilities` 报 T2/T3/network 各段工具项（注册表共 30 工具）、`web.t1.viewport`、`web.t2.*`、`web.t3.*`、`web.network.*` 与 `viewport/limits.viewport`、`limits.structuredGui/limits.vision/limits.network`，T4 仍 `unsupported`。
 
 ## T3 静态视觉职责
 
@@ -56,6 +56,17 @@ docs/                 项目记忆（本目录）；按工作区隔离的契约�
 - **能力报告**：`browser_capabilities.network` 报 `version/tools/session/limits/observed` 与 `web.network.*` 三态；`limits.network` 里 **`https = "mechanism-identical"` 与 `responseModification` 并列**（前者固定口径、后者按 Chrome 实测支持与否报 `true|false`）；诊断调用不启动浏览器、不建目录、不生成证据文件。
 - **未验证**：真实宿主重启后的网络采集冒烟与 provider/长连接稳定性未验；HTTPS 子项与 `modify-response` 子项按 [network-p0.md](network-p0.md) §10 记 NOT_RUN。
 
+## 共享视口职责
+
+权威契约见 [viewport-control.md](viewport-control.md)。
+
+- **Host（`index.js`）**：`VIEW_PRESETS`/`VIEW_LIMITS` 常量；`Runtime.view` 与 `get viewport()` 别名、`observed`、`viewMeta` 与 `viewOriginId`；`viewProjection/observedProjection/viewMeta/viewSnapshot` 纯 JSON 投影；`#readViewMetrics`（`Page.getLayoutMetrics` css* 字段 + DPR 读回）、`#scrollViewTo`（instant scrollTo）、`#waitTwoFrames`、`#settleViewObservation`（两帧 + 有界稳定采样）；`refreshViewObservation(Soon)` 的合并/节流/single-flight 后台观测与 `#commitObservedPosition`（只回显 x/y，`source:'page'`）；`applyView`（队列内 CAS → ensure → 条件 override → 条件 scroll → 提交）；legacy `applyViewport` 保持旧 round/clamp；`/viewport` 双形状路由与 `ui.view/viewMeta/observed` 投影；`browser_viewport` 注册（`readOnly(args)`/`preflight(args)` 让 get 走缓存诊断、预检零 CDP）；`browser_capabilities.viewport` 与 `limits.viewport`；截图与 T3 live 的默认比例解析。
+- **`capture-p0.js`**：`scaleMin=0.1`、`minOutputPixels=1`、`hasPositiveOutputSize()`；mapping 仍是纯 JSON（逐轴比例由 Host 用真实 PNG 尺寸补上）。
+- **`vision-t3.js`**：`validateSource` 保留"省略 scale"，范围下界 0.1；由 Host 在调用内用冻结的 `view.scale` 解析。
+- **`browser-safety.js`**：`VIEWPORT_CONFLICT`（state / retryable）。
+- **Client（`client.js`）**：`ViewLimits`/`WHEEL_STEPS`（10/100/1 与 5/10/1，Alt 优先）、`paintedRect()` 与 `frameWheelDelta()` 纯几何、`viewOf()/viewCompanionsOf()` 解析 `ui.view`、`acceptView/adoptView/syncViewDrafts/clearCaughtUpDrafts`（草稿保护、外部变更取消 fit）、`queueViewPatch/flushViewPatch`（120ms 合并、按字段 patch、v1 带 `expectedRevision`、旧 Host 走 legacy 体）、`frameGeometry/geometryMatches/inputGeomReady`（≤250ms best-effort 屏障）、指针/滚轮/拖拽映射与释放，以及尺寸栏 X/Y 输入与 flex-wrap。
+- **未改**：`frame-source.js`/`frame-push.js` 本轮未动（Lead 裁决不扩帧协议），因此宽高变更后的几何关联只是 best-effort。
+
 ## client.js 内部结构
 
 1. `CSS` 常量 + 图标
@@ -65,4 +76,6 @@ docs/                 项目记忆（本目录）；按工作区隔离的契约�
 
 `DebugView` 与 `MoreRow` 各自渲染一份 `<style>`（原因见 [dsh-integration.md](dsh-integration.md)）。
 
-**第 8 轮（网络 P0）`client.js` 未动**：网络能力只走 Agent 工具与 HTTP 路由，面板样式/文案/布局保持冻结；因此本轮不需要前端热更新，只有 Host 侧变更需要重启 DSH。
+**第 8 轮（网络 P0）`client.js` 未动**：网络能力只走 Agent 工具与 HTTP 路由，面板样式/文案/布局保持冻结；因此该轮不需要前端热更新，只有 Host 侧变更需要重启 DSH。
+
+**第 9 轮（共享视口）`client.js` 有改动**：尺寸栏新增 X/Y、五个数值框滚轮、fit 改为本地显示偏好、painted rect 坐标映射与帧几何屏障、导航链不再隐式 POST 本地尺寸、窄面板 flex-wrap。这些是用户明确要求的界面变更；其余视觉/文案/布局仍按冻结约定处理。

@@ -16,7 +16,7 @@
 
 当前默认暂存、显式持久：persist:boolean=false；out/persist:true/非空env任一才持久，env非法不回退；其余含legacy无cwd均插件暂存，dispose清理。file新增pathKind/persistence/root/ephemeral，持久相对/暂存绝对；capabilities.observed只含persistence/relativePath|null。14/14、142/142（[最终报告](../tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json)），tmp不可写真实失败/SIGKILL仍NOT_RUN；下方115项为历史。
 
-本文其余第4轮实例/工具数/验收计数为历史快照，现行 **29 工具**状态见 [status.md](status.md)（T1 9 + T2 7 + T3 6 + network P0 7）。P0权威契约为 [capture-p0.md](capture-p0.md)：截图增加连续scale1–4（1.11合法）、文档CSS region、相对out、PNG CRC/尺寸拒绝、≤16M全量均匀/透明统计、安全0600/no-clobber落盘与附件metadata比较；不是T3判断。T3 的静态视觉判定由第 7 轮六个视觉工具与 56 条套件另证（进程内 56/56、389/389）。**网络深度能力由第 8 轮 network P0 七工具另证**，权威契约 [network-p0.md](network-p0.md)（见下方「网络 P0 更新」）。真实Chromium+fake ctx三次各13/13、115/115（[报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），T1回归22/22、324/324（[报告](../tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)）。仍未验证：真实宿主P0重载/provider视觉、瞬时布局影响；canvas源位图限制与本地TOCTOU边界仍在。原始PNG落盘不等于独立JSONL证据包（网络 P0 的 JSONL/HAR 是另一套证据，见下）。
+本文其余第4轮实例/工具数/验收计数为历史快照，现行 **30 工具**状态见 [status.md](status.md)（T1 10 + T2 7 + T3 6 + network P0 7）。P0权威契约为 [capture-p0.md](capture-p0.md)：截图增加显式 scale 0.1–4（1.11 合法；第 9 轮起省略 scale 跟随共享 view.scale）、文档CSS region、相对out、PNG CRC/尺寸拒绝、≤16M全量均匀/透明统计、安全0600/no-clobber落盘与附件metadata比较；不是T3判断。T3 的静态视觉判定由第 7 轮六个视觉工具与 56 条套件另证（进程内 56/56、389/389）。**网络深度能力由第 8 轮 network P0 七工具另证**，权威契约 [network-p0.md](network-p0.md)（见下方「网络 P0 更新」）。真实Chromium+fake ctx三次各13/13、115/115（[报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），T1回归22/22、324/324（[报告](../tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)）。仍未验证：真实宿主P0重载/provider视觉、瞬时布局影响；canvas源位图限制与本地TOCTOU边界仍在。原始PNG落盘不等于独立JSONL证据包（网络 P0 的 JSONL/HAR 是另一套证据，见下）。
 
 ## 网络 P0 更新（第 8 轮，2026-11-01）
 
@@ -30,13 +30,25 @@
 - **真实宿主未重启**：3080（pid <pid>，17:24:28 启动）早于本轮 `index.js`/`network-p0.js` 变更，宿主未加载网络 P0；网络采集/控制/证据在真实宿主重启后的冒烟与 provider/长连接稳定性均 **NOT_RUN**。
 - 其它边界：shared/service worker 只在能证明 target/frame 父子归属时采（归属不明拒采并计 partial）；不做 MITM/不装 CA/不读 TLS 密钥；不做真实网络限速（只模拟 CDP 网络条件）；HAR 只保证 1.2 子集，WS/SSE 保真由 JSONL 断言。
 
+## 共享视口更新（第 9 轮，2026-11-01）
+
+**Agent 视口控制已实现（verified，覆盖路径）**：新增第 10 个 T1 工具 `browser_viewport`（能力 `web.t1.viewport`，工具面 29 → 30），契约见 [viewport-control.md](viewport-control.md)。`get` 是只读缓存诊断（不启动浏览器/不发 CDP/不占租约/stale 明示），`set` 是页面操作（宽高才发 metrics override，scale-only 不改页面几何）；`x/y` 是文档 CSS 滚动位置实测回读，`scale` 0.1–2 且是省略 scale 的截图默认密度，`expectedRevision` 冲突抛 `VIEWPORT_CONFLICT`（HTTP 409）且 patch 零应用。验收：`viewport.mjs` **11/11 probes、107/107 requiredChecks、exit 0**（连跑两次）；隔离 DSH GUI `viewport-gui.mjs` **73/73 PASS、5 NOT_RUN、exit 0**（连跑两次）；非回归 `run.mjs` **23/23、349/349**、`capture-p0.mjs` **14/14、142/142**、`runtime-faults` **16/16**。
+
+**剩余缺口（不夸大）**：
+
+- **真实宿主未重启**：3080（pid <pid>）早于本轮变更，真实会话仍是 29 工具且无 `ui.view`；30 工具、`browser_viewport` 调用与面板 X/Y 在真实宿主 **NOT_RUN**（隔离 DSH GUI 是验收证据，不能冒充 3080）。
+- **面板侧 5 条 NOT_RUN**：agent 归因（Host H2 覆盖）、letterbox 零派发（实测帧无 band）、旧 Host 降级、GUI 侧 CAS 并发（Host H5 覆盖）、宽高变更后几何屏障只到 best-effort（帧协议未扩展，≤250ms，partial）。
+- **截图默认尺寸已随比例变化**：`view.scale≠1` 时省略 `scale` 的截图与 T3 live 采集按该比例输出；要固定分辨率必须显式给 `scale`。低比例丢细节、极小 region 会被提前拒绝。
+- **H9 screencast 时序**（帧密度/ACK/递增）未单独实测；面板 >100% 只是 CSS 位图放大，真实像素密度要靠显式截图 scale。
+- `web.t1.browser-extras` 仍 **unsupported**（下载/上传/Cookie 导出/多标签/frame 目标等）。
+
 ## 0. 一分钟结论
 
 - **T1 五项主功能已全部有实现**：
   - JS 执行、CSSOM：verified（覆盖路径）。
   - 原生事件：partial（边界见 §1）；网络抓包：旧 `browser_network` 仍 partial，**深度采集/控制已由第 8 轮 network P0 七工具补齐**（见上方「网络 P0 更新」）。
   - **独立 HTTP API：已实现**（`browser_http_request`，契约见 [t1-http-request.md](t1-http-request.md)），P22 95/95 覆盖路径通过；**真实 Agent 会话内调用仍 NOT_RUN**。
-- 工具面 8 → **9 个**；`web.t1.http-request` 由 `unsupported` 变为 `available`；`web.t1.viewport-control`、`web.t1.browser-extras` 仍为 `unsupported`。
+- 工具面 8 → **9 个**（第 4 轮）；第 9 轮再 +1 → **T1 10 个 / 总 30**：`web.t1.http-request` 与 `web.t1.viewport`（第 9 轮，`browser_viewport`）均为 `available`；`web.t1.browser-extras` 仍为 `unsupported`。
 - 本轮落地契约裁决四项：`browser_state` 错误归属与时效（`error/errorAt/errorActionId/errorTarget`）、`runtime-faults:208` 清理竞态（实现有界重试 + 测试 waitFor）、Chrome 可执行文件解析、`browser_input` 的 `commands`/`unmodifiedText`/`pointerType:pen` 页面级真值（pen 修前被 CDP 拒绝，已修）。
 - T1 的主要难点仍是：**跨工作区 Cookie/存储隔离、完整网络沙箱、独立证据包、输入完整性、provider 图像可见性、结构化错误码、帧选择**，以及 Chrome 与 DSH 平台依赖。page/URL/viewport/租约已按工作区隔离。
 - 当前实例：**3080 仍是本轮改动前的构建（8 工具，无 `errorAt`/pen 修复）**，需用户重启后才加载本轮终版；新代码已在**隔离实例**加载并通过真实宿主回归（见 §5）。
@@ -49,15 +61,16 @@
 | JS 执行 · `browser_eval` | verified（覆盖路径） | 主世界表达式、Promise、可序列化值、`undefined`、错误栈与行列信息 | **无 frame 选择**；受页面同源策略约束；大对象/类实例只能靠可序列化投影；不是 DOM 操作 API |
 | 原生事件 · `browser_input` | partial | CDP 真实 mouse/wheel/key/text；`modifiers`（数组或位掩码）、`virtualKeyCode`、`autoRepeat`、`location`、`isKeypad`；**本轮修好 `pointerType:pen`**（原实现传数字 1/2 被 CDP 拒绝为 INTERNAL，现按 `mouse|pen` 字符串派发，页面可读回 `PointerEvent.pointerType==="pen"`）；整批先校验后派发 | **无焦点管理工具、无 M3 高层动作**；`applied` 只是数量；`commands`（`selectAll` 已由页面 selection 读数验证）与 `unmodifiedText` 的**特有效果不可观察**，按 `INCONCLUSIVE/platform-no-visible-effect` 记录；无 IME/组合输入保证；无触屏/触控笔真实目标 |
 | 网络抓包 · `browser_network` | partial（旧工具；深度能力见第 8 轮 network P0） | CDP Network 事件、响应状态、`loadingFailed`、URL 脱敏、有界 300 条、跨 session BUSY | 本工具**仍无请求/响应头与正文、无拦截/改写/Mock/限速**、WS/SSE 不做内容解析——这些由 7 个 `browser_network_*` 提供（[network-p0.md](network-p0.md)，`G1.5` partial、HTTPS 与 `modify-response` NOT_RUN），不是本工具的能力；记录从运行时启动开始 |
+| **共享视口 · `browser_viewport`** | verified（覆盖路径；真实宿主与 5 条 GUI 子项 NOT_RUN） | `get` 只读缓存诊断（不 ensure/不发 CDP/不进队列/不占租约，可读他人租约下的缓存并明示 stale）；`set` 页面操作（纯预检 → 队列 → 懒启动 + 租约，宽高才发 metrics override，scale-only 不改 CSS 视口/DPR/zoom）；`x/y` 为文档 CSS 滚动位置实测回读，宽高整数 200–4096，scale 0.1–2，`expectedRevision` → `VIEWPORT_CONFLICT`(409) 零应用；`browser_screenshot` 省略 scale 与 T3 live 缺省 scale 都跟随 `view.scale` | **真实宿主未重启**（30 工具面与 `ui.view` 未在真实会话验证）；面板侧 agent 归因/letterbox/旧 Host 降级/CAS 并发/几何屏障 5 条 NOT_RUN；H9 screencast 时序未测；`view.scale` 变化会改变默认截图尺寸（要固定分辨率需显式 scale）；>100% 只是 CSS 放大 |
 | 独立 HTTP · `browser_http_request` | verified（P22 覆盖路径；真实 Agent 会话 NOT_RUN） | Host 侧 node:http/https：默认 GET、5s 总超时（上限 20s）、64 KiB 保留上限（上限 1 MiB）、默认不跟随重定向（上限 5 跳）；每跳复用目标策略；HTTPS→HTTP 降级拒绝；无 cookie jar、危险头零派发；响应 headers 小写→string[]、敏感头 `["***"]`、URL 脱敏；utf8/base64、bodyBytes/bodyTruncated、不自动解压；`HTTP_TIMEOUT/HTTP_FAILED/HTTP_REDIRECT_LIMIT`；不启动 Chromium、不占租约、不进页面队列、不写页面 error | 不是完整网络沙箱（无 DNS pinning/代理隔离/全局配额）；不保证目标业务授权；正文与未知业务头仍可能敏感；**未在真实 Agent 会话内调用过**；HTTPS 降级用例仅在探针内用自签名证书 |
 | CSSOM · `browser_computed_style` | verified（覆盖路径） | 选择器首匹配元素的指定/完整 computedStyle；`TARGET_NOT_FOUND` 错误对象 | **只读 computedStyle**；**只取首个匹配**；无伪元素、iframe、Shadow DOM 目标；无布局盒模型/CSS 规则列表 |
-| 截图 · `browser_screenshot` | partial（P0采集覆盖路径通过，provider/宿主待验） | PNG/base64/hash/附件兼容；连续scale、文档CSS region、尺寸/CRC/均匀统计、安全相对路径落盘；capture与capabilities.observed，证据见上方P0更新 | 不自动按元素/整页推导region；无像素差异或视觉判定；canvas内部位图不会新增细节；附件metadata不自证provider可见性；C13不排除瞬时布局影响，TOCTOU非完整隔离 |
+| 截图 · `browser_screenshot` | partial（P0采集覆盖路径通过，provider/宿主待验） | PNG/base64/hash/附件兼容；显式scale 0.1–4（**省略=当前共享 view.scale**）、文档CSS region、尺寸/CRC/均匀统计、安全相对路径落盘；capture.request 带 scaleSource/viewRevision，mapping 带逐轴 cssPerPixel/scrollAtCapture；capture与capabilities.observed，证据见上方P0更新 | 不自动按元素/整页推导region；无像素差异或视觉判定；canvas内部位图不会新增细节；附件metadata不自证provider可见性；C13不排除瞬时布局影响，TOCTOU非完整隔离 |
 | 运行态 · `browser_state` | verified（覆盖路径） | 运行/关闭、`document.title`（含 SPA 刷新）、视口、`seq`、owner/单租约、脱敏 URL/activity/error；本轮新增 `errorAt/errorActionId/errorTarget`，成功的页面/网络操作清空错误，诊断与 HTTP 不清；诊断不夺 owner | 错误归属只在页面/网络操作层（导航守卫异步错误 `errorActionId=null`）；`url` 是脱敏值，真实地址只在认证 GUI 的 `ui.address`；不提供 DOM/网络细节 |
 | 能力发现 · `browser_capabilities` | partial | 9 个 T1 三态、`unsupported` 项、`limits.httpRequest`、owner 冲突时页面类 `unavailable`、HTTP 恒 `available` | 是**声明**不是行为证明；台账/测试/工具面变更可能短暂不同步；不能替代实际调用验证 |
 
-## 2. T1 未实现的扩展能力
+## 2. T1 扩展能力：已实现与未实现
 
-- **Agent 视口控制**（`web.t1.viewport-control`）：没有视口工具；视口预设只在面板（默认 1280×800、DPR 1，面板 200–4096）。属 T1 扩展，不在本轮功能范围。
+- **Agent 视口控制**（`web.t1.viewport-control`）：**已实现**（第 9 轮，`browser_viewport` / `web.t1.viewport`）；旧的"无工具、只能面板调"表述废止。剩余限制见上方「共享视口更新」。
 - **浏览器扩展操作**（`web.t1.browser-extras`）：无下载/上传/Cookie 导出/多标签/frame 目标选择。
 - **M3 高层动作**：无按选择器点击/输入、条件等待、拖拽等封装，只有原始事件注入。
 - **焦点管理工具**：仍没有独立焦点工具；用 Tab/Shift+Tab 或页面内 JS，并以页面读回为准。
@@ -113,10 +126,11 @@
 - 不要把 `unmodifiedText` 的 INCONCLUSIVE 写成“已验证”。
 - network P0 已 verified（52/52、266/266、8 NOT_RUN），但**不要把 8 条 NOT_RUN 说成通过**（C1 HTTPS、C2 二进制 body、C5 service worker、C20 单样本 p95、C35 淘汰 body 三态、C37 `modify-response`、C52 外部套件/真实宿主），也不要把 `G1.5` partial 说成“iframe/OOPIF/Worker/popup 全覆盖”，更不要把真实宿主写成已验证（3080 未重启）。
 - 不要把 `browser_network`（300 条元数据）当成 network P0 的采集/控制能力；也不要把 JSONL 导出当成断言通过。
+- 不要把 `browser_viewport get` 当"现在的真实状态"：它是缓存诊断（`stale` 明示）；要确定 set 之后的事实用返回的 `view`/`observed`。也不要把 `view.scale` 当页面缩放/DPR——它只是显示比例与默认截图密度；更不要把隔离 DSH GUI 的 73/73 说成真实宿主已验证。
 
 ## 7. 建议处理顺序（建议，不是承诺）
 
-1. **重启 3080 后的真实会话补证**：在新 Agent 会话调用一次 `browser_http_request`、确认 9 工具可见与 `errorAt`/pen 生效。
+1. **重启 3080 后的真实会话补证**：在新 Agent 会话确认 30 工具可见、调用一次 `browser_http_request` 与 `browser_viewport`（get/set）、确认 `ui.view` 与面板 X/Y 生效。
 2. **provider 图像可见性专项**：需要 provider/VLM 侧证据，单独验收。
 3. **T1 稳定性剩余**：GUI 地址栏与 shell 对话框的交互风险（产品侧需视觉/行为评审）；frame-push 半开连接回收（既有缺口，本轮未改）。
 4. **T1 安全/隔离**：跨工作区 Cookie/存储隔离、完整网络沙箱、独立证据包（按授权与成本排期，见 [t1-issues-and-solutions.md](t1-issues-and-solutions.md) §3.2）。

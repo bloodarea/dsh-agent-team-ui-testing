@@ -1,8 +1,10 @@
 # T1 M0–M2 实现契约与验收记录
 
-> 索引：[index.md](index.md) · 更新于 2026-10-31（第 4 轮：独立 HTTP API 收口 + 输入/状态/清理修复）· 当前阶段：主机侧 `run.mjs` **22/22 组、303/303 必需项、0 failed/skip、exit=0**（Lead 独立复跑，报告 `runs/2026-10-31T13-08-56-816Z-277736/run-report.json`）；故障注入 16/16（连跑 3 次）；隔离宿主 `verify-3081` **22/22 PASS、exit=0**（报告 `runs/host-3081-1793452433416/report.json`）；真实 Agent 会话内第九工具调用与 provider 图像可见性 NOT_RUN。
+> 索引：[index.md](index.md) · 更新于 2026-10-31（第 4 轮：独立 HTTP API 收口 + 输入/状态/清理修复）· 当前阶段：主机侧 `run.mjs` **22/22 组、303/303 必需项、0 failed/skip、exit=0**（Lead 独立复跑，报告 `runs/2026-10-31T13-08-56-816Z-277736/run-report.json`）；故障注入 16/16（连跑 3 次）；隔离宿主 `verify-3081` **22/22 PASS、exit=0**（报告 `runs/host-3081-1793452433416/report.json`）；真实 Agent 会话内第九工具调用与 provider 图像可见性 NOT_RUN。**第 9 轮现状**：主机侧 `run.mjs` **23/23 组、349/349**（工具面 30）、共享视口 `viewport.mjs` **11/11、107/107**、GUI `viewport-gui.mjs` **73/73 PASS/5 NOT_RUN**，见下方「共享视口契约摘要」与 [status.md](status.md)。
 
 > **T2 说明（2026-11-01）**：第 6 轮已实现 Web T2 结构化 GUI（工具面 9 → 16），本文保留 T1 M0–M2 契约与历史验收，不重写。T2 契约见 [t2-structured-gui.md](t2-structured-gui.md)，现行能力/验收以 [status.md](status.md) 与运行注册表为准。
+>
+> **第 9 轮共享视口（2026-11-01）见 [viewport-control.md](viewport-control.md)**：新增第 10 个 T1 工具 `browser_viewport`（能力 `web.t1.viewport`，工具面 29 → 30），本文的 T1 工具语义**除两处有意变更外不变**：① `browser_screenshot` 省略 `scale` 时不再固定为 1，而是跟随共享 `view.scale`（显式 scale 合法范围 1–4 → 0.1–4）；② T3 `Source.live` 同规则（`act` 沿用原采集比例）。其余 T1 工具的参数/返回/错误码不变，`browser_state` 只**新增**安全 `view` 字段。
 >
 > **第 8 轮网络 P0（2026-11-01）见 [network-p0.md](network-p0.md)**：新增 7 个 `browser_network_*`（工具面 22 → 29，本文的 T1 九工具参数/返回/语义不变），网络采集/分析/链路/控制/证据/订阅的现行契约与验收口径以该文为准，本文不重写。
 
@@ -10,11 +12,24 @@
 
 ## 工具与运行态
 
-工具面为 9 个：`browser_navigate`、`browser_eval`、`browser_screenshot`、`browser_input`、`browser_network`、`browser_computed_style`、`browser_http_request`（本轮新增，独立 HTTP API）、`browser_state`、`browser_capabilities`。`browser_input` 的 schema 已扩展（N2：`modifiers`／`virtualKeyCode`／`autoRepeat`／`unmodifiedText`／`commands`／`location`／`isKeypad`，mouse 的 `buttons`／`modifiers`／`pointerType`，wheel 的 `modifiers`；见下「输入事件契约」）；`browser_state` 增错误归属字段；其余工具输入不变。T2–T4、Agent 视口工具、下载/上传/Cookie 导出、多 target/frame 选择仍未实现；独立 HTTP 的完整契约见 [t1-http-request.md](t1-http-request.md)。
+工具面为 **10 个 T1 工具**（全插件 30 个）：`browser_navigate`、`browser_eval`、`browser_screenshot`、`browser_input`、`browser_network`、`browser_computed_style`、`browser_http_request`（第 4 轮新增，独立 HTTP API）、`browser_viewport`（第 9 轮新增，共享视口 get/set）、`browser_state`、`browser_capabilities`。`browser_input` 的 schema 已扩展（N2：`modifiers`／`virtualKeyCode`／`autoRepeat`／`unmodifiedText`／`commands`／`location`／`isKeypad`，mouse 的 `buttons`／`modifiers`／`pointerType`，wheel 的 `modifiers`；见下「输入事件契约」）；`browser_state` 增错误归属字段；其余工具输入不变。T4、浏览器扩展操作（下载/上传/Cookie 导出/多标签/frame 选择）仍未实现；Agent 视口工具已由 `browser_viewport` 实现（契约见 [viewport-control.md](viewport-control.md)）；独立 HTTP 的完整契约见 [t1-http-request.md](t1-http-request.md)。
 
 - 注册表决定当前 Agent 能调用哪些名字；`browser_capabilities` 根据调用方 session 与 active/idle owner 报告 `available / unavailable / unsupported`、原因与限制，不能直接回显静态 manifest。其他 owner 占用时页面/network 标 `unavailable`、reason `BUSY`，诊断工具仍 `available`。未启动的 T1 可声明 `available`（按需懒启动，constraint 明示启动可能失败）；`running/transport` 单独反映真实连接，不将未启动当不支持。附件服务状态与截图 fallback 另报限制。
 - `browser_state` / `browser_capabilities` 是诊断调用，不懒启动、不申请页面所有权；已有浏览器的标题从 `document.title` 刷新。`running:false` 不等于不支持。
 - 5 个页面工具可懒启动；`browser_network` 不启动，但须通过租约检查。导航检查 `Page.navigate.errorText` 与最终 URL；成功不保证 load complete，业务就绪仍需另查。
+
+## 共享视口契约摘要（`browser_viewport`，第 9 轮）
+
+完整契约（数据模型、观测节流、坐标映射、截图比例、错误与验收）见 [viewport-control.md](viewport-control.md)；这里只列对 T1 契约有影响的部分。
+
+- **一份权威 view**：每工作区 Runtime 持 `view={version:1,mode,x,y,width,height,scale,source,revision}`（文档 CSS px）。`x/y` 是页面顶层滚动位置（`Page.getLayoutMetrics` 实测），`width/height` 整数 200–4096，`mode` 由宽高派生，`scale` 0.1–2（10–200%），`source=default/gui/agent/page`，`revision` 只在内容变化时递增。顶层 `viewport={width,height}` 是别名。`browser_state` 与认证 GUI 的 `ui.view` 是同一数据的投影。
+- **get 只读 / set 页面操作**：`get` 只读缓存诊断（不 ensure、不发 CDP、不进队列、不占租约、不改 recent/error，可读他人租约下的缓存并明示 `stale`）；`set` 至少一个 view 字段（`mode` 与 width/height 互斥，`mode` 展开宽高后同传的 x/y/scale 仍生效），走队列内 CAS → 懒启动 + 租约，只有宽高变化才发 `Emulation.setDeviceMetricsOverride`，scale-only / x/y-only 不改 CSS 视口、DPR 或页面 zoom。
+- **CAS**：`expectedRevision` 在队列内复查，冲突抛 `VIEWPORT_CONFLICT`（state / retryable，HTTP **409**），patch 零应用、返回最新 view、不覆盖 page `lastError`；不自动重放。
+- **HTTP 兼容**：`POST /viewport` 同时接受 legacy `{width,height}`（原 Number/round/clamp 与 `viewport` 返回，保留 x/y/scale）与 v1 `{version:1,...}`（与工具同严格校验）；`/state`、`/frame`、ensure/navigate/reload/history 都附带 `ui.view/ui.viewMeta/ui.observed`。
+- **对其他工具的影响（仅这两处）**：`browser_screenshot` 省略 `scale` → 当前 `view.scale`（cold 1），显式 scale 0.1–4；T3 所有 `Source.live` 省略 `scale` → 本次调用冻结的 `view.scale`。T2 bbox/输入坐标、`browser_input` 的 wheel 单位仍是 CSS，不乘 `view.scale`；其余 T1 工具参数/返回/错误码未变。
+- **能力报告**：`browser_capabilities` 新增 `viewport` 段与 `limits.viewport`，工具表 30 项；其他 owner 持租约时 `web.t1.viewport` 与页面类一起 `unavailable`+BUSY（reason 注明 get 仍可只读诊断），诊断工具与 `browser_http_request` 仍 available。
+
+验收（同一最终代码，执行者/Lead）：`tests/acceptance/viewport.mjs` **11/11 probes、107/107 requiredChecks、exit 0**（连跑两次）；隔离 DSH GUI `tests/acceptance/viewport-gui.mjs` **73/73 PASS、5 NOT_RUN、exit 0**（连跑两次）；非回归 `run.mjs` **23/23、349/349**、`capture-p0.mjs` **14/14、142/142**、`runtime-faults` **16/16**。**真实宿主 3080 未重启**（30 工具与 `ui.view` NOT_RUN）；T2/T3/network/workspace/check-skill 全量回归由 Lead 终验复跑。
 
 ## 输入事件契约（N2，已实现）
 
@@ -124,7 +139,7 @@ Host 校验 HTTP(S) 目标、DNS 解析结果与最终 URL；Document Fetch 拦�
 
 | 项目 | 当前验收状态 | 必需证据 |
 | --- | --- | --- |
-| 9 工具、skill 与 manifest 一致 | PASS（结构与 fake ctx 注册）；隔离宿主 `apply()` 完整执行（`verify-3081` 22/22）；P1 断注册面恰好 9 个、P14 报 9 项 T1（http-request available）；**真实 Agent 会话（3080）仍是旧构建的 8 工具，第九工具的真实会话调用 NOT_RUN** | P1/P14/P21；check-skill 23/23、check-skill-registry 17/17；runs/2026-10-31T13-08-56-816Z-277736 |
+| 9 工具（第 9 轮起为 10 T1 / 总 30）、skill 与 manifest 一致 | PASS（结构与 fake ctx 注册）；隔离宿主 `apply()` 完整执行（`verify-3081` 22/22）；P1 断注册面恰好 9 个、P14 报 9 项 T1（http-request available）；**真实 Agent 会话（3080）仍是旧构建的 8 工具，第九工具的真实会话调用 NOT_RUN** | P1/P14/P21；check-skill 23/23、check-skill-registry 17/17；runs/2026-10-31T13-08-56-816Z-277736 |
 | 导航失败、标题、eval/style/HTTP 错误分类 | PASS（覆盖路径） | P2/P3/P4/P10：含 SPA 标题、NAV_FAILED、操作 error 对象、HTTP 兼容分类 |
 | URL 脱敏、loadingFailed、关闭资源 | PASS（覆盖路径）；Map/timer/断连恢复由单测覆盖 | P6/P8/P18；runtime-faults 16/16；启动失败清理与正常关闭 |
 | BUSY、anonymous、disposed | PASS；15s 到期/进行中续持/排队取消由单测覆盖 | P9/P15：两 session、所有页面/network 工具、诊断不夺 owner；runtime-faults 16/16 |

@@ -19,6 +19,9 @@
  *  - `Page.captureScreenshot` 的 `clip` 是文档 CSS 坐标；输出像素 = round(css * scale * dsf)。
  *  - `clip.scale` 是重新光栅化，不是位图放大；本插件固定 dsf=1，只用 clip.scale。
  *  - 因此 CAPTURE_UPSCALED 只证明“输出尺寸大于期望尺寸”，不单独证明发生了位图放大。
+ *  - scale 允许 0.1–4（Lead 冻结，见 docs/viewport-control.md §6.1）；实测 clip.scale=0.1/0.5/
+ *    0.65/1.11 时 PNG 尺寸都精确等于 round(css×scale)（取整发生在 clip 的 CSS 尺寸上，不是
+ *    scale 上），所以 0 容差公式不变，只需额外拒绝两轴 <1 的空输出（hasPositiveOutputSize）。
  */
 
 import { randomUUID } from 'node:crypto';
@@ -46,9 +49,17 @@ const MAX_DISTINCT_COLORS = 1024;
 
 /** P0 采集的公共限额（index.js / browser_capabilities 复用，避免魔法数字漂移）。 */
 export const CAPTURE_LIMITS = Object.freeze({
-  /** scale 允许范围（闭区间）。 */
-  scaleMin: 1,
+  /**
+   * 显式 scale 允许范围（闭区间）。
+   *
+   * 2026-11-01（docs/viewport-control.md §6.1，Lead 冻结）：下界从 1 扩到 0.1，因为共享
+   * `view.scale` 可以是 10%（0.1）而默认截图比例跟随它。上界仍是 4。默认值**不是** scaleMin：
+   * 省略 scale 时由 Host 在调用内解析为当前 `view.scale`（cold 时为 1）。
+   */
+  scaleMin: 0.1,
   scaleMax: 4,
+  /** 输出像素的下界：任一轴 < 1 时 Chrome 会取整成 0 像素，必须在 CDP 截图前拒绝。 */
+  minOutputPixels: 1,
   /** 单次截图期望像素上限（宽×高）；超过即 CAPTURE_TOO_LARGE，必须在 CDP 截图前判定。 */
   maxOutputPixels: 16000000,
   /** PNG 结构/解码预算之外的硬上限，避免异常 IHDR 拖垮解码。 */
@@ -339,6 +350,23 @@ export function detectImageAnomaly(decoded, { tolerance = 0 } = {}) {
       a: Math.round(sumA / scanned),
     },
   };
+}
+
+/**
+ * 输出尺寸下界：两轴都必须 ≥ CAPTURE_LIMITS.minOutputPixels（1）。
+ *
+ * `round(css × scale)` 在 scale<1 且矩形很小时可能舍入到 0（例如 1 CSS px @0.1 = 0.1 → 0）。
+ * Chrome 对这种 clip 不会给出可用的 PNG，所以调用方必须在派发 CDP 截图**之前**用本函数拒绝
+ * （`INVALID_ARGUMENT` / reason=`empty-output-dimensions`），不能偷偷升到 1px 再截。
+ *
+ * @param {{width:number,height:number}} expected
+ * @returns {boolean}
+ */
+export function hasPositiveOutputSize(expected) {
+  if (!expected || typeof expected !== 'object') return false;
+  return Number.isFinite(expected.width) && Number.isFinite(expected.height)
+    && expected.width >= CAPTURE_LIMITS.minOutputPixels
+    && expected.height >= CAPTURE_LIMITS.minOutputPixels;
 }
 
 /**

@@ -544,9 +544,11 @@ async function main() {
   });
 
   // ---- C9: argument validation + structured errors ------------------------------------------
-  await runProbe('C9-arguments', '参数与结构化错误（无副作用）', 'scale 0/0.999/4.001/5/字符串/NaN、region 宽 0/负/字符串 -> INVALID_ARGUMENT 且不新增文件；超预算 -> CAPTURE_TOO_LARGE；details 无绝对路径', async () => {
+  await runProbe('C9-arguments', '参数与结构化错误（无副作用）', 'scale 0/0.05/4.001/5/字符串/NaN、region 宽 0/负/字符串 -> INVALID_ARGUMENT 且不新增文件；超预算 -> CAPTURE_TOO_LARGE；details 无绝对路径', async () => {
     const filesBefore = await listFilesRecursive(state.captureRoot);
-    const invalidScales = [[0, '0'], [0.999, '0.999'], [4.001, '4.001'], [5, '5'], ['2', "'2'"], [Number.NaN, 'NaN']];
+    // Legal explicit range is 0.1–4 (docs/viewport-control.md §6.1, Lead freeze 2026-11-01), so the
+    // below-minimum probe is 0.05; 0.999 is a LEGAL continuous scale now (asserted by C4's 1.11 case).
+    const invalidScales = [[0, '0'], [0.05, '0.05'], [4.001, '4.001'], [5, '5'], ['2', "'2'"], [Number.NaN, 'NaN']];
     for (const [value, label] of invalidScales) {
       const bad = await harness.invoke('browser_screenshot', { scale: value });
       check(`C9 scale=${label} -> INVALID_ARGUMENT`, hasErrorCode(bad, 'INVALID_ARGUMENT') && bad.error?.category === 'input' && bad.error?.retryable === false && typeof bad.error?.message === 'string' && bad.error.message.startsWith('[INVALID_ARGUMENT]'), errorInfo(bad));
@@ -630,8 +632,12 @@ async function main() {
     try {
       const cold = await fresh.invoke('browser_capabilities');
       const captureBlock = cold.value?.capture || {};
+      // Explicit scale range is 0.1–4 and an omitted scale follows the shared view.scale
+      // (docs/viewport-control.md §6.1/§6.2, Lead freeze 2026-11-01) — the old [1,4] bound was the
+      // pre-viewport contract.
       check('C11 冷启动 capabilities.capture 声明完整', captureBlock.version === 1 && captureBlock.transport === 'cdp-page-capture-screenshot'
-        && captureBlock.coordinateSpace === 'document-css-px' && JSON.stringify(captureBlock.scaleRange) === '[1,4]'
+        && captureBlock.coordinateSpace === 'document-css-px' && JSON.stringify(captureBlock.scaleRange) === '[0.1,4]'
+        && captureBlock.defaultScaleSource === 'view.scale' && captureBlock.defaultScale === 1
         && captureBlock.maxOutputPixels === 16000000 && captureBlock.supports?.region === true && captureBlock.supports?.noClobber === true
         && captureBlock.output?.defaultMode === 'staging' && captureBlock.output?.noClobber === true
         && captureBlock.output?.workspaceRoot === '<workspace>', captureBlock);
@@ -659,7 +665,8 @@ async function main() {
       const serialized = JSON.stringify({ capture: warm.value?.capture, limits: warm.value?.limits?.capture });
       check('C11 capture 声明/observed 不含页 URL 原文与绝对路径', !serialized.includes(pageUrl) && !serialized.includes(state.captureRoot) && !serialized.includes('/home/'),
         { hasUrl: serialized.includes(pageUrl), hasRoot: serialized.includes(state.captureRoot), hasHome: serialized.includes('/home/') });
-      check('C11 16 工具与 web.t1.* 投影不变（带 tool 的 web.t1.* 仍 9 项）', warm.value?.capabilities?.filter((item) => item.id.startsWith('web.t1.') && item.tool).length === 9,
+      // 30 tools: 10 T1 (9 historical + browser_viewport) + 7 T2 + 6 T3 + 7 network.
+      check('C11 30 工具与 web.t1.* 投影（带 tool 的 web.t1.* 为 10 项）', warm.value?.capabilities?.filter((item) => item.id.startsWith('web.t1.') && item.tool).length === 10,
         warm.value?.capabilities?.filter((item) => item.id.startsWith('web.t1.') && item.tool).map((item) => item.id));
     } finally {
       try { await fresh.closeBrowser(); } catch { /* ignore */ }

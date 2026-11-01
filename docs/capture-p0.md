@@ -1,6 +1,8 @@
 # P0 采集基础设施契约
 
-> 索引：[index.md](index.md) · 2026-11-01 · 本文是 `browser_screenshot` P0 的权威实施与验收契约，已纳入 Lead 的接口裁决。本文属于静态设计交付；实现、运行验收与已加载构建须由执行报告另证。§9.1 的事实来自 Lead 提供的 Chrome 152 / Linux headless 实测记录，本文作者未重新运行这些实验。现行 T1/T2 基线见 [T1 契约](t1-m0-m2-contract.md)、[T2 契约](t2-structured-gui.md) 与 [状态记录](status.md)。
+> 索引：[index.md](index.md) · 2026-11-01 · 本文是 `browser_screenshot` P0 的权威实施与验收契约，已纳入 Lead 的接口裁决。
+>
+> **2026-11-01 共享视口修订（见 [viewport-control.md](viewport-control.md) §6）**：显式 `scale` 下界从 1 扩到 **0.1**（上界仍 4）；**省略 `scale` 不再等于 1**，而是由 Host 在调用内解析为当前共享 `view.scale`（cold 为 1）；两轴期望像素 <1 时在派发前报 `INVALID_ARGUMENT(reason=empty-output-dimensions)`；`capture.version` 仍为 **1**，新增 `capture.request.scaleSource/viewRevision` 与 `capture.mapping.cssPerPixel/scrollAtCapture`。除这些加法/范围变更外，本文其余语义（单次原始 PNG、CRC/尺寸、16M 预算、落盘与附件规则）不变。本文属于静态设计交付；实现、运行验收与已加载构建须由执行报告另证。§9.1 的事实来自 Lead 提供的 Chrome 152 / Linux headless 实测记录，本文作者未重新运行这些实验。现行 T1/T2 基线见 [T1 契约](t1-m0-m2-contract.md)、[T2 契约](t2-structured-gui.md) 与 [状态记录](status.md)。
 
 ## 1. 范围与运行不变量
 
@@ -18,7 +20,7 @@ P0 提供 Web T1–T4 可复用的**采集、校验、落盘与证据**基础设
 
 | 参数 | 类型、默认与边界 | 语义 |
 | --- | --- | --- |
-| `scale` | finite number，默认 1，连续区间 `[1,4]` | CDP `clip.scale`；1.11、1.25、1.5 等小数合法；字符串、NaN、越界为 `INVALID_ARGUMENT` |
+| `scale` | 可选 finite number，连续区间 `[0.1,4]`；**省略时 = 当前共享 `view.scale`**（cold 1），不是固定的 1 | CDP `clip.scale`；1.11、1.25、1.5、0.65 等小数合法；字符串、NaN、越界为 `INVALID_ARGUMENT`；两轴期望像素 <1 → `INVALID_ARGUMENT(empty-output-dimensions)` |
 | `region` | 可选 `{x,y,width,height}`；四项均为有限数，`width/height >= 1` | 文档 CSS px 矩形；字段使用 `width/height`，不使用 `w/h`；省略时取采集前现场 layout viewport 的文档原点和大小 |
 | `persist` | boolean，默认false；非布尔为INVALID_ARGUMENT | true表示持久留存；false不取消out/env表达的持久意图 |
 | `out` | 可选string，持久根相对POSIX路径，以`.png`结尾 | 提供即请求持久留存；持久模式省略out时用`output/capture/<actionId>.png`；无持久意图默认暂存，见§6 |
@@ -104,7 +106,7 @@ viewportCss = documentCss - S
 | --- | --- | --- |
 | `capture.version` | integer，1 | 此契约版本 |
 | `format` / `transport` | `'png'` / `'cdp-page-capture-screenshot'` | 采集路径声明 |
-| `request` | `{scale,region:null\|Rect,coordinateSpace:'document-css-px',persist:boolean,out:null\|string}` | 调用参数；省略参数按默认 scale、null region/out 表示，不把有效区域冒充显式请求 |
+| `request` | `{scale,scaleSource:'explicit'\|'view',viewRevision,region:null\|Rect,coordinateSpace:'document-css-px',persist:boolean,out:null\|string}` | 调用参数（`scale` 为已解析值）；`scaleSource` 说明是显式给的还是跟随共享 `view.scale`，`viewRevision` 记录解析时的 view 版本；null region/out 表示未显式请求，不把有效区域冒充显式请求 |
 | `environment` | `{browser:'chromium',pageDevicePixelRatio:number\|null,deviceScaleFactor:1,deviceScaleFactorSource:'runtime-override',viewport:{width,height},scroll:{x,y},headless:boolean\|null,headlessSource:'product'\|'userAgent'\|null}` | viewport/scroll 为采集前读回；页面 DPR 读取失败为 null；headless 联合检查已有浏览器版本 product/userAgent 的 HeadlessChrome 标记，任一命中为 true（product 优先），headlessSource 记录判定来源；取不到观测值时两者为 null，不为判定启动浏览器 |
 | `png` | `{width,height,bytes,chunks,crc:'ok'}` | 原始 PNG 结构/CRC 校验；`chunks` 为块数量，不是图片内容摘要 |
 | `expected` | `{width,height,pixelsPerCssPixel}` | §2.2 公式结果，不能冒充 PNG 实际值 |
@@ -219,7 +221,7 @@ realpath 守卫与 no-clobber 防止常规路径越界/覆盖，不构成对本�
 | --- | --- |
 | `version / transport / format` | `1 / 'cdp-page-capture-screenshot' / 'png'` |
 | `coordinateSpace` | `'document-css-px'` |
-| `defaultScale / scaleRange` | `1 / [1,4]`，连续范围 |
+| `defaultScale / defaultScaleSource / scaleRange / viewScaleRange` | `1（cold 回退） / "view.scale" / [0.1,4] / [0.1,2]`，连续范围；`minOutputPixels` 为 1 |
 | `maxOutputPixels` | `16000000` |
 | `supports` | `region/clipScale/captureBeyondViewport/pngStructureCheck/blankCheck/fileWrite/noClobber/attachmentSizeCompare:true`；表示实现支持的路径，不证明本次根可写、图片可解码或附件可用 |
 | `output.defaultMode / ephemeral` | `'staging' / true`，描述默认模式 |
@@ -252,7 +254,7 @@ null | {
 
 | ID | 必需行为与真值 | 证据/边界 |
 | --- | --- | --- |
-| C1 默认截图 | 1280×800；PNG 结构/CRC；scale1；mapping 文档坐标；sizeCheck.ok；env 指定临时根下相对 .png 路径；0600；base64/file/返回 hash 相等 | 记录 PNG、磁盘权限/字节/hash；证明源图保留 |
+| C1 默认截图 | 1280×800；PNG 结构/CRC；cold view.scale=1（省略 scale 跟随共享比例）；mapping 文档坐标；sizeCheck.ok；env 指定临时根下相对 .png 路径；0600；base64/file/返回 hash 相等 | 记录 PNG、磁盘权限/字节/hash；证明源图保留 |
 | C2 scale2 | 默认 2560×1600；条纹区域 scale1/2 均纯黑/白，scale2 灰阶为 0 或低于 1% | 黑白条纹真值与尺寸共同支持已测路径；不能单凭无灰阶排除所有放大方式 |
 | C3 region | 红色中心 20×20 全像素 255,0,0；蓝色中心同理 0,128,255 | 明确传 width/height；scale1 颜色不变 |
 | C4 连续小数 scale | 101×50：1.25→126×63，1.5→152×75；增加 scale1.11 合法且尺寸按 round 公式断言 | 禁止把 1.11 当非法；逐轴 sizeCheck.ok |
@@ -260,7 +262,7 @@ null | {
 | C6 预览回归 | 高DPI采集后GET `/frame` 仍200、application/json JSON投影，`image`字段是非空base64 JPEG（magic ffd8）；按JPEG魔数及解码尺寸1280×800验证，host.captured增长 | 不存在image/jpeg响应头；JSON传输类型与内部JPEG图像格式分开记录 |
 | C7 均匀图 | 纯白页 warning + anomaly.uniform=true，仍交付且 file 存在；返回图案页后无 uniform warning | 统计异常不是自动视觉 FAIL |
 | C8 路径/no-clobber | 路径越界/绝对/反斜杠/错误后缀报 OUTPUT_PATH_INVALID；已存在报 OUTPUT_EXISTS 且 hash 不变；多级目录成功；两次默认名不同 | 原文件字节与成功后临时残留检查；不将此扩称恶意进程隔离 |
-| C9 参数/错误 | scale=0/0.999/4.001/5/字符串/NaN 非法；region 宽0/负/字符串非法；4000×4001 scale1 超预算；code/category/retryable/message 与安全 details | 参数错误不新增截图/文件；details 不泄露主机绝对路径 |
+| C9 参数/错误 | scale=0/0.05/4.001/5/字符串/NaN 非法（0.999 自 2026-11-01 起合法）；region 宽0/负/字符串非法；4000×4001 scale1 超预算；code/category/retryable/message 与安全 details | 参数错误不新增截图/文件；details 不泄露主机绝对路径 |
 | C10 附件/原始图 | fake 附件半尺寸且 webp→downscaled/reencoded 与对应 warnings；原图尺寸仍等于 PNG；无附件→fallback/null/警告 | compare='attachment-metadata'；缺失字段不推断相同；不证明真实 provider |
 | C11 能力探测 | 冷启动含 capture/limits.capture，observed=null；截图后含真实事实；dispose 后 capabilities 不启动；无绝对路径/原始页面 URL | 声明支持与实测值分离；不把 running=false 当 unsupported |
 | C12 重复/回归 | 独立根与 profile 连跑两次全部必需项通过；主验收可独立重复运行 | 两份报告及计数，不靠状态残留 |

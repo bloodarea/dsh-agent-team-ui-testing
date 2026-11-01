@@ -351,11 +351,11 @@ async function probe1ToolSurface({ harness, check, finding }) {
   const expectedNames = EXPECTED_TOOLS.map((tool) => tool.name);
   const actualNames = harness.toolNames();
 
-  // 29 = 9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2)
-  //      + 6 T3 (docs/t3-vision.md §2.1) + 7 network (docs/network-p0.md §2). Counted against
-  //      EXPECTED_TOOLS so a group surface cannot drift silently; the "same names" assertion
-  //      below still proves nothing extra was registered.
-  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（9 T1 + 7 T2 + 6 T3 + 7 network）`, actualNames.length === EXPECTED_TOOLS.length, {
+  // 30 = 10 T1 (docs/runtime-t1.md + docs/viewport-control.md §7 browser_viewport)
+  //      + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
+  //      + 7 network (docs/network-p0.md §2). Counted against EXPECTED_TOOLS so a group surface
+  //      cannot drift silently; the "same names" assertion below still proves nothing extra.
+  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network）`, actualNames.length === EXPECTED_TOOLS.length, {
     expected: { count: EXPECTED_TOOLS.length, names: expectedNames },
     actual: { count: actualNames.length, names: actualNames },
   });
@@ -1728,7 +1728,7 @@ async function main() {
     helpers: harnessModule,
   };
 
-  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 29 个 browser_* 工具（9 T1 + 7 T2 + 6 T3 + 7 network），名称/参数 schema 与 docs/runtime-t1.md + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 + docs/network-p0.md §2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
+  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 30 个 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network），名称/参数 schema 与 docs/runtime-t1.md + docs/viewport-control.md §7 + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 + docs/network-p0.md §2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
   await runProbe({
     id: 'P23-network-surface',
     title: 'network P0 工具面（注册/schema/离线诊断/owner/BUSY/旧工具不变）',
@@ -1769,11 +1769,11 @@ async function main() {
   }, ({ check, finding, skip }) => probe13MetricsFallback({ harness: harnessA, httpServer: state.httpServer, check, finding, skip, observations }));
 
   const milestones = await import('./milestone-probes.mjs');
-  await runProbe({ id: 'P14-capabilities', title: '运行时能力发现', group: 'M2', expected: '29 工具声明、运行时服务探测、http-request available、七项 web.t2.* 与 structured-dom available、六项 web.t3.* 与 static-vision available、七项 web.network.* 与 p0 聚合可用状态、T4 unsupported' }, ({ check }) => milestones.capabilityProbe({ harness: harnessA, check }));
+  await runProbe({ id: 'P14-capabilities', title: '运行时能力发现', group: 'M2', expected: '30 工具声明、运行时服务探测、http-request 与 web.t1.viewport available、七项 web.t2.* 与 structured-dom available、六项 web.t3.* 与 static-vision available、七项 web.network.* 与 p0 聚合可用状态、limits.viewport/capture 比例契约、T4 unsupported' }, ({ check }) => milestones.capabilityProbe({ harness: harnessA, check }));
   await runProbe({ id: 'P15-owner-lease', title: '会话 lease、读取隔离与 disposed', group: 'M1', expected: '只有一个 owner、所有页面/网络访问校验、只读诊断跨会话、disposed 释放' }, ({ check }) => milestones.leaseProbe({ check }));
   await runProbe({ id: 'P19-target-policy', title: '导航目标与重定向安全', group: 'M1', expected: '工具/HTTP 阻断非法目标、loopback 放行、重定向目标重新校验' }, ({ check }) => milestones.targetPolicyProbe({ harness: harnessA, check, fixture: state.fixture }));
   await navigateAndWait(harnessA, state.fixture.url, { expectedTitle: 'DSH UI Testing Fixture' });
-  await runProbe({ id: 'P16-action-evidence', title: '操作 envelope 与截图附件/回退', group: 'M2', expected: '29 工具（含 7 个 T2、7 个 network）每次成功调用返回并 render envelope + evidence、截图 hash/time、附件和 base64 两条路径' }, ({ check }) => milestones.evidenceProbe({ harness: harnessA, check }));
+  await runProbe({ id: 'P16-action-evidence', title: '操作 envelope 与截图附件/回退', group: 'M2', expected: '30 工具（含 7 个 T2、7 个 network）每次成功调用返回并 render envelope + evidence、截图 hash/time、附件和 base64 两条路径' }, ({ check }) => milestones.evidenceProbe({ harness: harnessA, check }));
   await runProbe({ id: 'P17-cancel-serial', title: '取消与面板同锁串行', group: 'M0/M1', expected: 'signal 取消 1s 内 ABORTED，后续可恢复，面板输入与 Agent 不交错' }, ({ check }) => milestones.cancellationProbe({ harness: harnessA, check, fixture: state.fixture }));
   await runProbe({ id: 'P18-startup-failure', title: '启动失败清理', group: 'M0', expected: '错误明确、无 profile 遗留' }, ({ check }) => milestones.startupFailureProbe({ check }));
 
@@ -1797,7 +1797,7 @@ async function main() {
     id: 'P21-host-output-contract',
     title: '宿主输出契约（lossless JSON）',
     group: 'host-contract',
-    expected: '全部 29 工具（含 7 个 network）成功值与 render content 通过真实 snapshotJsonValue；eval undefined/抛错/number 参数/无附件截图/失败网络条目/抛错 details/类实例附件/T2 证据/network 工具值均无 undefined 且可快照',
+    expected: '全部 30 工具（含 7 个 network）成功值与 render content 通过真实 snapshotJsonValue；eval undefined/抛错/number 参数/无附件截图/失败网络条目/抛错 details/类实例附件/T2 证据/network 工具值均无 undefined 且可快照',
   }, async ({ check, finding }) => {
     await hostContract.hostOutputContractProbe({ harness: harnessA, check, finding, fixture: state.fixture });
     await hostContract.attachmentProjectionProbe({ createHarness, check });

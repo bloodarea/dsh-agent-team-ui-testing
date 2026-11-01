@@ -6,9 +6,10 @@
 | --- | --- | --- |
 | `browser_navigate` | `{ok:true,url}` | 检查 errorText/最终 URL；不保证 load complete；失败抛 BrowserError |
 | `browser_eval` | `{ok:true,value,type}` | 页面异常 `{ok:false,error:{code,category,retryable,message,details}}`，含描述/栈/位置 |
-| `browser_screenshot` | `{viewport,bytes,image,capturedAt,sha256,attachmentId,capture}` | 可选scale连续1–4/region文档CSS/persist:boolean=false/out持久根相对.png；默认staging，out/persist:true/非空env才persistent；file含pathKind/persistence/root/ephemeral，dispose清理暂存；CRC/尺寸/全量均匀统计/JSON映射/安全文件/附件metadata进入capture v1；保留base64/附件fallback，provider另验 |
+| `browser_screenshot` | `{viewport,bytes,image,capturedAt,sha256,attachmentId,capture}` | 可选显式scale 0.1–4（省略时跟随共享view.scale）/region文档CSS/persist:boolean=false/out持久根相对.png；默认staging，out/persist:true/非空env才persistent；file含pathKind/persistence/root/ephemeral，dispose清理暂存；CRC/尺寸/全量均匀统计/JSON映射/安全文件/附件metadata进入capture v1；保留base64/附件fallback，provider另验 |
 | `browser_input` | `{ok:true,applied}` | applied 是数组长度，不证明识别/生效；未知 kind 仍可能跳过；modifiers 支持字符串数组或 CDP 位掩码（Alt=1/Ctrl=2/Meta=4/Shift=8） |
 | `browser_network` | `{entries:[…]}` | 响应及 loadingFailed、URL 脱敏、记录有界；其他 owner 返回 BUSY |
+| `browser_viewport` | `{ok,running,view,observed,viewMeta}`（get）/ `{ok,requested,before,view,observed,viewMeta,applied,settled,clamped,overrideApplied,appliedFields}`（set） | get 只读缓存诊断（不 ensure/不发 CDP/不进队列/不占租约）；set 走预检 → 串行队列 → 懒启动 + 租约；`expectedRevision` 冲突抛 `VIEWPORT_CONFLICT`（HTTP 409）且 patch 零应用；`x/y` 是文档 CSS 滚动位置、`scale` 0.1–2 且为默认截图密度；不改 DPR/页面 zoom |
 | `browser_computed_style` | `{ok:true,style}` | 未命中返回 error 对象；非法 selector/页面异常按实际分类错误处理 |
 | `browser_state` | mode/activity/url/title/viewport/seq/running/error 与 owner 诊断；错误四字段 error/errorAt/errorActionId/errorTarget | 不启动、不占租约；标题从 document.title 刷新；成功的页面/网络操作清空错误，诊断与 HTTP 不清 |
 | `browser_http_request` | `{ok:true,method,url,status,statusText,headers,contentType,encoding,body,bodyBytes,bodyTruncated,redirects,timings}` | 独立 HTTP(S)：`ok:true` 仅表示取得响应（非 2xx 也成功返回）；默认不跟随重定向、5s/64KiB 预算、无 cookie jar；不启动 Chromium、不占租约；失败抛分类错误 |

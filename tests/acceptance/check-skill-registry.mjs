@@ -85,7 +85,7 @@ async function main() {
 
   // Provide the services index.js declares via `export const inject = ['tools', 'webServer']`.
   // The tools stub records what the real plugin registers, so the registry-level run also proves
-  // the 29-tool surface (that count is otherwise only asserted through the fake-ctx harness).
+  // the 30-tool surface (that count is otherwise only asserted through the fake-ctx harness).
   const registeredTools = new Map();
   ctx.provide('tools', {
     register(definition) { registeredTools.set(definition.name, definition); return () => { registeredTools.delete(definition.name); }; },
@@ -110,11 +110,13 @@ async function main() {
     }
     const netTools = ['browser_network_session', 'browser_network_events', 'browser_network_detail',
       'browser_network_trace', 'browser_network_control', 'browser_network_evidence', 'browser_network_subscribe'];
+    // The shared-viewport tool is the 10th T1 tool (docs/viewport-control.md §7).
     const toolNames = [...registeredTools.keys()];
-    record('真实 ctx.plugin 挂载后注册恰好 29 个 browser_* 工具（含 7 个 network 工具）', toolNames.length === 29
-      && toolNames.every((name) => name.startsWith('browser_')) && netTools.every((name) => registeredTools.has(name)),
-      { count: toolNames.length, network: netTools.filter((name) => registeredTools.has(name)) });
-    record('29 个注册工具都带 object 参数 schema 与 execute', toolNames.length === 29
+    record('真实 ctx.plugin 挂载后注册恰好 30 个 browser_* 工具（含 browser_viewport 与 7 个 network 工具）', toolNames.length === 30
+      && toolNames.every((name) => name.startsWith('browser_')) && netTools.every((name) => registeredTools.has(name))
+      && registeredTools.has('browser_viewport'),
+      { count: toolNames.length, network: netTools.filter((name) => registeredTools.has(name)), viewport: registeredTools.has('browser_viewport') });
+    record('30 个注册工具都带 object 参数 schema 与 execute', toolNames.length === 30
       && [...registeredTools.values()].every((definition) => definition.parameters?.type === 'object'
         && Array.isArray(definition.parameters?.required) && typeof definition.execute === 'function'),
       [...registeredTools.values()].filter((definition) => definition.parameters?.type !== 'object'

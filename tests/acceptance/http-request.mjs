@@ -480,8 +480,10 @@ export async function httpRequestProbe({ check, finding, fixture }) {
     const caps = await harness.invoke('browser_capabilities', {});
     const t1 = caps.value.capabilities.filter((item) => item.id.startsWith('web.t1.') && item.tool);
     const httpEntry = caps.value.capabilities.find((item) => item.id === 'web.t1.http-request');
-    check('P22.19 capabilities 9 项 T1 available 且 http-request=available/4 constraints',
-      t1.length === 9 && t1.every((item) => item.status === 'available') && httpEntry?.tool === 'browser_http_request'
+    // 10 T1 tool projections since the shared-viewport round (docs/viewport-control.md §7):
+    // the 9 historical T1 tools + browser_viewport.
+    check('P22.19 capabilities 10 项 T1 available 且 http-request=available/4 constraints',
+      t1.length === 10 && t1.every((item) => item.status === 'available') && httpEntry?.tool === 'browser_http_request'
       && httpEntry.constraints?.length === 4, { count: t1.length });
     const limits = caps.value.limits.httpRequest;
     check('P22.19 limits.httpRequest 与执行默认/上限同源',

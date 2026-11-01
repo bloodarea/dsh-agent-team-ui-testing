@@ -17,7 +17,7 @@ import { performance } from 'node:perf_hooks';
 import { BrowserError, Cdp, asBrowserError, checkAbort, abortable, redactUrl, redactText, validateTarget } from './browser-safety.js';
 import {
   CAPTURE_LIMITS, checkPixelSize, createCaptureMapping, decodePng, detectImageAnomaly,
-  expectedPixelSize, inspectPng, projectCaptureMapping, publishCapture, resolveCapturePath,
+  expectedPixelSize, hasPositiveOutputSize, inspectPng, projectCaptureMapping, publishCapture, resolveCapturePath,
 } from './capture-p0.js';
 // Web T3 static vision (docs/t3-vision.md, docs/t3-implementation-plan.md §2). The Host layer never
 // re-implements the pixel algorithms: it validates arguments, resolves sources, owns the product
@@ -357,25 +357,198 @@ function addCaptureWarning(warnings, code) {
   return warnings;
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * Shared viewport (docs/viewport-control.md §3, Lead freeze 2026-11-01)
+ *
+ * One authoritative `view` per Runtime: `{x,y,width,height,scale,source,revision}` in document CSS
+ * px. The GUI (authenticated same-origin) and the Agent tool read/write the same object; the top
+ * level `viewport={width,height}` is a read-only alias of `view.width/height`.
+ *
+ * `mode` is DERIVED from the final width/height (never an independent selection that can drift).
+ * `source` records who last changed the content (default/gui/agent/page), `revision` is monotonic
+ * and only moves when content actually changed (a same-value set or a poll never bumps it).
+ *
+ * `scale` is the manual display scale (0.1–2.0 = 10–200%) and also the DEFAULT density of a
+ * screenshot that does not pass an explicit scale. It is NOT devicePixelRatio, NOT page zoom and
+ * NOT device emulation: `deviceScaleFactor` stays 1 and no page zoom is ever sent.
+ * ------------------------------------------------------------------------------------------- */
+
+/** The four GUI presets (docs/viewport-control.md §3.1); 1280×800 derives `custom`. */
+const VIEW_PRESETS = Object.freeze({
+  wide: Object.freeze({ width: 1920, height: 1080 }),
+  landscape: Object.freeze({ width: 1024, height: 768 }),
+  tablet: Object.freeze({ width: 768, height: 1024 }),
+  phone: Object.freeze({ width: 393, height: 852 }),
+});
+
+const VIEW_LIMITS = Object.freeze({
+  width: Object.freeze([200, 4096]),
+  height: Object.freeze([200, 4096]),
+  scroll: Object.freeze([0, 10000000]),
+  scale: Object.freeze([0.1, 2]),
+  default: Object.freeze({ width: 1280, height: 800, x: 0, y: 0, scale: 1 }),
+  /** Contract §3.2: at most one metrics read every 200ms while a viewer is attached. */
+  scrollPollMinMs: 200,
+  /** Cached observation older than this is reported stale (never silently "fresh"). */
+  staleAfterMs: 1000,
+  /** set() waits two frames and at most this long for a stable readback. */
+  settleMaxMs: 1000,
+});
+
+/** Fields a `view` patch may carry; `mode` expands to width/height and is never stored. */
+const VIEW_FIELDS = Object.freeze(['mode', 'x', 'y', 'width', 'height', 'scale']);
+
+/** Derived mode name for a final width/height pair. */
+function viewModeFor(width, height) {
+  for (const [mode, size] of Object.entries(VIEW_PRESETS)) {
+    if (width === size.width && height === size.height) return mode;
+  }
+  return 'custom';
+}
+
+/**
+ * Pure pre-flight for `browser_viewport` (docs/viewport-control.md §7): no browser, no CDP, no file.
+ *
+ * Rejects unknown fields, an illegal action, `get` with any other field, an empty patch, a
+ * `mode`+width/height conflict, non-finite/non-integer/out-of-range numbers. A rejected call must
+ * cost neither a browser start nor a page change (contract §7.1 INVALID_ARGUMENT).
+ */
+function normalizeViewportRequest(args) {
+  const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+  for (const key of Object.keys(input)) {
+    if (!['action', ...VIEW_FIELDS, 'expectedRevision'].includes(key)) {
+      throw new BrowserError('INVALID_ARGUMENT', 'browser_viewport 不接受未知字段 ' + key, {
+        field: key, allowed: ['action', ...VIEW_FIELDS, 'expectedRevision'],
+      });
+    }
+  }
+  const action = input.action;
+  if (action !== 'get' && action !== 'set') {
+    throw new BrowserError('INVALID_ARGUMENT', 'action 只能是 get 或 set', {
+      field: 'action', valueType: typeof action,
+    });
+  }
+  if (action === 'get') {
+    const extra = ['action', ...VIEW_FIELDS, 'expectedRevision']
+      .filter((key) => key !== 'action' && input[key] !== undefined);
+    if (extra.length) {
+      throw new BrowserError('INVALID_ARGUMENT', 'action=get 是只读缓存诊断，不接受其他字段', { fields: extra });
+    }
+    return { action: 'get', patch: null, requested: null, expectedRevision: null };
+  }
+  const patch = {};
+  if (input.mode !== undefined) {
+    if (typeof input.mode !== 'string' || !Object.prototype.hasOwnProperty.call(VIEW_PRESETS, input.mode)) {
+      throw new BrowserError('INVALID_ARGUMENT', 'mode 只能是 wide/landscape/tablet/phone（custom 只作为派生返回值）', {
+        field: 'mode', valueType: typeof input.mode, allowed: Object.keys(VIEW_PRESETS),
+      });
+    }
+    patch.mode = input.mode;
+  }
+  for (const key of ['x', 'y']) {
+    if (input[key] === undefined) continue;
+    const value = input[key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new BrowserError('INVALID_ARGUMENT', `${key} 必须是有限数字（文档 CSS 像素）`, {
+        field: key, valueType: Array.isArray(value) ? 'array' : typeof value,
+      });
+    }
+    if (value < VIEW_LIMITS.scroll[0] || value > VIEW_LIMITS.scroll[1]) {
+      throw new BrowserError('INVALID_ARGUMENT', `${key} 超出允许范围`, {
+        field: key, min: VIEW_LIMITS.scroll[0], max: VIEW_LIMITS.scroll[1], value,
+      });
+    }
+    patch[key] = value;
+  }
+  for (const key of ['width', 'height']) {
+    if (input[key] === undefined) continue;
+    const value = input[key];
+    if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+      throw new BrowserError('INVALID_ARGUMENT', `${key} 必须是整数（不接受小数或字符串）`, {
+        field: key, valueType: Array.isArray(value) ? 'array' : typeof value,
+      });
+    }
+    if (value < VIEW_LIMITS.width[0] || value > VIEW_LIMITS.width[1]) {
+      throw new BrowserError('INVALID_ARGUMENT', `${key} 超出允许范围`, {
+        field: key, min: VIEW_LIMITS.width[0], max: VIEW_LIMITS.width[1], value,
+      });
+    }
+    patch[key] = value;
+  }
+  if (input.scale !== undefined) {
+    const value = input.scale;
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new BrowserError('INVALID_ARGUMENT', 'scale 必须是有限数字（0.1–2，即 10–200%）', {
+        field: 'scale', valueType: Array.isArray(value) ? 'array' : typeof value,
+      });
+    }
+    if (value < VIEW_LIMITS.scale[0] || value > VIEW_LIMITS.scale[1]) {
+      throw new BrowserError('INVALID_ARGUMENT', 'scale 超出允许范围（0.1–2，即 10–200%）', {
+        field: 'scale', min: VIEW_LIMITS.scale[0], max: VIEW_LIMITS.scale[1], value,
+      });
+    }
+    patch.scale = value;
+  }
+  if (patch.mode !== undefined && (patch.width !== undefined || patch.height !== undefined)) {
+    throw new BrowserError('INVALID_ARGUMENT', 'mode 与 width/height 不能同时给出（预设本身已包含宽高）', {
+      fields: ['mode', 'width', 'height'],
+    });
+  }
+  if (Object.keys(patch).length === 0) {
+    throw new BrowserError('INVALID_ARGUMENT', 'action=set 至少需要一个 view 字段（mode/x/y/width/height/scale）', {
+      fields: [...VIEW_FIELDS],
+    });
+  }
+  let expectedRevision = null;
+  if (input.expectedRevision !== undefined) {
+    const value = input.expectedRevision;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+      throw new BrowserError('INVALID_ARGUMENT', 'expectedRevision 必须是非负安全整数', {
+        field: 'expectedRevision', valueType: Array.isArray(value) ? 'array' : typeof value,
+      });
+    }
+    expectedRevision = value;
+  }
+  return { action: 'set', patch, requested: { ...patch }, expectedRevision };
+}
+
+/**
+ * Expand a validated patch: `mode` becomes its preset width/height, everything else passes through.
+ *
+ * A preset only supplies width/height: an `x`/`y`/`scale` given in the SAME patch is legal (only
+ * `mode` + `width`/`height` is rejected by the validator) and must not be dropped. `mode` itself
+ * never enters the runtime patch — it is derived from the final size.
+ */
+function expandViewPatch(patch) {
+  if (patch && patch.mode !== undefined) {
+    const { mode, ...rest } = patch;
+    const preset = VIEW_PRESETS[mode];
+    return { ...rest, width: preset.width, height: preset.height };
+  }
+  return { ...patch };
+}
+
 /**
  * Pure pre-flight for browser_screenshot: no browser, no filesystem, no capture.
  *
  * Runs before anything that could start Chromium so a rejected argument costs nothing.
- * `scale` must be a finite number in the continuous range [1,4] (fractions such as 1.11 are legal;
- * the output size is round(css x scale)); `region` is a document-CSS rectangle with four finite
- * numbers and width/height >= 1; `out` is an optional relative .png path.
+ * `scale` must be a finite number in the continuous range [0.1,4] (fractions such as 1.11 are
+ * legal; the output size is round(css x scale)). **Omitted is not 1**: `scale: null` is returned
+ * and the caller resolves it from the shared `view.scale` inside the call (docs/viewport-control.md
+ * §6.1). `region` is a document-CSS rectangle with four finite numbers and width/height >= 1;
+ * `out` is an optional relative .png path.
  */
 function normalizeCaptureRequest(args) {
   const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
-  let scale = CAPTURE_LIMITS.scaleMin;
+  let scale = null;
   if (input.scale !== undefined && input.scale !== null) {
     if (typeof input.scale !== 'number' || !Number.isFinite(input.scale)) {
-      throw new BrowserError('INVALID_ARGUMENT', 'scale 必须是有限数字（连续范围 1–4）', {
+      throw new BrowserError('INVALID_ARGUMENT', 'scale 必须是有限数字（连续范围 0.1–4）', {
         field: 'scale', valueType: Array.isArray(input.scale) ? 'array' : typeof input.scale,
       });
     }
     if (input.scale < CAPTURE_LIMITS.scaleMin || input.scale > CAPTURE_LIMITS.scaleMax) {
-      throw new BrowserError('INVALID_ARGUMENT', 'scale 超出允许范围（连续 1–4，可用小数）', {
+      throw new BrowserError('INVALID_ARGUMENT', 'scale 超出允许范围（连续 0.1–4，可用小数）', {
         field: 'scale', min: CAPTURE_LIMITS.scaleMin, max: CAPTURE_LIMITS.scaleMax, value: input.scale,
       });
     }
@@ -426,6 +599,15 @@ function normalizeCaptureRequest(args) {
 /** Pixel budget, judged before any CDP screenshot: Chrome must never be asked for more. */
 function assertCaptureBudget(rect, scale) {
   const expected = expectedPixelSize({ width: rect.width, height: rect.height, scale, deviceScaleFactor: 1 });
+  // A small region at a low scale can round to 0 px on an axis (docs/viewport-control.md §6.2):
+  // refuse before dispatch instead of asking Chrome for an impossible clip.
+  if (!hasPositiveOutputSize(expected)) {
+    throw new BrowserError('INVALID_ARGUMENT', '截图输出尺寸会舍入到 0 像素（请提高 scale 或 region 尺寸）', {
+      reason: 'empty-output-dimensions',
+      expected: { width: expected.width, height: expected.height },
+      requested: { region: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, scale },
+    });
+  }
   const pixels = expected.width * expected.height;
   if (pixels > CAPTURE_LIMITS.maxOutputPixels) {
     throw new BrowserError('CAPTURE_TOO_LARGE', '截图期望像素超过上限', {
@@ -1929,7 +2111,28 @@ export class Runtime {
     this.requests = new Map();
     this.url = '';
     this.title = '';
-    this.viewport = { width: 1280, height: 800 };
+    // Shared viewport authority (docs/viewport-control.md §3.1). `viewport` below is a read-only
+    // alias so the historical `{width,height}` field can never drift from `view`.
+    this.view = {
+      version: 1,
+      x: VIEW_LIMITS.default.x,
+      y: VIEW_LIMITS.default.y,
+      width: VIEW_LIMITS.default.width,
+      height: VIEW_LIMITS.default.height,
+      scale: VIEW_LIMITS.default.scale,
+      source: 'default',
+      revision: 0,
+    };
+    /** Last real `Page.getLayoutMetrics` readback (null until the page was actually observed). */
+    this.observed = null;
+    // Merged background observation of the layout viewport (docs/viewport-control.md §3.2): set by
+    // request/action triggers only — there is deliberately no standing 5Hz timer.
+    this.viewObserveTimer = 0;
+    this.viewObserveDue = [];
+    this.viewObserving = false;
+    this.viewObserveAt = 0;
+    /** Last GUI originId that wrote the view (Agent writes keep it null); diagnostics only. */
+    this.viewOriginId = null;
     this.activity = '空闲';
     this.agentUntil = 0;
     this.humanUntil = 0;
@@ -2032,6 +2235,12 @@ export class Runtime {
   get cleanupError() { return this.host ? this.host.cleanupError : null; }
   get running() { return Boolean(this.cdp && !this.cdp.closed); }
   get viewers() { return this.viewerUntil > Date.now() ? this.viewerSockets : 0; }
+  /**
+   * Historical top-level alias `viewport={width,height}` (docs/viewport-control.md §3.1 keeps it):
+   * it is a getter over `view` so the two can never disagree. Callers that need x/y/scale read
+   * `viewProjection()` instead.
+   */
+  get viewport() { return { width: this.view.width, height: this.view.height }; }
 
   /** A visible viewer heartbeat (metrics POST / WS connect). state/frame polls never call this. */
   touchViewer() { this.viewerUntil = Date.now() + this.viewerTtlMs; }
@@ -2103,7 +2312,9 @@ export class Runtime {
       return result;
     } catch (error) {
       const classified = asBrowserError(error);
-      if (entered && action && !['INVALID_ARGUMENT', 'UNSUPPORTED', 'BUSY'].includes(classified.code)) {
+      // VIEWPORT_CONFLICT is an optimistic-concurrency answer, not a page failure: like an
+      // invalid argument it must not overwrite the owner's lastError (docs/viewport-control.md §7.1).
+      if (entered && action && !['INVALID_ARGUMENT', 'UNSUPPORTED', 'BUSY', 'VIEWPORT_CONFLICT'].includes(classified.code)) {
         this.setError(classified.message, action);
       }
       // A rejected CDP wait cannot retract an already dispatched command. Close before allowing
@@ -2298,7 +2509,10 @@ export class Runtime {
       // Same-document navigations are only meaningful for the main frame; remember which one it is.
       const tree = await this.send('Page.getFrameTree', {}, signal);
       this.mainFrameId = tree && tree.frameTree && tree.frameTree.frame ? tree.frameTree.frame.id : undefined;
-      await this.applyViewport(this.viewport.width, this.viewport.height, signal);
+      await this.applyViewport(this.view.width, this.view.height, signal);
+      // First real observation of this page: `observed` goes from null (cold) to the measured
+      // layout viewport. Best effort — a Chromium without css* metrics keeps observed=null.
+      await this.refreshViewObservation(signal);
       await cdp.send('Page.startScreencast', {
         format: 'jpeg',
         quality: 72,
@@ -2406,6 +2620,8 @@ export class Runtime {
       // committed main-frame navigation, so the timeline can show which page the traffic belongs to.
       this.netMark({ kind: 'state', text: 'navigate', url: this.url });
       this.refreshMetadataSoon();
+      // A commit resets the document scroll: refresh x/y once the new document is observable.
+      this.refreshViewObservationSoon();
       return;
     }
     if (message.method === 'Page.navigatedWithinDocument') {
@@ -3217,18 +3433,433 @@ export class Runtime {
     return held.length;
   }
 
+  /* ---- shared view: projections ------------------------------------------------------------ */
+
+  /** Derived mode: exact preset match, otherwise `custom` (never an independent stored flag). */
+  viewMode() { return viewModeFor(this.view.width, this.view.height); }
+
+  /** Pure-JSON `view` projection (safe for tool values, HTTP `ui.view` and `state.view`). */
+  viewProjection() {
+    const view = this.view;
+    return {
+      version: 1,
+      mode: this.viewMode(),
+      x: view.x,
+      y: view.y,
+      width: view.width,
+      height: view.height,
+      scale: view.scale,
+      source: view.source,
+      revision: view.revision,
+    };
+  }
+
+  /** `observed` projection: null until a real readback; unknown values stay null, never guessed. */
+  observedProjection() {
+    const observed = this.observed;
+    if (!observed) return null;
+    return {
+      x: observed.x,
+      y: observed.y,
+      width: observed.width,
+      height: observed.height,
+      contentWidth: observed.contentWidth,
+      contentHeight: observed.contentHeight,
+      pageDevicePixelRatio: observed.pageDevicePixelRatio,
+      visualViewportScale: observed.visualViewportScale,
+      observedAt: observed.observedAt,
+      source: 'Page.getLayoutMetrics',
+    };
+  }
+
+  /** Freshness/identity companions for the cached view (docs/viewport-control.md §3.1). */
+  viewMeta() {
+    const observed = this.observed;
+    return {
+      runtimeId: this.runtimeId,
+      observedAt: observed ? observed.observedAt : null,
+      stale: !observed || Date.now() - observed.observedAt > VIEW_LIMITS.staleAfterMs,
+      originId: this.viewOriginId ?? null,
+    };
+  }
+
+  /** Read-only diagnostics for `browser_viewport get` (no ensure, no CDP, no lease). */
+  viewSnapshot() {
+    return {
+      ok: true,
+      running: this.running,
+      view: this.viewProjection(),
+      observed: this.observedProjection(),
+      viewMeta: this.viewMeta(),
+    };
+  }
+
+  /* ---- shared view: observation ------------------------------------------------------------ */
+
+  /**
+   * One real `Page.getLayoutMetrics` read (plus the page DPR as evidence).
+   *
+   * `cssLayoutViewport.pageX/pageY` is the authoritative document scroll position and
+   * `clientWidth/clientHeight` the CSS viewport size (docs/viewport-control.md §3.2). A Chromium
+   * without the `css*` fields cannot prove CSS coordinates, so it is reported as UNSUPPORTED
+   * instead of mixing device pixels into CSS fields.
+   */
+  async #readViewMetrics(signal) {
+    let layout;
+    try {
+      layout = await this.send('Page.getLayoutMetrics', {}, signal);
+    } catch (error) {
+      throw this.#captureError(error, 'getLayoutMetrics');
+    }
+    const layoutViewport = (layout && layout.cssLayoutViewport) || {};
+    const visualViewport = (layout && layout.cssVisualViewport) || {};
+    const content = (layout && layout.cssContentSize) || {};
+    if (!Number.isFinite(layoutViewport.clientWidth) || !Number.isFinite(layoutViewport.clientHeight)) {
+      throw new BrowserError('UNSUPPORTED', '当前 Chromium 不提供 CSS layout viewport 指标（无法证明 CSS 坐标）', {
+        phase: 'getLayoutMetrics', reason: 'css-layout-viewport-missing',
+      });
+    }
+    const pick = (primary, fallback) => (Number.isFinite(primary) ? primary : fallback);
+    let pageDevicePixelRatio = null;
+    try {
+      const evaluated = await this.send('Runtime.evaluate', {
+        expression: 'window.devicePixelRatio', returnByValue: true,
+      }, signal);
+      const value = evaluated && evaluated.result ? evaluated.result.value : undefined;
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) pageDevicePixelRatio = value;
+    } catch (error) {
+      if (error && error.code === 'ABORTED') throw error;
+      pageDevicePixelRatio = null;
+    }
+    return {
+      x: pick(layoutViewport.pageX, pick(visualViewport.pageX, 0)),
+      y: pick(layoutViewport.pageY, pick(visualViewport.pageY, 0)),
+      width: layoutViewport.clientWidth,
+      height: layoutViewport.clientHeight,
+      contentWidth: Number.isFinite(content.width) ? content.width : null,
+      contentHeight: Number.isFinite(content.height) ? content.height : null,
+      pageDevicePixelRatio,
+      visualViewportScale: Number.isFinite(visualViewport.scale) ? visualViewport.scale : null,
+      observedAt: Date.now(),
+    };
+  }
+
+  /** Instant scroll only: the single `Runtime.evaluate` use allowed besides the DPR read. */
+  async #scrollViewTo(x, y, signal) {
+    const left = Number.isFinite(x) ? x : 0;
+    const top = Number.isFinite(y) ? y : 0;
+    await this.send('Runtime.evaluate', {
+      expression: `window.scrollTo({left:${JSON.stringify(left)},top:${JSON.stringify(top)},behavior:'instant'})`,
+      returnByValue: true,
+    }, signal);
+  }
+
+  /** Wait for two rendered frames, bounded so a non-compositing page can never stall a set. */
+  async #waitTwoFrames(signal) {
+    const cdp = this.cdp;
+    if (!cdp || cdp.closed) return;
+    try {
+      await cdp.send('Runtime.evaluate', {
+        expression: 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))',
+        returnByValue: true,
+        awaitPromise: true,
+      }, { signal, timeoutMs: 500 });
+    } catch {
+      // A page that never paints (or a cancelled wait) must fall through to the timed samples:
+      // the bounded readback below is the authority, the frame wait is only a head start.
+    }
+  }
+
+  /**
+   * Bounded stable readback (docs/viewport-control.md §4.1 step 5): two frames, then at most
+   * `settleMaxMs` of samples; two consecutive samples within 0.01 CSS px count as settled.
+   * Settling is best effort — `settled:false` is a legal answer, never an error.
+   */
+  async #settleViewObservation(signal) {
+    await this.#waitTwoFrames(signal);
+    checkAbort(signal);
+    const deadline = Date.now() + VIEW_LIMITS.settleMaxMs;
+    let previous = await this.#readViewMetrics(signal);
+    let settled = false;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      checkAbort(signal);
+      const next = await this.#readViewMetrics(signal);
+      const stable = ['x', 'y', 'width', 'height']
+        .every((key) => Math.abs(next[key] - previous[key]) <= 0.01);
+      previous = next;
+      if (stable) { settled = true; break; }
+    }
+    return { observed: previous, settled };
+  }
+
+  /**
+   * Commit one observation: x/y/width/height come from the real metrics, `scale` from the patch.
+   * `revision` only moves when the content actually changed; `source` records who changed it.
+   */
+  #commitViewObservation(observed, { source = null, originId, scale = null } = {}) {
+    const view = this.view;
+    let changed = false;
+    if (observed) {
+      this.observed = observed;
+      for (const key of ['x', 'y', 'width', 'height']) {
+        if (!Number.isFinite(observed[key])) continue;
+        if (Math.abs(observed[key] - view[key]) > 1e-6) { view[key] = observed[key]; changed = true; }
+      }
+    }
+    if (Number.isFinite(scale) && Math.abs(scale - view.scale) > 1e-9) {
+      view.scale = scale;
+      changed = true;
+    }
+    if (source && changed) view.source = source;
+    if (originId !== undefined) this.viewOriginId = originId ?? null;
+    if (changed) view.revision += 1;
+    return changed;
+  }
+
+  /** One best-effort observation (page start). A failure leaves the previous facts untouched. */
+  async refreshViewObservation(signal) {
+    try {
+      const observed = await this.#readViewMetrics(signal);
+      this.#commitViewObservation(observed, { source: null });
+      return observed;
+    } catch (error) {
+      if (error && error.code === 'ABORTED') throw error;
+      return null;
+    }
+  }
+
+  /**
+   * Coalesced, single-flight, throttled view observation (docs/viewport-control.md §3.2).
+   *
+   * The page can move without any `browser_viewport set`: the page's own scripts, `scrollIntoView`,
+   * a wheel/scroll from the panel, smooth scrolling or scroll snap. Without a readback the cached
+   * `view.x/y` would only refresh on the next set, so the panel's X/Y inputs would show a stale
+   * position (Client GUI V6.4). This schedules at most one metrics read:
+   *   - **throttled**: real reads are at least `scrollPollMinMs` (200ms) apart,
+   *   - **coalesced**: several requests inside one window collapse into one read,
+   *   - **single-flight**: a read in flight is never stacked,
+   *   - **event-driven**: only requests/actions arm it — no standing timer, so an idle page with no
+   *     GUI poll costs zero CDP calls.
+   *
+   * `delayMs` lets a caller ask for a settling sample (`/input` schedules 50ms and 250ms).
+   * A failed read keeps the previous `observed` (which then reports `stale:true`) and never invents
+   * a position.
+   */
+  refreshViewObservationSoon({ delayMs = 0 } = {}) {
+    const cdp = this.cdp;
+    if (!cdp || cdp.closed) return;
+    const now = Date.now();
+    if (!Array.isArray(this.viewObserveDue)) this.viewObserveDue = [];
+    this.viewObserveDue.push(now + Math.max(0, delayMs));
+    // Two slots are the contract (immediate + settling sample); keep the queue tiny.
+    if (this.viewObserveDue.length > 4) this.viewObserveDue.splice(0, this.viewObserveDue.length - 4);
+    this.#armViewObservation();
+  }
+
+  #armViewObservation() {
+    if (this.viewObserveTimer || this.viewObserving) return;
+    if (!Array.isArray(this.viewObserveDue) || this.viewObserveDue.length === 0) return;
+    const cdp = this.cdp;
+    if (!cdp || cdp.closed) return;
+    const now = Date.now();
+    const due = Math.min(...this.viewObserveDue);
+    const wait = Math.max(0, Math.max(due, this.viewObserveAt + VIEW_LIMITS.scrollPollMinMs) - now);
+    this.viewObserveTimer = setTimeout(() => {
+      this.viewObserveTimer = 0;
+      // Consume every due time that this slot covers.
+      const slot = Date.now();
+      this.viewObserveDue = (this.viewObserveDue || []).filter((item) => item > slot + 5);
+      this.#runViewObservation();
+    }, wait);
+    this.viewObserveTimer.unref?.();
+  }
+
+  #runViewObservation() {
+    const cdp = this.cdp;
+    if (!cdp || cdp.closed) { this.viewObserveDue = []; return; }
+    // Never sample in the middle of a page operation (a set does its own bounded readback) or
+    // while the page is starting/closing: defer one slot instead of racing them.
+    if (this.inflight > 0 || this.starting || this.closing) {
+      // One deferred slot only: never let a long operation grow the queue (it is re-armed when the
+      // operation ends and a request asks again).
+      if (this.viewObserveDue.length === 0) this.viewObserveDue.push(Date.now() + 100);
+      else this.viewObserveDue[0] = Date.now() + 100;
+      this.#armViewObservation();
+      return;
+    }
+    this.viewObserving = true;
+    this.viewObserveAt = Date.now();
+    const cdpAtStart = cdp;
+    this.#readViewMetrics(AbortSignal.timeout(5000))
+      .then((observed) => {
+        if (this.cdp !== cdpAtStart || cdpAtStart.closed || this.closing) return;
+        this.#commitObservedPosition(observed);
+      })
+      .catch(() => { /* keep the old facts: `stale` then tells the truth */ })
+      .finally(() => {
+        this.viewObserving = false;
+        this.#armViewObservation();
+      });
+  }
+
+  /**
+   * Commit a background reading: refresh `observed`/`observedAt`, and echo a *position* change into
+   * `view.x/y` with `source:'page'` and `revision+1`. Width/height/scale are owned by set (which has
+   * its own bounded readback), so a background sample never rewrites them; a same-value sample never
+   * bumps the revision.
+   */
+  #commitObservedPosition(observed) {
+    if (!observed) return false;
+    this.observed = observed;
+    const view = this.view;
+    let changed = false;
+    for (const key of ['x', 'y']) {
+      if (!Number.isFinite(observed[key])) continue;
+      if (Math.abs(observed[key] - view[key]) > 1e-6) { view[key] = observed[key]; changed = true; }
+    }
+    if (changed) {
+      view.source = 'page';
+      view.revision += 1;
+    }
+    return changed;
+  }
+
+  /* ---- shared view: set -------------------------------------------------------------------- */
+
+  /**
+   * Apply one validated view patch **inside** the serial queue (docs/viewport-control.md §4.1).
+   *
+   * The caller does the pure pre-flight and enters `run()`; the `expectedRevision` recheck happens
+   * here so two concurrent patches cannot both pass it (CAS in the queue). Only a width/height
+   * change sends `Emulation.setDeviceMetricsOverride` (never for scale-only or x/y-only), a scroll
+   * is only sent when x/y were given, and the answer always reports the measured state.
+   *
+   * Multi-step CDP has no database rollback: when a later step fails the actually applied fields
+   * are committed first, then the error carries `phase/appliedFields/view` — never "no side effect".
+   */
+  async applyView(patch, { signal, source = 'agent', originId = null, expectedRevision = null } = {}) {
+    if (expectedRevision !== null && expectedRevision !== undefined && expectedRevision !== this.view.revision) {
+      throw new BrowserError('VIEWPORT_CONFLICT', '视口版本已变化（expectedRevision 与当前 revision 不同）', {
+        expected: expectedRevision, actual: this.view.revision, view: this.viewProjection(),
+      });
+    }
+    const before = this.viewProjection();
+    const requested = { ...patch };
+    const targetWidth = patch.width !== undefined ? patch.width : this.view.width;
+    const targetHeight = patch.height !== undefined ? patch.height : this.view.height;
+    const needsOverride = targetWidth !== this.view.width || targetHeight !== this.view.height;
+    const wantsScroll = patch.x !== undefined || patch.y !== undefined;
+    const appliedFields = [];
+    let overrideApplied = false;
+    try {
+      await this.ensure(signal);
+      if (needsOverride) {
+        await this.send('Emulation.setDeviceMetricsOverride', {
+          width: targetWidth, height: targetHeight, deviceScaleFactor: 1, mobile: false,
+        }, signal);
+        overrideApplied = true;
+        if (patch.width !== undefined) appliedFields.push('width');
+        if (patch.height !== undefined) appliedFields.push('height');
+      }
+      if (wantsScroll) {
+        // The preserved axis uses the live scroll position, not the cached view value.
+        const live = await this.#readViewMetrics(signal);
+        const target = {
+          x: patch.x !== undefined ? patch.x : live.x,
+          y: patch.y !== undefined ? patch.y : live.y,
+        };
+        await this.#scrollViewTo(target.x, target.y, signal);
+        if (patch.x !== undefined) appliedFields.push('x');
+        if (patch.y !== undefined) appliedFields.push('y');
+      }
+      if (patch.scale !== undefined) appliedFields.push('scale');
+      const { observed, settled } = await this.#settleViewObservation(signal);
+      this.#commitViewObservation(observed, {
+        source, originId, scale: patch.scale !== undefined ? patch.scale : null,
+      });
+      const view = this.viewProjection();
+      return {
+        ok: true,
+        requested,
+        before,
+        view,
+        observed: this.observedProjection(),
+        viewMeta: this.viewMeta(),
+        applied: true,
+        settled,
+        clamped: {
+          x: requested.x !== undefined && Math.abs(observed.x - requested.x) > 0.01,
+          y: requested.y !== undefined && Math.abs(observed.y - requested.y) > 0.01,
+        },
+        // Evidence only (additive): whether this set actually sent the emulation override.
+        overrideApplied,
+        appliedFields,
+      };
+    } catch (error) {
+      const classified = asBrowserError(error);
+      let last = null;
+      if (!['ABORTED', 'CDP_DISCONNECTED'].includes(classified.code)) {
+        last = await Promise.race([
+          this.#readViewMetrics(undefined).catch(() => null),
+          new Promise((resolve) => setTimeout(() => resolve(null), 500)),
+        ]);
+      }
+      // Commit only what is provably applied, so the caller sees the real state, not the request.
+      let changed = false;
+      if (overrideApplied) {
+        if (this.view.width !== targetWidth || this.view.height !== targetHeight) {
+          this.view.width = targetWidth;
+          this.view.height = targetHeight;
+          changed = true;
+        }
+      }
+      if (last) {
+        this.observed = last;
+        for (const key of ['x', 'y']) {
+          if (Number.isFinite(last[key]) && Math.abs(last[key] - this.view[key]) > 1e-6) {
+            this.view[key] = last[key];
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        this.view.source = source;
+        this.view.revision += 1;
+      }
+      classified.details = {
+        ...(classified.details && typeof classified.details === 'object' ? classified.details : {}),
+        phase: classified.details && classified.details.phase ? classified.details.phase : (overrideApplied ? 'afterOverride' : 'apply'),
+        appliedFields,
+        view: this.viewProjection(),
+        observed: this.observedProjection(),
+      };
+      throw classified;
+    }
+  }
+
+  /**
+   * Legacy `POST /viewport {width,height}` (docs/viewport-control.md §4.2): Number/round/clamp to
+   * 200–4096, keep x/y (the browser constrains them) and scale. It always returns the clamped
+   * request so an old client sees exactly the historical answer.
+   */
   async applyViewport(width, height, signal) {
     if (!Number.isFinite(width) || !Number.isFinite(height)) throw new BrowserError('INVALID_ARGUMENT', '视口尺寸必须是有限数字');
-    const w = Math.max(200, Math.min(4096, Math.round(width)));
-    const h = Math.max(200, Math.min(4096, Math.round(height)));
-    this.viewport = { width: w, height: h };
+    const w = Math.max(VIEW_LIMITS.width[0], Math.min(VIEW_LIMITS.width[1], Math.round(width)));
+    const h = Math.max(VIEW_LIMITS.height[0], Math.min(VIEW_LIMITS.height[1], Math.round(height)));
+    if (w !== this.view.width || h !== this.view.height) {
+      this.view.width = w;
+      this.view.height = h;
+      this.view.source = 'gui';
+      this.view.revision += 1;
+    }
     await this.send('Emulation.setDeviceMetricsOverride', {
       width: w,
       height: h,
       deviceScaleFactor: 1,
       mobile: false,
     }, signal);
-    return this.viewport;
+    return { width: w, height: h };
   }
 
   touchHuman(ms = 4000) {
@@ -3277,6 +3908,9 @@ export class Runtime {
       scope: this.scope,
       title: this.title,
       viewport: this.viewport,
+      // Safe view projection (no page text, no path): browser_state and the authenticated
+      // `ui.view` serve the same data (docs/viewport-control.md §4.2).
+      view: this.viewProjection(),
       seq: this.frames.seq,
       running: Boolean(this.cdp && !this.cdp.closed),
       error: redactText(this.lastError),
@@ -3307,6 +3941,11 @@ export class Runtime {
         scope: this.scope,
         address: running ? this.url : '',
         history: { ...(running ? this.history : emptyHistory()) },
+        // Shared viewport projection (docs/viewport-control.md §4.2): the same `view` the Agent
+        // tool reads, plus the observation and its freshness. Additive only.
+        view: this.viewProjection(),
+        viewMeta: this.viewMeta(),
+        observed: this.observedProjection(),
       },
     };
   }
@@ -3541,6 +4180,10 @@ export class Runtime {
         await this.send('Input.insertText', event.params, signal);
       }
     }
+    // A wheel/click/drag can move the page (momentum/smooth scroll/snap): two coalesced settling
+    // samples, 50ms and 250ms after the dispatch (docs/viewport-control.md §3.2).
+    this.refreshViewObservationSoon({ delayMs: 50 });
+    this.refreshViewObservationSoon({ delayMs: 250 });
     return events.length;
   }
 
@@ -3598,8 +4241,12 @@ export class Runtime {
    * unchanged; only a protocol error, empty data or a capture failure without a more fitting code
    * becomes CAPTURE_FAILED.
    */
-  async capture({ scale = 1, region } = {}, signal) {
+  async capture({ scale = 1, region, scaleSource = 'explicit' } = {}, signal) {
     const capturedAt = Date.now();
+    // The resolved density source travels with the capture so evidence can say whether the caller
+    // asked for this scale or the shared view.scale supplied it (docs/viewport-control.md §6.2).
+    const resolvedScaleSource = scaleSource === 'view' ? 'view' : 'explicit';
+    const viewRevisionAtCapture = this.view.revision;
     await this.ensure(signal);
     const deviceScaleFactor = 1;
     const effectiveScale = scale * deviceScaleFactor;
@@ -3647,6 +4294,13 @@ export class Runtime {
     const expected = expectedPixelSize({
       width: rect.width, height: rect.height, scale, deviceScaleFactor,
     });
+    if (!hasPositiveOutputSize(expected)) {
+      throw new BrowserError('INVALID_ARGUMENT', '截图输出尺寸会舍入到 0 像素（请提高 scale 或 region 尺寸）', {
+        reason: 'empty-output-dimensions', phase: 'effectiveClip',
+        expected: { width: expected.width, height: expected.height },
+        requested: { region: rect, scale },
+      });
+    }
     if (expected.width * expected.height > CAPTURE_LIMITS.maxOutputPixels) {
       throw new BrowserError('CAPTURE_TOO_LARGE', '截图期望像素超过上限', {
         expected: { width: expected.width, height: expected.height, pixels: expected.width * expected.height },
@@ -3683,6 +4337,8 @@ export class Runtime {
       pngBytes,
       capture: {
         requestedScale: scale,
+        scaleSource: resolvedScaleSource,
+        viewRevision: viewRevisionAtCapture,
         effectiveScale,
         deviceScaleFactor,
         deviceScaleFactorSource: 'runtime-override',
@@ -6015,6 +6671,19 @@ export class Runtime {
     this.humanUntil = 0;
     this.metadataStartedAt = 0;
     this.navigationError = undefined;
+    // A closed page keeps its width/height/scale configuration but loses its page-bound position
+    // (docs/viewport-control.md §3.1): x/y reset to 0, the observation is dropped, and the
+    // revision moves because that *is* a content change (never silently reuse the old position).
+    if (this.viewObserveTimer) { clearTimeout(this.viewObserveTimer); this.viewObserveTimer = 0; }
+    this.viewObserveDue = [];
+    this.viewObserving = false;
+    this.viewObserveAt = 0;
+    const hadViewPosition = this.view.x !== 0 || this.view.y !== 0 || this.observed !== null;
+    this.view.x = 0;
+    this.view.y = 0;
+    this.observed = null;
+    this.viewOriginId = null;
+    if (hadViewPosition) this.view.revision += 1;
     this.viewerUntil = 0;
     this.viewerSockets = 0;
     // Refs never survive a close/eviction/rebuild (contract §3.2).
@@ -6108,6 +6777,8 @@ function parseScopeQuery(rawUrl) {
 /** Status for the workspace-isolation error taxonomy (everything else stays 500 for compat). */
 function scopeHttpStatus(code) {
   switch (code) {
+    // Optimistic-concurrency loss on the shared viewport (docs/viewport-control.md §7.1).
+    case 'VIEWPORT_CONFLICT': return 409;
     case 'SCOPE_INVALID': return 400;
     case 'SCOPE_FORBIDDEN': return 403;
     case 'SCOPE_NOT_FOUND': return 404;
@@ -7220,7 +7891,12 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         const runtime = entry.runtime;
-        if (runtime.running) runtime.refreshMetadataSoon();
+        if (runtime.running) {
+          runtime.refreshMetadataSoon();
+          // The 80ms poll is the only "viewer alive" signal here: refresh the view cache so a page
+          // that scrolled itself is visible in `ui.observed` on a later poll (200ms throttled).
+          runtime.refreshViewObservationSoon();
+        }
         sendJson(res, 200, runtime.framePayload(since, projected(runtime)));
         return;
       }
@@ -7228,7 +7904,11 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         const runtime = entry.runtime;
-        if (runtime.running) runtime.refreshMetadataSoon();
+        if (runtime.running) {
+          runtime.refreshMetadataSoon();
+          // Same for the 500ms GUI state poll: coalesced + ≥200ms throttled, no standing timer.
+          runtime.refreshViewObservationSoon();
+        }
         sendJson(res, 200, projected(runtime));
         return;
       }
@@ -7305,15 +7985,63 @@ export function apply(ctx) {
         return;
       }
       if (action === '/viewport') {
+        // Two shapes (docs/viewport-control.md §4.2):
+        //   legacy {width,height}                 -> historical Number/round/clamp, same reply
+        //   v1 {version:1, ...patch, expectedRevision?, originId?} -> strict, same validation as
+        //                                            the tool; replies also carry ui.view/observed.
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
-        const viewport = await entry.runtime.run(async () => {
-          await entry.runtime.ensure();
-          return entry.runtime.applyViewport(Number(body.width), Number(body.height));
-        });
+        if (body.version === undefined || body.version === null) {
+          const viewport = await entry.runtime.run(async () => {
+            await entry.runtime.ensure();
+            return entry.runtime.applyViewport(Number(body.width), Number(body.height));
+          });
+          registry.markRecent(entry);
+          sendJson(res, 200, {
+            ok: true,
+            viewport,
+            // Additive projections: an old client ignores them, the new one adopts them.
+            view: entry.runtime.viewProjection(),
+            observed: entry.runtime.observedProjection(),
+            viewMeta: entry.runtime.viewMeta(),
+            requested: { width: Number(body.width), height: Number(body.height) },
+            clamped: { x: false, y: false },
+            applied: true,
+            settled: true,
+            state: projected(entry.runtime),
+          });
+          return;
+        }
+        if (body.version !== 1) {
+          throw new BrowserError('INVALID_ARGUMENT', 'version 只支持 1（省略则为旧形状 {width,height}）', {
+            field: 'version', valueType: typeof body.version,
+          });
+        }
+        const originId = body.originId === undefined || body.originId === null ? null : body.originId;
+        if (originId !== null && (typeof originId !== 'string' || !/^[\x20-\x7e]{1,64}$/.test(originId))) {
+          throw new BrowserError('INVALID_ARGUMENT', 'originId 必须是 ≤64 个可打印 ASCII 字符（可省略）', {
+            field: 'originId', valueType: typeof originId,
+          });
+        }
+        const { version: _version, originId: _originId, ...patchFields } = body;
+        const request = normalizeViewportRequest({ action: 'set', ...patchFields });
+        const result = await entry.runtime.run(() => entry.runtime.applyView(expandViewPatch(request.patch), {
+          source: 'gui', originId, expectedRevision: request.expectedRevision,
+        }));
         registry.markRecent(entry);
-        sendJson(res, 200, { ok: true, viewport });
+        sendJson(res, 200, {
+          ok: true,
+          viewport: { width: result.view.width, height: result.view.height },
+          view: result.view,
+          observed: result.observed,
+          viewMeta: result.viewMeta,
+          requested: request.requested,
+          clamped: result.clamped,
+          applied: true,
+          settled: result.settled,
+          state: projected(entry.runtime),
+        });
         return;
       }
       if (action === '/input') {
@@ -7393,6 +8121,10 @@ export function apply(ctx) {
             : { type: typeof value }])),
       };
       const diagnostic = ['browser_state', 'browser_capabilities'].includes(definition.name);
+      // Per-action read-only branch (docs/viewport-control.md §7): `browser_viewport get` is a
+      // *cache* diagnostic — no ensure, no CDP (not even Page.bringToFront), no queue, no lease,
+      // no recent/error bookkeeping. It may still read another owner's cached view.
+      const readOnly = typeof definition.readOnly === 'function' && definition.readOnly(args) === true;
       const isHttpRequest = definition.name === 'browser_http_request';
       // Web P0 network read-only tools (session.status/reset, events, detail, trace query, evidence,
       // subscribe) are scope-local reads: they resolve the workspace runtime but never take the page
@@ -7400,7 +8132,7 @@ export function apply(ctx) {
       const isNetworkRead = definition.networkRead === true;
       // The independent HTTP tool must not enter the page queue, the lease, activity or
       // lastError; only real page/network operations participate in the error projection.
-      const pageOperation = !diagnostic && !isHttpRequest && !isNetworkRead;
+      const pageOperation = !readOnly && !diagnostic && !isHttpRequest && !isNetworkRead;
       // Resolve the workspace scope from the exec identity only (never from a client-supplied
       // path). No exec identity at all is the old protocol and maps to legacy:default.
       let entry;
@@ -7451,10 +8183,22 @@ export function apply(ctx) {
           const value = await execute(args, { ...exec, meta, sessionId, runtime, httpClient });
           return finish(value, meta.target || '');
         }
+        // Optional pure pre-flight, outside the queue: an invalid argument must cost zero CDP
+        // (not even the queue's Page.bringToFront) and must not touch owner/error state
+        // (docs/viewport-control.md §7.1). Validation is pure: no browser, no file, no lease.
+        if (typeof definition.preflight === 'function') definition.preflight(args);
+        if (readOnly) {
+          // Cache-only diagnostic: deliberately outside run() so it cannot activate the page,
+          // wait behind the queue, claim the lease or mark the entry recent.
+          meta.target = runtime.url ? redactUrl(runtime.url) : '';
+          const value = await execute(args, { ...exec, meta, sessionId, runtime, httpClient });
+          return finish(value, meta.target);
+        }
         const value = await runtime.run(async () => {
           meta.target = runtime.url ? redactUrl(runtime.url) : '';
           if (pageOperation) runtime.touchAgent(definition.name === 'browser_navigate' ? '正在打开 ' + redactUrl(String(args?.url || '')) : ({
             browser_eval: '执行脚本', browser_input: '派发输入事件', browser_network: '读取网络记录',
+            browser_viewport: '调整共享视口',
             browser_screenshot: '截图', browser_computed_style: '读取计算样式',
             browser_snapshot: '读取结构快照', browser_click: '点击元素', browser_type: '输入文本',
             browser_scroll: '滚动页面', browser_fill_form: '填写表单', browser_node_state: '读取节点状态',
@@ -7477,6 +8221,11 @@ export function apply(ctx) {
         if (pageOperation) {
           registry.touch(entry);
           registry.markRecent(entry);
+          // Any successful page operation may have moved the page (scrollIntoView, click, drag,
+          // navigation, a script): refresh the view cache once, coalesced/throttled.
+          // `browser_viewport set` is excluded — applyView already did its own bounded readback, and
+          // a scale-only set must not cost an extra metrics read (docs/viewport-control.md §3.2).
+          if (definition.name !== 'browser_viewport') runtime.refreshViewObservationSoon();
         }
         // An operation-level failure (eval/style return {ok:false,error}) is a real failure, not
         // a success that clears the projection.
@@ -7534,7 +8283,7 @@ export function apply(ctx) {
 
   register({
     name: 'browser_screenshot',
-    description: '截取内嵌浏览器的画面（PNG）：默认当前可见视口（1280×800）；可选 scale（连续 1–4，可用小数；重新光栅化，不是位图放大）、'
+    description: '截取内嵌浏览器的画面（PNG）：默认当前可见视口、默认比例 = 当前共享显示比例 view.scale（冷启动 100%）；可选 scale（连续 0.1–4，可用小数；重新光栅化，不是位图放大）、'
       + 'region（文档 CSS 像素的无损裁剪）、persist（默认 false：写插件暂存目录，不落工作区）、out（工作区相对 .png，提供即视为持久留存）。'
       + '只有 out / persist:true / DSH_UI_TESTING_CAPTURE_DIR 三者之一才持久落盘（0600、原子写入、绝不覆盖）；'
       + '暂存文件返回绝对路径并在插件卸载时删除。返回 PNG 结构/尺寸校验/空白识别/落盘/附件对比证据与 warnings；尺寸不符或 PNG 损坏时不交付图片。',
@@ -7543,7 +8292,7 @@ export function apply(ctx) {
       properties: {
         scale: {
           type: 'number',
-          description: '光栅化倍数，连续 1–4（可用小数，如 1.25/1.5），默认 1；输出像素 = round(文档 CSS 尺寸 × scale)。高 DPI 只提升 DOM/CSS/文字/矢量，canvas/WebGL 内部位图不会变清晰。',
+          description: '光栅化倍数（重新光栅化，不是位图放大），连续 0.1–4，可用小数（如 0.65/1.25）。省略 = 使用共享显示比例 view.scale（默认 100% = 1），在调用内解析一次；显式值只影响本次截图，不改 view/DPR/滚动/视口。输出像素 = round(文档 CSS 尺寸 × scale)，两轴都须 ≥ 1 像素。高 DPI 只提升 DOM/CSS/文字/矢量，canvas/WebGL 内部位图不会变清晰。',
         },
         region: {
           type: 'object',
@@ -7578,9 +8327,16 @@ export function apply(ctx) {
       // *before* the capture starts (docs/network-p0.md §3.3 / R1-16); it never starts collection.
       const networkStart = { frameTimeMs: Date.now(), highWater: runtime.net ? runtime.net.seq : 0 };
       const request = normalizeCaptureRequest(args);
+      // The default density is the shared `view.scale`, resolved ONCE here inside the call (cold
+      // view default is 1) — an omitted scale must never be frozen to 1 by the validator
+      // (docs/viewport-control.md §6.1). An explicit scale overrides it for this capture only: it
+      // never writes view/DPR/scroll/viewport.
+      const scale = request.scale === null ? runtime.view.scale : request.scale;
+      const scaleSource = request.scale === null ? 'view' : 'explicit';
+      const viewRevision = runtime.view.revision;
       const budgetRect = request.region
         || { x: 0, y: 0, width: runtime.viewport.width, height: runtime.viewport.height };
-      assertCaptureBudget(budgetRect, request.scale);
+      assertCaptureBudget(budgetRect, scale);
 
       // 2) Persistence + output path, decided before the capture: a rejected `out` must not write a
       // PNG, and the default (no out/persist/env) must never touch the workspace.
@@ -7607,7 +8363,7 @@ export function apply(ctx) {
       }
 
       // 3) The single capture (no retry, no second encoding).
-      const shot = await runtime.capture({ scale: request.scale, region: request.region }, exec.signal);
+      const shot = await runtime.capture({ scale, region: request.region, scaleSource }, exec.signal);
       const data = shot.pngBytes;
       const captured = shot.capture;
       const product = await runtime.browserProduct(exec.signal);
@@ -7615,7 +8371,9 @@ export function apply(ctx) {
       const warnings = [];
       const sha256 = createHash('sha256').update(data).digest('hex');
       const requestBlock = {
-        scale: request.scale,
+        scale,
+        scaleSource,
+        viewRevision,
         region: request.region
           ? { x: request.region.x, y: request.region.y, width: request.region.width, height: request.region.height }
           : null,
@@ -7646,7 +8404,7 @@ export function apply(ctx) {
       const expected = expectedPixelSize({
         width: captured.region.width,
         height: captured.region.height,
-        scale: request.scale,
+        scale,
         deviceScaleFactor: captured.deviceScaleFactor,
       });
       const sizeCheck = checkPixelSize({ width: png.width, height: png.height }, expected);
@@ -7686,9 +8444,19 @@ export function apply(ctx) {
         region: captured.region,
         scroll: captured.scroll,
         viewport: captured.viewport,
-        scale: request.scale,
+        scale,
         deviceScaleFactor: captured.deviceScaleFactor,
       }));
+      // Per-axis mapping from the REAL PNG size (docs/viewport-control.md §6.2): the nominal
+      // `pixelsPerCssPixel` stays for old consumers, these two fields are the actual sampling.
+      // Coordinates: docX = region.x + imageX * region.width / png.width (same for y).
+      mapping.cssPerPixel = {
+        x: captured.region.width / png.width,
+        y: captured.region.height / png.height,
+      };
+      mapping.scrollAtCapture = { x: captured.scroll.x, y: captured.scroll.y };
+      mapping.formulas.continuous = 'docX = region.x + imageX * region.width / imagePixels.width; '
+        + 'viewportX = docX - scrollAtCapture.x';
 
       // 7) Blank check: warns only. A pure-colour page is a legal page.
       let anomaly = {
@@ -7833,7 +8601,8 @@ export function apply(ctx) {
       // 11) Lightweight facts for browser_capabilities.capture.observed (relative paths only).
       runtime.captureObservation = {
         observedAt: captured.capturedAt,
-        scale: request.scale,
+        scale,
+        scaleSource,
         png: { width: png.width, height: png.height },
         sizeCheck: { ok: true },
         anomaly: { checked: anomaly.checked, uniform: anomaly.uniform, transparent: anomaly.transparent },
@@ -8373,8 +9142,59 @@ export function apply(ctx) {
   });
 
   register({
+    name: 'browser_viewport',
+    // `get` is a cache diagnostic only: the wrapper must not ensure/queue/lease/activate for it.
+    readOnly: (args) => Boolean(args) && typeof args === 'object' && args.action === 'get',
+    // Pure pre-flight outside the queue: a rejected patch costs no CDP and no page change.
+    preflight: (args) => { normalizeViewportRequest(args); },
+    description: '共享视口（T1）：get=只读缓存诊断（不启动浏览器、不发 CDP、不占租约；可读取他人租约下的缓存，stale 明示）；'
+      + 'set=页面操作（懒启动 + 串行队列 + single-owner-lease，仅改比例也算页面操作）。坐标是文档 CSS 像素的页面顶层滚动位置（x/y），'
+      + '不是窗口位置；宽高显式修改页面 CSS 视口，仅改比例不改视口/DPR/页面缩放。'
+      + 'mode 预设 wide/landscape/tablet/phone；expectedRevision 冲突返回 VIEWPORT_CONFLICT（本次 patch 零应用）。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['get', 'set'], description: 'get=只读缓存诊断（不接受其他字段）；set=应用一个 patch（至少一个 view 字段）' },
+        mode: {
+          type: 'string',
+          enum: ['wide', 'landscape', 'tablet', 'phone'],
+          description: '预设：wide 1920×1080 / landscape 1024×768 / tablet 768×1024 / phone 393×852；与 width/height 互斥。custom 只作为派生返回值。',
+        },
+        x: { type: 'number', description: `页面顶层滚动位置 X（文档 CSS px，${VIEW_LIMITS.scroll[0]}–${VIEW_LIMITS.scroll[1]}）；成功后回读实际值（可能被 clamp）` },
+        y: { type: 'number', description: `页面顶层滚动位置 Y（文档 CSS px，${VIEW_LIMITS.scroll[0]}–${VIEW_LIMITS.scroll[1]}）；成功后回读实际值（可能被 clamp）` },
+        width: { type: 'integer', description: `CSS 视口宽（整数 ${VIEW_LIMITS.width[0]}–${VIEW_LIMITS.width[1]}）；只有宽高变化才发送 Emulation.setDeviceMetricsOverride` },
+        height: { type: 'integer', description: `CSS 视口高（整数 ${VIEW_LIMITS.height[0]}–${VIEW_LIMITS.height[1]}）` },
+        scale: {
+          type: 'number',
+          description: `共享显示比例 ${VIEW_LIMITS.scale[0]}–${VIEW_LIMITS.scale[1]}（即 ${VIEW_LIMITS.scale[0] * 100}–${VIEW_LIMITS.scale[1] * 100}%，1=100%）；`
+            + '也是省略 scale 的 browser_screenshot 默认比例。不是 DPR、不是页面缩放、不做设备模拟（dsf 固定 1）。',
+        },
+        expectedRevision: { type: 'integer', description: '可选 CAS：与队列内当前 view.revision 不同则 VIEWPORT_CONFLICT（不应用 patch，返回 latest view）' },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      const request = normalizeViewportRequest(args);
+      if (request.action === 'get') {
+        // Cache-only: the wrapper already bypasses run()/ensure()/lease for this action.
+        return exec.runtime.viewSnapshot();
+      }
+      const result = await exec.runtime.applyView(expandViewPatch(request.patch), {
+        signal: exec.signal,
+        source: 'agent',
+        originId: null,
+        expectedRevision: request.expectedRevision,
+      });
+      return { ok: true, ...result, requested: { ...request.requested } };
+    },
+  });
+
+  register({
     name: 'browser_state',
-    description: '读取内嵌浏览器的当前状态：地址、标题、视口、控制权归属。',
+    description: '读取内嵌浏览器的当前状态：地址、标题、视口（旧 {width,height} 与安全 view 投影）、控制权归属。'
+      + '不保证新鲜：需要确定更新后事实请用 browser_viewport set 的读回，或 browser_viewport get 的缓存诊断。',
     parameters: { type: 'object', properties: {}, required: [] },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
@@ -8579,9 +9399,12 @@ export function apply(ctx) {
       return vision.validateSource(source, label);
     }
     if (source.kind === 'live') {
+      // `scale` is forwarded only when the caller actually gave one: the validator keeps the
+      // "omitted" state so the Host can resolve the shared view.scale inside this call
+      // (docs/viewport-control.md §6.1). Defaulting to 1 here would freeze the old behaviour.
       return vision.validateSource({
         kind: 'live',
-        scale: source.scale ?? 1,
+        ...(source.scale !== undefined ? { scale: source.scale } : {}),
         ...(source.region ? { region: source.region } : {}),
       }, label);
     }
@@ -8598,7 +9421,7 @@ export function apply(ctx) {
    * `role` is only used for evidence; every pin is released by the caller in `finally`.
    * The returned `captureFacts` is the ancestor capture lineage (act re-capture/age checks).
    */
-  async function t3ResolveSource(runtime, exec, source, role, pins, budget) {
+  async function t3ResolveSource(runtime, exec, source, role, pins, budget, liveScale = null) {
     const normalized = t3SourceForResolve(source, 'source');
     if (normalized.kind === 'live') {
       // §3.1: a live CssRect must be inside the live cssContentSize; reject BEFORE the capture.
@@ -8615,7 +9438,15 @@ export function apply(ctx) {
           throw t3Invalid('source.region 超出文档高度', { path: 'source.region', reason: 'region-outside-document' });
         }
       }
-      const shot = await runtime.capture({ scale: normalized.scale ?? 1, region: normalized.region ?? undefined }, exec.signal);
+      // One frozen default per tool call: an omitted source.scale follows the shared view.scale
+      // (the caller captured it once before resolving any source), an explicit one wins.
+      const resolvedScale = normalized.scale !== undefined
+        ? normalized.scale
+        : (Number.isFinite(liveScale) ? liveScale : runtime.view.scale);
+      const scaleSource = normalized.scale !== undefined ? 'explicit' : 'view';
+      const shot = await runtime.capture({
+        scale: resolvedScale, region: normalized.region ?? undefined, scaleSource,
+      }, exec.signal);
       const png = inspectPng(shot.pngBytes, { checkCrc: true });
       if (!png.ok) {
         throw new BrowserError('INVALID_PNG', '实时采集返回的字节不是结构完整的 PNG（不交付坏图）', {
@@ -8654,6 +9485,8 @@ export function apply(ctx) {
         transport: 'cdp-page-capture-screenshot',
         request: {
           scale: shot.capture.requestedScale,
+          scaleSource: shot.capture.scaleSource ?? scaleSource,
+          viewRevision: Number.isFinite(shot.capture.viewRevision) ? shot.capture.viewRevision : null,
           region: normalized.region ? { ...normalized.region } : null,
           coordinateSpace: 'document-css-px',
           out: null,
@@ -9341,12 +10174,12 @@ export function apply(ctx) {
   }
 
   /** Resolve a template Query source (product/baseline only); returns the resolved source or null. */
-  async function t3TemplateImage(runtime, exec, query, pins, budget) {
+  async function t3TemplateImage(runtime, exec, query, pins, budget, liveScale = null) {
     if (!query || query.method !== 'template') return null;
     const template = query.template;
     if (!template) throw t3Invalid('template 查询必须提供 template source', { path: 'template' });
     if (template.kind === 'live') throw t3Invalid('template source 只能是 product 或 baseline', { path: 'template' });
-    return t3ResolveSource(runtime, exec, template, 'template', pins, budget);
+    return t3ResolveSource(runtime, exec, template, 'template', pins, budget, liveScale);
   }
 
   function t3MergeResolved(base, provided, validator, name) {
@@ -9406,7 +10239,8 @@ export function apply(ctx) {
       properties: {
         source: {
           type: 'object',
-          description: '源图：{kind:"live",scale?:1–4,region?:文档CSS Rect} | {kind:"product",productId:"v1_<32hex>"} | {kind:"baseline",name,revision?}；默认 live。',
+          description: '源图：{kind:"live",scale?:0.1–4,region?:文档CSS Rect} | {kind:"product",productId:"v1_<32hex>"} | {kind:"baseline",name,revision?}；默认 live。'
+            + 'live 省略 scale 时使用本次调用开始时冻结的共享显示比例 view.scale（默认 100%），显式值覆盖且只影响本次采集。',
         },
         region: {
           type: 'object',
@@ -9458,7 +10292,9 @@ export function apply(ctx) {
       let resolved = null;
       try {
         const request = t3ImageRequest(args && typeof args === 'object' ? args : {});
-        resolved = await t3ResolveSource(runtime, exec, request.source, 'source', pins, budget);
+        // One frozen default scale per call (docs/viewport-control.md §6.1).
+        const liveScale = runtime.view.scale;
+        resolved = await t3ResolveSource(runtime, exec, request.source, 'source', pins, budget, liveScale);
         let image = resolved.image;
         let mapping = resolved.product ? resolved.product.mapping : null;
         let actionable = resolved.product ? resolved.product.actionable === true : false;
@@ -9627,10 +10463,11 @@ export function apply(ctx) {
       let resolved = null;
       try {
         const request = t3FindRequest(args && typeof args === 'object' ? args : {});
-        resolved = await t3ResolveSource(runtime, exec, request.source, 'source', pins, budget);
+        const liveScale = runtime.view.scale;
+        resolved = await t3ResolveSource(runtime, exec, request.source, 'source', pins, budget, liveScale);
         const image = resolved.image;
         const roi = request.region ? t3RectInside(request.region, image, 'region') : { x: 0, y: 0, width: image.width, height: image.height };
-        const templateResolved = await t3TemplateImage(runtime, exec, request.query, pins, budget);
+        const templateResolved = await t3TemplateImage(runtime, exec, request.query, pins, budget, liveScale);
         const found = await vision.findInImageAsync(image, request.query, {
           roi, templateImage: templateResolved ? templateResolved.image : null,
           ...t3AlgoOpts(budget, exec.signal),
@@ -9737,8 +10574,11 @@ export function apply(ctx) {
       let resolvedAfter = null;
       try {
         const request = t3CompareRequest(args && typeof args === 'object' ? args : {});
-        resolvedBefore = await t3ResolveSource(runtime, exec, request.before, 'before', pins, budget);
-        resolvedAfter = await t3ResolveSource(runtime, exec, request.after, 'after', pins, budget);
+        // Both live sources share ONE resolved default so two images of the same call cannot fall
+        // on different densities if the view scale changes between resolutions.
+        const liveScale = runtime.view.scale;
+        resolvedBefore = await t3ResolveSource(runtime, exec, request.before, 'before', pins, budget, liveScale);
+        resolvedAfter = await t3ResolveSource(runtime, exec, request.after, 'after', pins, budget, liveScale);
         const beforeImage = resolvedBefore.image;
         const afterImage = resolvedAfter.image;
         if (beforeImage.width !== afterImage.width || beforeImage.height !== afterImage.height) {
@@ -10482,7 +11322,7 @@ export function apply(ctx) {
         if (sameNameHead) {
           throw t3Invalid('source 不能指向正在创建/更新的同名 HEAD（避免隐式自更新）', { path: 'source' });
         }
-        resolved = await t3ResolveSource(runtime, exec, request.source, 'source', pins, t3NewBudget());
+        resolved = await t3ResolveSource(runtime, exec, request.source, 'source', pins, t3NewBudget(), runtime.view.scale);
         const sourceSummary = {
           productId: resolved.product.productId,
           sha256: resolved.sha256,
@@ -11231,14 +12071,14 @@ export function apply(ctx) {
   }
 
   /** Run one case: resolve the source once, run every assertion, release the case pins. */
-  async function t3RunCase(runtime, exec, testCase, budget, warnings) {
+  async function t3RunCase(runtime, exec, testCase, budget, warnings, liveScale = null) {
     const pins = [];
     const assertionResults = [];
     const incomplete = [];
     let resolved = null;
     const factsById = new Map(testCase.facts.map((fact) => [fact.id, fact]));
     try {
-      resolved = await t3ResolveSource(runtime, exec, testCase.source, 'source', pins, budget);
+      resolved = await t3ResolveSource(runtime, exec, testCase.source, 'source', pins, budget, liveScale);
       for (const assertion of testCase.assertions) {
         try {
           assertionResults.push(await t3RunAssertion(runtime, exec, testCase, assertion, resolved, factsById, pins, budget, warnings));
@@ -11299,8 +12139,10 @@ export function apply(ctx) {
       let request = null;
       try {
         request = t3CheckRequest(args && typeof args === 'object' ? args : {});
+        // One frozen default scale for every case of this call.
+        const liveScale = runtime.view.scale;
         for (const testCase of request) {
-          const { result, source } = await t3RunCase(runtime, exec, testCase, budget, warnings);
+          const { result, source } = await t3RunCase(runtime, exec, testCase, budget, warnings, liveScale);
           caseResults.push(result);
           if (source && !evidenceSources.some((entry) => entry.productId === source.productId)) {
             evidenceSources.push(source);
@@ -11397,6 +12239,7 @@ export function apply(ctx) {
   register({
     name: 'browser_capabilities',
     description: '查询 Web T1/T2/T3/P0 工具、运行态、隔离模式及证据限制；不会启动浏览器（不 ensure、不建目录、不生成 product、不申请租约）。'
+      + 'viewport 段报告共享视口 get/set 边界、预设、比例范围与 limits.viewport（observed 只来自真实读回）；'
       + 'vision 段报告 T3 算法版本/工具/源类型/预算与最近一次真实视觉调用（observed），六个 web.t3.* 与聚合 web.t3.static-vision 按 BUSY 状态报告；'
       + 'network 段报告 7 个 browser_network_* 工具、会话计数器/完整性与 limits.network（含 responseModification 是否受 CDP 支持）；T4 仍 unsupported。',
     parameters: { type: 'object', properties: {}, required: [] },
@@ -11442,6 +12285,14 @@ export function apply(ctx) {
         'T4 dynamic vision (frame sequences/animation timing) stays unsupported',
       ];
       const diagnosticConstraints = ['diagnostic call; never starts Chromium or takes ownership'];
+      const viewportConstraints = [
+        'one shared view per workspace scope: {x,y,width,height,scale,source,revision} in document CSS px',
+        'get is a cache diagnostic: no lazy start, no CDP, no lease, no queue; an older cache is reported stale',
+        'set is a page operation (lazy start + serial queue + single-owner lease), including a scale-only set',
+        'only a width/height change sends Emulation.setDeviceMetricsOverride; scale never changes CSS viewport, DPR or page zoom',
+        'expectedRevision gives CAS inside the queue (VIEWPORT_CONFLICT, patch not applied)',
+        'x/y are the document scroll position read back from Page.getLayoutMetrics (not cached page values)',
+      ];
       const workspaceIsolation = registry.capabilities();
       // P0 capture facts. `observed` only ever comes from a real browser_screenshot of this Runtime
       // (relative paths and numbers only) — this call still starts nothing and takes no lease.
@@ -11488,6 +12339,12 @@ export function apply(ctx) {
             ...(busy ? { reason: 'BUSY: browser owned by another session' } : {}),
             constraints: t3Constraints })),
           ...diagnosticTools.map((name) => ({ id: 'web.t1.' + name, tool: 'browser_' + name, status: 'available', constraints: diagnosticConstraints })),
+          // Shared viewport (docs/viewport-control.md §7.2): get stays readable even when another
+          // session owns the page; set is a page operation and reports BUSY like every other one.
+          { id: 'web.t1.viewport', tool: 'browser_viewport',
+            status: busy ? 'unavailable' : 'available',
+            ...(busy ? { reason: 'BUSY: browser owned by another session (get 仍可只读诊断)' } : {}),
+            constraints: viewportConstraints },
           { id: 'web.t1.workspace-isolation', status: 'available',
             constraints: [
               'One headless Chromium + temporary profile for the plugin; one independent page target per workspace',
@@ -11535,7 +12392,7 @@ export function apply(ctx) {
               'partial: iframe/OOPIF/dedicated worker only; shared/service worker refused when attribution is unprovable',
               'HTTPS capture is mechanism-identical (same Network domain) but NOT independently verified (no local TLS target)',
             ] },
-          ...['t4.dynamic-vision', 't1.viewport-control', 't1.browser-extras'].map((id) => ({ id: 'web.' + id, status: 'unsupported', reason: 'Not implemented' })),
+          ...['t4.dynamic-vision', 't1.browser-extras'].map((id) => ({ id: 'web.' + id, status: 'unsupported', reason: 'Not implemented' })),
         ],
         // P0 capture infrastructure (docs/capture-p0.md). Declared, not probed: reading this must
         // never start Chromium, create a page or take the lease. `observed` is the last real
@@ -11545,8 +12402,12 @@ export function apply(ctx) {
           transport: 'cdp-page-capture-screenshot',
           format: 'png',
           coordinateSpace: 'document-css-px',
-          defaultScale: CAPTURE_LIMITS.scaleMin,
+          // An omitted scale is resolved from the shared view.scale inside the call, so `defaultScale`
+          // is the cold fallback (1) and NOT the lower bound of the legal range.
+          defaultScaleSource: 'view.scale',
+          defaultScale: VIEW_LIMITS.default.scale,
           scaleRange: [CAPTURE_LIMITS.scaleMin, CAPTURE_LIMITS.scaleMax],
+          viewScaleRange: [...VIEW_LIMITS.scale],
           maxOutputPixels: CAPTURE_LIMITS.maxOutputPixels,
           supports: {
             region: true,
@@ -11571,6 +12432,30 @@ export function apply(ctx) {
           },
           limits: { maxRegionPixels: CAPTURE_LIMITS.maxOutputPixels },
           observed: observedCapture,
+        },
+        // Shared viewport (docs/viewport-control.md §7.2). Declared, never probed: reading this
+        // starts nothing and takes no lease. `observed` only comes from a real Page.getLayoutMetrics
+        // readback (numbers only, no page text, no absolute path).
+        viewport: {
+          version: 1,
+          tool: 'browser_viewport',
+          coordinateSpace: 'document-css-px',
+          get: { readOnly: true, lazyStart: false, lease: false, fresh: false },
+          set: { lazyStart: true, lease: true },
+          deviceScaleFactor: 1,
+          pageZoomChanged: false,
+          presets: Object.fromEntries(Object.entries(VIEW_PRESETS).map(([mode, size]) => [mode, { ...size }])),
+          default: { ...VIEW_LIMITS.default },
+          scaleRange: [...VIEW_LIMITS.scale],
+          observed: (() => {
+            const observed = runtime.observedProjection();
+            return observed === null ? null : {
+              revision: runtime.view.revision,
+              source: runtime.view.source,
+              observedAt: observed.observedAt,
+              stale: runtime.viewMeta().stale,
+            };
+          })(),
         },
         // Web T3 static vision (docs/t3-vision.md §11). Declared, never probed: reading this must
         // not start Chromium, create the baseline root or add a product. `observed` is the last real
@@ -11619,7 +12504,21 @@ export function apply(ctx) {
           };
         })(),
         limits: {
-          viewport: runtime.viewport,
+          viewport: {
+            ...runtime.viewport,
+            version: 1,
+            width: [...VIEW_LIMITS.width],
+            height: [...VIEW_LIMITS.height],
+            scroll: [...VIEW_LIMITS.scroll],
+            scale: [...VIEW_LIMITS.scale],
+            default: { ...VIEW_LIMITS.default },
+            presets: Object.fromEntries(Object.entries(VIEW_PRESETS).map(([mode, size]) => [mode, { ...size }])),
+            scrollPollMinMs: VIEW_LIMITS.scrollPollMinMs,
+            staleAfterMs: VIEW_LIMITS.staleAfterMs,
+            settleMaxMs: VIEW_LIMITS.settleMaxMs,
+            deviceScaleFactor: 1,
+            pageZoomChanged: false,
+          },
           networkEntries: NETWORK_LIMIT,
           network: {
         ...network.limitsView(),
@@ -11657,7 +12556,10 @@ export function apply(ctx) {
           workspaceIsolation,
           capture: {
             scaleRange: [CAPTURE_LIMITS.scaleMin, CAPTURE_LIMITS.scaleMax],
-            scale: 'continuous 1-4 (fractions allowed); output = round(css x scale)',
+            defaultScaleSource: 'view.scale',
+            defaultScale: VIEW_LIMITS.default.scale,
+            scale: 'explicit: continuous 0.1-4 (fractions allowed); omitted: the shared view.scale; output = round(css x scale)',
+            minOutputPixels: { width: CAPTURE_LIMITS.minOutputPixels, height: CAPTURE_LIMITS.minOutputPixels },
             maxOutputPixels: CAPTURE_LIMITS.maxOutputPixels,
             maxRegionPixels: CAPTURE_LIMITS.maxOutputPixels,
             maxPathBytes: 200,

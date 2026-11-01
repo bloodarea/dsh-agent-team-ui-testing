@@ -474,9 +474,10 @@ async function probeC1({ check, finding }) {
   try {
     const names = harness.toolNames();
     const expected = EXPECTED_TOOLS.map((tool) => tool.name);
-    // 29 = 9 T1 + 7 T2 + 6 T3 (docs/t3-vision.md §2.1) + 7 network (docs/network-p0.md §2);
+    // 30 = 10 T1 (docs/runtime-t1.md + docs/viewport-control.md §7 browser_viewport) + 7 T2
+    //    + 6 T3 (docs/t3-vision.md §2.1) + 7 network (docs/network-p0.md §2);
     // compared against harness EXPECTED_TOOLS so no group can drift silently.
-    check('实际注册恰好 29 个工具', names.length === expected.length && JSON.stringify([...names].sort()) === JSON.stringify([...expected].sort()), {
+    check('实际注册恰好 30 个工具', names.length === expected.length && JSON.stringify([...names].sort()) === JSON.stringify([...expected].sort()), {
       expected: { count: expected.length, names: expected }, actual: { count: names.length, names },
     });
     const problems = [];
@@ -491,7 +492,7 @@ async function probeC1({ check, finding }) {
       if (typeof definition.description !== 'string' || !definition.description.trim()) problems.push(`${tool.name}: description 为空`);
       if (typeof definition.execute !== 'function') problems.push(`${tool.name}: execute 不是函数`);
     }
-    check('29 个工具的 parameters/required/execute/description 与契约 §2.2/§2.1/§2 一致', problems.length === 0, { expected: [], actual: problems });
+    check('30 个工具的 parameters/required/execute/description 与契约 §2.2/§2.1/§2 一致', problems.length === 0, { expected: [], actual: problems });
 
     const rawCdp = names.filter((name) => /cdp|devtools|protocol|runtime\.|page\./i.test(name));
     check('没有暴露原始 CDP/协议命令工具', rawCdp.length === 0, { expected: [], actual: rawCdp });
@@ -513,15 +514,16 @@ async function probeC1({ check, finding }) {
     });
     const caps = await call(harness, 'browser_capabilities', {}, execOf());
     const toolEntries = (caps.value?.capabilities || []).filter((item) => item.tool);
-    check('capabilities 覆盖全部 29 个工具（含 7 个 T2 + 6 个 T3 + 7 个 network）', toolEntries.length === EXPECTED_TOOLS.length && EXPECTED_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
+    check('capabilities 覆盖全部 30 个工具（含 10 个 T1 + 7 个 T2 + 6 个 T3 + 7 个 network）', toolEntries.length === EXPECTED_TOOLS.length && EXPECTED_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
       expected: { count: EXPECTED_TOOLS.length }, actual: toolEntries.map((item) => `${item.tool}:${item.status}`),
     });
-    // Proves the pre-network surface did not regress independently of the new group: the 22
-    // legacy tools must still be declared, and the 7 network tools must be declared too.
-    check('旧 22 工具与新增 7 个 network 工具都各自完整声明', LEGACY_TOOLS.length === 22 && NETWORK_TOOLS.length === 7
+    // Proves the pre-network surface did not regress independently of the new group: the 23
+    // legacy tools (22 pre-viewport + browser_viewport) must still be declared, and the 7 network
+    // tools must be declared too.
+    check('旧 23 工具（22 旧 + browser_viewport）与新增 7 个 network 工具都各自完整声明', LEGACY_TOOLS.length === 23 && NETWORK_TOOLS.length === 7
       && LEGACY_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name))
       && NETWORK_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
-      expected: { legacy: 22, network: 7 },
+      expected: { legacy: 23, network: 7 },
       actual: { legacyMissing: LEGACY_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name),
         networkMissing: NETWORK_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name) },
     });
@@ -2908,7 +2910,7 @@ async function main() {
   log(`[env] tools (${harness.toolNames().length}): ${harness.toolNames().join(', ')}`);
 
   const probes = [
-    { id: 'C1-registration', criteria: 1, title: '注册面 29 工具与参数校验', expected: '恰好 29 工具（9 T1 + 7 T2 + 6 T3 + 7 network）、required 与 §2.2/§2.1/§2 一致、纯参数错误 INVALID_ARGUMENT 且不启动浏览器', body: (ctx) => probeC1(ctx) },
+    { id: 'C1-registration', criteria: 1, title: '注册面 30 工具与参数校验', expected: '恰好 30 工具（10 T1 + 7 T2 + 6 T3 + 7 network）、required 与 §2.2/§2.1/§2 一致、纯参数错误 INVALID_ARGUMENT 且不启动浏览器', body: (ctx) => probeC1(ctx) },
     { id: 'C2-cold-capabilities', criteria: 2, title: '冷启动能力报告', expected: '仅 state/capabilities 即可读工具事实、web.t2.* 与 structured-dom available、web.t3.* 与 static-vision available、T4 unsupported、limits.structuredGui 正确', body: (ctx) => probeC2(ctx) },
     { id: 'C3-workspace-isolation', criteria: 3, title: '工作区隔离（page/ref/lease/network）', expected: '跨 workspace 的 ref 在另一侧 REF_STALE 且互不影响', body: (ctx) => probeC3(ctx) },
     { id: 'C4-semantic-snapshot', criteria: 4, title: '语义快照结构', expected: '标题/列表/表格/同名按钮/顺序保留、refs 与树一一对应、隐藏内容排除', body: (ctx) => probeC4({ harness, ...ctx }) },
@@ -2944,8 +2946,8 @@ async function main() {
     { id: 'C34-failure-evidence', criteria: 34, title: '失败证据与错误形状', expected: '六码均 BrowserError、details.evidence 存在、hidden/covered 升级 T3、不泄露 selector', body: (ctx) => probeC34({ harness, ...ctx }) },
     { id: 'C35-network-redaction', criteria: 35, title: '网络/脱敏/限额', expected: 'networkDelta seq 增量与 dropped、哨兵不泄露、value=null、URL 脱敏、evidence ≤262144', body: (ctx) => probeC35({ harness, ...ctx }) },
     { id: 'C36-shadow-frame', criteria: 36, title: 'shadow 与 frame 边界', expected: 'AX ref 点击 shadow 按钮、CSS 不穿透、iframe 仅边界、closed shadow 无 ref', body: (ctx) => probeC36({ harness, ...ctx }) },
-    { id: 'C37-t1-host-regression', criteria: 37, title: 'T1/宿主输出回归（进程内部分）', expected: '全部注册工具（29）成功值与 render 全部 lossless、T1 9 工具 surface 未放宽', body: (ctx) => probeC37({ harness, ...ctx }) },
-    { id: 'C38-real-host', criteria: 38, title: '真实宿主/声明', expected: '隔离 DSH 重新加载 29 工具并在真实 Agent 会话执行链条（本套件 NOT_RUN）', body: (ctx) => probeC38(ctx) },
+    { id: 'C37-t1-host-regression', criteria: 37, title: 'T1/宿主输出回归（进程内部分）', expected: '全部注册工具（30）成功值与 render 全部 lossless、T1 10 工具 surface 未放宽', body: (ctx) => probeC37({ harness, ...ctx }) },
+    { id: 'C38-real-host', criteria: 38, title: '真实宿主/声明', expected: '隔离 DSH 重新加载 30 工具并在真实 Agent 会话执行链条（本套件 NOT_RUN）', body: (ctx) => probeC38(ctx) },
   ];
 
   // Optional subset selection for debugging: DSH_T2_ONLY="C9,C13" runs just those probes.

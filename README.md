@@ -6,7 +6,7 @@ Help AI agents operate, inspect, test, and verify Web, desktop, Android, TUI and
 **English** | [简体中文](README_zh.md)
 
 > [!IMPORTANT]
-> **Project status: architecture / pre-release.** The Web channel — **T1 programmatic, T2 structured GUI, T3 static vision and P0 infrastructure — image input + network capture —** (29 agent tools) — is implemented and covered by acceptance suites that drive a real Chromium. The other eight planned environments are not implemented and stay disabled in the runtime picker. The plugin is linked locally, not published to npm: there is no released package, compatibility matrix or official release. Verification state, counts and open gaps: [docs/status.md](docs/status.md).
+> **Project status: architecture / pre-release.** The Web channel — **T1 programmatic, T2 structured GUI, T3 static vision and P0 infrastructure — image input, network capture and shared viewport control —** (30 agent tools) — is implemented and covered by acceptance suites that drive a real Chromium. The other eight planned environments are not implemented and stay disabled in the runtime picker. The plugin is linked locally, not published to npm: there is no released package, compatibility matrix or official release. Verification state, counts and open gaps: [docs/status.md](docs/status.md).
 
 ## What is this?
 
@@ -36,26 +36,30 @@ Coding agents can produce UI code without being able to answer: **"Does the fini
 
 ## Implemented today: Web (Chromium)
 
-One plugin runs a single shared headless Chromium per host and gives every DSH workspace its own page, URL, viewport, history, network buffer and lease; cookies and storage are shared per Chromium profile. The agent surface is **29 tools** across three capability tiers plus the two-part P0 infrastructure (image input and network capture):
+One plugin runs a single shared headless Chromium per host and gives every DSH workspace its own page, URL, viewport, history, network buffer and lease; cookies and storage are shared per Chromium profile. The agent surface is **30 tools** across three capability tiers plus the **three-part P0 infrastructure** (image input, network capture and shared viewport control):
 
 | Tier | Tools | Capabilities |
 | --- | --- | --- |
-| **T1** programmatic | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_state` `browser_capabilities` | Navigation, JavaScript execution, console/network inspection, independent HTTP requests, computed styles, screenshots, raw mouse/wheel/keyboard events, capability reporting |
+| **T1** programmatic | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_viewport` `browser_state` `browser_capabilities` | Navigation, JavaScript execution, console/network inspection, independent HTTP requests, computed styles, screenshots, raw mouse/wheel/keyboard events, the shared canvas size/scroll/display scale, capability reporting |
 | **T2** structured GUI | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | Snapshot → ref targeting, trusted CDP actions, forms, node state and waits; every call returns structured evidence and typed errors |
 | **T3** static vision | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | Crop/zoom/preprocess/annotate PNGs, deterministic colour/component/edge/template finders, YIQ diff, coordinate input, managed baselines, regression and layout/occlusion/overflow/truncation/colour/missing-component assertions |
-| **P0-A image input** (capture-p0, enhances the T1 screenshot tool) | `browser_screenshot` | Continuous `scale` 1–4 and document-CSS `region`, PNG structure/CRC/size/uniformity validation, safe staged or persisted files, `capture.version=1` evidence and optional network time-window linkage |
+| **P0-A image input** (capture-p0, enhances the T1 screenshot tool) | `browser_screenshot` | Explicit `scale` 0.1–4 (omitted follows the shared view scale) and document-CSS `region`, PNG structure/CRC/size/uniformity validation, safe staged or persisted files, `capture.version=1` evidence and optional network time-window linkage |
 | **P0-B network capture** (network-p0) | `browser_network_session` `browser_network_events` `browser_network_detail` `browser_network_trace` `browser_network_control` `browser_network_evidence` `browser_network_subscribe` | Capture (HTTP/HTTPS bodies, WebSocket, SSE, iframe/OOPIF/Worker), timeline, analysis and aggregation, business-step traces, interception/throttling/replay/mock, JSONL+HAR evidence and per-agent subscriptions |
+| **P0-C shared viewport** (viewport-control) | `browser_viewport` (T1 tool) + debug-panel size bar | One authoritative CSS-pixel `view` per workspace: page-scroll `x`/`y`, CSS viewport `width`/`height`, display/screenshot `scale`, derived mode, source/revision. Cache-only `get`; leased `set`; optimistic `VIEWPORT_CONFLICT` CAS; X/Y inputs and wheel stepping in the panel; painted-rect input mapping. It never changes page viewport, device pixel ratio or page zoom |
+
+**P0-C shared viewport control (new).** This is the third P0 infrastructure item. One authoritative `view = {mode, x, y, width, height, scale, source, revision}` per DSH workspace, in document CSS pixels, is read and written by both the agent (`browser_viewport`) and the debug panel. `x/y` are the page scroll position measured with `Page.getLayoutMetrics` (not a window position); `width/height` are the page's CSS viewport (200–4096); `mode` is derived from the size (`wide`/`landscape`/`tablet`/`phone`/`custom`); `scale` (0.1–2, i.e. 10–200%) is a display ratio and the default screenshot density — it never changes the page viewport, device pixel ratio (fixed at 1) or page zoom. `get` is a cache-only diagnostic (no browser start, no CDP, no lease, `stale` shown), `set` is a page operation with lazy start, the serial queue and the workspace lease; a width/height change is the only thing that emits `Emulation.setDeviceMetricsOverride`. `expectedRevision` gives optimistic concurrency (`VIEWPORT_CONFLICT`, HTTP 409, patch not applied). The panel size bar gained X/Y inputs, mouse-wheel stepping for all five numeric fields, a `fit` that is a purely local display preference, painted-rect coordinate mapping (never multiplied by host DPR) and a best-effort frame barrier after a resize. Acceptance: `viewport.mjs` → 11/11 probes, 107/107 required, exit 0; isolated-DSH GUI `viewport-gui.mjs` → 73/73 PASS, 5 NOT_RUN, exit 0. The real 3080 host was not restarted, so the 30-tool surface and `ui.view` are **NOT_RUN** there.
 
 T3 is an in-house, dependency-free JavaScript stack (own PNG codec, YIQ diff and finders; no Sharp, Pixelmatch or Argos). `browser_capabilities` reports what the host actually serves — six `web.t3.*` entries plus the `web.t3.static-vision` aggregate — while `web.t4.*` remains `unsupported`.
 
-### P0 infrastructure: two independent parts
+### P0 infrastructure: three independent parts
 
-P0 is **not one feature**; it is two separately contracted and separately accepted capabilities:
+P0 is **not one feature**; it is three separately contracted and separately accepted capabilities:
 
-- **P0-A — image input stream / screenshot capture** (`capture-p0.js`, contract [docs/capture-p0.md](docs/capture-p0.md)): `browser_screenshot` with continuous `scale` 1–4, document-CSS `region`, PNG structure/CRC/dimension/uniformity checks, safe staging plus explicit persistence, `capture.version=1` evidence and attachment metadata, and a `capture.networkWindow` time link to P0-B. Acceptance: `capture-p0.mjs` → 14/14 probes, 142/142 required, exit 0.
+- **P0-A — image input stream / screenshot capture** (`capture-p0.js`, contract [docs/capture-p0.md](docs/capture-p0.md)): `browser_screenshot` with continuous `scale` 0.1–4, document-CSS `region`, PNG structure/CRC/dimension/uniformity checks, safe staging plus explicit persistence, `capture.version=1` evidence and attachment metadata, and a `capture.networkWindow` time link to P0-B. Acceptance: `capture-p0.mjs` → 14/14 probes, 142/142 required, exit 0.
 - **P0-B — network capture / business-chain debugging** (`network-p0.js`, contract [docs/network-p0.md](docs/network-p0.md)): seven `browser_network_*` tools covering capture, timeline, analysis, business traces, control and evidence. Acceptance: `network-p0.mjs` → 52/52 criteria, 266 required, 0 failed, 8 explicit NOT_RUN, exit 0; plus the 5-page shop-chain scenario `network-chain.mjs` → 12/12, 49 required, exit 0.
+- **P0-C — shared viewport control** (`index.js` Runtime view + `browser_viewport` + the debug-panel size bar, contract [docs/viewport-control.md](docs/viewport-control.md)): one authoritative CSS-pixel view per workspace (page-scroll x/y, CSS viewport width/height, display and default-screenshot ratio, derived mode, source/revision); cache-only `get`, leased `set`, optimistic `VIEWPORT_CONFLICT` CAS, event-driven 200 ms scroll observation, X/Y inputs and mouse-wheel stepping in the panel, local-only `fit`, painted-rect input mapping. Acceptance: `viewport.mjs` → 11/11 probes, 107/107 required, exit 0; isolated-DSH GUI `viewport-gui.mjs` → 73/73 PASS, 5 NOT_RUN, exit 0.
 
-They are independent: P0-A alone does **not** establish T3 static-vision judgement, and P0-B alone does **not** establish T4 dynamic vision. Both are in-process Chromium results; the real-host restart smoke for the network half remains **NOT_RUN**.
+They are independent: P0-A alone does **not** establish T3 static-vision judgement, P0-B alone does **not** establish T4 dynamic vision, and P0-C alone does **not** establish screenshot evidence or visual judgement. All three are in-process or isolated-DSH results; the real-host restart smoke for the new Host surface remains **NOT_RUN** (the 3080 host predates this round).
 
 ### P0-B: network capture and debugging (network-p0)
 
@@ -72,7 +76,7 @@ Authority contract: [docs/network-p0.md](docs/network-p0.md) (tool schemas, even
 
 ### P0-A: image input stream — screenshots and evidence files (capture-p0)
 
-`browser_screenshot` accepts optional continuous `scale` (1–4) and a `region` in document CSS pixels. PNGs are staged in a plugin-instance directory by default (mode 0600, never overwriting an existing file) and removed when the plugin is disposed; pass `out`, `persist:true`, or set `DSH_UI_TESTING_CAPTURE_DIR` to keep them under a persistent root. Screenshot evidence also gains a `capture.networkWindow` block (frame/capture times, `fromSeq`/`toSeq`, `nearest`) when a network session exists — `capture.version` stays **1** and the other capture fields keep their meaning. Screenshots are not redacted — review the content before sharing. Acceptance: `node tests/acceptance/capture-p0.mjs` → **14/14 probes, 142/142 required, 0 failed, exit 0**. T3 baselines live under `<root>/output/vision-baselines/<scopeHash>/` with immutable revisions, HEAD compare-and-swap and tombstones.
+`browser_screenshot` accepts an optional explicit `scale` (continuous 0.1–4) and a `region` in document CSS pixels; when `scale` is omitted the shared view scale is used (cold start: 1), so a panel/agent ratio of 65% yields a 520×390 PNG for an 800×600 viewport. PNGs are staged in a plugin-instance directory by default (mode 0600, never overwriting an existing file) and removed when the plugin is disposed; pass `out`, `persist:true`, or set `DSH_UI_TESTING_CAPTURE_DIR` to keep them under a persistent root. Screenshot evidence also gains a `capture.networkWindow` block (frame/capture times, `fromSeq`/`toSeq`, `nearest`) when a network session exists — `capture.version` stays **1** and the other capture fields keep their meaning. Screenshots are not redacted — review the content before sharing. Acceptance: `node tests/acceptance/capture-p0.mjs` → **14/14 probes, 142/142 required, 0 failed, exit 0**. T3 baselines live under `<root>/output/vision-baselines/<scopeHash>/` with immutable revisions, HEAD compare-and-swap and tombstones.
 
 ### Current limits
 
@@ -82,7 +86,9 @@ Authority contract: [docs/network-p0.md](docs/network-p0.md) (tool schemas, even
 - **Some checks are unobservable.** Blink truncates CDP mouse coordinates to integers and inert subtrees do not participate in hit-testing, so those sub-checks are recorded as NOT_APPLICABLE instead of passed.
 - **Web only.** Desktop, Android, TUI, HarmonyOS, games and 3D are planned; the runtime picker keeps them disabled.
 - **Network P0 boundaries.** Sub-target capture is **partial** (`G1.5`): same-origin iframe and dedicated worker are proven; OOPIF is `partial` (not separately verified); shared and service workers are **not collected** (attaching a service worker pauses it and breaks `register()`); popups stay blocked by the existing target policy and there is no multi-tab capture. HTTPS is not independently verified (no local TLS fixture), `responseModification` is conditional on Chrome support, real bandwidth shaping is only CDP emulation, and HAR export is a 1.2 subset (JSONL is the lossless format). Bodies and headers are redacted by default but are not a general secret detector.
-- **In-process ≠ real host.** The network suite drives a fake plugin context plus a real Chromium; the restarted-host smoke for the seven network tools is **NOT_RUN**.
+- **In-process ≠ real host.** The network suite drives a fake plugin context plus a real Chromium; the restarted-host smoke for the seven network tools is **NOT_RUN**. The same holds for the shared viewport: `ui.view`, `browser_viewport` and the panel X/Y inputs are verified in-process and in an isolated DSH instance, not on the user's 3080.
+- **Viewport display limits.** The live preview is a 1x screencast JPEG, so a display scale above 100% is CSS magnification of the bitmap, not extra pixel density; ask for it explicitly with `browser_screenshot`'s `scale` (or T3). Because the shared ratio is also the default screenshot density, omitting `scale` after changing the ratio changes the PNG size — pass `scale` when a fixed resolution matters. The resize geometry barrier is best-effort (≤250 ms) because the frame protocol was deliberately not extended.
+- **Conflicts and staleness.** `browser_viewport get` is a cache diagnostic: `stale` means "not recently observed", and the page can scroll itself at any time (`source:"page"`). A lost `expectedRevision` race returns `VIEWPORT_CONFLICT` and the patch is not applied — re-read and decide again instead of replaying it.
 
 The repository also ships acceptance suites that drive a real Chromium in-process (`tests/acceptance/`) and pure-algorithm unit tests for the PNG codec, YIQ diff, baselines and network event model. Current results and open gaps: [docs/status.md](docs/status.md).
 
@@ -92,7 +98,7 @@ Nine runtime environments are planned; only Web is implemented so far.
 
 | Environment | Current status | Candidate integration approach | Intended coverage |
 | --- | --- | --- | --- |
-| **Web** (Chromium) | **T1 + T2 + T3 + P0 network implemented**; T4 not implemented (debug view available) | Chromium, Chrome DevTools Protocol (CDP), DOM/accessibility APIs | Navigation, forms, responsive layouts, console/network inspection, deep network capture/tracing, screenshots, interactions, static visual analysis and coordinate input |
+| **Web** (Chromium) | **T1 + T2 + T3 + P0 (image input, network capture, shared viewport) implemented**; T4 not implemented (debug view available) | Chromium, Chrome DevTools Protocol (CDP), DOM/accessibility APIs | Navigation, forms, responsive layouts, console/network inspection, deep network capture/tracing, screenshots, interactions, static visual analysis, shared viewport control and coordinate input |
 | **Windows desktop** | Planned, not implemented (picker disabled) | Windows UI Automation (UIA) and platform-approved input/capture mechanisms | Native controls, window state, user journeys, screenshots |
 | **Linux desktop** | Planned, not implemented (picker disabled) | Accessibility interfaces and compositor/desktop-specific automation | Native controls and GUI workflows; actual coverage depends on X11/Wayland and permissions |
 | **macOS desktop** | Planned, not implemented (picker disabled) | macOS Accessibility (AXUIElement) plus system capture/input APIs (TCC authorization required) | Native controls, window state, user journeys, screenshots; full unattended automation is not an initial commitment |
@@ -186,10 +192,12 @@ flowchart TD
     M --> P[Capability selection: T1 / T2 / T3 / T4]
     P --> B[Web adapter: Chromium / CDP]
     B --> N[Network P0: capture / timeline / trace / control / evidence]
+    B --> C[Viewport P0: CSS view / X-Y / wheel / screenshot ratio]
     P --> D[Desktop adapter: Windows / Linux]
     P --> R[Android adapter: device / emulator]
     B --> E[Observations and evidence]
     N --> E
+    C --> E
     D --> E
     R --> E
     E --> X[Assertions and test report]
@@ -233,7 +241,7 @@ These are **planned work items**, not claims of completion. Ordering may change 
 
 - [ ] **R0 — Feasibility:** audit DSH plugin/sidebar interfaces, upstream licenses, test target capabilities and security boundaries.
 - [ ] **R1 — Web foundation:** retain workspace/context/tab management, background Chromium execution and viewer independence.
-- [ ] **R2 — Test core:** add typed test sessions, T1–T4 capability selection, actions, observations, assertions and evidence reports. _(Web T1–T3 plus P0 network delivered: programmatic channel, structured GUI, static vision and network capture/tracing, each with an acceptance suite. T4 and the cross-environment test core remain open.)_
+- [ ] **R2 — Test core:** add typed test sessions, T1–T4 capability selection, actions, observations, assertions and evidence reports. _(Web T1–T3 plus the three P0 items delivered: programmatic channel, structured GUI, static vision, network capture/tracing and shared viewport control, each with an acceptance suite. T4 and the cross-environment test core remain open.)_
 - [ ] **R3 — Collaboration:** implement agent/team authorization, target ownership, human takeover and concurrent test scheduling.
 - [ ] **R4 — Desktop:** validate Windows/Linux adapters, accessibility/input/capture options, permissions and focus constraints.
 - [ ] **R5 — Android:** validate device/emulator lifecycle, UI hierarchy, interaction, screenshots and failure reporting.
@@ -250,11 +258,13 @@ The remaining planned environments (macOS desktop, TUI, HarmonyOS, games, 3D) ha
 The acceptance suites used in development are Node scripts that drive a real, local Chrome/Chromium; run them serially:
 
 ```bash
-node tests/acceptance/run.mjs            # T1 programmatic
+node tests/acceptance/run.mjs            # T1 programmatic (30-tool surface)
+node tests/acceptance/viewport.mjs       # P0-C shared viewport (Host, real Chromium)
 node tests/acceptance/t2-structured.mjs  # T2 structured GUI
 node tests/acceptance/t3-vision.mjs      # T3 static vision
-node tests/acceptance/capture-p0.mjs     # screenshot capture infrastructure
-node tests/acceptance/network-p0.mjs     # network P0 (capture/timeline/trace/control/evidence)
+node tests/acceptance/capture-p0.mjs     # P0-A screenshot capture infrastructure
+node tests/acceptance/network-p0.mjs     # P0-B network capture/timeline/trace/control/evidence
+node tests/acceptance/viewport-gui.mjs   # P0-C shared viewport (isolated DSH + headless Chrome)
 ```
 
 The repository ships no product screenshots; the legacy `banner.png` / `banner_zh.png` assets were removed and nothing here should be presented as a capability demo.
@@ -275,10 +285,11 @@ The repository ships no product screenshots; the legacy `banner.png` / `banner_z
 | [docs/status.md](docs/status.md) | Current implementation status, verification evidence and open gaps |
 | [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 tier model, completion bars and selection strategy |
 | [docs/t1-m0-m2-contract.md](docs/t1-m0-m2-contract.md) | T1 tool, lease, error and evidence contract |
+| [docs/viewport-control.md](docs/viewport-control.md) | P0-C shared viewport contract: view model, get/set split, CAS, HTTP/UI projection, panel mapping, screenshot scale and acceptance |
 | [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | T2 contract, ref protocol and tool semantics |
 | [docs/t3-vision.md](docs/t3-vision.md) | T3 contract, algorithms and verdict rules |
-| [docs/capture-p0.md](docs/capture-p0.md) | Screenshot capture contract |
-| [docs/network-p0.md](docs/network-p0.md) | P0 network contract: seven tools, event schema, quotas, `NET_*` errors, fixture routes and acceptance C1–C52 |
+| [docs/capture-p0.md](docs/capture-p0.md) | P0-A screenshot capture contract |
+| [docs/network-p0.md](docs/network-p0.md) | P0-B network contract: seven tools, event schema, quotas, `NET_*` errors, fixture routes and acceptance C1–C52 |
 
 ## Relationship to other projects
 

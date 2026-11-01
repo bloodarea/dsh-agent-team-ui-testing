@@ -19,6 +19,10 @@ const TAXONOMY = {
   // snapshot, not a replay.
   REF_STALE: ['action', false], TARGET_NOT_UNIQUE: ['action', false],
   NOT_INTERACTABLE: ['action', false], WAIT_TIMEOUT: ['timeout', true],
+  // Shared viewport (docs/viewport-control.md §7.1, Lead freeze 2026-11-01): an optimistic
+  // concurrency failure, not a bad argument and not a page failure. `state` + retryable=true means
+  // "read the current view and decide again"; the patch was NOT applied and page lastError is kept.
+  VIEWPORT_CONFLICT: ['state', true],
   // P0 capture infrastructure (docs/capture-p0.md): the capture pipeline has its own taxonomy so a
   // bad screenshot never masquerades as INTERNAL. Size/format refusals are not retryable (the same
   // page would produce the same bytes); a failed CDP capture and a failed output write are.

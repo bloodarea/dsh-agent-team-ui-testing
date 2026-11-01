@@ -1,6 +1,6 @@
 # T1/T2 运行时：内嵌无头 Chromium 与预览帧管线
 
-> 索引：[docs/index.md](index.md) · 2026-10-31 实现；帧管线调整为 2026-10-31
+> 索引：[docs/index.md](index.md) · 2026-10-31 实现；帧管线调整为 2026-10-31；共享视口（`/viewport` v1、`ui.view`、`browser_viewport`）2026-11-01 加入，契约见 [viewport-control.md](viewport-control.md)
 
 Host 起**真正的无头 Chromium**，用 CDP 驱动；同一时刻最多一个 Chromium/profile，但按 DSH 工作区创建独立 page target（每页独立 URL/viewport/history/网络缓冲/队列/租约）。画面通过各自的 `Page.startScreencast` JPEG 帧回到对应面板，用户输入经该工作区 page 的 CDP 派发。窗口从不显示，因此**不会抢焦点**。Cookie/localStorage/cache 仍共享，不是安全隔离；完整契约见 [workspace-isolation.md](workspace-isolation.md)。
 
@@ -17,7 +17,8 @@ Host (index.js + frame-source.js + frame-push.js)     Client (client.js)
 ├─ FramePush hub（同源 WS，40ms 合并、背压丢帧）        ├─ 指针/滚轮/键盘 → POST /input（带 scope）
 ├─ Network.enable → 每页请求环形缓冲                    ├─ 地址 → /navigate；刷新 → /reload；后退/前进 → /history
 ├─ 第 8 轮网络 P0：Runtime 级全事件采集 + network-p0.js  │   （网络能力只走 Agent 工具，无新面板路由）
-├─ Runtime.evaluate / DOM / CSS（每页）                ├─ /state 每 500ms（已认证 GUI 带 ui.address/ui.history/scope）
+├─ Runtime.evaluate / DOM / CSS（每页）                ├─ /state 每 500ms（已认证 GUI 带 ui.address/ui.history/ui.view/scope）
+├─ 每 Runtime 一份 view（宽高/x/y/比例/来源/版本）      ├─ 尺寸栏 X/Y/宽高/比例（滚轮、120ms 合并、fit 本地）
 └─ HTTP 路由 /plugins/ui-testing/*（按 scope 选实例）   └─ /metrics 每 2s 上报实测显示指标（viewer 心跳）
 ```
 
@@ -34,7 +35,7 @@ Host (index.js + frame-source.js + frame-push.js)     Client (client.js)
 
 ## HTTP 接口
 
-> 这些都是**同源 HTTP 路由**；`webServer` 层不做登录鉴权，默认只监听 loopback。Agent 侧只应使用 29 个结构化工具（9 T1 + 7 T2 + 6 T3 + 7 network），不应直接调这些路由。M0–M2 现行契约与待验收项见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)，网络 P0 契约见 [network-p0.md](network-p0.md)，按工作区 scope 见 [workspace-isolation.md](workspace-isolation.md)。HTTP 错误保留 `error` 字符串并新增 `code/category/retryable`。
+> 这些都是**同源 HTTP 路由**；`webServer` 层不做登录鉴权，默认只监听 loopback。Agent 侧只应使用 30 个结构化工具（10 T1 + 7 T2 + 6 T3 + 7 network），不应直接调这些路由。M0–M2 现行契约与待验收项见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)，网络 P0 契约见 [network-p0.md](network-p0.md)，按工作区 scope 见 [workspace-isolation.md](workspace-isolation.md)。HTTP 错误保留 `error` 字符串并新增 `code/category/retryable`。
 
 **工作区 scope（第 5 轮）**：scoped HTTP 发 `X-UI-Testing-Scope-Version: 1` + 三选一 identity（`-Session-Id` / `-Scope: recent|unassigned` / `-Scope-Binding: <runtimeId>`）；WS 用 `?scopeVersion=1&sessionId=…` / `&scope=…` / `&binding=…`。无 scope 版本是 `legacy:default`。scoped 请求严格 owner-only（`connection.admit` + `browserPeer`），先鉴权后解析、零副作用；unknown session/binding 404、存储故障 503、非 owner 403、满 8 page `RUNTIME_LIMIT` 503。state/ui/工具结果带不含绝对路径的 `scope`。
 
@@ -46,13 +47,13 @@ Host (index.js + frame-source.js + frame-push.js)     Client (client.js)
 | POST | `/plugins/ui-testing/navigate` | `{url}`，HTTP(S) 目标、DNS 与最终 URL 校验；Document 请求/重定向继续拦截；不保证加载完成 |
 | POST | `/plugins/ui-testing/reload` | 刷新当前文档（`Page.reload({ignoreCache:false})`）；不读客户端 URL，未运行 → `TARGET_NOT_FOUND`，不懒启动；先装主框架提交等待器再发送，10s 无提交 → `CDP_TIMEOUT`；需已认证 GUI |
 | POST | `/plugins/ui-testing/history` | `{direction:'back'\|'forward'}`；队列内先 `Page.getNavigationHistory()`，`currentIndex±1` 的 `entries[i].id` → `Page.navigateToHistoryEntry({entryId})`；越界返回 `moved:false` 且零派发，非法 direction → `INVALID_ARGUMENT` 零派发；需已认证 GUI |
-| POST | `/plugins/ui-testing/viewport` | `{width,height}`（Emulation.setDeviceMetricsOverride） |
+| POST | `/plugins/ui-testing/viewport` | 双形状：legacy `{width,height}`（Number/round/clamp，保留 x/y/scale）或 v1 `{version:1,...patch,expectedRevision?,originId?}`（与工具同严格校验）；响应对两者都带 `view/observed/viewMeta/requested/clamped/applied/settled/state`，`VIEWPORT_CONFLICT → 409`（见下） |
 | POST | `/plugins/ui-testing/input` | `{events:[…]}`，mouse / wheel / key / text |
 | POST | `/plugins/ui-testing/eval` | `{expression}` → `{ok,value,type}` |
 | POST | `/plugins/ui-testing/screenshot` | → `{image: base64 PNG}` |
 | POST | `/plugins/ui-testing/close` | 关闭浏览器并清理临时 profile、WS 客户端、帧缓存 |
 | GET | `/plugins/ui-testing/frame?since=N` | 轮询回退：无新帧 `{pending:true}`，否则 `{seq,epoch,transport:"poll",image,capturedAt,receivedAt,width,height,…,state}`；`pending` 与有图两个分支的 `state` 同形 |
-| GET | `/plugins/ui-testing/state` | 保留 `mode/activity/url/title/viewport/seq/running/error` 与 owner 诊断字段；已认证 GUI 额外带 `ui`（见下） |
+| GET | `/plugins/ui-testing/state` | 保留 `mode/activity/url/title/viewport/seq/running/error` 与 owner 诊断字段，新增安全 `view`；已认证 GUI 额外带 `ui`（含 `ui.view/ui.viewMeta/ui.observed`，见下） |
 | GET | `/plugins/ui-testing/metrics` | host 采集/推送/丢帧/ackFailures/captureFps + 最近一次 client 实测指标 |
 | POST | `/plugins/ui-testing/metrics` | 客户端上报 `{transport,displayFps,endToEndMs,transportMs,droppedClient,received,displayed,seq,epoch,measuredAt}` |
 | GET（Upgrade） | `/plugins/ui-testing/frames` | WebSocket 推帧；升级前经 `ctx.get('connection').requestRejection(req)` 鉴权，无 connection 服务时只允许 loopback |
@@ -74,6 +75,29 @@ ui: {
 - `history` 是浏览器 CDP 历史（`Page.getNavigationHistory`）的聚合投影：`length=entries.length`、`index=currentIndex`，`canGoBack = index>0`、`canGoForward = index>=0 && index<length-1`；**不返回 entries/entryId/title 列表**。查询失败按 `available:false` 处理，不能当"只有一条历史"。`/reload`、`/history` 的成功响应带同一 `ui`。
 - 客户端所有快照（`/state`、`/frame`、导航响应）走单一 `acceptRemote(state)`：v1 按 `runtimeId`+`revision` 排序，同 runtime 较小 revision 丢弃；切换 runtime 清空地址来源并记住退役 `runtimeId` 丢弃迟到响应；轮询请求带客户端 `requestGeneration`，导航动作提交前递增，先前发出的响应不能覆盖提交后的地址。
 - 停止（`/close`）后 `address=''`、history 全部禁用；`runtimeId` 不变、`revision` 继续递增，避免旧读回重填地址。
+
+### 共享视口：`/viewport` v1、`ui.view` 与实时观测
+
+权威语义见 [viewport-control.md](viewport-control.md)。每个工作区 Runtime 持有 `view={version:1,mode,x,y,width,height,scale,source,revision}`，顶层 `viewport={width,height}` 是它的 getter 别名；面板与 Agent 读写同一对象。
+
+```text
+ui: {
+  version: 1, runtimeId, revision, address, history:{…},
+  view:     {version:1,mode,x,y,width,height,scale,source,revision},
+  viewMeta: {runtimeId,observedAt:null|ms,stale:boolean,originId:null|string},  # originId 本轮恒 null（面板不发，见下）
+  observed: null | {x,y,width,height,contentWidth,contentHeight,
+                    pageDevicePixelRatio,visualViewportScale,observedAt,
+                    source:'Page.getLayoutMetrics'}
+}
+```
+
+- **坐标与尺寸**：`x/y` 是文档 CSS px 的页面顶层滚动位置，来自 `Page.getLayoutMetrics.cssLayoutViewport.pageX/pageY`（不是窗口位置，也不是缓存页面值）；`width/height` 是 CSS viewport（整数 200–4096）；`mode` 由宽高精确匹配派生（custom 只作返回值）。`Runtime.evaluate` 只用于 instant `scrollTo` 与 DPR 读取。
+- **比例**：`scale` 0.1–2（10–200%）是面板显示比例与"省略 scale 的截图默认密度"；页面 CSS 视口、DPR（固定 1）、页面 zoom 与布局都不受影响。只有显式改宽高才发 `Emulation.setDeviceMetricsOverride({deviceScaleFactor:1,mobile:false})`。
+- **HTTP 双形状**：legacy `{width,height}` 保持旧的 Number/round/clamp 与 `viewport` 返回（`source` 记 `gui`）；v1 使用与工具相同的严格校验（`version` 只接受 1；`originId` 为**可选诊断字段**、≤64 可打印 ASCII，**本轮面板不发送**，因此 `viewMeta.originId` 恒为 null，不承担鉴权/scope/租约语义），响应对两种形状都带 `view/observed/viewMeta/requested/clamped/applied/settled/state`。冲突映射 `VIEWPORT_CONFLICT → 409`，其余沿用既有 code→status 映射。
+- **谁会被投影**：认证 `/state`、`/frame` 的 state、`ensure`/`navigate`/`reload`/`history` 响应都附 `ui.view/ui.viewMeta/ui.observed`；`browser_state` 工具返回同一份安全 `view`（无页面文本、无路径），但**不保证新鲜**——需要确定更新后事实时用 `browser_viewport set` 的读回。
+- **实时观测的触发与节流**：成功 set 自带两帧 + 最多 1000ms 的有界稳定读回（`settled:false` 是合法答案）；主框架导航提交、`/input` 派发后（50ms 与 250ms）、`/frame`（80ms 轮询）与 `/state`（500ms 轮询）、以及除 `browser_viewport` 外任何成功的页面操作都会调度一次读回。读回**合并、至少间隔 200ms、single-flight、事件驱动**：没有 viewer、没有动作的静止页面零 CDP 采样；缓存超过 1000ms 标 `stale:true`；后台读回只回显 x/y（`source:"page"`、revision+1），不覆盖宽高与比例；读回失败保留旧事实并标 stale，不虚构位置。
+- **截图默认比例**：`browser_screenshot` 省略 `scale` 时在调用内取当前 `view.scale`（`capture.request.scaleSource:"view"`，cold 为 1），显式 `scale` 允许 0.1–4 且只影响该次截图（`scaleSource:"explicit"`）；两轴期望像素 <1 时提前 `INVALID_ARGUMENT(empty-output-dimensions)`。T3 `Source.live` 同规则（本次调用冻结一次默认值，`act` 沿用原采集比例）。
+- **limits**：`browser_capabilities.limits.viewport={width:[200,4096],height:[200,4096],scroll:[0,10000000],scale:[0.1,2],default:{1280,800,0,0,1},presets,scrollPollMinMs:200,staleAfterMs:1000,settleMaxMs:1000,deviceScaleFactor:1,pageZoomChanged:false}`；`capture`/`limits.capture` 报 `defaultScaleSource:"view.scale"`、`defaultScale:1`、`scaleRange:[0.1,4]`、`minOutputPixels:{1,1}`。`viewport` 段另报 `get:{readOnly:true,lazyStart:false,lease:false,fresh:false}`、`set:{lazyStart:true,lease:true}` 与 `observed`（只来自真实读回）。
 
 ### 地址/标题/历史的同步事件
 
@@ -101,11 +125,13 @@ header: {v:1, seq, epoch, capturedAtMs, receivedAtMs, width, height,
 
 ## Agent 工具
 
-T1（9 个）：`browser_navigate`、`browser_eval`、`browser_screenshot`、`browser_input`、`browser_network`、`browser_computed_style`、`browser_http_request`、`browser_state`、`browser_capabilities`。
+T1（10 个）：`browser_navigate`、`browser_eval`、`browser_screenshot`、`browser_input`、`browser_network`、`browser_computed_style`、`browser_http_request`、`browser_viewport`（第 9 轮新增，共享视口 get/set）、`browser_state`、`browser_capabilities`。
 
 T2（第 6 轮新增 7 个）：`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`。完整契约见 [t2-structured-gui.md](t2-structured-gui.md)，实现/验收状态见 [status.md](status.md)。
 
 T3（第 7 轮新增 6 个）：`browser_vision_image`、`browser_vision_find`、`browser_vision_compare`、`browser_vision_act`、`browser_vision_baseline`、`browser_vision_check`。完整契约见 [t3-vision.md](t3-vision.md)，实现/验收状态见 [status.md](status.md)。
+
+`browser_viewport` 的 `get` 是**缓存诊断**（包装器按 `readOnly(args)` 在 `run()` 之外执行：不 ensure、不发 CDP、不进队列、不申请/续租租约、不改 recent/error），`set` 与其它页面工具一样走预检 → 串行队列 → 懒启动 + single-owner-lease；`expectedRevision` 冲突抛 `VIEWPORT_CONFLICT`（HTTP 409）且 patch 零应用。详见 [viewport-control.md](viewport-control.md) §7。
 
 T2 与 T1 共用同一 Runtime/队列/租约，`browser_snapshot` 的 ref 表按 Runtime 隔离；七工具都是页面操作（懒启动 + BUSY），`browser_state`/`browser_capabilities` 与独立 HTTP 不因 T2 改变语义。`browser_capabilities` 新增 `web.t2.*` 与 `limits.structuredGui`。**本文 T2 轮快照中的“T3/T4 仍 unsupported”已被第 7 轮取代**：T3 六个视觉工具与 `web.t3.*` 已实现并验收，T4 仍 unsupported。
 
@@ -117,13 +143,13 @@ M0–M2 的 `single-owner-lease` 保留，但已改为**按 DSH 工作区**：�
 
 T1回归有既有随机P21 flake：同一行为实现仅persist描述文案不同，一次22/22、324/324、exit0（[05-49-22](../tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)），一次21/22、323/324通过/1失败、exit1（[05-59-53](../tests/acceptance/runs/2026-11-01T05-59-53-185Z-105978/run-report.json)）。唯一失败为P21-host-output-contract的loadingFailed条目检查，实际仅3条成功网络记录，与[基线同项](../tests/acceptance/runs/2026-11-01T04-30-43-916Z-53146/run-report.json)相同；Lead判定既有环境flake而非P0回归，失败记录仍为FAIL。验收需串行，串行不能保证flake不出现。
 
-权威契约见 [capture-p0.md](capture-p0.md)；当前默认暂存修订C1–C14 **14/14、142/142、exit0**（[最终报告](../tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json)）。下方13/115属修订前历史：进程内真实 Chromium 三次各 **13/13 probes、115/115 必需项、exit 0**（[末次报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），宿主重启后加载与 provider 视觉仍 NOT_RUN。
+权威契约见 [capture-p0.md](capture-p0.md)；默认暂存修订 C1–C14 **14/14、142/142、exit0**（共享视口轮同一最终代码复跑 [capture-p0-2026-11-01T15-40-32-906Z-519432](../tests/acceptance/runs/capture-p0-2026-11-01T15-40-32-906Z-519432/report.json)；此前 [05-52-05](../tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json) 同结果）。注意：从第 9 轮起显式 `scale` 下界是 **0.1**、默认值不再固定 1（省略时跟随共享 `view.scale`），见 [viewport-control.md](viewport-control.md) §6。下方13/115属修订前历史：进程内真实 Chromium 三次各 **13/13 probes、115/115 必需项、exit 0**（[末次报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），宿主重启后加载与 provider 视觉仍 NOT_RUN。
 
 | 项 | 现行语义 |
 | --- | --- |
-| 参数 | `scale?:number=1`连续1–4；region文档CSS px；`persist?:boolean=false`；out为持久根相对.png，提供即持久；无out/persist:true/非空env时默认暂存 |
+| 参数 | `scale?:number`显式连续0.1–4，**省略=当前共享`view.scale`（cold 1）**；region文档CSS px；`persist?:boolean=false`；out为持久根相对.png，提供即持久；无out/persist:true/非空env时默认暂存 |
 | 单一采集路径 | `Page.captureScreenshot` PNG clip，DSF固定1，只用clip.scale；输出逐轴 `round(css×scale)`，最多16M像素；不事后放大/重编码，PNG损坏或尺寸不符不交付 |
-| capture | `version/request/environment/png/expected/sizeCheck/mapping/anomaly/file/delivery/warnings`；mapping纯JSON+公式；PNG CRC/尺寸与≤16M全量均匀/透明统计，纯色仅警告 |
+| capture | `version(仍1)/request/environment/png/expected/sizeCheck/mapping/anomaly/file/delivery/warnings`；`request` 新增 `scaleSource(explicit\|view)`/`viewRevision`，`mapping` 新增逐轴 `cssPerPixel` 与 `scrollAtCapture` 与连续点公式；mapping纯JSON；PNG CRC/尺寸与≤16M全量均匀/透明统计，纯色仅警告 |
 | 环境 | `deviceScaleFactorSource:'runtime-override'`；页面DPR读回失败null；`headless/headlessSource` 联合product/userAgent判定，任一HeadlessChrome命中true，未知null（Chrome152实测source=userAgent） |
 | 文件 | 默认staging（插件实例tmp目录/绝对file.path/pathKind=absolute/persistence=staging/root=staging/ephemeral=true），正常dispose清理；out/persist:true/非空env触发persistent（env或cwd根/相对path/ephemeral=false）；0600/link/no-clobber；legacy持久无根报OUTPUT_PATH_INVALID(root_unknown)，暂存失败只file=null+capture_file_unavailable |
 | 交付 | base64与落盘是同份PNG/hash；附件仅compare='attachment-metadata'，缺字段不推断相同；附件降采样/重编码警告不能证明provider最终接收尺寸 |
@@ -189,6 +215,11 @@ warnings封闭为 `content_uniform/content_transparent/model_image_downscaled/at
 ## 已知限制
 
 - 帧仍是 JPEG（质量 72、最大 1600×1200），WS 推送最小间隔 40ms；高动态页面可能掉帧，`dropped.coalesced/blocked` 会增长。轮询回退固定 80ms。
+- **共享视口的显示粒度**：实时帧固定 1x screencast，面板只按 `scale` 做 CSS 放大/缩小（>100% 时是位图放大、不是更高像素密度）；需要细节时用 `browser_screenshot` 的显式 `scale`（0.1–4）或 T3。缩放比例不改变页面 CSS 视口与 DPR。
+- **共享比例会改变默认截图尺寸**：`view.scale≠1` 时省略 `scale` 的截图（含 T3 live 源）按该比例输出；需要固定分辨率请显式给 `scale`。比例过低会丢细节，极小 region 会被提前拒绝（`empty-output-dimensions`）。
+- **视口 X/Y 是页面滚动位置**，不是窗口位置；页面自己滚动、smooth scroll 或 scroll snap 会继续改变它，缓存超过 1s 标 stale；`browser_viewport get` 只是缓存诊断，不保证新鲜。
+- **宽高变更后的输入屏障是 best-effort**：帧协议未扩展（`frame-source.js`/`frame-push.js` 本轮未改），只按已解码帧尺寸/元数据暂停输入 ≤250ms。
+- **真实宿主未验证**：3080（pid <pid>）本轮未重启，30 工具与 `ui.view` 只在进程内套件与隔离 DSH GUI 验证过；隔离实例不能冒充主实例。
 - 推帧只有服务端合并/背压，没有逐帧客户端 ACK；客户端丢帧通过 `seq` 跳号和 `droppedClient` 观测。
 - WS 升级依赖宿主 `connection` 服务鉴权；该服务不存在时仅 loopback 放行（测试/最小组合）。反向代理若不透传 Upgrade，会自然回退到轮询。
 - 键盘：`browser_input` 已支持 `modifiers`（数组或位掩码）与 `virtualKeyCode`，可派发 Tab/Shift+Tab/Enter/Esc/方向键与组合键（P20 用页面 DOM 事件与 `activeElement` 实测）；`commands`、`unmodifiedText`、`pointerType:pen` 只有 schema 与透传，无页面级行为断言（未验证）。面板里的人类输入走同一个 `/input` 通道。

@@ -6,7 +6,7 @@
 [English](README.md) | **简体中文**
 
 > [!IMPORTANT]
-> **项目状态：架构设计 / 预发布。** Web 通道——**T1 程序化、T2 结构化 GUI、T3 静态视觉与 P0 基础设施——图片输入流 + 网络抓包**（共 29 个 Agent 工具）——已实现，并由驱动真实 Chromium 的验收套件覆盖；其余 8 个规划中的运行环境尚未实现，界面选择器里保持置灰。插件目前以本地 link 方式安装，未发布到 npm：仍没有已发布的安装包、兼容性矩阵或正式 Release。验收状态、计数与未完成项见 [docs/status.md](docs/status.md)。
+> **项目状态：架构设计 / 预发布。** Web 通道——**T1 程序化、T2 结构化 GUI、T3 静态视觉与 P0 基础设施——图片输入流、网络抓包与共享视口控制**（共 30 个 Agent 工具）——已实现，并由驱动真实 Chromium 的验收套件覆盖；其余 8 个规划中的运行环境尚未实现，界面选择器里保持置灰。插件目前以本地 link 方式安装，未发布到 npm：仍没有已发布的安装包、兼容性矩阵或正式 Release。验收状态、计数与未完成项见 [docs/status.md](docs/status.md)。
 
 ## 这是什么项目？
 
@@ -36,26 +36,30 @@ AI 编程 Agent 可以生成界面代码，却很难可靠地回答：**最终�
 
 ## 已实现：Web 通道（Chromium）
 
-同一个插件在每台主机上运行一个共享的无头 Chromium，并为每个 DSH 工作区提供独立的 page、URL、视口、历史、网络缓冲和租约；Cookie 与存储按 Chromium profile 共享。Agent 可用的是 **29 个工具**，分属三层能力加两项 P0 基础设施（图片输入流与网络抓包）：
+同一个插件在每台主机上运行一个共享的无头 Chromium，并为每个 DSH 工作区提供独立的 page、URL、视口、历史、网络缓冲和租约；Cookie 与存储按 Chromium profile 共享。Agent 可用的是 **30 个工具**，分属三层能力加**三项 P0 基础设施**（图片输入流、网络抓包与共享视口控制）：
 
 | 层级 | 工具 | 能力 |
 | --- | --- | --- |
-| **T1** 程序化 | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_state` `browser_capabilities` | 导航、执行 JavaScript、Console/Network 检查、独立 HTTP 请求、计算样式、截图、原始鼠标/滚轮/键盘事件、能力探测 |
+| **T1** 程序化 | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_viewport` `browser_state` `browser_capabilities` | 导航、执行 JavaScript、Console/Network 检查、独立 HTTP 请求、计算样式、截图、原始鼠标/滚轮/键盘事件、共享视口（尺寸/滚动/显示比例）、能力探测 |
 | **T2** 结构化 GUI | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | snapshot → ref 定位、真实 CDP 操作、表单、节点状态与等待；每次调用都返回结构化证据与分类错误 |
 | **T3** 静态视觉 | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | 截图裁剪/缩放/预处理/标注、颜色/连通域/边缘/模板确定性识别、YIQ 差异、坐标交互、受管基线、回归与布局/遮挡/溢出/截断/颜色/组件缺失断言 |
-| **P0-A 图片输入流**（capture-p0，增强 T1 截图工具） | `browser_screenshot` | 连续 `scale` 1–4 与文档 CSS `region`、PNG 结构/CRC/尺寸/均匀性校验、安全暂存与显式持久、`capture.version=1` 证据与附件元数据、可选网络时间窗关联 |
+| **P0-A 图片输入流**（capture-p0，增强 T1 截图工具） | `browser_screenshot` | 显式 `scale` 0.1–4（省略时跟随共享视口比例）与文档 CSS `region`、PNG 结构/CRC/尺寸/均匀性校验、安全暂存与显式持久、`capture.version=1` 证据与附件元数据、可选网络时间窗关联 |
 | **P0-B 网络抓包**（network-p0） | `browser_network_session` `browser_network_events` `browser_network_detail` `browser_network_trace` `browser_network_control` `browser_network_evidence` `browser_network_subscribe` | 采集（HTTP/HTTPS 请求响应体、WebSocket、SSE、iframe/OOPIF/Worker）、时间轴、分析与聚合、业务链路、拦截/限速/重放/Mock、JSONL+HAR 证据与多 Agent 独立订阅 |
+| **P0-C 共享视口**（viewport-control） | `browser_viewport`（T1 工具）+ 调试面板尺寸栏 | 每个工作区一份权威 CSS 像素 `view`：页面滚动 `x`/`y`、CSS 视口 `width`/`height`、显示与默认截图 `scale`、派生 mode、source/revision。`get` 只读缓存诊断；`set` 为租约内的页面操作；`VIEWPORT_CONFLICT` 乐观并发；面板 X/Y 输入与五输入滚轮；按绘制矩形做坐标映射。不改变页面视口、设备像素比或页面缩放 |
+
+**P0-C 共享视口控制（新增）**：这是 P0 的第三项基础设施。每个 DSH 工作区一份权威 `view = {mode, x, y, width, height, scale, source, revision}`（文档 CSS 像素），Agent（`browser_viewport`）与调试面板读写同一对象。`x/y` 是页面滚动位置（`Page.getLayoutMetrics` 实测，不是窗口位置），`width/height` 是页面 CSS 视口（200–4096），`mode` 由尺寸派生（`宽屏/横屏/平板/手机/custom`），`scale`（0.1–2，即 10–200%）是显示比例与默认截图密度，**不改变页面视口、设备像素比（固定 1）或页面缩放**。`get` 是只读缓存诊断（不启动浏览器、不发 CDP、不占租约，`stale` 明示），`set` 是页面操作（懒启动 + 串行队列 + 工作区租约），只有宽高变化才发 `Emulation.setDeviceMetricsOverride`；`expectedRevision` 提供乐观并发（`VIEWPORT_CONFLICT`，HTTP 409，patch 不应用）。面板尺寸栏新增 X/Y、五个数值框支持滚轮、「适应窗口」降级为纯本地显示偏好、按实际绘制矩形做坐标映射（不乘宿主 DPR），宽高变更后有 best-effort 帧屏障。验收：`viewport.mjs` → 11/11 probes、107/107 required、exit 0；隔离 DSH GUI `viewport-gui.mjs` → 73/73 PASS、5 NOT_RUN、exit 0。真实 3080 未重启，30 工具与 `ui.view` 在那里仍是 **NOT_RUN**。
 
 T3 是自研、零第三方依赖的纯 JavaScript 实现（自带 PNG 编解码、YIQ 差异与识别算法，不依赖 Sharp、Pixelmatch、Argos）。`browser_capabilities` 报告宿主实际提供的能力——6 项 `web.t3.*` 与聚合 `web.t3.static-vision`；`web.t4.*` 仍为 `unsupported`。
 
-### P0 基础设施：两项独立能力
+### P0 基础设施：三项独立能力
 
-P0 **不是单一功能**，而是两项各自有契约、各自独立验收的能力：
+P0 **不是单一功能**，而是三项各自有契约、各自独立验收的能力：
 
-- **P0-A — 图片输入流 / 截图采集**（`capture-p0.js`，契约 [docs/capture-p0.md](docs/capture-p0.md)）：`browser_screenshot` 支持连续 `scale` 1–4、文档 CSS `region`、PNG 结构/CRC/尺寸/均匀性校验、安全暂存与显式持久、`capture.version=1` 证据与附件元数据，并可与 P0-B 的网络时间窗关联（`capture.networkWindow`）。验收：`capture-p0.mjs` → 14/14 probes、142/142 required、exit 0。
+- **P0-A — 图片输入流 / 截图采集**（`capture-p0.js`，契约 [docs/capture-p0.md](docs/capture-p0.md)）：`browser_screenshot` 支持连续 `scale` 0.1–4、文档 CSS `region`、PNG 结构/CRC/尺寸/均匀性校验、安全暂存与显式持久、`capture.version=1` 证据与附件元数据，并可与 P0-B 的网络时间窗关联（`capture.networkWindow`）。验收：`capture-p0.mjs` → 14/14 probes、142/142 required、exit 0。
 - **P0-B — 网络抓包 / 业务链路调试**（`network-p0.js`，契约 [docs/network-p0.md](docs/network-p0.md)）：7 个 `browser_network_*` 工具，覆盖采集、时间轴、分析、业务链路、控制与证据。验收：`network-p0.mjs` → 52/52 criteria、266 required、0 failed、8 条显式 NOT_RUN、exit 0；另有 5 页电商链路场景 `network-chain.mjs` → 12/12、49 required、exit 0。
+- **P0-C — 共享视口控制**（`index.js` Runtime view + `browser_viewport` + 调试面板尺寸栏，契约 [docs/viewport-control.md](docs/viewport-control.md)）：每个工作区一份权威 CSS 像素 view（页面滚动 x/y、CSS 视口宽高、显示与默认截图比例、派生 mode、source/revision）；只读缓存 `get`、租约内 `set`、`VIEWPORT_CONFLICT` CAS、事件驱动 200ms 滚动观测、面板 X/Y 与五输入滚轮、纯本地 `fit`、按绘制矩形做坐标映射。验收：`viewport.mjs` → 11/11 probes、107/107 required、exit 0；隔离 DSH GUI `viewport-gui.mjs` → 73/73 PASS、5 NOT_RUN、exit 0。
 
-两者互相独立：P0-A 本身**不构成** T3 静态视觉判定，P0-B 本身**不构成** T4 动态视觉判定。两者均为进程内真实 Chromium 结果；网络半边的真实宿主重启冒烟仍为 **NOT_RUN**。
+三者互相独立：P0-A 本身**不构成** T3 静态视觉判定，P0-B 本身**不构成** T4 动态视觉判定，P0-C 本身**不构成**截图证据或视觉判定。三者均为进程内或隔离 DSH 结果；新 Host 面的真实宿主重启冒烟仍为 **NOT_RUN**（3080 早于本轮构建）。
 
 ### P0-B：网络抓包与调试（network-p0）
 
@@ -72,7 +76,7 @@ P0 **不是单一功能**，而是两项各自有契约、各自独立验收的�
 
 ### P0-A：图片输入流——截图与证据文件（capture-p0）
 
-`browser_screenshot` 支持可选的连续 `scale`（1–4）与**文档 CSS 像素**的 `region`。默认把 PNG 暂存到插件实例目录（权限 0600、不覆盖同名文件），插件销毁时清理；显式传入 `out`、`persist:true` 或设置 `DSH_UI_TESTING_CAPTURE_DIR` 才会持久到指定根目录。截图证据在有网络会话时新增 `capture.networkWindow`（帧/截图时间、`fromSeq`/`toSeq`、`nearest`），`capture.version` 仍为 **1**，其余 capture 字段语义不变。截图不做脱敏，分享前请自行检查内容。T3 基线存放在 `<root>/output/vision-baselines/<scopeHash>/`，使用不可变 revision、HEAD CAS 与墓碑删除。
+`browser_screenshot` 支持可选的显式 `scale`（连续 0.1–4）与**文档 CSS 像素**的 `region`；省略 `scale` 时使用共享视口比例（冷启动 1），所以面板/Agent 把比例设成 65% 后，800×600 视口默认输出 520×390 的 PNG。默认把 PNG 暂存到插件实例目录（权限 0600、不覆盖同名文件），插件销毁时清理；显式传入 `out`、`persist:true` 或设置 `DSH_UI_TESTING_CAPTURE_DIR` 才会持久到指定根目录。截图证据在有网络会话时新增 `capture.networkWindow`（帧/截图时间、`fromSeq`/`toSeq`、`nearest`），`capture.version` 仍为 **1**，其余 capture 字段语义不变。截图不做脱敏，分享前请自行检查内容。T3 基线存放在 `<root>/output/vision-baselines/<scopeHash>/`，使用不可变 revision、HEAD CAS 与墓碑删除。
 
 ### 当前限制
 
@@ -82,7 +86,9 @@ P0 **不是单一功能**，而是两项各自有契约、各自独立验收的�
 - **有些检查不可观测。** Blink 会把 CDP 鼠标坐标截断为整数、inert 子树不参与 hit-test，因此这两类子项记为 NOT_APPLICABLE 而不是通过。
 - **仅 Web。** 桌面、Android、TUI、HarmonyOS、游戏与 3D 仍为规划，运行环境选择器里保持置灰。
 - **网络 P0 边界。** 子目标采集为 **partial**（`G1.5`）：same-origin iframe 与 dedicated worker 已实证；OOPIF 为 `partial`（未单独验证）；shared/service worker **不采集**（attach 会暂停并破坏 `register()`）；popup 继续被既有目标策略阻断，也没有多标签/popup 采集；HTTPS 未独立验收（无本地 TLS 靶机）；`responseModification` 取决于 Chrome 是否支持；带宽限制只是 CDP 模拟；HAR 是 1.2 子集（JSONL 才是保真格式）。正文与头默认脱敏，但不是通用秘密检测器。
-- **进程内 ≠ 真实宿主。** 网络套件用 fake ctx + 真实 Chromium；重启宿主后的七个网络工具冒烟仍 **NOT_RUN**。
+- **进程内 ≠ 真实宿主。** 网络套件用 fake ctx + 真实 Chromium；重启宿主后的七个网络工具冒烟仍 **NOT_RUN**。共享视口同理：`ui.view`、`browser_viewport` 与面板 X/Y 只在进程内套件与隔离 DSH 实例验证过，没有在用户的 3080 上验证。
+- **视口显示粒度。** 实时预览是 1x screencast JPEG，比例 >100% 只是位图 CSS 放大，不是更高像素密度；需要细节用 `browser_screenshot` 的显式 `scale`（或 T3）。因为共享比例就是默认截图密度，改比例后省略 `scale` 会改变 PNG 尺寸——需要固定分辨率时显式给 `scale`。宽高变更后的几何屏障是 best-effort（≤250ms），因为本轮刻意没有扩展帧协议。
+- **冲突与新鲜度。** `browser_viewport get` 是缓存诊断：`stale` 表示"不是刚观测过"，页面随时可能自己滚动（`source:"page"`）。`expectedRevision` 竞争失败返回 `VIEWPORT_CONFLICT` 且不应用 patch——重新读取后再判断，不要重放旧 patch。
 
 仓库还提供在进程内驱动真实 Chromium 的验收套件（`tests/acceptance/`），以及针对 PNG 编解码、YIQ 差异、基线与网络事件模型的纯算法单测。当前结果与未完成项见 [docs/status.md](docs/status.md)。
 
@@ -92,7 +98,7 @@ P0 **不是单一功能**，而是两项各自有契约、各自独立验收的�
 
 | 运行环境 | 当前状态 | 候选技术路线 | 目标能力 |
 | --- | --- | --- | --- |
-| **Web**（Chromium） | **T1 + T2 + T3 + P0 网络已实现**；T4 未实现（面板可用） | Chromium、Chrome DevTools Protocol（CDP）、DOM/Accessibility API | 页面导航、表单、响应式布局、Console/Network、深度网络采集与链路追踪、截图、交互、静态视觉分析与坐标输入 |
+| **Web**（Chromium） | **T1 + T2 + T3 + P0（图片输入、网络抓包、共享视口）已实现**；T4 未实现（面板可用） | Chromium、Chrome DevTools Protocol（CDP）、DOM/Accessibility API | 页面导航、表单、响应式布局、Console/Network、深度网络采集与链路追踪、截图、交互、静态视觉分析、共享视口控制与坐标输入 |
 | **Windows 桌面** | 规划中，未实现（置灰） | Windows UI Automation（UIA）及系统允许的输入/采集接口 | 原生控件、窗口状态、界面流程和截图 |
 | **Linux 桌面** | 规划中，未实现（置灰） | 无障碍接口及桌面环境适配能力 | 原生控件、GUI 流程；实际支持范围受 X11/Wayland 与权限影响 |
 | **macOS 桌面** | 规划中，未实现（置灰） | macOS Accessibility（AXUIElement）及系统截屏/输入接口（需 TCC 授权） | 原生控件、窗口状态、界面流程和截图；初期不承诺完整无人值守自动化 |
@@ -186,10 +192,12 @@ flowchart TD
     M --> P[T1 / T2 / T3 / T4 能力选择]
     P --> B[Web 适配器: Chromium / CDP]
     B --> N[网络 P0: 采集 / 时间轴 / 链路 / 控制 / 证据]
+    B --> C[视口 P0: CSS view / X-Y / 滚轮 / 截图比例]
     P --> D[桌面适配器: Windows / Linux]
     P --> R[Android 适配器: 设备 / 模拟器]
     B --> E[观察与证据]
     N --> E
+    C --> E
     D --> E
     R --> E
     E --> X[断言与测试报告]
@@ -233,7 +241,7 @@ flowchart TD
 
 - [ ] **R0 — 可行性：** 审计 DSH 插件/Sidebar 接口、上游许可证、目标平台能力与安全边界。
 - [ ] **R1 — Web 基础：** 保留工作区/上下文/标签页管理、后台 Chromium 执行与查看器解耦。
-- [ ] **R2 — 测试核心：** 实现类型化测试会话、T1–T4 能力选择、操作、观察、断言与证据报告。_（已交付 Web T1–T3 与 P0 网络：程序化通道、结构化 GUI、静态视觉与网络采集/链路，各自带验收套件；T4 与跨运行环境测试核心仍未完成。）_
+- [ ] **R2 — 测试核心：** 实现类型化测试会话、T1–T4 能力选择、操作、观察、断言与证据报告。_（已交付 Web T1–T3 与三项 P0：程序化通道、结构化 GUI、静态视觉、网络采集/链路与共享视口控制，各自带验收套件；T4 与跨运行环境测试核心仍未完成。）_
 - [ ] **R3 — 协作控制：** 实现单/多 Agent 授权、目标归属、人工接管与并发测试协调。
 - [ ] **R4 — 桌面应用：** 验证 Windows/Linux 的无障碍、输入、截图、权限与焦点约束。
 - [ ] **R5 — Android：** 验证设备/模拟器生命周期、UI 节点、交互、截图与错误报告。
@@ -250,11 +258,13 @@ flowchart TD
 开发阶段使用的验收套件是驱动本机真实 Chrome/Chromium 的 Node 脚本，请串行执行：
 
 ```bash
-node tests/acceptance/run.mjs            # T1 程序化
+node tests/acceptance/run.mjs            # T1 程序化（30 工具面）
+node tests/acceptance/viewport.mjs       # P0-C 共享视口（Host，真实 Chromium）
 node tests/acceptance/t2-structured.mjs  # T2 结构化 GUI
 node tests/acceptance/t3-vision.mjs      # T3 静态视觉
-node tests/acceptance/capture-p0.mjs     # 截图采集基础设施
-node tests/acceptance/network-p0.mjs     # 网络 P0（采集/时间轴/链路/控制/证据）
+node tests/acceptance/capture-p0.mjs     # P0-A 截图采集基础设施
+node tests/acceptance/network-p0.mjs     # P0-B 网络 P0（采集/时间轴/链路/控制/证据）
+node tests/acceptance/viewport-gui.mjs   # P0-C 共享视口（隔离 DSH + 无头 Chrome）
 ```
 
 仓库不含产品截图；旧版 `banner.png` / `banner_zh.png` 已移除，仓库内容不应被当作能力演示。
@@ -275,10 +285,11 @@ node tests/acceptance/network-p0.mjs     # 网络 P0（采集/时间轴/链路/�
 | [docs/status.md](docs/status.md) | 当前实现状态、验收证据与未完成项 |
 | [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 分层、完成门槛与选择策略 |
 | [docs/t1-m0-m2-contract.md](docs/t1-m0-m2-contract.md) | T1 工具、租约、错误与证据契约 |
+| [docs/viewport-control.md](docs/viewport-control.md) | P0-C 共享视口契约：view 模型、get/set 分类、CAS、HTTP/UI 投影、面板映射、截图比例与验收 |
 | [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | T2 契约、Ref 协议与工具语义 |
 | [docs/t3-vision.md](docs/t3-vision.md) | T3 契约、算法与判定规则 |
-| [docs/capture-p0.md](docs/capture-p0.md) | 截图采集契约 |
-| [docs/network-p0.md](docs/network-p0.md) | P0 网络契约：七个工具、事件 schema、配额、`NET_*` 错误、靶机路由与验收 C1–C52 |
+| [docs/capture-p0.md](docs/capture-p0.md) | P0-A 截图采集契约 |
+| [docs/network-p0.md](docs/network-p0.md) | P0-B 网络契约：七个工具、事件 schema、配额、`NET_*` 错误、靶机路由与验收 C1–C52 |
 
 ## 与配套项目的关系
 

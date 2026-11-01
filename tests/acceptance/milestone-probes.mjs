@@ -57,12 +57,19 @@ export async function capabilityProbe({ harness, check }) {
   });
   const t1Tools = capabilities.filter((item) => item.id.startsWith('web.t1.') && item.tool);
   const httpEntry = capabilities.find((item) => item.id === 'web.t1.http-request');
-  check('T1 恰好 9 项工具投影且 http-request 为 available', t1Tools.length === 9
+  // 10 T1 tool projections after the shared-viewport round (docs/viewport-control.md §7.2):
+  // 9 historical + browser_viewport.
+  const viewportEntry = capabilities.find((item) => item.id === 'web.t1.viewport');
+  check('T1 恰好 10 项工具投影（含 web.t1.viewport）且 http-request/viewport 为 available', t1Tools.length === 10
     && t1Tools.every((item) => item.status === 'available')
     && httpEntry?.tool === 'browser_http_request' && httpEntry.status === 'available'
     && Array.isArray(httpEntry.constraints) && httpEntry.constraints.length === 4
-    && httpEntry.constraints.some((text) => /no Chromium startup/i.test(text)),
-  { expected: { count: 9, http: 'available' }, actual: t1Tools.map((item) => `${item.id}:${item.status}`) });
+    && httpEntry.constraints.some((text) => /no Chromium startup/i.test(text))
+    && viewportEntry?.tool === 'browser_viewport' && viewportEntry.status === 'available'
+    && Array.isArray(viewportEntry.constraints) && viewportEntry.constraints.length >= 5
+    && viewportEntry.constraints.some((text) => /cache diagnostic/i.test(text))
+    && viewportEntry.constraints.some((text) => /set is a page operation/i.test(text)),
+  { expected: { count: 10, http: 'available', viewport: 'available' }, actual: t1Tools.map((item) => `${item.id}:${item.status}`) });
   // network P0 (docs/network-p0.md §2/§12): seven web.network.* tool projections + the
   // web.network.p0 aggregate. Their tri-state must be one of available/unavailable/unsupported and
   // the aggregate must not sit behind a tool. Storage-only tools are readable without Chromium, so
@@ -109,9 +116,14 @@ export async function capabilityProbe({ harness, check }) {
       && (networkSection?.observed === null || typeof networkSection?.observed === 'object'), {
     expected: { https: 'mechanism-identical', observed: 'null | object' }, actual: { https: networkCapture.https, observed: networkSection?.observed },
   });
-  check('viewport-control/browser-extras 仍 unsupported 且没有同名工具',
-    capabilities.filter((item) => /viewport-control|browser-extras/.test(item.id)).every((item) => item.status === 'unsupported' && !item.tool),
-    { actual: capabilities.filter((item) => /viewport-control|browser-extras/.test(item.id)) });
+  // The shared viewport is implemented now: the old `web.t1.viewport-control` placeholder must be
+  // gone and `web.t1.viewport` must carry the new tool. `browser-extras` stays unsupported.
+  const viewportControl = capabilities.filter((item) => item.id === 'web.t1.viewport-control');
+  check('共享视口已实现：web.t1.viewport-control 占位已移除，web.t1.viewport 指向 browser_viewport；browser-extras 仍 unsupported',
+    viewportControl.length === 0
+      && capabilities.some((item) => item.id === 'web.t1.viewport' && item.tool === 'browser_viewport')
+      && capabilities.filter((item) => /browser-extras/.test(item.id)).every((item) => item.status === 'unsupported' && !item.tool),
+    { actual: { viewportControl, viewport: capabilities.find((item) => item.id === 'web.t1.viewport'), extras: capabilities.filter((item) => /browser-extras/.test(item.id)) } });
   const structuredGui = value?.limits?.structuredGui;
   check('limits.structuredGui 报告 T2 契约限额', structuredGui?.protocolVersion === 1
     && structuredGui?.defaultMaxNodes === 500 && structuredGui?.maxNodes === 2000
@@ -120,6 +132,33 @@ export async function capabilityProbe({ harness, check }) {
     && structuredGui?.maxRefs === 2000 && structuredGui?.formFields === 20 && structuredGui?.scrollAmount === 400, {
     expected: 'docs/t2-structured-gui.md §5.3 limits.structuredGui', actual: structuredGui,
   });
+  const viewportLimits = value?.limits?.viewport;
+  const viewportSection = value?.viewport;
+  check('limits.viewport 与 viewport 段报告共享视口契约（比例 0.1–2、预设、stale/settle、dsf=1、get 只读）',
+    Array.isArray(viewportLimits?.width) && viewportLimits.width[0] === 200 && viewportLimits.width[1] === 4096
+      && Array.isArray(viewportLimits?.height) && viewportLimits.height[0] === 200 && viewportLimits.height[1] === 4096
+      && Array.isArray(viewportLimits?.scroll) && viewportLimits.scroll[0] === 0 && viewportLimits.scroll[1] === 10000000
+      && Array.isArray(viewportLimits?.scale) && viewportLimits.scale[0] === 0.1 && viewportLimits.scale[1] === 2
+      && viewportLimits?.default?.width === 1280 && viewportLimits?.default?.height === 800
+      && viewportLimits?.default?.scale === 1 && viewportLimits?.staleAfterMs === 1000
+      && viewportLimits?.settleMaxMs === 1000 && viewportLimits?.scrollPollMinMs === 200
+      && viewportLimits?.deviceScaleFactor === 1 && viewportLimits?.pageZoomChanged === false
+      && viewportSection?.tool === 'browser_viewport' && viewportSection?.get?.readOnly === true
+      && viewportSection?.get?.lazyStart === false && viewportSection?.get?.lease === false
+      && viewportSection?.set?.lazyStart === true && viewportSection?.set?.lease === true
+      && viewportSection?.presets?.phone?.width === 393 && viewportSection?.presets?.phone?.height === 852
+      && viewportSection?.presets?.wide?.width === 1920 && viewportSection?.presets?.landscape?.height === 768
+      && viewportSection?.presets?.tablet?.width === 768,
+  { expected: 'docs/viewport-control.md §7.2 limits.viewport + viewport 段', actual: { viewportLimits, viewportSection } });
+  const captureSection = value?.capture;
+  const captureLimits = value?.limits?.capture;
+  check('capture 默认比例来源是 view.scale（cold fallback 1），显式 scale 范围 0.1–4',
+    captureSection?.defaultScaleSource === 'view.scale' && captureSection?.defaultScale === 1
+      && Array.isArray(captureSection?.scaleRange) && captureSection.scaleRange[0] === 0.1 && captureSection.scaleRange[1] === 4
+      && captureLimits?.defaultScaleSource === 'view.scale' && captureLimits?.defaultScale === 1
+      && Array.isArray(captureLimits?.scaleRange) && captureLimits.scaleRange[0] === 0.1 && captureLimits.scaleRange[1] === 4
+      && captureLimits?.minOutputPixels?.width === 1 && captureLimits?.minOutputPixels?.height === 1,
+  { expected: { defaultScaleSource: 'view.scale', defaultScale: 1, scaleRange: [0.1, 4] }, actual: { captureSection, captureLimits } });
   const httpLimits = value?.limits?.httpRequest;
   check('limits.httpRequest 与契约默认/上限一致', httpLimits?.defaultTimeoutMs === 5000 && httpLimits?.maxTimeoutMs === 20000
     && httpLimits?.defaultMaxBytes === 65536 && httpLimits?.maxBytes === 1048576 && httpLimits?.maxRequestBodyBytes === 65536

@@ -2240,9 +2240,10 @@ async function probeC50({ harness, check }) {
   const names = harness.toolNames();
   const networkNames = module.NETWORK_TOOLS.map((tool) => tool.name);
   const legacyNames = module.LEGACY_TOOLS.map((tool) => tool.name);
-  check('注册表恰好 29 个工具（22 旧 + 7 network），名称与契约一致', names.length === 29
+  // 30 tools since the shared-viewport round: 23 legacy (22 pre-network + browser_viewport) + 7 network.
+  check('注册表恰好 30 个工具（23 旧 + 7 network），名称与契约一致', names.length === 30
     && networkNames.every((name) => names.includes(name)) && legacyNames.every((name) => names.includes(name)),
-    { expected: { total: 29, network: 7, legacy: 22 }, actual: { total: names.length, missingNetwork: networkNames.filter((n) => !names.includes(n)) } });
+    { expected: { total: 30, network: 7, legacy: 23 }, actual: { total: names.length, missingNetwork: networkNames.filter((n) => !names.includes(n)) } });
   const schemaProblems = [];
   for (const tool of module.NETWORK_TOOLS) {
     const definition = harness.tools.get(tool.name);
@@ -2324,9 +2325,9 @@ const BEARER = ['Bearer', 'SECRET', 'netfixture02'].join(' ');
 /** C52 — non-regression invariants that can be proven inside this process. */
 async function probeC52({ harness, check, notRun }) {
   const exec = execOf('c52');
-  check('本套件所有探针使用的工具都在 29 个注册工具内（无 CDP shim）', harness.toolNames().length === 29
+  check('本套件所有探针使用的工具都在 30 个注册工具内（无 CDP shim）', harness.toolNames().length === 30
     && harness.toolNames().every((name) => name.startsWith('browser_')),
-    { expected: 29, actual: harness.toolNames().length });
+    { expected: 30, actual: harness.toolNames().length });
   await freshSession(harness, { exec, name: 'c52' });
   await clickAndAwait(harness, '#net-fetch-json', 'fetch-json', { exec });
   const legacy = await call(harness, 'browser_network', { limit: 20 }, exec);
@@ -2353,7 +2354,7 @@ async function probeC52({ harness, check, notRun }) {
   }
   check('git diff --check 通过（无空白错误）', diffCheck.ok, { expected: { exitCode: 0 }, actual: diffCheck });
   notRun('T1 run.mjs / T2 t2-structured.mjs / T3 t3-vision.mjs / capture-p0.mjs 回归', '这四套件是独立进程命令（各自单 owner 浏览器），不在本套件内并行执行；由 Lead 串行复跑，本进程只证明工具面与旧 browser_network 形状未变。');
-  notRun('真实宿主（3080 重启后加载 29 工具）', 'fake Cordis ctx 不能代替真实宿主；需要用户重启 3080 后在真实 Agent 会话验证，属 NET-VERIFY。');
+  notRun('真实宿主（3080 重启后加载 30 工具）', 'fake Cordis ctx 不能代替真实宿主；需要用户重启 3080 后在真实 Agent 会话验证，属 NET-VERIFY。');
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -2410,9 +2411,9 @@ B_PROBES.push(
   { id: 'C47-quota', criteria: ['C47'], title: '配额/背压', expected: 'maxEvents 淘汰、integrity 如实、限额公开、规则 32 上限', body: probeC47 },
   { id: 'C48-integrity', criteria: ['C48'], title: '完整性', expected: 'complete 条件、gaps/issues、有淘汰必 false', body: probeC48 },
   { id: 'C49-subscriptions', criteria: ['C49'], title: '多 Agent 订阅', expected: '独立游标、不重复投递、跨 agent FORBIDDEN、close 幂等', body: probeC49 },
-  { id: 'C50-invariants-tools', criteria: ['C50'], title: '不变量：工具面/能力', expected: '29 工具、7 schema、capabilities.network、诊断不启动、旧工具不变', body: probeC50 },
+  { id: 'C50-invariants-tools', criteria: ['C50'], title: '不变量：工具面/能力', expected: '30 工具、7 schema、capabilities.network、诊断不启动、旧工具不变', body: probeC50 },
   { id: 'C51-invariants-safety', criteria: ['C51'], title: '不变量：安全/隔离', expected: '默认脱敏、路径限制、owner-only 订阅、租约、NET_* 失败', body: probeC51 },
-  { id: 'C52-invariants-regression', criteria: ['C52'], title: '不变量：非回归', expected: '29 工具、旧 browser_network 形状、node --check、git diff --check；外部套件 NOT_RUN', body: probeC52 },
+  { id: 'C52-invariants-regression', criteria: ['C52'], title: '不变量：非回归', expected: '30 工具、旧 browser_network 形状、node --check、git diff --check；外部套件 NOT_RUN', body: probeC52 },
 );
 
 /* ------------------------------------------------------------------------------------------------

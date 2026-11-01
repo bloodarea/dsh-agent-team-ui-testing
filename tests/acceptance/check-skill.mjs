@@ -10,7 +10,7 @@
  *     registers (no invented capabilities, no Playwright/Puppeteer tool names);
  *   - knowledge/web/t1-capability-ledger.md exists, uses only known status values, and does not
  *     claim the unsupported http-request capability as available;
- *   - the composed surface is consistent: index.js registers 29 tools (9 T1 + 7 T2 + 6 T3
+ *   - the composed surface is consistent: index.js registers 30 tools (10 T1 + 7 T2 + 6 T3
  *     + 7 network), the T1 ledger exists, and the manifest declares T2/T3 as supported while T4
  *     stays unsupported. The manifest/ledger halves for T2, T3 and network P0 are *optional* until
  *     the skill owner lands them (task-5); until then they are reported as INFO, never faked.
@@ -82,11 +82,12 @@ async function main() {
   const indexSource = await readFile(INDEX_FILE, 'utf8');
   const actualTools = new Set();
   for (const match of indexSource.matchAll(/name:\s*'((?:browser_)[a-z0-9_]+)'/g)) actualTools.add(match[1]);
-  // 29 = 9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2)
-  //      + 6 T3 (docs/t3-vision.md §2.1) + 7 network (docs/network-p0.md §2).
+  // 30 = 10 T1 (docs/runtime-t1.md + docs/viewport-control.md §7 `browser_viewport`)
+  //      + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
+  //      + 7 network (docs/network-p0.md §2).
   const expectedTools = [
     'browser_navigate', 'browser_eval', 'browser_screenshot', 'browser_input', 'browser_network',
-    'browser_computed_style', 'browser_http_request', 'browser_state', 'browser_capabilities',
+    'browser_computed_style', 'browser_http_request', 'browser_viewport', 'browser_state', 'browser_capabilities',
     'browser_snapshot', 'browser_click', 'browser_type', 'browser_scroll', 'browser_fill_form',
     'browser_node_state', 'browser_wait_for',
     'browser_vision_image', 'browser_vision_find', 'browser_vision_compare',
@@ -95,8 +96,8 @@ async function main() {
     'browser_network_trace', 'browser_network_control', 'browser_network_evidence',
     'browser_network_subscribe',
   ];
-  record('index.js 中可解析出 29 个实际注册的 browser_* 工具（9 T1 + 7 T2 + 6 T3 + 7 network）',
-    actualTools.size === 29 && expectedTools.every((name) => actualTools.has(name))
+  record('index.js 中可解析出 30 个实际注册的 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network）',
+    actualTools.size === 30 && expectedTools.every((name) => actualTools.has(name))
       && [...actualTools].every((name) => expectedTools.includes(name)), [...actualTools]);
 
   // 2. Frontmatter.
@@ -121,7 +122,7 @@ async function main() {
   // 4. Tool names in SKILL.md are all real (no invented/Playwright names).
   const mentionedTools = new Set([...body.matchAll(/browser_[a-z0-9_]+/g)].map((match) => match[0]));
   const inventedTools = [...mentionedTools].filter((name) => !actualTools.has(name));
-  record('SKILL.md 中出现的每个 browser_* 工具名都是 index.js 实际注册的 29 个之一', inventedTools.length === 0, { mentioned: [...mentionedTools], invented: inventedTools });
+  record('SKILL.md 中出现的每个 browser_* 工具名都是 index.js 实际注册的 30 个之一', inventedTools.length === 0, { mentioned: [...mentionedTools], invented: inventedTools });
 
   // 5. Ledger.
   record('knowledge/web/t1-capability-ledger.md 存在', existsSync(LEDGER_FILE), relative(REPO_ROOT, LEDGER_FILE));
@@ -138,6 +139,14 @@ async function main() {
       httpLine || '未提及 http-request');
     const discoveryLine = ledger.split(/\r?\n/).find((line) => /web\.t1\.capability-discovery/.test(line));
     record('台账能力发现对应 browser_capabilities 且标明实现状态', Boolean(discoveryLine) && /browser_capabilities/.test(discoveryLine) && /implemented-not-verified|verified|partial/.test(discoveryLine), discoveryLine);
+    // Shared viewport (docs/viewport-control.md §7): the 10th T1 tool must be recorded as implemented
+    // in the T1 ledger — the old `viewport-control -> unsupported` row is no longer the truth.
+    const viewportLine = ledger.split(/\r?\n/).find((line) => /web\.t1\.viewport(?!-control)/.test(line));
+    record('台账把 web.t1.viewport 记为 browser_viewport 且状态 implemented-not-verified/verified/partial',
+      Boolean(viewportLine) && /browser_viewport/.test(viewportLine)
+        && /implemented-not-verified|verified|partial/.test(viewportLine)
+        && !/unsupported|not implemented|不支持/i.test(viewportLine),
+      viewportLine || '未提及 web.t1.viewport');
     record('Skill 明确记录错误码、lease、截图回退契约', ['BrowserError', 'BUSY', 'browser_capabilities', 'base64-fallback'].every((term) => raw.includes(term)), '缺少 M0–M2 契约关键词');
   }
 
@@ -198,6 +207,22 @@ async function main() {
         && netOps.every((op) => ALLOWED_STATUSES.has(op.status)),
       { tier: manifest.tier, networkToolOperations: netToolOps.map((op) => `${op.id}:${op.tool}:${op.status}`), aggregate: netAggregate?.status },
       { optional: true });
+    // Shared viewport half: the 10th T1 tool projection `web.t1.viewport` -> browser_viewport, plus
+    // the viewport limits block. Required (not optional): the tool surface cannot silently drop it.
+    const viewportOp = (manifest.operations || []).find((op) => op.id === 'web.t1.viewport');
+    const legacyViewportOp = (manifest.operations || []).find((op) => op.id === 'web.t1.viewport-control');
+    record('manifest 声明 web.t1.viewport -> browser_viewport（非 unsupported，且旧的 viewport-control 占位已移除）',
+      Boolean(viewportOp) && viewportOp.tool === 'browser_viewport' && viewportOp.status !== 'unsupported'
+        && ALLOWED_STATUSES.has(viewportOp.status) && !legacyViewportOp,
+      { viewport: viewportOp && `${viewportOp.id}:${viewportOp.tool}:${viewportOp.status}`, legacy: legacyViewportOp?.id });
+    record('manifest 报告 limits.viewport（宽高 200–4096、滚动上限、比例 0.1–2、dsf=1）与 capture 默认比例来源 view.scale',
+      Array.isArray(manifest.limits?.viewport?.width) && manifest.limits.viewport.width[1] === 4096
+        && Array.isArray(manifest.limits?.viewport?.scale) && manifest.limits.viewport.scale[0] === 0.1 && manifest.limits.viewport.scale[1] === 2
+        && manifest.limits?.viewport?.deviceScaleFactor === 1
+        && manifest.limits?.capture?.defaultScaleSource === 'view.scale'
+        && Array.isArray(manifest.limits?.capture?.scaleRange) && manifest.limits.capture.scaleRange[0] === 0.1
+        && manifest.limits.capture.scaleRange[1] === 4,
+      { viewport: manifest.limits?.viewport, capture: manifest.limits?.capture });
   }
 
   return failSummary();
