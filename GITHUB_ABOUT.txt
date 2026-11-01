@@ -16,5 +16,5 @@ https://github.com/bloodarea/dsh-agent-team-ui-testing
 Suggested status:
 Architecture / pre-release. Roadmap items are planned capabilities and must not be presented as released functionality.
 
-Existing old banner assets:
-The old browser-centric banner.png / banner_zh.png are not representative of the new cross-platform vision. The new README intentionally does not embed them. Keep or replace them separately after designing new assets.
+Removed old banner assets:
+The old browser-centric banner.png / banner_zh.png were dropped from the repository (they were not representative of the new cross-platform vision), and the README does not embed them. New assets can be added after the updated design is reviewed.
