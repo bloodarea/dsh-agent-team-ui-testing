@@ -1,6 +1,6 @@
 # 示例 · 点击、文本输入、状态观察与截图
 
-> 展示本插件 8 个工具中的调用形状；业务返回示例省略统一 action 元数据；输出为示意，**未在本仓库运行**，不构成验证证据。坐标为页面 CSS 像素，相对当前视口。
+> 展示本插件 16 个工具（T1 9 + T2 7，本文只用 T1）中的调用形状；业务返回示例省略统一 action 元数据；输出为示意，**未在本仓库运行**，不构成验证证据。输入坐标为当前视口CSS px；截图region为文档CSS px，两者按采集前scroll转换。
 
 ## 1. 点击一个按钮
 
@@ -64,7 +64,7 @@ browser_input {
 browser_state {}
 ```
 
-示意业务返回（single-owner-lease 空闲 15s、进行中保持，面板仍共享页；owner/action 元数据省略）：
+示意业务返回（按工作区 page 隔离 + 每工作区 single-owner-lease；同工作区面板与 Agent 共用 page，跨工作区 Cookie/存储共享；owner/action 元数据省略）：
 
 ```json
 { "mode": "agent", "activity": "派发输入事件", "url": "http://127.0.0.1:3000/", "running": true, "error": "" }
@@ -88,7 +88,19 @@ browser_screenshot {}
 { "viewport": { "width": 1280, "height": 800 }, "bytes": 182340, "image": "<base64 PNG>", "capturedAt": 0, "sha256": "<actual SHA-256>", "attachmentId": null }
 ```
 
-字段值仅为占位。可选附件服务保存并 render image block，attachmentId 使用实际引用；无服务 render base64-fallback 文本。不能把附件 ID 当文件路径，或把保存成功当 provider 实际可见；需真实会话另验。没有裁剪/像素差异/VLM，原始截图不代表 T3/T4 已实现。
+字段值仅为占位。可选附件服务保存并 render image block，attachmentId 使用实际引用；无服务 render base64-fallback 文本。不能把附件 ID 当文件路径，或把保存成功当 provider 实际可见；需真实会话另验。P0支持文档区域clip、连续scale和安全落盘，无像素差异/VLM，原始截图不代表T3/T4。当前暂存修订14/14、142/142报告见 [T1台账](../knowledge/web/t1-capability-ledger.md)；P0真实宿主重载/provider仍NOT_RUN。
+
+需要局部高密度原图时，示意调用（不是运行记录）：
+
+```json
+browser_screenshot {
+  "scale": 1.25,
+  "region": { "x": 20, "y": 100, "width": 120, "height": 40 },
+  "out": "output/capture/detail.png"
+}
+```
+
+scale允许连续1–4；输出尺寸由round(css×scale)计算，最多16M像素。返回capture记录PNG实际尺寸/CRC/sizeCheck、纯JSON mapping、anomaly、file的pathKind/persistence/root/ephemeral及path/hash、delivery及warnings；不要根据示例编造这些字段值。persist:boolean默认false；本例提供out即持久（即使persist:false），也可persist:true使用持久默认名output/capture/<actionId>.png。无out/persist:true/非空env时默认插件实例暂存，绝对path、dispose清理，不写工作区；file含pathKind/persistence/root/ephemeral，持久路径相对env或cwd根，observed只persistence/relativePath|null。已有同名报OUTPUT_EXISTS，换名重试；legacy无cwd默认暂存，持久无根报root_unknown。DSF固定1；DPR未知null；headlessSource来自product/userAgent。原始base64/落盘同一字节，附件compare='attachment-metadata'缺字段不能推断相同；完整路径/legacy/env约束见 [安全边界](../references/core/safety.md)。均匀图只是警告，canvas内部位图不增加源细节，C13前后不变不排除瞬时布局影响。
 
 ## 5. 失败与停止
 

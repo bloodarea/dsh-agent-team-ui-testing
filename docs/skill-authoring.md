@@ -16,12 +16,12 @@
 | 模板里的条目 | 真实状态 |
 | --- | --- |
 | `web.t1.runtime-evaluate`（JS 执行） | 已实现：`browser_eval` + `POST /plugins/ui-testing/eval` |
-| `web.t1.input`（原生事件） | 已实现按键/组合键：`browser_input` + `POST /input`；`modifiers`（数组或位掩码）、`virtualKeyCode`、`autoRepeat`、`location/isKeypad`、mouse/wheel 修饰键均透传，整批先校验后派发（P20）。`applied` 仍只是数组长度；`commands`/`unmodifiedText`/`pointerType:pen` 只有 schema+透传（未验证） |
+| `web.t1.input`（原生事件） | 已实现按键/组合键：`browser_input` + `POST /input`；`modifiers`（数组或位掩码）、`virtualKeyCode`、`autoRepeat`、`location/isKeypad`、mouse/wheel 修饰键均透传，整批先校验后派发（P20）。`applied` 仍只是数组长度；`commands`/`unmodifiedText`/`pointerType:pen` 本轮补页面真值断言（pen 已修 CDP 字符串映射；无可见效果项按 INCONCLUSIVE 记录） |
 | `web.t1.network-observe`（网络抓包） | 部分实现：`browser_network`，响应及 loadingFailed 元数据、URL 脱敏；无头/正文；其他 owner 调用返回 BUSY |
 | `web.t1.cssom`（样式读取） | 已实现：`browser_computed_style`（只取首个匹配元素） |
-| `web.t1.http-request`（Playwright APIRequestContext） | 未实现：没有独立 HTTP 客户端；页面内请求只能靠 `browser_eval` 里的 `fetch` |
+| `web.t1.http-request`（独立 HTTP 请求） | 已实现：`browser_http_request`（Host 侧 node:http/https，不启动 Chromium、不占租约）；默认不跟随重定向、5s/64KiB 预算、每跳复验目标、无 cookie jar；契约见 [t1-http-request.md](t1-http-request.md) |
 | `web.t1.screenshot` | 保留 base64 与 `capturedAt/sha256/attachmentId`；可选附件 image block，无服务 render `base64-fallback` 文本；返回值按 lossless JSON 投影（附件为纯 JSON），否则真实宿主会判 `INVALID_TOOL_OUTPUT`；provider 可见性待实测，无 T3 分析 |
-| 能力发现 | 工具面 8 个，新增 `browser_capabilities` 报真实 `available/unavailable/unsupported`；注册表决定能否调用，state/capabilities 诊断不启动 |
+| 能力发现 | 工具面 9 个，`browser_capabilities` 报真实 `available/unavailable/unsupported`（含 web.t1.http-request=available）；注册表决定能否调用，state/capabilities 诊断不启动 |
 | T2 结构化 GUI / T3 静态视觉 / T4 动态视觉 | 未实现，Skill 与 manifest 明确标 `unsupported` |
 
 运行时细节与限制见 [runtime-t1.md](runtime-t1.md)，M0–M2 当前契约与待验收项见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)；[t1-infrastructure-audit.md](t1-infrastructure-audit.md) 是历史结论，不代表新增路径通过。改 `index.js` 的工具名/参数时，**必须同步改 SKILL 与台账**，否则 Skill 会教 Agent 调用不存在的接口。

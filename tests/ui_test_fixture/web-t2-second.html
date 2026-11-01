@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH T2 Fixture — Second</title>
+  <style>
+    body {
+      margin: 24px;
+      font-family: Arial, "Noto Sans", sans-serif;
+      color: rgb(17, 24, 39);
+      background-color: rgb(255, 255, 255);
+    }
+    #t2-second-marker {
+      color: rgb(22, 101, 52);
+      font-size: 16px;
+      padding: 12px 16px;
+    }
+    #t2-second-counter {
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <h1 id="t2-second-title">Second Page</h1>
+  <p id="t2-second-marker">t2-second</p>
+  <p>
+    <button id="t2-second-btn" type="button">Second action</button>
+    <span id="t2-second-counter">0</span>
+  </p>
+  <nav id="t2-second-nav">
+    <a id="t2-second-back" href="/web-t2.html">Back to the T2 fixture page</a>
+  </nav>
+
+  <script>
+    (function () {
+      'use strict';
+
+      /* Same instrumented contract as /web-t2.html: window.__t2 records real DOM events
+         (isTrusted, key, modifiers, bounded value, optional scrollTop, ts) in a 300-entry
+         ring buffer, plus summary()/reset()/seq. */
+
+      var MAX_EVENTS = 300;
+      var MAX_VALUE = 60;
+      var TYPES = [
+        'pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu',
+        'keydown', 'keyup', 'input', 'change', 'scroll', 'focusin', 'focusout'
+      ];
+
+      var events = [];
+      var seq = 0;
+
+      function describeTarget(target) {
+        if (!target) return null;
+        if (target === window) return 'window';
+        if (target === document) return 'document';
+        if (target === document.documentElement) return 'html';
+        if (target === document.body) return 'body';
+        if (target.id) return target.id;
+        var role = target.getAttribute && target.getAttribute('role');
+        var ariaLabel = target.getAttribute && target.getAttribute('aria-label');
+        var text = '';
+        if (target.textContent) text = target.textContent.replace(/\s+/g, ' ').trim().slice(0, 40);
+        var tag = target.tagName ? target.tagName.toLowerCase() : 'node';
+        if (role) return role + ':' + (ariaLabel || text);
+        if (ariaLabel || text) return tag + ':' + (ariaLabel || text);
+        return tag;
+      }
+
+      function boundedValue(target) {
+        if (!target || target === window || target === document) return null;
+        var raw;
+        if (target.multiple && target.selectedOptions) {
+          var picked = [];
+          for (var i = 0; i < target.selectedOptions.length; i += 1) {
+            picked.push(target.selectedOptions[i].value);
+          }
+          raw = picked.join(',');
+        } else if (typeof target.value === 'string') {
+          raw = target.value;
+        } else if (target.isContentEditable && typeof target.textContent === 'string') {
+          raw = target.textContent.replace(/\s+/g, ' ').trim();
+        }
+        if (typeof raw !== 'string') return null;
+        return raw.length > MAX_VALUE ? raw.slice(0, MAX_VALUE) : raw;
+      }
+
+      function record(type, event) {
+        var target = event.target;
+        var entry = {
+          type: type,
+          isTrusted: event.isTrusted === true,
+          target: describeTarget(target),
+          key: typeof event.key === 'string' ? event.key : null,
+          modifiers: {
+            ctrl: event.ctrlKey === true,
+            shift: event.shiftKey === true,
+            alt: event.altKey === true,
+            meta: event.metaKey === true
+          },
+          value: boundedValue(target),
+          ts: Date.now()
+        };
+        if (type === 'scroll') {
+          if (target && typeof target.scrollTop === 'number') entry.scrollTop = target.scrollTop;
+          else entry.scrollTop = window.scrollY || 0;
+        }
+        seq += 1;
+        if (events.length >= MAX_EVENTS) events.shift();
+        events.push(entry);
+        window.__t2.seq = seq;
+      }
+
+      function summary() {
+        var counts = {};
+        var i;
+        for (i = 0; i < TYPES.length; i += 1) counts[TYPES[i]] = 0;
+        for (i = 0; i < events.length; i += 1) {
+          var type = events[i].type;
+          counts[type] = (counts[type] || 0) + 1;
+        }
+        return counts;
+      }
+
+      function reset() {
+        events.length = 0;
+        seq = 0;
+        window.__t2.seq = 0;
+      }
+
+      window.__t2 = {
+        events: events,
+        seq: 0,
+        maxEvents: MAX_EVENTS,
+        types: TYPES.slice(),
+        summary: summary,
+        reset: reset
+      };
+
+      for (var t = 0; t < TYPES.length; t += 1) {
+        (function (type) {
+          var options = type === 'scroll' ? { capture: true, passive: true } : true;
+          window.addEventListener(type, function (event) { record(type, event); }, options);
+        })(TYPES[t]);
+      }
+
+      var clicks = 0;
+      var counterEl = document.getElementById('t2-second-counter');
+      document.getElementById('t2-second-btn').addEventListener('click', function () {
+        clicks += 1;
+        counterEl.textContent = String(clicks);
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -280,14 +280,16 @@ export async function inputModifiersProbe({ harness, check, fixture }) {
   const modifiersSchema = itemProperties.modifiers || {};
   const modifierVariants = Array.isArray(modifiersSchema.oneOf) ? modifiersSchema.oneOf : [];
   const hasArrayForm = modifierVariants.some((variant) => variant.type === 'array' && ['alt', 'ctrl', 'meta', 'shift'].every((name) => (variant.items?.enum || []).includes(name)));
-  const hasMaskForm = modifierVariants.some((variant) => variant.type === 'integer' && variant.minimum === 0 && variant.maximum === 15);
+  // Host-pluggable schema subset forbids minimum/maximum: the 0–15 range is enforced at execution
+  // time (the modifiers=16 INVALID_ARGUMENT check above).
+  const hasMaskForm = modifierVariants.some((variant) => variant.type === 'integer');
   const keyTypeDescription = String(itemProperties.type?.description || '');
   check('browser_input schema 声明 modifiers/buttons/pointerType/virtualKeyCode 等全部新字段', missingFields.length === 0, {
     expected: requiredFields,
     actual: { missing: missingFields, declared: Object.keys(itemProperties) },
   });
-  check('schema 的 modifiers 同时声明字符串数组与 0–15 位掩码两种形式', hasArrayForm && hasMaskForm, {
-    expected: { arrayOf: ['alt', 'ctrl', 'meta', 'shift'], integerRange: [0, 15] },
+  check('schema 的 modifiers 同时声明字符串数组与整数位掩码两种形式（范围在执行时校验）', hasArrayForm && hasMaskForm, {
+    expected: { arrayOf: ['alt', 'ctrl', 'meta', 'shift'], integerForm: true },
     actual: modifiersSchema,
   });
   check('schema 的 key.type 描述列出四种合法类型，items.required 仍只有 kind', ['keyDown', 'keyUp', 'rawKeyDown', 'char'].every((type) => keyTypeDescription.includes(type))
@@ -295,4 +297,128 @@ export async function inputModifiersProbe({ harness, check, fixture }) {
     expected: { descriptionMentions: ['keyDown', 'keyUp', 'rawKeyDown', 'char'], required: ['kind'] },
     actual: { description: keyTypeDescription, required: definition?.parameters?.properties?.events?.items?.required },
   });
+}
+
+/**
+ * P20b — page-truth probes added by the T1 close-out (contract §9.4):
+ *  - `commands:['selectAll']` must change the real selection (with a no-commands control run)
+ *  - `unmodifiedText` must not be asserted via a DOM field that does not exist; only the visible
+ *    input semantics are assertable (its unique effect stays INCONCLUSIVE when unobservable)
+ *  - `pointerType:'pen'` must surface as `PointerEvent.pointerType === 'pen'` in the page, not
+ *    merely as an accepted tool argument.
+ * Inconclusive platform behaviour is recorded as an advisory finding, never folded into PASS.
+ */
+export async function inputPageTruthProbe({ harness, check, finding, fixture }) {
+  const loaded = await navigateFixture(harness, fixture.url);
+  if (!loaded.loaded) {
+    check('P20b 前置：可导航到 fixture 并加载完成', false, { actual: loaded.navigation.error || loaded.navigation.value });
+    return;
+  }
+
+  // --- commands: selectAll through the renderer's editing command path ----------------------
+  const setup = await evalValue(harness, `(() => {
+    document.getElementById('p20-probe')?.remove();
+    const input = document.createElement('input');
+    input.id = 'p20-probe';
+    document.body.appendChild(input);
+    input.value = 'abcdef';
+    input.focus();
+    input.setSelectionRange(3, 3);
+    window.__p20 = [];
+    for (const type of ['keydown', 'keyup', 'beforeinput', 'input']) {
+      input.addEventListener(type, (e) => window.__p20.push({ type, key: e.key, code: e.code,
+        data: e.data === undefined ? null : e.data, inputType: e.inputType === undefined ? null : e.inputType,
+        ctrl: e.ctrlKey === true, shift: e.shiftKey === true,
+        value: input.value, start: input.selectionStart, end: input.selectionEnd }), true);
+    }
+    return { active: document.activeElement.id, start: input.selectionStart, end: input.selectionEnd, value: input.value };
+  })()`);
+  check('P20b commands 前置：临时 input 聚焦且 selection=3/3', setup.active === 'p20-probe' && setup.start === 3 && setup.end === 3, setup);
+
+  const runRawKeyDown = async (withCommand) => {
+    await evalValue(harness, `(() => { const i = document.getElementById('p20-probe'); i.value = 'abcdef'; i.focus(); i.setSelectionRange(3, 3); window.__p20 = []; return true; })()`);
+    const event = { kind: 'key', type: 'rawKeyDown', key: 'a', code: 'KeyA', virtualKeyCode: 65 };
+    if (withCommand) event.commands = ['selectAll'];
+    const sent = await harness.invoke('browser_input', { events: [event, { kind: 'key', type: 'keyUp', key: 'a', code: 'KeyA', virtualKeyCode: 65 }] });
+    const state = await evalValue(harness, `(() => { const i = document.getElementById('p20-probe');
+      return { start: i.selectionStart, end: i.selectionEnd, value: i.value, active: document.activeElement.id, records: window.__p20.slice() }; })()`);
+    return { sent, state };
+  };
+  const commandRun = await runRawKeyDown(true);
+  const controlRun = await runRawKeyDown(false);
+  const commandEffect = commandRun.state.start === 0 && commandRun.state.end === 6;
+  const controlEffect = controlRun.state.start === 0 && controlRun.state.end === 6;
+  check('P20b commands：rawKeyDown 携带 commands:["selectAll"] 使页面 selection=0/6（无 commands 对照仍 3/3）',
+    commandRun.sent.ok === true && commandEffect && controlEffect === false,
+    { commandRun: commandRun.state, controlRun: controlRun.state });
+  if (!commandEffect || controlEffect) {
+    finding({
+      id: 'P20-commands-inconclusive', severity: 'info', advisory: true,
+      summary: '当前平台未观察到 commands:["selectAll"] 的页面可编辑区效果（或对照也全选），按契约记 INCONCLUSIVE',
+      evidence: { command: commandRun.state, control: controlRun.state },
+    });
+  }
+
+  // --- unmodifiedText: only visible input semantics are assertable -------------------------
+  const typeChar = async (withUnmodified) => {
+    await evalValue(harness, `(() => { const i = document.getElementById('p20-probe'); i.value = ''; i.focus(); i.setSelectionRange(0, 0); window.__p20 = []; return true; })()`);
+    const event = { kind: 'key', type: 'char', key: 'A', code: 'KeyA', text: 'A', modifiers: ['shift'], virtualKeyCode: 65 };
+    if (withUnmodified) event.unmodifiedText = 'a';
+    const sent = await harness.invoke('browser_input', { events: [event] });
+    const state = await evalValue(harness, `(() => { const i = document.getElementById('p20-probe'); return { value: i.value, records: window.__p20.slice() }; })()`);
+    return { sent, state };
+  };
+  const withUnmodified = await typeChar(true);
+  const withoutUnmodified = await typeChar(false);
+  const inputRecord = (run) => (run.state.records || []).find((entry) => entry.type === 'input') || null;
+  const withInput = inputRecord(withUnmodified);
+  const withoutInput = inputRecord(withoutUnmodified);
+  check('P20b unmodifiedText：页面最终 value 与 input.data 均为 "A"，无额外小写 a',
+    withUnmodified.sent.ok === true && withUnmodified.state.value === 'A' && withInput?.data === 'A',
+    { withUnmodified: withUnmodified.state, withoutUnmodified: withoutUnmodified.state });
+  if (JSON.stringify(withInput) === JSON.stringify(withoutInput)
+    && withUnmodified.state.value === withoutUnmodified.state.value) {
+    finding({
+      id: 'P20-unmodifiedText-inconclusive', severity: 'info', advisory: true,
+      summary: '传/不传 unmodifiedText 的页面可观察结果相同；DOM 无该字段，特有作用 INCONCLUSIVE（不伪造 DOM 字段）',
+      evidence: { withUnmodified: withInput, withoutUnmodified: withoutInput },
+    });
+  }
+
+  // --- pointerType: pen comes from the real PointerEvent ----------------------------------
+  const pointerSetup = await evalValue(harness, `(() => {
+    window.__ptr = [];
+    const el = document.getElementById('inc');
+    for (const type of ['pointerdown', 'pointermove', 'pointerup']) {
+      el.addEventListener(type, (e) => window.__ptr.push({ type, pointerType: e.pointerType,
+        x: Math.round(e.clientX), y: Math.round(e.clientY), button: e.button, buttons: e.buttons }), true);
+    }
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  })()`);
+  const pen = await harness.invoke('browser_input', { events: [
+    { kind: 'mouse', type: 'mouseMoved', x: pointerSetup.x, y: pointerSetup.y, button: 'none', clickCount: 0, pointerType: 'pen' },
+    { kind: 'mouse', type: 'mousePressed', x: pointerSetup.x, y: pointerSetup.y, button: 'left', clickCount: 1, pointerType: 'pen' },
+    { kind: 'mouse', type: 'mouseReleased', x: pointerSetup.x, y: pointerSetup.y, button: 'left', clickCount: 1, pointerType: 'pen' },
+  ] });
+  const penEvents = await evalValue(harness, 'window.__ptr.slice()');
+  const penDowns = penEvents.filter((entry) => entry.type === 'pointerdown');
+  check('P20b pointerType:pen → 页面 pointerdown.pointerType === "pen"（坐标/button/buttons 与顺序）',
+    pen.ok === true && penDowns.length === 1 && penDowns[0].pointerType === 'pen'
+    && penDowns[0].x === pointerSetup.x && penDowns[0].y === pointerSetup.y
+    && penDowns[0].button === 0 && penDowns[0].buttons === 1
+    && penEvents.findIndex((entry) => entry.type === 'pointermove') < penEvents.findIndex((entry) => entry.type === 'pointerdown')
+    && penEvents.findIndex((entry) => entry.type === 'pointerdown') < penEvents.findIndex((entry) => entry.type === 'pointerup'),
+    { penEvents, pointerSetup });
+  await evalValue(harness, '(() => { window.__ptr = []; const c = document.getElementById("counter"); c.textContent = "0"; return true; })()');
+  const mouse = await harness.invoke('browser_input', { events: [
+    { kind: 'mouse', type: 'mouseMoved', x: pointerSetup.x, y: pointerSetup.y, button: 'none', clickCount: 0 },
+    { kind: 'mouse', type: 'mousePressed', x: pointerSetup.x, y: pointerSetup.y, button: 'left', clickCount: 1 },
+    { kind: 'mouse', type: 'mouseReleased', x: pointerSetup.x, y: pointerSetup.y, button: 'left', clickCount: 1 },
+  ] });
+  const mouseEvents = await evalValue(harness, 'window.__ptr.slice()');
+  const mouseDowns = mouseEvents.filter((entry) => entry.type === 'pointerdown');
+  check('P20b 默认 mouse 对照：页面 pointerdown.pointerType === "mouse"',
+    mouse.ok === true && mouseDowns.length === 1 && mouseDowns[0].pointerType === 'mouse', { mouseEvents });
+  await evalValue(harness, '(() => { document.getElementById("p20-probe")?.remove(); return true; })()');
 }

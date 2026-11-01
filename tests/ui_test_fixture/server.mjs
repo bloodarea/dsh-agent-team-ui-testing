@@ -25,6 +25,10 @@
  *   GET  /                -> index.html
  *   GET  /index.html      -> index.html
  *   GET  /second.html     -> second.html
+ *   GET  /web-t2.html     -> web-t2.html (T2 structured-input fixture page)
+ *   GET  /web-t2-second.html -> web-t2-second.html (T2 second page)
+ *   GET  /capture-p0.html -> capture-p0.html (P0 capture pixel-truth page; fixed CSS boxes/colours)
+ *   GET  /blank.html      -> blank.html (P0 capture blank-page fixture: pure white body)
  */
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -40,6 +44,12 @@ const STATIC_FILES = new Map([
   ['/', 'index.html'],
   ['/index.html', 'index.html'],
   ['/second.html', 'second.html'],
+  // T2 (structured input) fixture pages; contract values in tests/ui_test_fixture/README.md.
+  ['/web-t2.html', 'web-t2.html'],
+  ['/web-t2-second.html', 'web-t2-second.html'],
+  // P0 capture fixtures (docs/capture-p0.md; truth table in tests/ui_test_fixture/README.md).
+  ['/capture-p0.html', 'capture-p0.html'],
+  ['/blank.html', 'blank.html'],
 ]);
 
 function json(res, status, value) {

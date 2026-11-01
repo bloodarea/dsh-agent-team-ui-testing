@@ -217,7 +217,7 @@ try {
  await r.run(()=>r.ensure(),{agent:true,sessionId:'recovery-owner'});
  assert.notEqual(r.proc.pid,oldPid); assert.notEqual(r.profileDir,oldProfile);
  await waitFor(()=>!isProcessAlive(oldPid));
- assert.equal(await pathExists(oldProfile),false);
+ await waitFor(async()=>!await pathExists(oldProfile),{timeoutMs:3000,intervalMs:50});
  assert.equal(r.lease.sessionId,'recovery-owner');
  console.log('recovery-ok');
 } finally {await r.close();}`;
@@ -240,7 +240,10 @@ test('navigation policy allows loopback/DNS localhost and rejects forbidden targ
     await assert.rejects(validateTarget(url, { allowPrivate: false }), classified('INVALID_ARGUMENT', 'input', false));
   }
   await assert.rejects(validateTarget('http://127.0.0.1:3080/path', { origins: ['http://127.0.0.1:3080'] }), classified('INVALID_ARGUMENT', 'input', false));
-  await assert.rejects(validateTarget('http://does-not-exist.invalid/'), classified('NAV_FAILED', 'navigation', true));
+  // Deterministic DNS failure: this host runs a fake-ip proxy that resolves *any* name
+  // (including .invalid) to 198.18.0.28, so the real lookup cannot be asserted here.
+  const dnsFailure = async () => { const error = new Error('getaddrinfo ENOTFOUND does-not-exist.invalid'); error.code = 'ENOTFOUND'; throw error; };
+  await assert.rejects(validateTarget('http://does-not-exist.invalid/', { resolve: dnsFailure }), classified('NAV_FAILED', 'navigation', true));
   assert.equal(await validateTarget('http://192.168.0.1/', { allowPrivate: true }), 'http://192.168.0.1/');
   await assert.rejects(validateTarget('http://169.254.169.254/', { allowPrivate: true }), classified('INVALID_ARGUMENT', 'input', false));
 });

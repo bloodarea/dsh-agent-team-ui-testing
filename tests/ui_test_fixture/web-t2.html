@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH T2 Fixture</title>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+    body {
+      margin: 24px;
+      font-family: Arial, "Noto Sans", sans-serif;
+      color: rgb(17, 24, 39);
+      background-color: rgb(255, 255, 255);
+    }
+    h1 {
+      font-size: 24px;
+      margin: 0 0 8px;
+    }
+    h2 {
+      font-size: 18px;
+      margin: 0 0 8px;
+    }
+    h3 {
+      font-size: 16px;
+      margin: 0 0 8px;
+    }
+    p {
+      margin: 4px 0;
+    }
+    section {
+      margin: 8px 0;
+      padding: 8px 12px;
+      border: 1px solid rgb(209, 213, 219);
+      border-radius: 8px;
+    }
+    #t2-nav a {
+      margin-right: 16px;
+    }
+    #t2-list {
+      margin: 0 0 8px;
+      padding-left: 24px;
+      font-size: 12px;
+      line-height: 1.2;
+    }
+    #t2-table {
+      border-collapse: collapse;
+    }
+    #t2-table th,
+    #t2-table td {
+      border: 1px solid rgb(209, 213, 219);
+      padding: 4px 8px;
+      text-align: left;
+      font-size: 14px;
+    }
+    label {
+      display: inline-block;
+      margin-right: 8px;
+      font-size: 14px;
+    }
+    input,
+    textarea,
+    select,
+    button {
+      font-size: 14px;
+      padding: 4px 6px;
+    }
+    fieldset {
+      margin: 8px 0;
+      padding: 8px 12px;
+      border: 1px solid rgb(209, 213, 219);
+    }
+    #t2-output,
+    #t2-counter,
+    #t2-async-result,
+    #t2-save-result,
+    #t2-shadow-result {
+      font-weight: 700;
+    }
+    #t2-output {
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    /* States */
+    #t2-hidden {
+      display: none;
+    }
+    /* Overlay / hit-test: #t2-overlay is absolutely positioned over #t2-covered and keeps the
+       default pointer-events, so anything aimed at #t2-covered lands on the overlay instead. */
+    #t2-stack {
+      position: relative;
+      width: 240px;
+      height: 44px;
+    }
+    #t2-covered {
+      position: absolute;
+      inset: 0;
+      width: 240px;
+      height: 44px;
+    }
+    #t2-overlay {
+      position: absolute;
+      inset: 0;
+      width: 240px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: rgb(255, 255, 255);
+      background-color: rgba(17, 24, 39, 0.75);
+    }
+    /* Scroll */
+    #t2-scroll-box {
+      height: 200px;
+      overflow: auto;
+      border: 1px solid rgb(209, 213, 219);
+      background-color: rgb(249, 250, 251);
+    }
+    #t2-scroll-content {
+      height: 1200px;
+      padding: 8px;
+    }
+    /* Compression cases (2026-11-01): fixed-size, flow-neutral moving track so the
+       unstable-scroll negative never disturbs other probes' layout. */
+    #t2-compression-section p {
+      margin: 6px 0;
+    }
+    #t2-moving-track {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      width: 200px;
+      height: 60px;
+      overflow: hidden;
+      border: 1px dashed rgb(156, 163, 175);
+      background-color: rgb(249, 250, 251);
+    }
+    #t2-moving {
+      position: absolute;
+      top: 8px;
+      left: 0;
+      width: 80px;
+      height: 30px;
+      overflow: auto;
+      background-color: rgb(219, 234, 254);
+    }
+    #t2-moving .t2-moving-content {
+      height: 400px;
+      padding: 4px;
+    }
+    #t2-moving-result,
+    #t2-dup-result {
+      font-weight: 700;
+    }
+    /* Page-bottom spacer: makes the document roughly 2400 CSS px tall so scrolling works. */
+    #t2-page-spacer {
+      /* Tuned so the document is ~2400 CSS px tall at a 1280x800 viewport. */
+      height: 154px;
+    }
+  </style>
+</head>
+<body>
+  <h1 id="t2-title">DSH T2 Fixture</h1>
+  <p id="t2-intro">Deterministic local target for the dsh-agent-team-ui-testing T2 (structured)
+    acceptance suite. No external network, no random data, no clocks in page content.</p>
+
+  <nav id="t2-nav">
+    <a id="t2-nav-first" href="/index.html">T1 fixture page</a>
+    <a id="t2-nav-second" href="/web-t2-second.html">T2 second page</a>
+  </nav>
+
+  <main id="main">
+    <section id="t2-structure-section">
+      <h2 id="t2-heading-2">Structure</h2>
+      <h3 id="t2-heading-3">List and table</h3>
+
+      <ul id="t2-list">
+        <li>Item 1</li>
+        <li>Item 2</li>
+        <li>Item 3</li>
+        <li>Item 4</li>
+        <li>Item 5</li>
+        <li>Item 6</li>
+        <li>Item 7</li>
+        <li>Item 8</li>
+        <li>Item 9</li>
+        <li>Item 10</li>
+        <li>Item 11</li>
+        <li>Item 12</li>
+        <li>Item 13</li>
+        <li>Item 14</li>
+        <li>Item 15</li>
+        <li>Item 16</li>
+        <li>Item 17</li>
+        <li>Item 18</li>
+        <li>Item 19</li>
+        <li>Item 20</li>
+        <li>Item 21</li>
+        <li>Item 22</li>
+        <li>Item 23</li>
+        <li>Item 24</li>
+        <li>Item 25</li>
+        <li>Item 26</li>
+        <li>Item 27</li>
+        <li>Item 28</li>
+        <li>Item 29</li>
+        <li>Item 30</li>
+        <li>Item 31</li>
+        <li>Item 32</li>
+        <li>Item 33</li>
+        <li>Item 34</li>
+        <li>Item 35</li>
+        <li>Item 36</li>
+        <li>Item 37</li>
+        <li>Item 38</li>
+        <li>Item 39</li>
+        <li>Item 40</li>
+      </ul>
+
+      <table id="t2-table">
+        <thead>
+          <tr><th scope="col">Name</th><th scope="col">Value</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>alpha</td><td>1</td></tr>
+          <tr><td>beta</td><td>2</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="t2-form-section">
+      <h2>Form</h2>
+      <form id="t2-form" action="/web-t2.html" method="get">
+        <p>
+          <label for="t2-name">Name</label>
+          <input id="t2-name" name="name" type="text" required autocomplete="off">
+        </p>
+        <p>
+          <label for="t2-email">Email</label>
+          <input id="t2-email" name="email" type="email" required autocomplete="off">
+        </p>
+        <p>
+          <label for="t2-bio">Bio</label>
+          <textarea id="t2-bio" name="bio" rows="2" cols="30"></textarea>
+        </p>
+        <p>
+          <input id="t2-agree" name="agree" type="checkbox">
+          <label for="t2-agree">I agree to the fixture terms</label>
+        </p>
+        <fieldset>
+          <legend>Plan</legend>
+          <input id="t2-plan-basic" name="t2-plan" type="radio" value="basic" checked>
+          <label for="t2-plan-basic">Basic</label>
+          <input id="t2-plan-pro" name="t2-plan" type="radio" value="pro">
+          <label for="t2-plan-pro">Pro</label>
+        </fieldset>
+        <p>
+          <label for="t2-country">Country</label>
+          <select id="t2-country" name="country">
+            <option value="us" selected>United States</option>
+            <option value="cn">China</option>
+            <option value="de">Germany</option>
+          </select>
+        </p>
+        <p>
+          <label for="t2-tags">Tags</label>
+          <select id="t2-tags" name="tags" multiple size="3">
+            <option value="a">Tag A</option>
+            <option value="b">Tag B</option>
+            <option value="c">Tag C</option>
+          </select>
+        </p>
+        <p>
+          <label for="t2-volume">Volume</label>
+          <input id="t2-volume" name="volume" type="range" min="0" max="100" value="30">
+          <span id="t2-volume-value">30</span>
+        </p>
+        <p>
+          <label for="t2-readonly">Readonly</label>
+          <input id="t2-readonly" name="readonly" type="text" value="readonly-value" readonly>
+        </p>
+        <p>
+          <label for="t2-disabled">Disabled</label>
+          <input id="t2-disabled" name="disabled" type="text" value="disabled-value" disabled>
+        </p>
+        <p>
+          <button id="t2-submit" type="submit">Submit form</button>
+          <button id="t2-disabled-btn" type="button" disabled>Disabled action</button>
+        </p>
+        <p id="t2-output">not-submitted</p>
+      </form>
+    </section>
+
+    <section id="t2-interaction-section">
+      <h2>Interactions</h2>
+      <p>
+        <span id="t2-counter">0</span>
+        <button id="t2-inc" type="button">Increment</button>
+      </p>
+      <p>
+        <button id="t2-toggle" type="button" aria-expanded="false" aria-controls="t2-panel">Toggle panel</button>
+      </p>
+      <div id="t2-panel" hidden>panel body text</div>
+      <p>
+        <button id="t2-async" type="button">Start async</button>
+        <span id="t2-async-result">idle</span>
+      </p>
+      <div id="t2-live" role="status" aria-live="polite"></div>
+      <p>
+        <button id="t2-save-1" class="t2-save" type="button">Save</button>
+        <button id="t2-save-2" class="t2-save" type="button">Save</button>
+        <span id="t2-save-result">none</span>
+      </p>
+      <p>
+        <span id="t2-editable" contenteditable="true">editable text</span>
+      </p>
+    </section>
+
+    <section id="t2-state-section">
+      <h2>States</h2>
+      <div id="t2-hidden"><button id="t2-hidden-btn" type="button">Hidden action</button></div>
+      <div id="t2-aria-hidden" aria-hidden="true">aria hidden text</div>
+      <p>
+        <input id="t2-checked" name="checked" type="checkbox" checked>
+        <label for="t2-checked">Pre-checked</label>
+      </p>
+      <div id="t2-tablist" role="tablist">
+        <button id="t2-selected-tab" role="tab" aria-selected="true" type="button">Selected tab</button>
+        <button id="t2-unselected-tab" role="tab" aria-selected="false" type="button">Unselected tab</button>
+      </div>
+      <p id="t2-long-text">The T2 fixture long text block is deterministic: exactly three hundred characters, identical on every run. It exists so a structured read can be compared character by character, proving that long text is returned in full, that whitespace stays intact, and that nothing is truncated. End of the block.</p>
+    </section>
+
+    <section id="t2-overlay-section">
+      <h2>Overlay / hit test</h2>
+      <div id="t2-stack">
+        <button id="t2-covered" type="button">Covered action</button>
+        <div id="t2-overlay">overlay</div>
+      </div>
+    </section>
+
+    <section id="t2-scroll-section">
+      <h2>Scroll</h2>
+      <div id="t2-scroll-box">
+        <div id="t2-scroll-content">scroll content top</div>
+      </div>
+    </section>
+
+    <section id="t2-compression-section">
+      <h2>Compression cases</h2>
+      <p>aria-label owner whose visible child text differs: both representations must survive.</p>
+      <p>
+        <button id="t2-aria-label-btn" type="button" aria-label="Save">Save now</button>
+        <span id="t2-aria-label-result">not-clicked</span>
+      </p>
+      <p id="t2-fragmented"><span>Alpha</span> <b>Beta</b> <i>Gamma</i></p>
+      <p id="t2-same-text"><span class="t2-same-text">Same</span> <span class="t2-same-text">Same</span></p>
+      <p id="t2-dup-buttons">
+        <button id="t2-same-btn-a" class="t2-dup" type="button">Duplicate</button>
+        <button id="t2-same-btn-b" class="t2-dup" type="button">Duplicate</button>
+        <span id="t2-dup-result">none</span>
+      </p>
+      <p>
+        <button id="t2-long-name" type="button" aria-label="alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-alpha-bravo-charlie-">delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-delta-echo-foxtrot-</button>
+      </p>
+    </section>
+
+    <section id="t2-shadow-section">
+      <h2>Shadow DOM</h2>
+      <t2-widget></t2-widget>
+      <p id="t2-shadow-result">not-clicked</p>
+    </section>
+  </main>
+
+  <div id="t2-page-spacer"></div>
+  <p id="t2-page-end">page-end</p>
+
+  <div id="t2-moving-track">
+    <div id="t2-moving"><div class="t2-moving-content">moving content</div></div>
+  </div>
+  <p id="t2-moving-result">idle</p>
+
+  <script>
+    (function () {
+      'use strict';
+
+      /* ------------------------------------------------------------------ *
+       * Event instrumentation: window.__t2
+       *
+       * Every recorded entry is a plain object:
+       *   { type, isTrusted, target, key, modifiers:{ctrl,shift,alt,meta}, value, scrollTop?, ts }
+       * - isTrusted comes straight from the DOM event, so synthetic element.click() records false
+       *   while a real input-injection click records true.
+       * - target is the element id, or a role/name fallback for elements without an id.
+       * - value is the target's current value (or contenteditable text), truncated to 60 chars.
+       * - ts is Date.now() in ms.
+       * The buffer keeps the newest 300 entries (oldest are dropped first).
+       * ------------------------------------------------------------------ */
+      var MAX_EVENTS = 300;
+      var MAX_VALUE = 60;
+      var TYPES = [
+        'pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu',
+        'keydown', 'keyup', 'input', 'change', 'scroll', 'focusin', 'focusout'
+      ];
+
+      var events = [];
+      var seq = 0;
+
+      function describeTarget(target) {
+        if (!target) return null;
+        if (target === window) return 'window';
+        if (target === document) return 'document';
+        if (target === document.documentElement) return 'html';
+        if (target === document.body) return 'body';
+        if (target.id) return target.id;
+        var role = target.getAttribute && target.getAttribute('role');
+        var ariaLabel = target.getAttribute && target.getAttribute('aria-label');
+        var text = '';
+        if (target.textContent) text = target.textContent.replace(/\s+/g, ' ').trim().slice(0, 40);
+        var tag = target.tagName ? target.tagName.toLowerCase() : 'node';
+        if (role) return role + ':' + (ariaLabel || text);
+        if (ariaLabel || text) return tag + ':' + (ariaLabel || text);
+        return tag;
+      }
+
+      function boundedValue(target) {
+        if (!target || target === window || target === document) return null;
+        var raw;
+        if (target.multiple && target.selectedOptions) {
+          var picked = [];
+          for (var i = 0; i < target.selectedOptions.length; i += 1) {
+            picked.push(target.selectedOptions[i].value);
+          }
+          raw = picked.join(',');
+        } else if (typeof target.value === 'string') {
+          raw = target.value;
+        } else if (target.isContentEditable && typeof target.textContent === 'string') {
+          raw = target.textContent.replace(/\s+/g, ' ').trim();
+        }
+        if (typeof raw !== 'string') return null;
+        return raw.length > MAX_VALUE ? raw.slice(0, MAX_VALUE) : raw;
+      }
+
+      function record(type, event) {
+        var target = event.target;
+        var entry = {
+          type: type,
+          isTrusted: event.isTrusted === true,
+          target: describeTarget(target),
+          key: typeof event.key === 'string' ? event.key : null,
+          modifiers: {
+            ctrl: event.ctrlKey === true,
+            shift: event.shiftKey === true,
+            alt: event.altKey === true,
+            meta: event.metaKey === true
+          },
+          value: boundedValue(target),
+          ts: Date.now()
+        };
+        if (type === 'scroll') {
+          if (target && typeof target.scrollTop === 'number') entry.scrollTop = target.scrollTop;
+          else entry.scrollTop = window.scrollY || 0;
+        }
+        seq += 1;
+        if (events.length >= MAX_EVENTS) events.shift();
+        events.push(entry);
+        window.__t2.seq = seq;
+      }
+
+      function summary() {
+        var counts = {};
+        var i;
+        for (i = 0; i < TYPES.length; i += 1) counts[TYPES[i]] = 0;
+        for (i = 0; i < events.length; i += 1) {
+          var type = events[i].type;
+          counts[type] = (counts[type] || 0) + 1;
+        }
+        return counts;
+      }
+
+      function reset() {
+        events.length = 0;      // keep the same array identity exposed on window.__t2.events
+        seq = 0;
+        window.__t2.seq = 0;
+        window.__t2.shadow.clicks = 0;
+        window.__t2.shadow.trustedClicks = 0;
+        window.__t2.shadow.lastTrusted = null;
+      }
+
+      window.__t2 = {
+        events: events,
+        seq: 0,
+        maxEvents: MAX_EVENTS,
+        types: TYPES.slice(),
+        summary: summary,
+        reset: reset,
+        shadow: { clicks: 0, trustedClicks: 0, lastTrusted: null }
+      };
+
+      for (var t = 0; t < TYPES.length; t += 1) {
+        (function (type) {
+          // Capture phase on window also sees non-bubbling events (scroll on elements) and
+          // events retargeted out of a shadow root.
+          var options = type === 'scroll' ? { capture: true, passive: true } : true;
+          window.addEventListener(type, function (event) { record(type, event); }, options);
+        })(TYPES[t]);
+      }
+
+      /* ------------------------------- Counter ------------------------------- */
+      var counter = 0;
+      var counterEl = document.getElementById('t2-counter');
+      document.getElementById('t2-inc').addEventListener('click', function () {
+        counter += 1;
+        counterEl.textContent = String(counter);
+      });
+
+      /* --------------------------- Toggle / panel ---------------------------- */
+      var toggleEl = document.getElementById('t2-toggle');
+      var panelEl = document.getElementById('t2-panel');
+      toggleEl.addEventListener('click', function () {
+        var next = toggleEl.getAttribute('aria-expanded') !== 'true';
+        toggleEl.setAttribute('aria-expanded', next ? 'true' : 'false');
+        if (next) panelEl.removeAttribute('hidden');
+        else panelEl.setAttribute('hidden', '');
+      });
+
+      /* -------------------------------- Async -------------------------------- */
+      var asyncBtn = document.getElementById('t2-async');
+      var asyncResultEl = document.getElementById('t2-async-result');
+      var liveEl = document.getElementById('t2-live');
+      asyncBtn.addEventListener('click', function () {
+        asyncResultEl.textContent = 'pending';
+        window.setTimeout(function () {
+          asyncResultEl.textContent = 'async-done';
+          liveEl.textContent = liveEl.textContent ? liveEl.textContent + ' saved' : 'saved';
+        }, 250);
+      });
+
+      /* --------------------- Duplicate accessible name: Save ------------------ */
+      var saveResultEl = document.getElementById('t2-save-result');
+      var saveButtons = document.querySelectorAll('.t2-save');
+      for (var b = 0; b < saveButtons.length; b += 1) {
+        (function (button) {
+          button.addEventListener('click', function () {
+            saveResultEl.textContent = button.id;
+          });
+        })(saveButtons[b]);
+      }
+
+      /* -------------------------------- Range -------------------------------- */
+      var volumeEl = document.getElementById('t2-volume');
+      var volumeOutEl = document.getElementById('t2-volume-value');
+      volumeEl.addEventListener('input', function () {
+        volumeOutEl.textContent = volumeEl.value;
+      });
+
+      /* -------------------------------- Form --------------------------------- */
+      var formEl = document.getElementById('t2-form');
+      var outputEl = document.getElementById('t2-output');
+      formEl.addEventListener('submit', function (event) {
+        event.preventDefault();
+        var planEl = formEl.querySelector('input[name="t2-plan"]:checked');
+        var tagsEl = document.getElementById('t2-tags');
+        var tags = [];
+        for (var i = 0; i < tagsEl.selectedOptions.length; i += 1) {
+          tags.push(tagsEl.selectedOptions[i].value);
+        }
+        var data = {
+          name: document.getElementById('t2-name').value,
+          email: document.getElementById('t2-email').value,
+          bio: document.getElementById('t2-bio').value,
+          agree: document.getElementById('t2-agree').checked,
+          plan: planEl ? planEl.value : null,
+          country: document.getElementById('t2-country').value,
+          tags: tags,
+          volume: Number(document.getElementById('t2-volume').value),
+          readonly: document.getElementById('t2-readonly').value
+        };
+        outputEl.textContent = JSON.stringify(data);
+        document.body.dataset.t2Submitted = '1';
+      });
+
+      /* --------------------- Compression cases (2026-11-01) -------------------- */
+      document.getElementById('t2-aria-label-btn').addEventListener('click', function () {
+        document.getElementById('t2-aria-label-result').textContent = 'save-clicked';
+      });
+      var dupButtons = document.querySelectorAll('.t2-dup');
+      for (var d = 0; d < dupButtons.length; d += 1) {
+        (function (button) {
+          button.addEventListener('click', function () {
+            document.getElementById('t2-dup-result').textContent = button.id;
+          });
+        })(dupButtons[d]);
+      }
+
+      /* Deterministic continuously-moving target: a frame counter drives translateX in a
+         ping-pong over a fixed 200x60 track. `position: fixed` keeps it out of the flow, so it
+         never changes any other element's bbox or the document scroll height. */
+      (function () {
+        var moving = document.getElementById('t2-moving');
+        if (!moving || typeof window.requestAnimationFrame !== 'function') return;
+        var frame = 0;
+        var step = function () {
+          frame = (frame + 1) % 240;
+          var offset = frame <= 120 ? frame : 240 - frame;
+          moving.style.transform = 'translateX(' + offset + 'px)';
+          window.requestAnimationFrame(step);
+        };
+        window.requestAnimationFrame(step);
+      })();
+
+      /* ------------------------------ Shadow DOM ------------------------------ */
+      class T2Widget extends HTMLElement {
+        connectedCallback() {
+          if (this.shadowRoot) return;
+          var root = this.attachShadow({ mode: 'open' });
+          var style = document.createElement('style');
+          style.textContent = 'button { font-size: 14px; padding: 4px 6px; }';
+          var button = document.createElement('button');
+          button.id = 'shadow-btn';
+          button.type = 'button';
+          button.textContent = 'Shadow Action';
+          button.addEventListener('click', function (event) {
+            var state = window.__t2.shadow;
+            state.clicks += 1;
+            state.lastTrusted = event.isTrusted === true;
+            if (state.lastTrusted) state.trustedClicks += 1;
+            var result = document.getElementById('t2-shadow-result');
+            if (result) result.textContent = 'Shadow clicked ' + String(state.clicks);
+          });
+          root.appendChild(style);
+          root.appendChild(button);
+        }
+      }
+      if (!customElements.get('t2-widget')) customElements.define('t2-widget', T2Widget);
+    })();
+  </script>
+</body>
+</html>

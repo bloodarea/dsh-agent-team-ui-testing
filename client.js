@@ -21,16 +21,96 @@ window.__ModuleLoader__.load({
     ];
     /** 与 Host 半边的运行时通信（同源，走应用自身的鉴权）。 */
     const HOST_BASE = '/plugins/ui-testing';
-    async function callHost(op, body) {
+    const SCOPE_VERSION = '1';
+
+    /**
+     * Immutable request identity for one panel generation.
+     * `kind` is `session` (explicit Session) or `recent` (main panel without a captured Session).
+     * A `recent` identity is pinned to one Host runtime by `binding` (the Host's ui.runtimeId), so
+     * later state/input/WS requests cannot drift to another workspace when `recent` is re-resolved.
+     */
+    function scopeSnapshot(kind, sessionId, binding, legacy) {
+      return Object.freeze({
+        version: SCOPE_VERSION,
+        kind: kind === 'session' ? 'session' : 'recent',
+        sessionId: kind === 'session' ? String(sessionId || '') : '',
+        binding: binding ? String(binding) : '',
+        legacy: legacy === true,
+      });
+    }
+
+    function scopeHeaders(scope) {
+      if (!scope) return {};
+      const headers = { 'X-UI-Testing-Scope-Version': SCOPE_VERSION };
+      if (scope.kind === 'session' && scope.sessionId) {
+        headers['X-UI-Testing-Session-Id'] = scope.sessionId;
+      } else if (scope.binding) {
+        headers['X-UI-Testing-Scope-Binding'] = scope.binding;
+      } else {
+        headers['X-UI-Testing-Scope'] = 'recent';
+      }
+      return headers;
+    }
+
+    async function callHost(op, body, options) {
+      const scope = options && options.scope;
+      const signal = options && options.signal;
       const response = await fetch(HOST_BASE + '/' + op, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: Object.assign({ 'content-type': 'application/json' }, scopeHeaders(scope)),
         credentials: 'same-origin',
         body: JSON.stringify(body || {}),
+        signal,
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok || payload.ok === false) throw new Error(payload.error || ('运行时请求失败：' + response.status));
+      if (!response.ok || payload.ok === false) {
+        const error = new Error(payload.error || ('运行时请求失败：' + response.status));
+        error.code = payload.code;
+        throw error;
+      }
       return payload;
+    }
+
+    /** GET helper: every read carries the same immutable scope snapshot as writes. */
+    async function getHost(path, scope, signal) {
+      const response = await fetch(HOST_BASE + path, { credentials: 'same-origin', headers: scopeHeaders(scope), signal, cache: 'no-store' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.ok === false) {
+        const error = new Error(payload.error || ('运行时请求失败：' + response.status));
+        error.code = payload.code;
+        throw error;
+      }
+      return payload;
+    }
+
+    /** The Host's cold/recent binding (ui.runtimeId) for a scope-bearing response. */
+    function runtimeIdOf(payload) {
+      if (!payload || typeof payload !== 'object') return '';
+      const state = payload.state && typeof payload.state === 'object' ? payload.state : payload;
+      const ui = state.ui && typeof state.ui === 'object' ? state.ui : null;
+      const candidates = [
+        payload.binding, state.binding,
+        payload.scope && payload.scope.runtimeId, state.scope && state.scope.runtimeId,
+        payload.scope && payload.scope.binding, state.scope && state.scope.binding,
+        ui && ui.runtimeId, state.runtimeId, payload.runtimeId,
+      ];
+      for (const value of candidates) if (value) return String(value);
+      return '';
+    }
+
+    /** True when the Host answered with workspace-scope evidence (new protocol). */
+    function hasScopeEvidence(payload) {
+      if (!payload || typeof payload !== 'object') return false;
+      const state = payload.state && typeof payload.state === 'object' ? payload.state : payload;
+      const ui = state.ui && typeof state.ui === 'object' ? state.ui : null;
+      return Boolean(payload.scope || state.scope || (ui && ui.scope) || payload.scopeId || state.scopeId);
+    }
+
+    let legacyHostWarned = false;
+    function warnLegacyHost() {
+      if (legacyHostWarned) return;
+      legacyHostWarned = true;
+      console.warn('ui-testing: Host does not expose workspace scope; the panel is using the shared legacy browser (no workspace isolation).');
     }
 
     /** 尺寸条左侧的分辨率预设。 */
@@ -167,9 +247,13 @@ window.__ModuleLoader__.load({
     const WS_OPEN_TIMEOUT_MS = 4000;
     const SEED_DELAY_MS = 700;
 
-    function frameSocketUrl() {
+    function frameSocketUrl(scope) {
       const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      return scheme + '//' + location.host + HOST_BASE + '/frames';
+      let query = '?scopeVersion=' + SCOPE_VERSION;
+      if (scope && scope.kind === 'session' && scope.sessionId) query += '&sessionId=' + encodeURIComponent(scope.sessionId);
+      else if (scope && scope.binding) query += '&binding=' + encodeURIComponent(scope.binding);
+      else query += '&scope=recent';
+      return scheme + '//' + location.host + HOST_BASE + '/frames' + query;
     }
 
     function blobFromBase64(base64, type) {
@@ -192,10 +276,14 @@ window.__ModuleLoader__.load({
     /**
      * @param {{onFrame: (frame: {blob: Blob, meta: object}) => void,
      *          onState: (state: object) => void,
-     *          onTransport: (kind: 'ws'|'poll') => void}} handlers
+     *          onTransport: (kind: 'ws'|'poll') => void,
+     *          canWrite?: () => boolean}} handlers
+     * @param {object} scope Immutable scope/binding snapshot for every request and the WS.
      */
-    function createFrameTransport(handlers) {
+    function createFrameTransport(handlers, scope) {
       let closed = false;
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const signal = controller ? controller.signal : undefined;
       let socket;
       let socketTimer = 0;
       let pollTimer = 0;
@@ -263,8 +351,9 @@ window.__ModuleLoader__.load({
         if (stats.received > 0) return;
         if (seedFor === lastState.url) return;
         if (Date.now() - urlSince < SEED_DELAY_MS) return;
+        if (handlers.canWrite && !handlers.canWrite()) return;
         seedFor = lastState.url;
-        callHost('screenshot').then((payload) => {
+        callHost('screenshot', {}, { scope, signal }).then((payload) => {
           if (closed || !payload || !payload.image) return;
           stats.seeded += 1;
           const meta = {
@@ -290,7 +379,7 @@ window.__ModuleLoader__.load({
         if (closed || kind === 'ws' || pollBusy) return;
         pollBusy = true;
         try {
-          const response = await fetch(HOST_BASE + '/frame?since=' + Math.max(0, lastSeq), { credentials: 'same-origin' });
+          const response = await fetch(HOST_BASE + '/frame?since=' + Math.max(0, lastSeq), { credentials: 'same-origin', headers: scopeHeaders(scope), signal });
           if (response.ok) {
             const payload = await response.json();
             if (payload.state) {
@@ -345,7 +434,7 @@ window.__ModuleLoader__.load({
         if (closed) return;
         let next;
         try {
-          next = new WebSocket(frameSocketUrl());
+          next = new WebSocket(frameSocketUrl(scope));
           next.binaryType = 'arraybuffer';
         } catch { scheduleRetry(); return; }
         socket = next;
@@ -409,6 +498,9 @@ window.__ModuleLoader__.load({
         },
         close() {
           closed = true;
+          if (controller) {
+            try { controller.abort(); } catch { /* ignore */ }
+          }
           window.clearTimeout(socketTimer);
           window.clearTimeout(retryTimer);
           socketTimer = 0;
@@ -436,8 +528,153 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /* ------------------------------------------------------------------------------------------
+     * Workspace scope binding for the panel.
+     *
+     * The right sidebar tab is session-scoped and receives the standard `sessionId` prop. The
+     * root-scoped main panel has no Session binding: `MoreRow` remembers the session that owns the
+     * main view right before `layout.selectPanel`, and `DebugView` reads that memory. With no
+     * capture the panel asks the Host for `recent` once, then pins every request/WS to the Host
+     * provided runtime binding so a later request cannot drift to another workspace.
+     * ---------------------------------------------------------------------------------------- */
+    const MAIN_CAPTURE_NONE = '!none';
+    const MAIN_CAPTURE_LOADING = '!loading';
+    const MAIN_CAPTURE_AMBIGUOUS = '!ambiguous';
+
+    const mainCapture = { sessionId: '', resolution: 'none' };
+    const mainCaptureListeners = new Set();
+
+    function parseCaptureValue(value) {
+      const text = typeof value === 'string' ? value : MAIN_CAPTURE_NONE;
+      if (text === MAIN_CAPTURE_LOADING) return { sessionId: '', resolution: 'loading' };
+      if (text === MAIN_CAPTURE_AMBIGUOUS) return { sessionId: '', resolution: 'ambiguous' };
+      if (text.indexOf('session:') === 0) {
+        const sessionId = text.slice('session:'.length);
+        return sessionId ? { sessionId, resolution: 'session' } : { sessionId: '', resolution: 'none' };
+      }
+      return { sessionId: '', resolution: 'none' };
+    }
+
+    function rememberMainCapture(value) {
+      const next = parseCaptureValue(value);
+      if (next.sessionId === mainCapture.sessionId && next.resolution === mainCapture.resolution) return;
+      mainCapture.sessionId = next.sessionId;
+      mainCapture.resolution = next.resolution;
+      for (const listener of mainCaptureListeners) {
+        try { listener(); } catch { /* a listener must not break the capture */ }
+      }
+    }
+
+    function useMainCapture() {
+      const [, bump] = React.useReducer((value) => value + 1, 0);
+      React.useEffect(() => {
+        mainCaptureListeners.add(bump);
+        return () => { mainCaptureListeners.delete(bump); };
+      }, []);
+      return mainCapture;
+    }
+
+    /** Primitive selector for the standard `useSessions` hook (stable across renders). */
+    function mainViewCaptureSelector(state) {
+      if (!state || state.phase !== 'ready') return MAIN_CAPTURE_LOADING;
+      const byId = state.byId || {};
+      const ids = Array.isArray(state.ids) && state.ids.length ? state.ids : Object.keys(byId);
+      let found = '';
+      let count = 0;
+      for (const id of ids) {
+        const row = byId[id];
+        const retained = row && row.retainedBy && Number(row.retainedBy.mainView) > 0;
+        if (!retained) continue;
+        count += 1;
+        found = id;
+        if (count > 1) return MAIN_CAPTURE_AMBIGUOUS;
+      }
+      return count === 1 ? 'session:' + found : MAIN_CAPTURE_NONE;
+    }
+
+    function parseLiveCapture(value) {
+      const text = typeof value === 'string' ? value : MAIN_CAPTURE_NONE;
+      if (text === MAIN_CAPTURE_LOADING) return { kind: 'loading', sessionId: '' };
+      if (text === MAIN_CAPTURE_AMBIGUOUS) return { kind: 'ambiguous', sessionId: '' };
+      if (text.indexOf('session:') === 0) return { kind: 'session', sessionId: text.slice('session:'.length) };
+      return { kind: 'none', sessionId: '' };
+    }
+
+    /**
+     * Main-panel identity: the capture memory wins (the panel is pinned when it opens); a unique
+     * live main view resolves an earlier loading/ambiguous capture. Ambiguity only pauses writes.
+     */
+    function resolvePanelIdentity(seatSessionId, capture, liveValue) {
+      if (seatSessionId) {
+        return { kind: 'session', sessionId: seatSessionId, key: 'session:' + seatSessionId, paused: false };
+      }
+      const live = parseLiveCapture(liveValue);
+      let sessionId = capture && capture.sessionId ? capture.sessionId : '';
+      let resolved = capture && capture.resolution ? capture.resolution : 'none';
+      if (resolved !== 'session' && live.kind === 'session' && live.sessionId) {
+        sessionId = live.sessionId;
+        resolved = 'session';
+      }
+      const paused = live.kind === 'loading' || live.kind === 'ambiguous';
+      if (resolved === 'session' && sessionId) return { kind: 'session', sessionId, key: 'session:' + sessionId, paused };
+      return { kind: 'recent', sessionId: '', key: 'recent', paused };
+    }
+
+    function useDocumentVisibility() {
+      const [visible, setVisible] = React.useState(() => (typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'));
+      React.useEffect(() => {
+        if (typeof document === 'undefined') return undefined;
+        const update = () => setVisible(document.visibilityState !== 'hidden');
+        document.addEventListener('visibilitychange', update);
+        update();
+        return () => document.removeEventListener('visibilitychange', update);
+      }, []);
+      return visible;
+    }
+
+    /** Slot dispatcher: the sidebar tab seat has useTabInfo; the root main seat does not. */
+    function DebugView(props) {
+      if (props && typeof props.useTabInfo === 'function') return h(SidebarDebugView, props);
+      if (props && typeof props.sessionId === 'string' && props.sessionId) return h(SessionDebugViewStatic, props);
+      return h(MainDebugView, props);
+    }
+
+    function SidebarDebugView(props) {
+      const info = props.useTabInfo();
+      const tab = info && info.tab ? info.tab : null;
+      // An older shell without tab visibility data is conservatively treated as visible.
+      const visible = !tab || tab.visible !== false;
+      const sessionId = typeof props.sessionId === 'string' ? props.sessionId : '';
+      return h(DebugViewBody, Object.assign({}, props, { seatSessionId: sessionId, visible, capture: null, liveCapture: '' }));
+    }
+
+    function SessionDebugViewStatic(props) {
+      return h(DebugViewBody, Object.assign({}, props, { seatSessionId: props.sessionId, visible: true, capture: null, liveCapture: '' }));
+    }
+
+    function MainDebugView(props) {
+      const safe = props || {};
+      if (typeof safe.useSessions === 'function') return h(MainDebugViewLive, safe);
+      return h(MainDebugViewStatic, safe);
+    }
+
+    function MainDebugViewLive(props) {
+      const liveCapture = props.useSessions(mainViewCaptureSelector);
+      return h(MainDebugViewRender, Object.assign({}, props, { liveCapture }));
+    }
+
+    function MainDebugViewStatic(props) {
+      return h(MainDebugViewRender, Object.assign({}, props, { liveCapture: MAIN_CAPTURE_NONE }));
+    }
+
+    function MainDebugViewRender(props) {
+      const capture = useMainCapture();
+      const visible = useDocumentVisibility();
+      return h(DebugViewBody, Object.assign({}, props, { seatSessionId: '', visible, capture }));
+    }
+
     /** The debug view body, shared by the main column and the right sidebar. */
-    function DebugView() {
+    function DebugViewBody(props) {
       // `draft` is only the address-bar edit buffer: the navigation truth lives in `remote.ui`.
       const [draft, setDraft] = React.useState('');
       const [sizing, setSizing] = React.useState(false);
@@ -477,6 +714,97 @@ window.__ModuleLoader__.load({
       const requestGenerationRef = React.useRef(0);
       const retiredRuntimeRef = React.useRef('');
       const pendingRef = React.useRef({ active: false, editVersion: 0, address: '' });
+
+      // Immutable scope/binding for this generation. A `recent` identity is pinned to the Host
+      // runtime id returned by the first /state (or /ensure); `binding` is empty until then.
+      const seatSessionId = props && typeof props.seatSessionId === 'string' ? props.seatSessionId : '';
+      const visible = !props || props.visible !== false;
+      const capture = props && props.capture ? props.capture : { sessionId: '', resolution: 'none' };
+      const identity = resolvePanelIdentity(seatSessionId, capture, props && props.liveCapture);
+      const identityKey = identity.key;
+      const [bindingState, setBindingState] = React.useState({ identityKey: '', value: '' });
+      const [legacyState, setLegacyState] = React.useState({ identityKey: '', value: false });
+      const binding = bindingState.identityKey === identityKey ? bindingState.value : '';
+      const legacyHost = legacyState.identityKey === identityKey ? legacyState.value : false;
+      const ready = identity.kind === 'session' || Boolean(binding) || legacyHost;
+      const scope = React.useMemo(
+        () => scopeSnapshot(identity.kind, identity.sessionId, binding, legacyHost),
+        [identity.kind, identity.sessionId, binding, legacyHost],
+      );
+      const scopeKey = scope.kind + ':' + scope.sessionId + '|' + scope.binding + (scope.legacy ? '|legacy' : '');
+      // Every scope/binding transition (including a discarded binding that re-resolves to the
+      // same runtime id) must rebuild the transport/pollers even when the scope values repeat.
+      const scopeEpochRef = React.useRef(0);
+      const scopeTokenRef = React.useRef('');
+      if (scopeTokenRef.current !== scopeKey) {
+        scopeTokenRef.current = scopeKey;
+        scopeEpochRef.current += 1;
+      }
+      const scopeEpoch = scopeEpochRef.current;
+      const scopeRef = React.useRef(scope);
+      scopeRef.current = scope;
+      const visibleRef = React.useRef(true);
+      visibleRef.current = visible;
+      const readyRef = React.useRef(false);
+      readyRef.current = ready;
+      const writesPausedRef = React.useRef(false);
+      writesPausedRef.current = identity.paused;
+      const abortRef = React.useRef(null);
+      const bindingAttemptsRef = React.useRef({ identityKey: '', count: 0 });
+      if (bindingAttemptsRef.current.identityKey !== identityKey) bindingAttemptsRef.current = { identityKey, count: 0 };
+      // The first unresolved→bound transition is this panel's own resolution of `recent`: it must
+      // not abort the ensure/viewport/navigate chain that produced it. Any later binding change
+      // (runtime replaced, binding lost) retires the old scope exactly like an identity change.
+      // The reset epoch only advances on transitions, so repeated renders of the same scope never
+      // schedule another reset (which would abort the resolver's own re-resolution request).
+      const resetHistoryRef = React.useRef({ identityKey: '', value: '' });
+      const resetEpochRef = React.useRef(0);
+      if (resetHistoryRef.current.identityKey !== identityKey) {
+        resetHistoryRef.current = { identityKey, value: binding };
+        resetEpochRef.current += 1;
+      } else if (resetHistoryRef.current.value !== binding) {
+        const previousBinding = resetHistoryRef.current.value;
+        resetHistoryRef.current = { identityKey, value: binding };
+        if (previousBinding || !binding) resetEpochRef.current += 1;
+      }
+      const resetKey = resetEpochRef.current;
+
+      function adoptBinding(value) {
+        const next = value ? String(value) : '';
+        if (!next) return;
+        setBindingState((current) => (current.identityKey === identityKey && current.value === next ? current : { identityKey, value: next }));
+      }
+
+      function discardBinding(value) {
+        const next = value ? String(value) : '';
+        setBindingState((current) => (current.identityKey === identityKey && current.value === next ? { identityKey, value: '' } : current));
+      }
+
+      function markLegacyHost() {
+        warnLegacyHost();
+        setLegacyState((current) => (current.identityKey === identityKey && current.value ? current : { identityKey, value: true }));
+      }
+
+      /** Pin a recent scope to the runtime id the Host reported (cold entry or ensure). */
+      function noteHostScope(payload) {
+        const current = scopeRef.current;
+        if (!current || current.kind !== 'recent') return;
+        if (!hasScopeEvidence(payload)) return;
+        const runtimeId = runtimeIdOf(payload);
+        if (!runtimeId) return;
+        if (runtimeId !== current.binding) adoptBinding(runtimeId);
+      }
+
+      function noteLegacyHost(payload) {
+        if (!payload || hasScopeEvidence(payload)) return;
+        markLegacyHost();
+      }
+
+      function ingestHostState(state) {
+        noteHostScope(state);
+        noteLegacyHost(state);
+        acceptRemote(state);
+      }
 
       const ui = remote && remote.ui && remote.ui.version === 1 ? remote.ui : null;
       const uiHistory = ui && ui.history && typeof ui.history === 'object' ? ui.history : null;
@@ -585,9 +913,124 @@ window.__ModuleLoader__.load({
 
       const pageSize = { w: Math.max(200, Math.min(4096, Number(width) || 200)), h: Math.max(200, Math.min(4096, Number(height) || 200)) };
 
-      // 画面传输：优先同源 WebSocket 推送，失败自动回退到 /frame HTTP 轮询。
+      // One immutable scope/binding snapshot per generation. Identity or binding changes retire
+      // every transport/poll/request and all UI state derived from the previous workspace.
       React.useEffect(() => {
+        requestGenerationRef.current += 1;
+        if (abortRef.current) abortRef.current.abort();
+        abortRef.current = new AbortController();
+        remoteRef.current = null;
+        retiredRuntimeRef.current = '';
+        dirtyRef.current = false;
+        editVersionRef.current += 1;
+        pendingRef.current = { active: false };
+        setPending(false);
+        setNavBusy(false);
+        setDraft('');
+        setRemote({ mode: 'idle', activity: '', url: '', running: false });
+        setError('');
+        setActivity('无进行中的操作');
+        setMode('idle');
+        setTransportKind('poll');
+        setShot('');
+        if (shotUrlRef.current) {
+          try { URL.revokeObjectURL(shotUrlRef.current); } catch { /* ignore */ }
+          shotUrlRef.current = '';
+        }
+        for (const objectUrl of frameMetaRef.current.keys()) {
+          try { URL.revokeObjectURL(objectUrl); } catch { /* ignore */ }
+        }
+        frameMetaRef.current.clear();
+        displayTimes.current = [];
+        displayLatencies.current = [];
+        displayedRef.current = 0;
+        perfRef.current = { fps: 0, frameMs: 0 };
+        setFps(0);
+        setFrameMs(0);
+        return () => {
+          if (abortRef.current) abortRef.current.abort();
+          abortRef.current = null;
+        };
+      }, [resetKey]);
+
+      // `recent` is pinned once: the first /state (or /ensure) returns ui.runtimeId, and every
+      // later request/WS carries that binding. A WS must never start on bare `recent`, because
+      // the next request could resolve a different recent entry.
+      React.useEffect(() => {
+        if (!visible || identity.kind !== 'recent' || binding || legacyHost) return undefined;
+        let cancelled = false;
+        let retryTimer = 0;
+        const controller = new AbortController();
+        const scopeNow = scopeRef.current;
+        const generation = requestGenerationRef.current;
+        function retry() {
+          if (cancelled) return;
+          if (bindingAttemptsRef.current.count >= 3) return;
+          retryTimer = window.setTimeout(run, 2500);
+        }
+        async function run() {
+          if (cancelled) return;
+          try {
+            const state = await getHost('/state', scopeNow, controller.signal);
+            if (cancelled || generation !== requestGenerationRef.current) return;
+            if (hasScopeEvidence(state)) {
+              const runtimeId = runtimeIdOf(state);
+              if (runtimeId) {
+                ingestHostState(state);
+                adoptBinding(runtimeId);
+                return;
+              }
+              // Scope-aware Host without a cold binding: one ensure is allowed to materialize it.
+              if (identity.paused) return;
+              bindingAttemptsRef.current.count += 1;
+              const ensured = await callHost('ensure', {}, { scope: scopeNow, signal: controller.signal });
+              if (cancelled || generation !== requestGenerationRef.current) return;
+              const ensuredState = ensured && ensured.state ? ensured.state : ensured;
+              const ensuredBinding = runtimeIdOf(ensured);
+              if (ensuredBinding) {
+                ingestHostState(ensuredState);
+                adoptBinding(ensuredBinding);
+                return;
+              }
+              if (hasScopeEvidence(ensured)) {
+                ingestHostState(ensuredState);
+                retry();
+                return;
+              }
+              markLegacyHost();
+              return;
+            }
+            // No scope evidence: old Host. Keep the panel displayable on the legacy browser,
+            // but never claim workspace isolation.
+            markLegacyHost();
+            ingestHostState(state);
+          } catch (error) {
+            if (cancelled || (error && error.name === 'AbortError')) return;
+            if (generation !== requestGenerationRef.current) return;
+            retry();
+          }
+        }
+        run();
+        return () => { cancelled = true; window.clearTimeout(retryTimer); controller.abort(); };
+      }, [visible, identity.kind, identityKey, binding, legacyHost, identity.paused]);
+
+      // 画面传输：优先同源 WebSocket 推送，失败自动回退到 /frame HTTP 轮询。
+      // Hidden sidebar tabs / a hidden document stop the WS and both poll loops without
+      // closing the Host page or unmounting the component.
+      React.useEffect(() => {
+        if (!visible || !ready) return undefined;
+        const scopeNow = scopeRef.current;
         let mounted = true;
+        // A fresh transport per generation: old frames/object URLs never survive a rebuild.
+        if (shotUrlRef.current) {
+          try { URL.revokeObjectURL(shotUrlRef.current); } catch { /* ignore */ }
+          shotUrlRef.current = '';
+        }
+        for (const objectUrl of frameMetaRef.current.keys()) {
+          try { URL.revokeObjectURL(objectUrl); } catch { /* ignore */ }
+        }
+        frameMetaRef.current.clear();
+        setShot('');
         const transport = createFrameTransport({
           onFrame({ blob, meta }) {
             if (!mounted) return;
@@ -601,47 +1044,60 @@ window.__ModuleLoader__.load({
               frameMetaRef.current.delete(previous);
             }, 2000);
           },
-          onState(state) { if (mounted) acceptRemote(state); },
+          onState(state) { if (mounted) ingestHostState(state); },
           onTransport(kind) { if (mounted) setTransportKind(kind); },
-        });
+          canWrite() { return !writesPausedRef.current && visibleRef.current; },
+        }, scopeNow);
         transportRef.current = transport;
         transport.start();
         return () => {
           mounted = false;
           transport.close();
-          transportRef.current = null;
+          if (transportRef.current === transport) transportRef.current = null;
           for (const objectUrl of frameMetaRef.current.keys()) URL.revokeObjectURL(objectUrl);
           frameMetaRef.current.clear();
           if (shotUrlRef.current) URL.revokeObjectURL(shotUrlRef.current);
           shotUrlRef.current = '';
         };
-      }, []);
+      }, [scopeEpoch, ready, visible]);
 
       // 状态同步与帧流解耦：静止页面没有新帧时，地址/运行态仍按固定间隔刷新。
       React.useEffect(() => {
+        if (!visible || !ready) return undefined;
+        const scopeNow = scopeRef.current;
+        const controller = new AbortController();
         let cancelled = false;
         let timer = 0;
         async function tick() {
-          // A snapshot requested before a navigation action cannot move the address back.
+          // Capture the action generation per request, not per effect: a navigation action bumps
+          // the generation and must not stop this poller from rescheduling (only stale responses
+          // are dropped).
           const generation = requestGenerationRef.current;
           try {
-            const response = await fetch(HOST_BASE + '/state', { credentials: 'same-origin' });
-            if (response.ok) {
-              const state = await response.json();
-              if (!cancelled && generation === requestGenerationRef.current) {
-                acceptRemote(state);
-                if (transportRef.current) transportRef.current.noteState({ url: state.url });
-              }
+            const state = await getHost('/state', scopeNow, controller.signal);
+            if (!cancelled && generation === requestGenerationRef.current) {
+              ingestHostState(state);
+              if (transportRef.current) transportRef.current.noteState({ url: state.url });
             }
-          } catch { /* 运行时尚未启动 */ }
+          } catch (error) {
+            if (cancelled || (error && error.name === 'AbortError')) return;
+            const code = error && error.code ? String(error.code) : '';
+            // A binding whose entry was evicted (idle close) must be re-resolved, not reused.
+            if (scopeNow.kind === 'recent' && scopeNow.binding && /SCOPE_NOT_FOUND|BINDING/i.test(code)) {
+              discardBinding(scopeNow.binding);
+            }
+          }
           if (!cancelled) timer = window.setTimeout(tick, 500);
         }
         tick();
-        return () => { cancelled = true; window.clearTimeout(timer); };
-      }, []);
+        return () => { cancelled = true; window.clearTimeout(timer); controller.abort(); };
+      }, [scopeEpoch, ready, visible]);
 
       // 性能观测：FPS 与延迟都来自实际显示（img.onload + rAF），不是轮询间隔。
       React.useEffect(() => {
+        if (!visible || !ready) return undefined;
+        const scopeNow = scopeRef.current;
+        const controller = new AbortController();
         let computeTimer = 0;
         let postTimer = 0;
         const compute = () => {
@@ -663,8 +1119,9 @@ window.__ModuleLoader__.load({
           const stats = transport.stats();
           fetch(HOST_BASE + '/metrics', {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: Object.assign({ 'content-type': 'application/json' }, scopeHeaders(scopeNow)),
             credentials: 'same-origin',
+            signal: controller.signal,
             body: JSON.stringify({
               transport: stats.transport,
               displayFps: perfRef.current.fps,
@@ -682,8 +1139,8 @@ window.__ModuleLoader__.load({
         };
         computeTimer = window.setInterval(compute, 500);
         postTimer = window.setInterval(post, 2000);
-        return () => { window.clearInterval(computeTimer); window.clearInterval(postTimer); };
-      }, []);
+        return () => { window.clearInterval(computeTimer); window.clearInterval(postTimer); controller.abort(); };
+      }, [scopeEpoch, ready, visible]);
 
       function onFrameLoad(event) {
         const source = event.currentTarget.currentSrc || event.currentTarget.src;
@@ -702,12 +1159,14 @@ window.__ModuleLoader__.load({
         });
       }
       React.useEffect(() => {
-        if (!sizing) return;
+        if (!sizing || !visible || !ready || identity.paused) return undefined;
+        const scopeNow = scopeRef.current;
+        const signal = abortRef.current ? abortRef.current.signal : undefined;
         const handle = window.setTimeout(() => {
-          callHost('viewport', { width: pageSize.w, height: pageSize.h }).catch(() => {});
+          callHost('viewport', { width: pageSize.w, height: pageSize.h }, { scope: scopeNow, signal }).catch(() => {});
         }, 120);
         return () => window.clearTimeout(handle);
-      }, [sizing, pageSize.w, pageSize.h]);
+      }, [sizing, pageSize.w, pageSize.h, scopeEpoch, ready, visible, identity.paused]);
 
       function pagePoint(event) {
         const rect = event.currentTarget.getBoundingClientRect();
@@ -718,7 +1177,9 @@ window.__ModuleLoader__.load({
         };
       }
       function sendEvents(events) {
-        callHost('input', { events }).catch(() => {});
+        if (!readyRef.current || writesPausedRef.current) return;
+        const signal = abortRef.current ? abortRef.current.signal : undefined;
+        callHost('input', { events }, { scope: scopeRef.current, signal }).catch(() => {});
       }
 
       // 人类接管：真实输入后 4 秒内标记，其余时间回落到空闲
@@ -757,6 +1218,10 @@ window.__ModuleLoader__.load({
       function submit(event) {
         if (event) event.preventDefault();
         if (pendingRef.current.active) return;
+        if (writesPausedRef.current) {
+          console.warn('ui-testing: navigation paused while the main view is loading or ambiguous');
+          return;
+        }
         let parsed;
         try {
           const raw = draft.trim();
@@ -778,16 +1243,39 @@ window.__ModuleLoader__.load({
         setActivity('正在加载 ' + parsed.host);
         requestGenerationRef.current += 1;
         const generation = requestGenerationRef.current;
-        callHost('ensure', {})
-          .then(() => callHost('viewport', { width: pageSize.w, height: pageSize.h }))
-          .then(() => callHost('navigate', { url: parsed.href }))
+        const signal = abortRef.current ? abortRef.current.signal : undefined;
+        let scopeNow = scopeRef.current;
+        const needsBinding = scopeNow.kind === 'recent' && !scopeNow.binding && !scopeNow.legacy;
+        const ensure = needsBinding
+          ? callHost('ensure', {}, { scope: scopeNow, signal }).then((payload) => {
+              // A real operation on recent must return the binding used by the rest of the chain.
+              if (generation !== requestGenerationRef.current) return payload;
+              const ensuredState = payload && payload.state ? payload.state : payload;
+              const runtimeId = runtimeIdOf(payload) || runtimeIdOf(ensuredState);
+              if (runtimeId && hasScopeEvidence(payload)) {
+                scopeNow = scopeSnapshot('recent', '', runtimeId, false);
+                adoptBinding(runtimeId);
+              } else if (!hasScopeEvidence(payload)) {
+                markLegacyHost();
+              } else {
+                throw new Error('运行时不可用');
+              }
+              return payload;
+            })
+          : callHost('ensure', {}, { scope: scopeNow, signal });
+        ensure
+          .then(() => callHost('viewport', { width: pageSize.w, height: pageSize.h }, { scope: scopeNow, signal }))
+          .then(() => callHost('navigate', { url: parsed.href }, { scope: scopeNow, signal }))
           .then((payload) => {
             // A newer action superseded this submit: its response must not touch loading/error.
             if (generation !== requestGenerationRef.current) return;
+            noteHostScope(payload && payload.state);
+            noteLegacyHost(payload && payload.state);
             finishNavigation(payload && payload.state, version);
           })
           .catch((err) => {
             if (generation !== requestGenerationRef.current) return;
+            if (err && err.name === 'AbortError') return;
             pendingRef.current = { active: false };
             setPending(false);
             dirtyRef.current = true; // keep the failed input until edit / Escape / blur
@@ -796,21 +1284,26 @@ window.__ModuleLoader__.load({
       }
 
       function reload() {
-        if (reloadDisabled) return;
+        if (reloadDisabled || writesPausedRef.current || !readyRef.current) return;
         cancelDraft();
         setError('');
         setNavBusy(true);
         setActivity(host ? '正在重新加载 ' + host : '正在重新加载');
         requestGenerationRef.current += 1;
         const generation = requestGenerationRef.current;
-        callHost('reload', {})
+        const scopeNow = scopeRef.current;
+        const signal = abortRef.current ? abortRef.current.signal : undefined;
+        callHost('reload', {}, { scope: scopeNow, signal })
           .then((payload) => {
             if (generation !== requestGenerationRef.current) return;
             setNavBusy(false);
+            noteHostScope(payload && payload.state);
+            noteLegacyHost(payload && payload.state);
             finishNavigation(payload && payload.state);
           })
           .catch((err) => {
             if (generation !== requestGenerationRef.current) return;
+            if (err && err.name === 'AbortError') return;
             setNavBusy(false);
             setError((err && err.message) || '运行时不可用');
           });
@@ -818,21 +1311,26 @@ window.__ModuleLoader__.load({
 
       function move(direction) {
         const disabled = direction === 'back' ? backDisabled : forwardDisabled;
-        if (disabled) return;
+        if (disabled || writesPausedRef.current || !readyRef.current) return;
         cancelDraft();
         setError('');
         setNavBusy(true);
         setActivity(direction === 'back' ? '正在后退' : '正在前进');
         requestGenerationRef.current += 1;
         const generation = requestGenerationRef.current;
-        callHost('history', { direction })
+        const scopeNow = scopeRef.current;
+        const signal = abortRef.current ? abortRef.current.signal : undefined;
+        callHost('history', { direction }, { scope: scopeNow, signal })
           .then((payload) => {
             if (generation !== requestGenerationRef.current) return;
             setNavBusy(false);
+            noteHostScope(payload && payload.state);
+            noteLegacyHost(payload && payload.state);
             finishNavigation(payload && payload.state);
           })
           .catch((err) => {
             if (generation !== requestGenerationRef.current) return;
+            if (err && err.name === 'AbortError') return;
             setNavBusy(false);
             setError((err && err.message) || '运行时不可用');
           });
@@ -1005,7 +1503,16 @@ window.__ModuleLoader__.load({
 
         // 左侧「更多」下拉里的一行：打开调试视图，不再占用左侧图标栏
         function MoreRow(props) {
-          const dismiss = props && props.onDismiss;
+          return typeof props.useSessions === 'function'
+            ? h(MoreRowLive, props)
+            : h(MoreRowContent, Object.assign({}, props, { capture: MAIN_CAPTURE_NONE }));
+        }
+        function MoreRowLive(props) {
+          const capture = props.useSessions(mainViewCaptureSelector);
+          return h(MoreRowContent, { onDismiss: props.onDismiss, capture });
+        }
+        function MoreRowContent(props) {
+          const dismiss = props.onDismiss;
           return h(React.Fragment, null,
             h('style', null, CSS),
             h('button', {
@@ -1013,6 +1520,9 @@ window.__ModuleLoader__.load({
               className: 'utb-menu-row',
               role: 'menuitem',
               onClick: () => {
+                // Remember the workspace that owns the main view *before* opening the panel;
+                // the root-scoped main panel reads this memory and pins itself to that Session.
+                rememberMainCapture(props.capture);
                 const layout = ctx.get('layout');
                 if (!layout) { console.error('ui-testing: layout service unavailable'); return; }
                 layout.selectPanel(ID);

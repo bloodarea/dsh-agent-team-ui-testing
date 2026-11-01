@@ -23,8 +23,50 @@ export async function capabilityProbe({ harness, check }) {
   const advertisedTools = new Set(capabilities.map((item) => item.tool).filter(Boolean));
   check('所有实际工具都有 capability 声明且没有虚构工具', harness.toolNames().every((name) => advertisedTools.has(name))
     && [...advertisedTools].every((name) => harness.tools.has(name)), { expected: harness.toolNames(), actual: [...advertisedTools] });
-  check('T2/T3/T4 均明确 unsupported', ['t2', 't3', 't4'].every((tier) => capabilities.some((item) => item.id.toLowerCase().includes(tier) && item.status === 'unsupported')),
-    { expected: ['T2 unsupported', 'T3 unsupported', 'T4 unsupported'], actual: capabilities });
+  // T2 (docs/t2-structured-gui.md §5.3): seven web.t2.* projections + the aggregate id are
+  // available; T3/T4 stay unsupported with no tool behind them.
+  const expectedT2 = [
+    ['web.t2.snapshot', 'browser_snapshot'], ['web.t2.click', 'browser_click'], ['web.t2.type', 'browser_type'],
+    ['web.t2.scroll', 'browser_scroll'], ['web.t2.fill_form', 'browser_fill_form'],
+    ['web.t2.node_state', 'browser_node_state'], ['web.t2.wait_for', 'browser_wait_for'],
+  ];
+  const t2Problems = expectedT2.filter(([id, tool]) => !capabilities.some((item) => item.id === id && item.tool === tool && item.status === 'available'));
+  const structured = capabilities.find((item) => item.id === 'web.t2.structured-dom');
+  check('七项 web.t2.* 投影 available 且 structured-dom 单独 available', t2Problems.length === 0
+    && structured?.status === 'available' && !structured?.tool, {
+    expected: [...expectedT2.map((item) => `${item[0]}:available`), 'web.t2.structured-dom:available'],
+    actual: { problems: t2Problems, structured },
+  });
+  check('T3/T4 仍明确 unsupported 且没有同名工具', ['t3', 't4'].every((tier) => capabilities.some((item) => item.id.toLowerCase().includes(tier) && item.status === 'unsupported'))
+    && capabilities.filter((item) => /t3|t4/i.test(item.id)).every((item) => !item.tool), {
+    expected: ['T3 unsupported', 'T4 unsupported', 'no tool'],
+    actual: capabilities.filter((item) => /t3|t4/i.test(item.id)),
+  });
+  const t1Tools = capabilities.filter((item) => item.id.startsWith('web.t1.') && item.tool);
+  const httpEntry = capabilities.find((item) => item.id === 'web.t1.http-request');
+  check('T1 恰好 9 项工具投影且 http-request 为 available', t1Tools.length === 9
+    && t1Tools.every((item) => item.status === 'available')
+    && httpEntry?.tool === 'browser_http_request' && httpEntry.status === 'available'
+    && Array.isArray(httpEntry.constraints) && httpEntry.constraints.length === 4
+    && httpEntry.constraints.some((text) => /no Chromium startup/i.test(text)),
+  { expected: { count: 9, http: 'available' }, actual: t1Tools.map((item) => `${item.id}:${item.status}`) });
+  check('viewport-control/browser-extras 仍 unsupported 且没有同名工具',
+    capabilities.filter((item) => /viewport-control|browser-extras/.test(item.id)).every((item) => item.status === 'unsupported' && !item.tool),
+    { actual: capabilities.filter((item) => /viewport-control|browser-extras/.test(item.id)) });
+  const structuredGui = value?.limits?.structuredGui;
+  check('limits.structuredGui 报告 T2 契约限额', structuredGui?.protocolVersion === 1
+    && structuredGui?.defaultMaxNodes === 500 && structuredGui?.maxNodes === 2000
+    && structuredGui?.defaultDepth === 12 && structuredGui?.maxDepth === 32 && structuredGui?.boxesDefault === false
+    && structuredGui?.treeBytes === 131072 && structuredGui?.snapshotBytes === 524288 && structuredGui?.evidenceBytes === 262144
+    && structuredGui?.maxRefs === 2000 && structuredGui?.formFields === 20 && structuredGui?.scrollAmount === 400, {
+    expected: 'docs/t2-structured-gui.md §5.3 limits.structuredGui', actual: structuredGui,
+  });
+  const httpLimits = value?.limits?.httpRequest;
+  check('limits.httpRequest 与契约默认/上限一致', httpLimits?.defaultTimeoutMs === 5000 && httpLimits?.maxTimeoutMs === 20000
+    && httpLimits?.defaultMaxBytes === 65536 && httpLimits?.maxBytes === 1048576 && httpLimits?.maxRequestBodyBytes === 65536
+    && httpLimits?.maxRequestHeaderBytes === 8192 && httpLimits?.maxResponseHeaderBytes === 16384
+    && httpLimits?.defaultMaxRedirects === 0 && httpLimits?.maxRedirects === 5,
+  { expected: '契约 §7 limits.httpRequest', actual: httpLimits });
 }
 
 export async function leaseProbe({ check }) {
@@ -47,7 +89,9 @@ export async function leaseProbe({ check }) {
     const byTool = new Map((busyCapabilities.value?.capabilities || []).filter((item) => item.tool).map((item) => [item.tool, item]));
     check('capabilities 对其他 owner 页面/network 如实报 unavailable，诊断仍 available', ['browser_navigate', 'browser_eval', 'browser_screenshot', 'browser_input', 'browser_network', 'browser_computed_style'].every((name) => byTool.get(name)?.status === 'unavailable')
       && ['browser_state', 'browser_capabilities'].every((name) => byTool.get(name)?.status === 'available'), { expected: '6 unavailable + 2 diagnostics available', actual: busyCapabilities.value?.capabilities });
-    const state = await harness.invoke('browser_state');
+    // Diagnostics run in the same workspace (workspace isolation: leases are per workspace),
+    // from a third session that must not take the owner.
+    const state = await harness.invoke('browser_state', {}, exec('lease-observer'));
     check('诊断保留实际 owner 且 network 不启动浏览器', state.value?.owner?.sessionId === winner && state.value.running === false,
       { expected: { owner: winner, running: false }, actual: state.value });
     await harness.ctx.emit('agent/disposed', { agent: { id: 'unrelated-session' } });
@@ -94,6 +138,57 @@ export async function evidenceProbe({ harness, check }) {
     && Number.isFinite(time(shot.value.capturedAt)) && shot.value.sha256 === createHash('sha256').update(bytes).digest('hex')
     && textContent(shot).includes(shot.value.image) && textContent(shot).includes('base64-fallback'),
   { expected: 'base64-fallback + attachmentId:null + sha256 + capturedAt + rendered base64', actual: shot.value && { ...shot.value, image: `[${bytes.length} bytes]` } });
+
+  // --- T2 (docs/t2-structured-gui.md §2.2): same envelope + version=1 evidence -------------
+  const origin = new URL(state.value.url).origin;
+  const t2Page = origin + '/web-t2.html';
+  const t2Nav = await harness.invoke('browser_navigate', { url: t2Page });
+  await waitFor(async () => (await harness.invoke('browser_eval', { expression: 'document.readyState' })).value?.value === 'complete', { timeoutMs: 10000, label: 't2 page ready' });
+  // Pre-scroll so the lossless-output probe is not coupled to auto-scroll (C17 covers that).
+  await harness.invoke('browser_eval', { expression: 'document.getElementById("t2-inc").scrollIntoView({block:"center"}), 1' });
+  const snapshot = await harness.invoke('browser_snapshot', {});
+  const refs = Object.values(snapshot.value?.refs || {});
+  const incrementRef = Object.entries(snapshot.value?.refs || {}).find(([, entry]) => entry.role === 'button' && entry.name === 'Increment')?.[0];
+  const nameRef = Object.entries(snapshot.value?.refs || {}).find(([, entry]) => entry.role === 'textbox' && entry.name === 'Name')?.[0];
+  check('T2 快照可用（前置：refs 非空）', t2Nav.ok && snapshot.ok && refs.length > 5 && Boolean(incrementRef), {
+    expected: 'snapshot with refs', actual: { nav: t2Nav.ok, snapshot: snapshot.ok, refs: refs.length, incrementRef, error: snapshot.error?.message },
+  });
+  const t2Cases = [
+    ['browser_snapshot', {}],
+    ['browser_click', { ref: incrementRef }],
+    ['browser_type', { ref: nameRef, text: 'evidence-probe' }],
+    ['browser_scroll', { direction: 'down', amount: 120 }],
+    ['browser_fill_form', { fields: [{ selector: '#t2-agree', type: 'checkbox', value: true }] }],
+    ['browser_node_state', { selector: '#t2-inc' }],
+    ['browser_wait_for', { text: 'Item 1', timeoutMs: 2000 }],
+  ];
+  const t2successful = [];
+  for (const [name, args] of t2Cases) {
+    const result = await harness.invoke(name, args);
+    t2successful.push(result);
+    const value = result.value;
+    const text = textContent(result);
+    check(`${name} 返回完整 envelope + version=1 evidence`, result.ok && evidenceKeys.every((key) => Object.hasOwn(value || {}, key))
+      && typeof value.actionId === 'string' && value.sessionId === 'anonymous'
+      && Number.isFinite(time(value.startedAt)) && time(value.finishedAt) >= time(value.startedAt)
+      && value.evidence?.version === 1 && typeof value.evidence.operation === 'string'
+      && Array.isArray(value.evidence.targets) && Array.isArray(value.evidence.incomplete)
+      && typeof value.evidence.truncated === 'boolean' && Boolean(value.evidence.networkDelta)
+      && Boolean(value.evidence.before) && Boolean(value.evidence.after)
+      && text.includes('"evidence"') && text.includes(value.actionId), {
+      expected: [...evidenceKeys, 'evidence.version=1', 'targets/incomplete/truncated/networkDelta/before/after'],
+      actual: { value: value && { ...value, evidence: value.evidence && { ...value.evidence, targets: `[${value.evidence.targets?.length}]` } }, content: text.slice(0, 600) },
+    });
+  }
+  check('七个 T2 工具生成唯一 actionId', new Set(t2successful.map((item) => item.value?.actionId)).size === t2successful.length,
+    { expected: t2successful.length, actual: t2successful.map((item) => item.value?.actionId) });
+  const t2Failure = await harness.invoke('browser_click', { selector: '#t2-missing-evidence' });
+  check('T2 失败抛 BrowserError 且 details.evidence version=1', t2Failure.threw === true
+    && t2Failure.error?.code === 'TARGET_NOT_FOUND' && t2Failure.error?.details?.evidence?.version === 1
+    && String(t2Failure.error?.message || '').startsWith('[TARGET_NOT_FOUND]'), {
+    expected: { code: 'TARGET_NOT_FOUND', evidenceVersion: 1 }, actual: { code: t2Failure.error?.code, evidence: t2Failure.error?.details?.evidence?.version, message: String(t2Failure.error?.message || '').slice(0, 160) },
+  });
+  await harness.invoke('browser_navigate', { url: state.value.url });
 
   const saves = [];
   const ref = { id: 'acceptance-image', attachmentId: 'acceptance-image', mediaType: 'image/png' };

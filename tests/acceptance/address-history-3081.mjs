@@ -42,7 +42,7 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -57,6 +57,7 @@ const REPO_ROOT = dirname(dirname(HERE));
 const RUN_DIR = join(HERE, 'runs', `address-history-${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}`);
 const GUI_BASE = (process.env.GUI_BASE || 'http://127.0.0.1:3081').replace(/\/+$/, '');
 const LOG_PATH = process.env.DSH_3081_LOG || '/tmp/dsh-3081.log';
+const DSH_3081_HOME = process.env.DSH_3081_HOME || '/tmp/dsh-utb-home';
 const CHROME_BIN = process.env.DSH_ACCEPTANCE_CHROME || process.env.DSH_REAL_BROWSER_CHROME || join(HERE, 'chrome-wrapper.sh');
 const TOTAL_TIMEOUT_MS = Number(process.env.DSH_ADDRESS_TIMEOUT_MS || 300000) || 300000;
 const CHROME_PROFILE_PREFIX = 'dsh-address-history-';
@@ -264,11 +265,77 @@ const state = {
   wsEvents: [],
   cdpScriptIds: [],
   trace: [],
+  // Scope identity captured from the GUI panel's own requests. The panel is session-scoped, so
+  // external HTTP assertions must use the same identity instead of falling into legacy:default.
+  panelScope: null,
+  lastObservedScope: null,
+  servedClient: null,
+  requestHeaders: new Map(),
 };
 
-async function hostFetch(path, { method = 'GET', body, auth = true, headers = {}, timeoutMs = 20000 } = {}) {
+function headerValue(headers, name) {
+  if (!headers) return undefined;
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lower) return Array.isArray(value) ? value[0] : String(value);
+  }
+  return undefined;
+}
+
+/**
+ * Capture the panel's scope identity from its own transport. The frames WebSocket is
+ * authoritative (it is the exact scope the preview is bound to); HTTP headers are a fallback.
+ * Prefer the explicit Session id when the panel is session-scoped, otherwise use the Host
+ * runtime binding (recent panel). Never synthesize `recent`.
+ */
+function setPanelScope(sessionId, binding, source, rank, { explicit = false, force = false } = {}) {
+  if (!sessionId && !binding) return;
+  const current = state.panelScope;
+  if (current && current.explicit && !force) return;
+  if (!force && current && current.rank > rank) return;
+  if (!force && current && current.rank === rank && current.sessionId === (sessionId || '') && current.binding === (binding || '')) return;
+  const scopeHeaders = { 'X-UI-Testing-Scope-Version': '1' };
+  if (sessionId) scopeHeaders['X-UI-Testing-Session-Id'] = sessionId;
+  else scopeHeaders['X-UI-Testing-Scope-Binding'] = binding;
+  state.panelScope = {
+    headers: scopeHeaders,
+    sessionId: sessionId || '',
+    binding: binding || '',
+    source,
+    rank,
+    explicit,
+    at: new Date().toISOString(),
+  };
+}
+
+function observePanelScope(sessionId, binding, source) {
+  state.lastObservedScope = {
+    sessionId: sessionId || '',
+    binding: binding || '',
+    source,
+    at: new Date().toISOString(),
+  };
+}
+
+function capturePanelScope(headers) {
+  const version = headerValue(headers, 'x-ui-testing-scope-version');
+  if (version !== '1') return;
+  const sessionId = headerValue(headers, 'x-ui-testing-session-id');
+  const binding = headerValue(headers, 'x-ui-testing-scope-binding');
+  observePanelScope(sessionId, binding, 'GUI HTTP request headers');
+  setPanelScope(sessionId, binding, 'GUI HTTP request headers (latest)', 3);
+}
+
+async function hostFetch(path, { method = 'GET', body, auth = true, headers = {}, timeoutMs = 20000, scoped = true } = {}) {
   const requestHeaders = { ...headers };
   if (auth && state.cookie) requestHeaders.cookie = state.cookie;
+  const forgedOrigin = headerValue(headers, 'origin') !== undefined
+    && headerValue(headers, 'origin') !== guiUrl.origin;
+  // Negative auth/forged-Origin cases must keep the legacy surface they assert; positive checks
+  // use the panel's captured scope so both sides observe the same runtime.
+  if (scoped && auth && !forgedOrigin && state.panelScope) {
+    Object.assign(requestHeaders, state.panelScope.headers);
+  }
   if (body !== undefined) requestHeaders['content-type'] = 'application/json';
   const response = await fetch(GUI_BASE + '/plugins/ui-testing' + path, {
     method,
@@ -332,15 +399,28 @@ async function targetClick(selector) {
 /* ------------------------------------------------------------------------------------------------
  * GUI helpers (DOM-level clicks/focus + trusted CDP key events for typing).
  * ---------------------------------------------------------------------------------------------- */
+/** Scope DOM reads to the MAIN debug panel: a sidebar tab is a different seat/instance. */
+function mainPanelExpr(inner) {
+  return `(() => {
+    const candidates = [...document.querySelectorAll('.utb')].filter((el) => !el.closest('[data-sidebar-right-tab]'));
+    const visible = candidates.find((el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+    const panel = visible || candidates[0];
+    if (!panel) return null;
+    ${inner}
+  })()`;
+}
+
 async function guiSnapshot() {
-  return pageEvaluate(`(() => {
-    const panel = document.querySelector('.utb');
-    const addr = document.querySelector('.utb-addr');
-    const back = document.querySelector('button[aria-label="后退"]');
-    const forward = document.querySelector('button[aria-label="前进"]');
-    const reload = document.querySelector('button[aria-label="刷新"]');
+  return pageEvaluate(mainPanelExpr(`
+    const addr = panel.querySelector('.utb-addr');
+    const back = panel.querySelector('button[aria-label="后退"]');
+    const forward = panel.querySelector('button[aria-label="前进"]');
+    const reload = panel.querySelector('button[aria-label="刷新"]');
     return {
-      panel: !!panel,
+      panel: true,
       addr: addr ? addr.value : null,
       disabled: {
         back: back ? !!back.disabled : null,
@@ -348,10 +428,10 @@ async function guiSnapshot() {
         reload: reload ? !!reload.disabled : null,
       },
       invalid: addr ? addr.getAttribute('data-invalid') : null,
-      alert: (() => { const node = panel && panel.querySelector('[role="alert"]'); return node ? node.textContent : null; })(),
+      alert: (() => { const node = panel.querySelector('[role="alert"]'); return node ? node.textContent : null; })(),
       focused: document.activeElement ? (document.activeElement.className || document.activeElement.tagName) : null,
     };
-  })()`);
+  `)) || { panel: false, addr: null, disabled: {}, invalid: null, alert: null, focused: null };
 }
 
 async function guiClick(selector) {
@@ -372,6 +452,18 @@ async function guiDiag() {
       url: location.href,
       ready: document.readyState,
       utb: document.querySelectorAll('.utb').length,
+      visiblePanels: [...document.querySelectorAll('.utb')].filter((el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      }).length,
+      chosenPanel: (() => {
+        const visible = [...document.querySelectorAll('.utb')].filter((el) => {
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+        const main = visible.find((el) => !el.closest('[data-sidebar-right-tab]')) || visible[0];
+        return main ? { sidebar: Boolean(main.closest('[data-sidebar-right-tab]')), addr: (main.querySelector('.utb-addr') || {}).value } : null;
+      })(),
       addrInputs: document.querySelectorAll('.utb-addr').length,
       buttons: [...document.querySelectorAll('button[aria-label]')].map((el) => el.getAttribute('aria-label')).slice(0, 60),
       menuRows: [...document.querySelectorAll('.utb-menu-row')].map((el) => el.textContent.trim()).slice(0, 10),
@@ -393,7 +485,95 @@ async function sidebarMoreClick() {
   })()`);
 }
 
+async function selectedSessionId() {
+  return pageEvaluate(`(() => {
+    const row = [...document.querySelectorAll('[data-row-key^="session:"]')]
+      .find((el) => el.getAttribute('aria-selected') === 'true');
+    return row ? row.getAttribute('data-row-key').slice('session:'.length) : '';
+  })()`);
+}
+
+async function ensureLeftSidebar() {
+  let selected = await selectedSessionId();
+  if (selected) return selected;
+  await pageEvaluate(`(() => {
+    const expand = document.querySelector('button[aria-label="打开侧边栏"]');
+    if (expand) { expand.click(); return true; }
+    return false;
+  })()`);
+  await sleep(400);
+  try {
+    await waitFor(async () => (await selectedSessionId()) || undefined, { timeoutMs: 6000, intervalMs: 150, label: 'selected session row' });
+  } catch { /* no session in this profile */ }
+  return selectedSessionId();
+}
+
+/** Collapse the right sidebar so a leftover debug tab cannot contribute scope requests. */
+async function collapseRightSidebar() {
+  const clicked = await pageEvaluate(`(() => {
+    const toggle = document.querySelector('[data-sidebar-right-toggle]');
+    if (toggle) { toggle.click(); return true; }
+    return false;
+  })()`);
+  if (clicked) await sleep(350);
+  return clicked;
+}
+
+/**
+ * The main panel must be freshly mounted for the selected Session. A restored main panel or a
+ * right-sidebar debug tab would otherwise supply a different scope identity to the HTTP checks.
+ */
+async function owningWorkspaceId(sessionId) {
+  return pageEvaluate(`(() => {
+    const row = document.querySelector('[data-row-key="session:${sessionId}"]');
+    if (!row) return '';
+    const group = row.parentElement;
+    const workspace = group && group.querySelector('[data-row-key^="workspace:"]');
+    return workspace ? workspace.getAttribute('data-row-key').slice('workspace:'.length) : '';
+  })()`);
+}
+
 async function openPanel() {
+  await dismissShellDialogs();
+  await ensureLeftSidebar();
+  await collapseRightSidebar();
+  let selected = await selectedSessionId();
+  if (selected) {
+    // Explicit Session identity from the real sidebar selection; never latest-wins across panels.
+    setPanelScope(selected, '', 'selected sidebar session row', 4, { explicit: true, force: true });
+    // Force the main view back to a conversation through the owning workspace's New Session
+    // action (it reuses that workspace's blank Session and closes a restored debug panel).
+    const workspaceId = await owningWorkspaceId(selected);
+    let refreshed = false;
+    if (workspaceId) {
+      refreshed = await pageEvaluate(`(() => {
+        const row = document.querySelector('[data-row-key="workspace:${workspaceId}"]');
+        if (!row) return false;
+        const button = [...row.querySelectorAll('button[aria-label]')]
+          .find((node) => (node.getAttribute('aria-label') || '').includes('新建会话'));
+        if (!button) return false;
+        button.click();
+        return true;
+      })()`);
+    }
+    if (!refreshed) {
+      await pageEvaluate(`(() => {
+        const row = document.querySelector('[data-row-key="session:${selected}"]');
+        if (row) row.click();
+        return true;
+      })()`);
+    }
+    await sleep(500);
+    const after = await selectedSessionId();
+    if (after && after !== selected) {
+      selected = after;
+      setPanelScope(selected, '', 'selected sidebar session row after New Session', 4, { explicit: true, force: true });
+    }
+    try {
+      await waitFor(async () => (await pageEvaluate(`!!([...document.querySelectorAll('.utb')].find((el) => !el.closest('[data-sidebar-right-tab]')))`)) ? undefined : true,
+        { timeoutMs: 4000, intervalMs: 100, label: 'main panel closed before reopen' });
+    } catch { /* reported by the visible-panel checks below */ }
+  }
   // After a GUI reload the shell mounts asynchronously: wait (bounded) for the sidebar action
   // before clicking, instead of assuming the whole React tree is already there.
   let clicked;
@@ -432,7 +612,14 @@ async function openPanel() {
     })()`);
     if (!row || !row.found) throw new Error('调试视图 menu row not found: ' + sanitize(fmt(await guiDiag())));
   }
-  await waitFor(() => pageEvaluate(`!!document.querySelector('.utb')`), { timeoutMs: 5000, intervalMs: 50, label: '.utb panel' });
+  await waitFor(() => pageEvaluate(`(() => {
+    const el = [...document.querySelectorAll('.utb')].find((panel) => {
+      if (panel.closest('[data-sidebar-right-tab]')) return false;
+      const rect = panel.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+    return !!el;
+  })()`), { timeoutMs: 5000, intervalMs: 50, label: 'visible main .utb panel' });
   await installSubmitProbe();
   return true;
 }
@@ -512,19 +699,19 @@ async function dismissShellDialogs() {
  * before we type, exactly like a user clicking into the field.
  */
 async function focusAddress() {
-  const ok = await pageEvaluate(`(() => {
-    const el = document.querySelector('.utb-addr');
+  const ok = await pageEvaluate(mainPanelExpr(`
+    const el = panel.querySelector('.utb-addr');
     if (!el) return false;
     if (document.activeElement === el) el.blur();
     el.focus();
     el.select();
     return document.activeElement === el;
-  })()`);
-  if (!ok) throw new Error('cannot focus .utb-addr');
+  `));
+  if (!ok) throw new Error('cannot focus main .utb-addr');
 }
 
 async function guiAddr() {
-  return pageEvaluate(`(() => { const el = document.querySelector('.utb-addr'); return el ? el.value : null; })()`);
+  return pageEvaluate(mainPanelExpr(`const el = panel.querySelector('.utb-addr'); return el ? el.value : null;`));
 }
 
 async function dispatchKey(key, { code, virtualKeyCode, modifiers = 0, text } = {}) {
@@ -550,8 +737,8 @@ async function pressEscape() {
  * that window would submit the previous address.
  */
 async function addressSyncState() {
-  return pageEvaluate(`(() => {
-    const el = document.querySelector('.utb-addr');
+  return pageEvaluate(mainPanelExpr(`
+    const el = panel.querySelector('.utb-addr');
     if (!el) return null;
     const key = Object.keys(el).find((name) => name.startsWith('__reactProps$'));
     return {
@@ -560,7 +747,7 @@ async function addressSyncState() {
       focused: document.activeElement === el,
       invalid: el.getAttribute('data-invalid'),
     };
-  })()`);
+  `));
 }
 
 async function waitAddressSynced(text, timeoutMs = 1500) {
@@ -613,14 +800,14 @@ async function typeAddress(text) {
     }
     if (!synced) {
       // Last-resort React-compatible value write; recorded as an environment fact when used.
-      const used = await pageEvaluate(`(() => {
-        const el = document.querySelector('.utb-addr');
+      const used = await pageEvaluate(mainPanelExpr(`
+        const el = panel.querySelector('.utb-addr');
         if (!el) return false;
         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
         setter.call(el, ${JSON.stringify(text)});
         el.dispatchEvent(new Event('input', { bubbles: true }));
         return el.value === ${JSON.stringify(text)};
-      })()`);
+      `));
       if (used) {
         state.usedNativeValueSetter = (state.usedNativeValueSetter || 0) + 1;
         await waitAddressSynced(text, 1000);
@@ -681,12 +868,12 @@ async function submitAddress(text) {
         state.submitRecoveries = (state.submitRecoveries || 0) + 1;
         await typeAddress(text);
       }
-      const submitted = await pageEvaluate(`(() => {
-        const input = document.querySelector('.utb-addr');
+      const submitted = await pageEvaluate(mainPanelExpr(`
+        const input = panel.querySelector('.utb-addr');
         if (!input || !input.form) return false;
         input.form.requestSubmit();
         return true;
-      })()`);
+      `));
       if (!submitted) throw new Error('cannot submit the address form');
       state.enterFallback = (state.enterFallback || 0) + 1;
       await waitFor(async () => (await pageEvaluate(`window.__utbSubmitSeen || 0`)) > before, {
@@ -856,13 +1043,37 @@ async function awaitHistorySettled(name, label, timeoutMs = 6000) {
 function hookNetworkEvents() {
   state.chrome.cdp.on((message) => {
     if (message.method === 'Network.webSocketCreated' && message.params && message.params.url) {
-      state.wsEvents.push({ url: String(message.params.url), at: Date.now(), document: state.documentGeneration || 0 });
+      const wsUrl = String(message.params.url);
+      state.wsEvents.push({ url: wsUrl, at: Date.now(), document: state.documentGeneration || 0 });
+      if (wsUrl.includes('/plugins/ui-testing/frames')) {
+        try {
+          const parsed = new URL(wsUrl, GUI_BASE);
+          if (parsed.searchParams.get('scopeVersion') === '1') {
+            const sid = parsed.searchParams.get('sessionId');
+            const binding = parsed.searchParams.get('binding');
+            observePanelScope(sid, binding, 'GUI frames WS query');
+            setPanelScope(sid, binding, 'GUI frames WS query', 2);
+          }
+        } catch { /* ignore malformed ws url */ }
+      }
+      return;
+    }
+    if (message.method === 'Network.requestWillBeSentExtraInfo') {
+      const requestId = message.params && message.params.requestId;
+      const entry = requestId ? state.requestHeaders.get(requestId) : undefined;
+      if (entry) {
+        entry.headers = { ...entry.headers, ...(message.params.headers || {}) };
+        capturePanelScope(entry.headers);
+      }
       return;
     }
     if (message.method !== 'Network.requestWillBeSent') return;
     const request = message.params && message.params.request;
     if (!request || !request.url) return;
     if (!request.url.startsWith(GUI_BASE + '/plugins/ui-testing/')) return;
+    const requestId = message.params.requestId;
+    if (requestId) state.requestHeaders.set(requestId, { url: request.url, headers: { ...(request.headers || {}) } });
+    capturePanelScope(request.headers || {});
     let body;
     if (typeof request.postData === 'string') {
       try { body = JSON.parse(request.postData); } catch { body = request.postData.slice(0, 200); }
@@ -1796,12 +2007,13 @@ const ADDRESS_PROBE_SOURCE = `(() => {
       rec('input', { dom: event.target.value, react: controlled(event.target) });
     }
   }, true);
+  const mainPanel = () => [...document.querySelectorAll('.utb')].find((el) => !el.closest('[data-sidebar-right-tab]'));
   document.addEventListener('submit', (event) => {
-    const el = document.querySelector('.utb-addr');
+    const el = mainPanel()?.querySelector('.utb-addr');
     rec('submit', { dom: el ? el.value : null, react: controlled(el), formClass: event.target && event.target.className });
   }, true);
   const tick = () => {
-    const el = document.querySelector('.utb-addr');
+    const el = mainPanel()?.querySelector('.utb-addr');
     if (!el) { rec('tick', { present: false }); return; }
     if (!window.__utbAddrNode) window.__utbAddrNode = el;
     rec('tick', {
@@ -1908,30 +2120,84 @@ async function reproG1(iterations) {
 /* ------------------------------------------------------------------------------------------------
  * Main.
  * ---------------------------------------------------------------------------------------------- */
+/** Prove the GUI loaded the workspace client bundle, not a stale pre-restart copy. */
+async function servedClientEvidence() {
+  const result = await pageEvaluate(`(async () => {
+    const boot = window.__DSH_BOOT__;
+    const entry = boot && Array.isArray(boot.entries)
+      ? boot.entries.find((candidate) => candidate.id === 'dsh-agent-team-ui-testing')
+      : undefined;
+    if (!entry || !entry.url) return null;
+    const response = await fetch(entry.url, { credentials: 'same-origin', cache: 'no-store' });
+    const text = await response.text();
+    return { rev: entry.rev || '', url: entry.url, text };
+  })()`);
+  if (!result) return null;
+  const digest = createHash('sha256').update(result.text).digest('hex');
+  return {
+    rev: result.rev,
+    url: String(result.url).replace(/^[^?]*\?\?/, 'plugins/??'),
+    bytes: Buffer.byteLength(result.text, 'utf8'),
+    sha256: digest.slice(0, 24),
+    hasScopeBinding: result.text.includes('X-UI-Testing-Scope-Binding'),
+    hasScopeEpoch: result.text.includes('scopeEpoch'),
+  };
+}
+
 function buildProbe() {
   const info = {};
+  const port = guiUrl.port || '80';
   try {
-    // Listener identity (pid only; argv/env are never copied).
-    const output = execFileSync('ss', ['-ltnp', 'sport = :3081'], { encoding: 'utf8', timeout: 3000 });
-    const match = /pid=(\d+)/.exec(output);
-    info.serverPid = match ? Number(match[1]) : null;
-    if (info.serverPid) {
+    // `ss -p` may be hidden in a sandbox/namespace; fall back to pgrep for the node listener.
+    let pid = null;
+    try {
+      const output = execFileSync('ss', ['-ltnp', 'sport = :' + port], { encoding: 'utf8', timeout: 3000 });
+      const match = /pid=(\d+)/.exec(output);
+      if (match) pid = Number(match[1]);
+    } catch { /* ignore */ }
+    if (!pid) {
       try {
-        const cmdline = execFileSync('tr', ['\\0', ' ', '/proc/' + info.serverPid + '/cmdline'], { encoding: 'utf8', timeout: 3000 });
+        const lines = execFileSync('pgrep', ['-af', 'dsh web --port ' + port], { encoding: 'utf8', timeout: 3000 })
+          .split('\n')
+          .filter(Boolean);
+        const line = lines.find((candidate) => /\bnode\b/.test(candidate) && !/bash -c/.test(candidate))
+          || lines.find((candidate) => !/bash -c/.test(candidate));
+        if (line) pid = Number(line.trim().split(/\s+/)[0]) || null;
+      } catch { /* ignore */ }
+    }
+    info.serverPid = pid;
+    if (pid) {
+      let ppid = null;
+      try {
+        const cmdline = readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').join(' ');
         info.serverCommand = cmdline.replace(/token=\S+/g, 'token=[REDACTED]').slice(0, 200);
       } catch { /* ignore */ }
       try {
-        // Approximate process start time: /proc/<pid>/stat field 22 (clock ticks) + /proc/stat btime.
-        const statText = execFileSync('cat', ['/proc/' + info.serverPid + '/stat'], { encoding: 'utf8', timeout: 3000 });
+        const statText = readFileSync('/proc/' + pid + '/stat', 'utf8');
         const fields = statText.slice(statText.lastIndexOf(')') + 2).split(' ');
+        ppid = Number(fields[1]);
         const startTicks = Number(fields[19]);
-        const procStat = execFileSync('cat', ['/proc/stat'], { encoding: 'utf8', timeout: 3000 });
+        const procStat = readFileSync('/proc/stat', 'utf8');
         const btimeLine = procStat.split('\n').find((line) => line.startsWith('btime '));
         const btimeSeconds = btimeLine ? Number(btimeLine.split(/\s+/)[1]) : 0;
         if (Number.isFinite(startTicks) && btimeSeconds > 0) {
           info.startedAt = new Date((btimeSeconds + startTicks / 100) * 1000).toISOString();
         }
       } catch { /* ignore */ }
+      // The process env is often unreadable; the launcher's command line carries DSH_HOME.
+      try {
+        const environ = readFileSync('/proc/' + pid + '/environ', 'utf8').split('\0').join('\n');
+        const homeLine = environ.split('\n').find((line) => line.startsWith('DSH_HOME='));
+        if (homeLine) { info.dshHome = homeLine.slice('DSH_HOME='.length); info.homeSource = 'listener environ'; }
+      } catch { /* ignore */ }
+      if (!info.dshHome && ppid) {
+        try {
+          const parentCmd = readFileSync('/proc/' + ppid + '/cmdline', 'utf8').split('\0').join(' ');
+          const home = /(?:^|\s)DSH_HOME=([^\s]+)/.exec(parentCmd);
+          if (home) { info.dshHome = home[1]; info.homeSource = 'launcher cmdline'; }
+        } catch { /* ignore */ }
+      }
+      if (!info.homeSource) info.homeSource = null;
     }
   } catch { info.serverPid = null; }
   return info;
@@ -1957,20 +2223,26 @@ async function buildState() {
   return {
     indexJs,
     clientJs,
-    loadedBuildMatchesWorkspace: Object.keys(editedAfterStart).length === 0,
-    loadedBuildNote: Object.keys(editedAfterStart).length
-      ? 'WARNING: workspace source changed after the 3081 listener started; the run exercises the build loaded at restart, NOT these on-disk edits.'
-      : 'On-disk source mtimes are older than the listener start: the running build matches the workspace files.',
+    hostIndexLoadedAtStart: startedAtMs ? !editedAfterStart['index.js'] : null,
+    clientChangedAfterStart: startedAtMs ? Boolean(editedAfterStart['client.js']) : null,
+    loadedBuildMatchesWorkspace: startedAtMs ? Object.keys(editedAfterStart).length === 0 : null,
+    loadedBuildNote: !startedAtMs
+      ? 'Listener start time could not be read; loadedBuildMatchesWorkspace is NOT VERIFIED.'
+      : Object.keys(editedAfterStart).length
+        ? 'WARNING: workspace source changed after the 3081 listener started. Host index.js is the restart build; the client bundle is served per page load and is verified separately by servedClient (rev + scope markers).'
+        : 'On-disk source mtimes are older than the listener start: the running build matches the workspace files.',
     editedAfterStart,
   };
 }
 
 async function loadToken() {
   const text = await readFile(LOG_PATH, 'utf8');
-  const matches = [...text.matchAll(/http:\/\/(?:127\.0\.0\.1|localhost):3081\/\?token=[A-Za-z0-9_-]+/g)];
-  if (!matches.length) throw new Error(`no 3081 launch URL in ${LOG_PATH}`);
-  const url = matches[matches.length - 1][0];
-  const token = /[?&]token=([A-Za-z0-9_-]+)/.exec(url)[1];
+  const urls = [...text.matchAll(/https?:\/\/[^\s"'<>]*[?&]token=[^\s"'&<>]+/g)]
+    .map((match) => match[0])
+    .filter((url) => url.startsWith(GUI_BASE));
+  if (!urls.length) throw new Error(`no launch URL for ${GUI_BASE} in ${LOG_PATH}`);
+  const url = urls[urls.length - 1];
+  const token = /[?&]token=([^\s&"'<>]+)/.exec(url)[1];
   return { url, token };
 }
 
@@ -1988,6 +2260,7 @@ async function main() {
   state.hostInfo = buildProbe();
   state.buildInfo = await buildState();
   log(`[env] 3081 listener pid: ${state.hostInfo.serverPid ?? 'unknown'}`);
+  log(`[env] listener DSH_HOME: ${state.hostInfo.dshHome ?? 'unreadable'}; configured isolated home: ${DSH_3081_HOME}`);
   log(`[env] build fingerprint index.js=${state.buildInfo.indexJs ? state.buildInfo.indexJs.sha256 : 'n/a'} client.js=${state.buildInfo.clientJs ? state.buildInfo.clientJs.sha256 : 'n/a'}`);
   const { startFixtureServer } = await import(pathToFileURL(join(REPO_ROOT, 'tests/ui_test_fixture/server.mjs')).href);
   state.fixture = await startFixtureServer();
@@ -2017,6 +2290,12 @@ async function main() {
   const locationAfterToken = await pageEvaluate(`location.href`);
   check('GUI', 'G1 token URL exchanged away from the address (no token in location)', locationAfterToken.indexOf('token=') === -1, 'no token in location', locationAfterToken);
 
+  state.servedClient = await servedClientEvidence();
+  check('GUI', 'G5 GUI serves the workspace client bundle (scope binding code present)', Boolean(state.servedClient && state.servedClient.hasScopeBinding && state.servedClient.hasScopeEpoch),
+    { hasScopeBinding: true, hasScopeEpoch: true }, state.servedClient && { rev: state.servedClient.rev, bytes: state.servedClient.bytes, sha256: state.servedClient.sha256, hasScopeBinding: state.servedClient.hasScopeBinding, hasScopeEpoch: state.servedClient.hasScopeEpoch });
+  state.observations = state.observations || {};
+  state.observations.servedClient = { ...state.servedClient, matchesWorkspaceClientJs: Boolean(state.servedClient && state.buildInfo.clientJs && state.servedClient.sha256 === state.buildInfo.clientJs.sha256) };
+
   // Open the debug panel through the real shell: 更多 → 调试视图 → .utb.
   let panelOpened = false;
   try {
@@ -2029,6 +2308,17 @@ async function main() {
     const panel = await guiSnapshot();
     check('GUI', 'G3 更多 → 调试视图 opens .utb panel', panel.panel === true, true, panel.panel);
     check('GUI', 'G3 .utb-addr address input present', panel.addr !== null, { addr: 'string' }, { addr: panel.addr });
+    try {
+      await waitFor(() => state.lastObservedScope || undefined, { timeoutMs: 8000, intervalMs: 100, label: 'main panel scope observation' });
+    } catch { /* reported by the G4 check below */ }
+    const expectedSession = state.panelScope && state.panelScope.explicit ? state.panelScope.sessionId : '';
+    const observed = state.lastObservedScope;
+    const observedMatches = observed && expectedSession
+      ? observed.sessionId === expectedSession
+      : Boolean(observed);
+    check('GUI', 'G4 main panel requests carry the selected Session identity (no cross-panel scope)', observedMatches,
+      { sessionId: expectedSession || 'captured', binding: null },
+      { observed, expected: state.panelScope });
   }
 
   // Preflight: the host must already expose the v1 UI projection. Otherwise this run would
@@ -2116,7 +2406,13 @@ function buildReport(fatal) {
       guiOrigin: guiUrl.origin,
       tokenLogPath: LOG_PATH,
       host: state.hostInfo || null,
+      dshHome: {
+        configured: DSH_3081_HOME,
+        listener: state.hostInfo && state.hostInfo.dshHome ? state.hostInfo.dshHome : null,
+        matches: Boolean(state.hostInfo && state.hostInfo.dshHome === DSH_3081_HOME),
+      },
       build: state.buildInfo || null,
+      servedClient: state.servedClient || null,
       addressSyncMiss: state.addressSyncMiss || 0,
       enterFallback: state.enterFallback || 0,
       focusStealRetries: state.focusStealRetries || 0,
@@ -2134,6 +2430,10 @@ function buildReport(fatal) {
       chromeBin: CHROME_BIN,
       node: process.version,
       platform: `${process.platform}/${process.arch}`,
+      panelScope: state.panelScope
+        ? { sessionId: state.panelScope.sessionId, binding: state.panelScope.binding, source: state.panelScope.source, explicit: state.panelScope.explicit === true, capturedAt: state.panelScope.at }
+        : null,
+      lastObservedPanelScope: state.lastObservedScope || null,
       usedNativeValueSetter: state.usedNativeValueSetter || 0,
       interactions: 'GUI 交互使用 DOM 级 click/focus + CDP 可信按键输入（无头环境规避遮罩落点）；目标页面点击使用真实 /eval 坐标 + /input 原生事件。',
       note: 'GUI token 与 browser-session cookie 只在本进程内存；报告/日志已脱敏。3080 未被操作。fixture 假 token 为固定测试值，不是真实凭据。',

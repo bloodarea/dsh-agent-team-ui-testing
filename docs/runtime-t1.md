@@ -1,8 +1,8 @@
-# T1 运行时：内嵌无头 Chromium 与预览帧管线
+# T1/T2 运行时：内嵌无头 Chromium 与预览帧管线
 
 > 索引：[docs/index.md](index.md) · 2026-10-31 实现；帧管线调整为 2026-10-31
 
-Host 起一个**真正的无头 Chromium**，用 CDP 驱动；画面通过 `Page.startScreencast` 的 JPEG 帧回到面板，用户输入反过来经 CDP 派发。窗口从不显示，因此**不会抢焦点**。
+Host 起**真正的无头 Chromium**，用 CDP 驱动；同一时刻最多一个 Chromium/profile，但按 DSH 工作区创建独立 page target（每页独立 URL/viewport/history/网络缓冲/队列/租约）。画面通过各自的 `Page.startScreencast` JPEG 帧回到对应面板，用户输入经该工作区 page 的 CDP 派发。窗口从不显示，因此**不会抢焦点**。Cookie/localStorage/cache 仍共享，不是安全隔离；完整契约见 [workspace-isolation.md](workspace-isolation.md)。
 
 画面采集是 **CDP 事件驱动**：页面发生 damage 时 Chromium 才发帧，不是固定帧率采样。客户端传输优先走**同源 WebSocket 服务端推送**，失败或断开时自动回退到原有 `GET /frame` HTTP 轮询；两种传输共用同一份"最新帧"缓存与元数据。
 
@@ -10,15 +10,14 @@ Host 起一个**真正的无头 Chromium**，用 CDP 驱动；画面通过 `Page
 
 ```text
 Host (index.js + frame-source.js + frame-push.js)     Client (client.js)
-├─ spawn chrome --headless=new                        ├─ createFrameTransport()
-├─ CDP over WebSocket                                 │   ├─ WS 优先（服务端推帧）
-├─ Page.startScreencast ─┐                            │   └─ 80ms /frame 轮询回退
-│                        ▼                            ├─ <img> 渲染 Blob URL（object-fit: contain）
-├─ FrameSource（最新帧 + seq/epoch/时间戳/计数）        ├─ 指针/滚轮/键盘 → POST /input
-├─ FramePush（同源 WS，40ms 合并、背压丢帧、ack）       ├─ 地址 → POST /navigate；刷新 → /reload；后退/前进 → /history
-├─ Network.enable → 请求环形缓冲                       ├─ /state 每 500ms 同步运行态（已认证 GUI 带 ui.address/ui.history）
-├─ Runtime.evaluate / DOM / CSS                       └─ /metrics 每 2s 上报实测显示指标
-└─ HTTP 路由 /plugins/ui-testing/*
+├─ spawn chrome --headless=new（单 Host/profile）       ├─ createFrameTransport(scope)
+├─ BrowserHost：owned/pending/autoattach/closing       │   ├─ WS 优先（服务端按 scope 推帧）
+├─ 每工作区 Runtime：独立 page target + page-level CDP  │   └─ 80ms /frame 轮询回退
+├─ 每 Runtime：FrameSource（seq/epoch/时间戳/计数）     ├─ <img> 渲染 Blob URL（object-fit: contain）
+├─ FramePush hub（同源 WS，40ms 合并、背压丢帧）        ├─ 指针/滚轮/键盘 → POST /input（带 scope）
+├─ Network.enable → 每页请求环形缓冲                    ├─ 地址 → /navigate；刷新 → /reload；后退/前进 → /history
+├─ Runtime.evaluate / DOM / CSS（每页）                ├─ /state 每 500ms（已认证 GUI 带 ui.address/ui.history/scope）
+└─ HTTP 路由 /plugins/ui-testing/*（按 scope 选实例）   └─ /metrics 每 2s 上报实测显示指标（viewer 心跳）
 ```
 
 ## 帧管线
@@ -26,13 +25,15 @@ Host (index.js + frame-source.js + frame-push.js)     Client (client.js)
 - **采集**：`Page.screencastFrame` → `FrameSource.accept()`；每帧记录 `seq`、`epoch`、`capturedAt`（CDP 秒 → epoch 毫秒）、`receivedAt`、`width/height/pageWidth/pageHeight`、`format`。收到即 `Page.screencastFrameAck`，ack 失败计数进 `/metrics`。
 - **缓存**：只保留最新一帧（last-writer-wins）。慢消费者不会看到积压帧，因此预览延迟不会随轮询/渲染变慢而持续增长。
 - **页面切换**：主 frame 的 `Page.frameNavigated` 让 `FrameSource.epoch + 1`；传输侧丢弃旧 epoch 的排队帧（`stale` 计数），客户端也忽略旧 epoch 帧。
-- **推送（WebSocket）**：`frame-push.js` 通过 `ctx.webServer.registerUpgrade()` 自实现 RFC 6455 握手（无第三方依赖）。最新帧合并推送，最小间隔 40ms；`socket.write` 背压时丢帧并计数，绝不排队；客户端不需要逐帧 ACK。
+- **推送（WebSocket）**：`frame-push.js` 通过单个 `ctx.webServer.registerUpgrade()` dispatcher 自实现 RFC 6455 握手（无第三方依赖），按 scope 绑定 `createFramePusher`；每工作区独立 clients/背压/统计，hello/二进制头带 `scopeId/runtimeId`。最新帧合并推送，最小间隔 40ms；`socket.write` 背压时丢帧并计数，绝不排队；客户端不需要逐帧 ACK。
 - **回退（HTTP 轮询）**：`GET /frame?since=N` 保持兼容；无新帧返回 `{pending:true}`。WS 未连上或断开时客户端自动轮询，重连退避 0.8s→15s。
 - **资源释放**：`/close`/插件卸载时关闭全部 WS 客户端、`Page.stopScreencast`、清空帧缓存/网络缓冲/运行态，等待 Chromium 退出（SIGTERM → SIGKILL 兜底）并同步删除临时 profile；启动失败路径也会清理已 spawn 的进程与 profile。
 
 ## HTTP 接口
 
-> 这些都是**同源 HTTP 路由**；`webServer` 层不做登录鉴权，默认只监听 loopback。Agent 侧只应使用 8 个结构化工具，不应直接调这些路由。M0–M2 现行契约与待验收项见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)。HTTP 错误保留 `error` 字符串并新增 `code/category/retryable`。
+> 这些都是**同源 HTTP 路由**；`webServer` 层不做登录鉴权，默认只监听 loopback。Agent 侧只应使用 16 个结构化工具（9 T1 + 7 T2），不应直接调这些路由。M0–M2 现行契约与待验收项见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)，按工作区 scope 见 [workspace-isolation.md](workspace-isolation.md)。HTTP 错误保留 `error` 字符串并新增 `code/category/retryable`。
+
+**工作区 scope（第 5 轮）**：scoped HTTP 发 `X-UI-Testing-Scope-Version: 1` + 三选一 identity（`-Session-Id` / `-Scope: recent|unassigned` / `-Scope-Binding: <runtimeId>`）；WS 用 `?scopeVersion=1&sessionId=…` / `&scope=…` / `&binding=…`。无 scope 版本是 `legacy:default`。scoped 请求严格 owner-only（`connection.admit` + `browserPeer`），先鉴权后解析、零副作用；unknown session/binding 404、存储故障 503、非 owner 403、满 8 page `RUNTIME_LIMIT` 503。state/ui/工具结果带不含绝对路径的 `scope`。
 
 **鉴权与原始地址边界（2026-10-31）**：GET `/state`、GET `/frame`、POST `/ensure`、`/navigate` 的响应统一经同一投影——`ctx.get('connection')` 存在且 `requestRejection(req)` 明确返回 `undefined`（已认证同源 GUI）时返回 HTTP 专用 `uiState()`（含未脱敏 `ui.address` 与 `ui.history`）；服务缺失、抛错、401/403 一律只回既有脱敏 `state()`（fail closed）。`/reload`、`/history` 只服务已认证 GUI，未认证直接 401/403，错误体沿用 `{ok:false,error,code:'UNSUPPORTED',category:'capability',retryable:false}`，不写入页面 `lastError`。原始地址不会进入 `browser_state` 工具值、网络记录、`/metrics` 或 WS 头；HTTP UI state 响应带 `Cache-Control: no-store`，不加宽泛 CORS。
 
@@ -97,11 +98,42 @@ header: {v:1, seq, epoch, capturedAtMs, receivedAtMs, width, height,
 
 ## Agent 工具
 
-`browser_navigate`、`browser_eval`、`browser_screenshot`、`browser_input`、`browser_network`、`browser_computed_style`、`browser_state`、`browser_capabilities`。
+T1（9 个）：`browser_navigate`、`browser_eval`、`browser_screenshot`、`browser_input`、`browser_network`、`browser_computed_style`、`browser_http_request`、`browser_state`、`browser_capabilities`。
 
-M0–M2 新增 `single-owner-lease`：页面操作与 network 需要 owner 租约，空闲 15s、进行中保持，其他 session 返回 `BUSY`；exec 身份缺失时共用 `anonymous`。state/capabilities 不启动浏览器也不占租约，disposed 释放对应 owner。面板与 Agent 仍共享页面，但进入同一个串行队列；这不是会话隔离。帧管线、`/metrics`、WS 都不是 Agent 工具。
+T2（第 6 轮新增 7 个）：`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`。完整契约见 [t2-structured-gui.md](t2-structured-gui.md)，实现/验收状态见 [status.md](status.md)。
 
-工具失败抛带 `[CODE]` 的 `BrowserError(code/category/retryable/details)`，eval/style 操作失败返回 error 对象。每次调用返回并 render `actionId/sessionId/startedAt/finishedAt/target/args` 摘要；截图保留 base64，带 `capturedAt/sha256/attachmentId`，可选附件服务保存并 render image block，无服务则明确 `base64-fallback` 文本。**工具返回值必须是 lossless JSON**（宿主会校验，含 `undefined` 属性即被判 `INVALID_TOOL_OUTPUT`），统一在 `register()` 边界做投影。已发 CDP 命令后取消会在队列内关闭浏览器再放锁，下一调用可懒启动。完整字段、错误码、实测报告及残余风险见 [现行契约](t1-m0-m2-contract.md)：主验收 21/21 组、196/196 必需项通过；3081（重启后）verify-3081 14/14 PASS、exit=0；真实 Agent 会话内 8 工具已真实调用，provider 视图仍 NOT_RUN；故障注入单测 16/16、exit=0。
+T2 与 T1 共用同一 Runtime/队列/租约，`browser_snapshot` 的 ref 表按 Runtime 隔离；七工具都是页面操作（懒启动 + BUSY），`browser_state`/`browser_capabilities` 与独立 HTTP 不因 T2 改变语义。`browser_capabilities` 新增 `web.t2.*` 与 `limits.structuredGui`，T3/T4 仍 unsupported。
+
+M0–M2 的 `single-owner-lease` 保留，但已改为**按 DSH 工作区**：页面操作与 network 先按 exec 身份解析工作区 runtime，再申请该 runtime 的租约；空闲 15s、进行中保持，同工作区其他 session 返回 `BUSY`，不同工作区互不影响。exec 身份缺失走 `legacy:default`；`agent/disposed` 只释放对应 owner。同一工作区的面板与 Agent 使用同一 page/串行队列；不同工作区 page/URL/viewport/网络缓冲独立，但 Cookie/存储共享。state/capabilities 不启动浏览器也不占租约。`browser_http_request` 仍是独立分支：不启动 Chromium、不申请/续租、不进页面队列、不建 page/entry，插件卸载时取消在飞请求。帧管线、`/metrics`、WS 都不是 Agent 工具。scope 身份、请求头/query、recent→binding 与限制见 [workspace-isolation.md](workspace-isolation.md)。
+
+工具失败抛带 `[CODE]` 的 `BrowserError(code/category/retryable/details)`，eval/style 操作失败返回 error 对象。每次调用返回并 render `actionId/sessionId/startedAt/finishedAt/target/args` 摘要；截图保留 base64，带 `capturedAt/sha256/attachmentId`，可选附件服务保存并 render image block，无服务则明确 `base64-fallback` 文本。**工具返回值必须是 lossless JSON**（宿主会校验，含 `undefined` 属性即被判 `INVALID_TOOL_OUTPUT`），统一在 `register()` 边界做投影。已发 CDP 命令后取消会在队列内关闭浏览器再放锁，下一调用可懒启动。完整字段、错误码、实测报告及残余风险见 [现行契约](t1-m0-m2-contract.md) 与 [HTTP 契约](t1-http-request.md)：本轮计数与结论以 `tests/acceptance/runs/` 报告为准；真实宿主内第九工具的注册/调用与 provider 视图仍 NOT_RUN。
+
+### P0 截图采集（`browser_screenshot`）
+
+T1回归有既有随机P21 flake：同一行为实现仅persist描述文案不同，一次22/22、324/324、exit0（[05-49-22](../tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)），一次21/22、323/324通过/1失败、exit1（[05-59-53](../tests/acceptance/runs/2026-11-01T05-59-53-185Z-105978/run-report.json)）。唯一失败为P21-host-output-contract的loadingFailed条目检查，实际仅3条成功网络记录，与[基线同项](../tests/acceptance/runs/2026-11-01T04-30-43-916Z-53146/run-report.json)相同；Lead判定既有环境flake而非P0回归，失败记录仍为FAIL。验收需串行，串行不能保证flake不出现。
+
+权威契约见 [capture-p0.md](capture-p0.md)；当前默认暂存修订C1–C14 **14/14、142/142、exit0**（[最终报告](../tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json)）。下方13/115属修订前历史：进程内真实 Chromium 三次各 **13/13 probes、115/115 必需项、exit 0**（[末次报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），宿主重启后加载与 provider 视觉仍 NOT_RUN。
+
+| 项 | 现行语义 |
+| --- | --- |
+| 参数 | `scale?:number=1`连续1–4；region文档CSS px；`persist?:boolean=false`；out为持久根相对.png，提供即持久；无out/persist:true/非空env时默认暂存 |
+| 单一采集路径 | `Page.captureScreenshot` PNG clip，DSF固定1，只用clip.scale；输出逐轴 `round(css×scale)`，最多16M像素；不事后放大/重编码，PNG损坏或尺寸不符不交付 |
+| capture | `version/request/environment/png/expected/sizeCheck/mapping/anomaly/file/delivery/warnings`；mapping纯JSON+公式；PNG CRC/尺寸与≤16M全量均匀/透明统计，纯色仅警告 |
+| 环境 | `deviceScaleFactorSource:'runtime-override'`；页面DPR读回失败null；`headless/headlessSource` 联合product/userAgent判定，任一HeadlessChrome命中true，未知null（Chrome152实测source=userAgent） |
+| 文件 | 默认staging（插件实例tmp目录/绝对file.path/pathKind=absolute/persistence=staging/root=staging/ephemeral=true），正常dispose清理；out/persist:true/非空env触发persistent（env或cwd根/相对path/ephemeral=false）；0600/link/no-clobber；legacy持久无根报OUTPUT_PATH_INVALID(root_unknown)，暂存失败只file=null+capture_file_unavailable |
+| 交付 | base64与落盘是同份PNG/hash；附件仅compare='attachment-metadata'，缺字段不推断相同；附件降采样/重编码警告不能证明provider最终接收尺寸 |
+| 能力发现 | capture.output声明defaultMode=staging、persistRules、stagingRoot/workspaceRoot占位、ephemeral；limits.capture含staging/persistParam/pathKind；observed首次null，file仅{persistence,relativePath|null}；诊断不启动/不建暂存根 |
+
+warnings封闭为 `content_uniform/content_transparent/model_image_downscaled/attachment_reencoded/blank_check_skipped/capture_file_unavailable/attachment_unavailable/capture_beyond_viewport`。新增错误为 `CAPTURE_FAILED/INVALID_PNG/CAPTURE_SIZE_MISMATCH/CAPTURE_UPSCALED/CAPTURE_TOO_LARGE/OUTPUT_PATH_INVALID/OUTPUT_EXISTS/OUTPUT_WRITE_FAILED`，分类和恢复见权威契约；取消/超时/断连原码透传。region与T2 bbox/输入的视口CSS坐标不同，转换使用采集前scroll及mapping。高密度不增加canvas/WebGL内部位图细节；C13只证明fixture前后布局无持久变化，瞬时布局影响、TOCTOU和provider仍不作保证。
+
+### 独立 HTTP 客户端（`browser_http_request`）
+
+- 传输：Host 进程内 `node:http`/`node:https`，不经过页面、CDP 或面板路由；零第三方依赖。
+- 预算：默认 GET、5000ms 总截止（上限 20000）、65536 保留字节（上限 1048576）、请求体 ≤65536 字节、请求头合计 ≤8192 字节；默认不跟随重定向（上限 5 跳）。
+- 安全：每次派发（含每一跳）复用 `validateTarget`；HTTPS→HTTP 降级拒绝；拒绝 `host/content-length/transfer-encoding/connection/cookie/accept-encoding` 等客户端托管头；无 cookie jar；跨 origin 重定向清空调用方头。
+- 返回：`ok:true` 只表示取得响应；404/500 正常返回；`headers` 小写→`string[]`、敏感头 `["***"]`；`encoding` 为 utf8/base64；`bodyBytes` 为保留原始实体字节；`bodyTruncated` 明确截断；不自动解压。
+- 错误：`HTTP_TIMEOUT`、`HTTP_FAILED`、`HTTP_REDIRECT_LIMIT`（DNS 仍 `NAV_FAILED`）；取消/超时只销毁当前请求，不关浏览器、不改页面租约或错误。
+- 能力发现：`browser_capabilities` 报 `web.t1.http-request: available` 与 `limits.httpRequest`，不因 Chrome 缺失或其他 owner 占用降级。
 
 ## 内置 Skill 与能力发现
 
@@ -157,14 +189,14 @@ M0–M2 新增 `single-owner-lease`：页面操作与 network 需要 owner 租�
 - 键盘：`browser_input` 已支持 `modifiers`（数组或位掩码）与 `virtualKeyCode`，可派发 Tab/Shift+Tab/Enter/Esc/方向键与组合键（P20 用页面 DOM 事件与 `activeElement` 实测）；`commands`、`unmodifiedText`、`pointerType:pen` 只有 schema 与透传，无页面级行为断言（未验证）。面板里的人类输入走同一个 `/input` 通道。
 - 输入事件会先到达宿主页面，因此宿主里若有模态遮罩会吞掉点击。
 - 没有下载、上传、Cookie 导出、多标签页、跨源隔离。
-- **实测只证明覆盖路径**：标题刷新、导航失败信号、分类错误、返回值 lossless JSON、N2 输入事件、截图附件/render 已由现行 21 组、196 项主验收覆盖，取代相应历史 F2/F3/F4/F9 结论；3081 终版（pid <pid>）Lead 独立终验 verify-3081 22/22、GUI address-history 276/276 通过（硬化后连续 3 次 276/276 + B1/G1 专项各 12/12）；真实 Agent 会话内 8 工具已真实调用；provider 是否显示图像仍 NOT_RUN。截图无裁剪/像素差异/VLM。
-- **无 Agent 级状态隔离**：同一插件实例共享 Chromium/page/url/viewport/network；租约仅限制其他 Agent 的页面/network 调用，面板仍能在队列内改变共享页面。
+- **实测只证明覆盖路径**：标题刷新、导航失败信号、分类错误、返回值 lossless JSON、N2 输入事件、截图附件/render 已由第 4 轮 22 组、303 项主验收（含 P22 独立 HTTP 95 项）覆盖，取代相应历史 F2/F3/F4/F9 结论；3081 终版（pid <pid>）Lead 独立终验 verify-3081 22/22、GUI address-history 276/276 通过（硬化后连续 3 次 276/276 + B1/G1 专项各 12/12）；真实 Agent 会话内 8 工具曾真实调用（第 4 轮第九工具未在真实会话调用）；provider 是否显示图像仍 NOT_RUN。此前“截图无裁剪”属历史；P0 已提供文档 clip/连续 scale/PNG校验/安全落盘，验收见上节与 [状态记录](status.md)，仍无像素差异/VLM/视觉判断。
+- **跨工作区 Cookie/存储不隔离**：同一 Chromium/profile 下 Cookie、localStorage、IndexedDB、cache 共享；page/URL/viewport/网络缓冲/队列/租约按工作区隔离。真实 Agent exec 身份链与两个 GUI 工作区已在 3081 验收，见 [workspace-isolation.md](workspace-isolation.md)。
 - **目标策略不是完整网络沙箱**：允许 loopback；默认阻断 RFC1918（`DSH_UI_TESTING_ALLOW_PRIVATE=1` 开放）、metadata/unspecified/multicast、credentials、已配置 `DSH_WEB_URL` origin；导航、DNS、最终 URL 和 Document 重定向校验仍不能消除子资源与 DNS rebinding 风险。
 - **网络是有限元数据**：URL 脱敏并记录 loadingFailed，Map/记录有界；无请求/响应头或正文，脱敏也不能保证覆盖所有业务敏感字段。
 - 帧/指标只保存在内存；`/metrics` 的 client 数据是最近一次上报，重启即清空；不实现 T4 帧序列分析。
 - 地址/历史只有**单个 Runtime、单个主 page** 的浏览器历史；不跨 session 持久化、不展示历史条目列表、不做多标签/popup 接管，也不注入 DOM history shim。`about:blank` 只在"浏览器内部已有条目"时允许回退；其它非 HTTP(S) 历史目标按 `INVALID_ARGUMENT` 拒绝。
 - `ui.address` 只在已认证同源 GUI 的 HTTP 响应里出现；`browser_state`、网络记录、`/metrics`、WS 头仍是脱敏/无地址。旧 Host（未重启）没有 `ui` 字段，客户端降级为只读脱敏 URL 且禁用刷新/后退/前进。
-- Host 半边、`skills/**` 或 `package.json` 改动需要重启 DSH；Client 半边热更新。**本轮 3081 已重启到终版**（pid <pid>，18:36:21；index `fe870ee1…a38b3`/18:19:00、client `f03a1c2d…681edf`/18:01:07，``editedAfterStart={}``），`verify-3081` 22/22、GUI `address-history-3081` 276/276 均 PASS（Lead 独立终验；硬化后连续 3 次 276/276 + B1/G1 专项各 12/12；此前 255/260 的偶发根因是 shell 对话框 `autoFocus` 抢焦点，属环境/脚本，脚本已硬化）；**3080 未重启（用户自行重启），重启前客户端走 legacy 降级。**
+- Host 半边、`skills/**` 或 `package.json` 改动需要重启 DSH；Client 半边热更新。**本轮 3081 已重启到终版**（pid <pid>，18:36:21；index `fe870ee1…a38b3`/18:19:00、client `f03a1c2d…681edf`/18:01:07，``editedAfterStart={}``），`verify-3081` 22/22、GUI `address-history-3081` 276/276 均 PASS（Lead 独立终验；硬化后连续 3 次 276/276 + B1/G1 专项各 12/12；此前 255/260 的偶发根因是 shell 对话框 `autoFocus` 抢焦点，属环境/脚本，脚本已硬化）；**3080 已由用户于 19:36:05 重启**（pid <pid>）并确认 `ui.version=1`；legacy 降级只适用于重启前旧 Host（历史状态）。3081 验收完成后已停止。
 - **`host.clients` 不是绝对健康指标**：3081 上可能存在外部 viewer（用户 3080 浏览器、旧 headless `/tmp/chrome-iso2`），基线非 0 属正常；正常 GUI reload 会把本页 client 回收为 0。既有缺口：无 WebSocket Close 帧的粗暴断开会让服务端 socket 停在 `CLOSE-WAIT`、frame-push 不回收（`MAX_CLIENTS=8`，`frame-push.js` 本轮未改），建议后续单独修。
 
 逐条证据与缺口见 [t1-infrastructure-audit.md](t1-infrastructure-audit.md) 与 `tests/acceptance/evidence/`。

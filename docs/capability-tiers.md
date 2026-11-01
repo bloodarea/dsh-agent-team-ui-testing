@@ -35,4 +35,9 @@
 
 ## 对当前实现的含义
 
-调试视图当前通过无头 Chromium + CDP 提供部分 T1 工具及 screencast 预览，已经有真实 T1 通道；M0–M2 工具面与待验收状态见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)。T2 DOM/ARIA/结构化节点协议仍未实现，「选择元素」「打开调试工具」继续禁用；单纯有 CDP 连接或可见截图不代表 T2/T3/T4 已实现。
+调试视图通过无头 Chromium + CDP 同时提供 Web **T1**（程序化）与 **T2**（结构化 GUI）：
+
+- T1：9 个工具（导航、JS、截图、输入、网络、计算样式、独立 HTTP、状态、能力发现），现行契约与验收见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)、[t1-http-request.md](t1-http-request.md)。
+- P0共享采集：已有 `browser_screenshot` 增强为连续scale1–4、文档CSS region、PNG结构/尺寸/均匀统计、安全落盘和capture证据；默认暂存（dispose清理），out/persist:true/非空env显式持久；file区分绝对暂存/相对持久，能力observed不含绝对路径。C1–C14共14/14、142/142（[最终报告](../tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json)）。不新增工具，不因采集增强提升T3/T4状态；下方115项为历史。权威契约见 [capture-p0.md](capture-p0.md)，真实Chromium+fake ctx三次各13/13、115/115（[报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)）；provider与真实宿主P0重载仍NOT_RUN。
+- T2：7 个工具（`browser_snapshot` + `click` / `type` / `scroll` / `fill_form` / `node_state` / `wait_for`），AX 语义树 + 单调 `eN` Ref + 可信输入 + `evidence.version=1`；契约与 38 条验收见 [t2-structured-gui.md](t2-structured-gui.md)，实现/验收状态见 [status.md](status.md)。T2 仍属主 frame + AX-backed open shadow，iframe 内部、closed shadow、原生 select popup/拖拽/上传下载/contenteditable/IME 与视觉判定不在范围内。
+- **T3/T4 未实现**：截图（T1 `browser_screenshot`）与可访问树都不是静态视觉定位/动态时序能力；当覆盖、canvas/WebGL、颜色/布局/可读性或需要判断命中区成因时，T2 只给 `escalation:"T3"` 提示，报告 BLOCKED/INCONCLUSIVE，不能由 T1/T2 的成功推定视觉验收通过。「选择元素」「打开调试工具」仍禁用，面板视觉未变。

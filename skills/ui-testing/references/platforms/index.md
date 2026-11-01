@@ -1,10 +1,10 @@
 # 平台索引
 
-本插件**只对 Web 定义了 T1 的一部分实现**；其它平台没有定义、没有实现、不可用。本文件不承诺任何 SDK 已安装，运行时能力以 Agent 当前工具注册表为准。
+本插件**只对 Web 实现了 T1 与 T2**；其它平台没有定义、没有实现、不可用。本文件不承诺任何 SDK 已安装，运行时能力以 Agent 当前工具注册表为准。
 
 | 平台 | 文档 | 当前状态 |
 |---|---|---|
-| Web / Chromium（无头） | `web.md` | T1 部分实现（`implemented-not-verified` / `partial`）；T2–T4 未实现 |
+| Web / Chromium（无头） | `web.md` | T1 部分实现（`verified` / `partial`）+ T2 结构化 GUI **已实现并验收**（`verified`，含真实宿主 14/14 检查行：`tests/acceptance/evidence/t2-real-host-2026-11-01.md`）；T3–T4 未实现 |
 | Windows | 未创建 | 未定义 / 不可用 |
 | Linux | 未创建 | 未定义 / 不可用 |
 | Android | 未创建 | 未定义 / 不可用 |

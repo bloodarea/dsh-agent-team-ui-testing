@@ -30,6 +30,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as httpRequest from './http-request.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(dirname(HERE));
@@ -293,8 +294,8 @@ async function waitForState(harness, predicate, { timeoutMs = 10000, label = 'st
   throw new Error(`timed out waiting for state ${label}; last=${truncate(last)}`);
 }
 
-async function navigateAndWait(harness, url, { expectedTitle, timeoutMs = 15000 } = {}) {
-  const navigation = await harness.invoke('browser_navigate', { url });
+async function navigateAndWait(harness, url, { expectedTitle, timeoutMs = 15000, exec } = {}) {
+  const navigation = await harness.invoke('browser_navigate', { url }, exec);
   if (!navigation.ok || !navigation.value?.ok) return { navigation, loaded: false };
   const ready = {
     expression: `({ ready: document.readyState, title: document.title })`,
@@ -303,7 +304,7 @@ async function navigateAndWait(harness, url, { expectedTitle, timeoutMs = 15000 
   const startedAt = Date.now();
   let last;
   while (Date.now() - startedAt < timeoutMs) {
-    last = await harness.invoke('browser_eval', { expression: ready.expression });
+    last = await harness.invoke('browser_eval', { expression: ready.expression }, exec);
     if (last.ok && last.value?.ok && ready.predicate(last.value.value)) {
       return { navigation, loaded: true, page: last.value.value };
     }
@@ -350,8 +351,9 @@ async function probe1ToolSurface({ harness, check, finding }) {
   const expectedNames = EXPECTED_TOOLS.map((tool) => tool.name);
   const actualNames = harness.toolNames();
 
-  check('工具注册面恰好是 8 个 browser_* 工具', actualNames.length === 8, {
-    expected: { count: 8, names: expectedNames },
+  // 16 = 9 T1 (docs/runtime-t1.md) + 7 T2 (docs/t2-structured-gui.md §2.2).
+  check('工具注册面恰好是 16 个 browser_* 工具（9 T1 + 7 T2）', actualNames.length === 16, {
+    expected: { count: 16, names: expectedNames },
     actual: { count: actualNames.length, names: actualNames },
   });
   check('工具名与 docs/runtime-t1.md 完全一致（无缺失、无多余）', JSON.stringify([...actualNames].sort()) === JSON.stringify([...expectedNames].sort()), {
@@ -856,14 +858,20 @@ async function probe8CloseAndResources({ harness, check, finding }) {
 async function probe9Isolation({ harnessA, createHarness, check, finding }) {
   const { scanPluginChromeProcesses, waitFor } = await import(pathToFileURL(join(HERE, 'harness.mjs')).href);
   const fixtureUrl = report.environment.fixtureUrl;
+  // Workspace isolation: sessions inside one workspace still share one runtime (and its lease).
+  // The fake sessions service maps every session id to one canonical workspace, so this probe
+  // keeps its original "shared inside one apply" assertions while exercising the real identity
+  // chain (exec.agent.session.header.cwd -> ctx.sessions -> workspaceRegistry.resolveByPath).
+  const execA = { agent: { id: 'probe9-session', session: { header: { cwd: harnessA.workspaceDir } } } };
 
-  await navigateAndWait(harnessA, `${fixtureUrl}second.html`, { expectedTitle: 'DSH UI Testing Fixture — Second Page' });
-  const stateA = (await harnessA.invoke('browser_state', {})).value;
+  await navigateAndWait(harnessA, fixtureUrl, { expectedTitle: 'DSH UI Testing Fixture', exec: execA });
+  await navigateAndWait(harnessA, `${fixtureUrl}second.html`, { expectedTitle: 'DSH UI Testing Fixture — Second Page', exec: execA });
+  const stateA = (await harnessA.invoke('browser_state', {}, execA)).value;
   check('单实例内第二次工具调用沿用同一浏览器（url 变为 second 页）', stateA?.running === true && String(stateA.url).includes('/second.html'), {
     expected: { running: true, url: '<fixture>/second.html' },
     actual: { running: stateA?.running, url: stateA?.url, viewport: stateA?.viewport },
   });
-  const networkA = (await harnessA.invoke('browser_network', { limit: 300 })).value?.entries || [];
+  const networkA = (await harnessA.invoke('browser_network', { limit: 300 }, execA)).value?.entries || [];
   check('单实例内 network 缓冲跨导航累积（共享）', networkA.some((entry) => String(entry.url).includes('/api/data')) && networkA.some((entry) => String(entry.url).includes('/second.html')), {
     expected: '同时含首次页面的 /api/data 与 /second.html 文档请求',
     actual: networkA.map((entry) => entry.url).slice(-8),
@@ -874,7 +882,7 @@ async function probe9Isolation({ harnessA, createHarness, check, finding }) {
   try {
     await navigateAndWait(harnessB, `${fixtureUrl}?instance=b`, { expectedTitle: 'DSH UI Testing Fixture' });
     const stateB = (await harnessB.invoke('browser_state', {})).value;
-    const stateAAfterB = (await harnessA.invoke('browser_state', {})).value;
+    const stateAAfterB = (await harnessA.invoke('browser_state', {}, execA)).value;
     check('两个独立 apply 实例各自拥有独立浏览器（running 且 url 不同）', stateB?.running === true && stateB.url !== stateAAfterB?.url, {
       expected: { B: 'running:true，url 含 instance=b', A: '仍为 /second.html' },
       actual: { B: { running: stateB?.running, url: stateB?.url }, A: { running: stateAAfterB?.running, url: stateAAfterB?.url } },
@@ -899,10 +907,12 @@ async function probe9Isolation({ harnessA, createHarness, check, finding }) {
       const remaining = newChromeProcesses({ scanPluginChromeProcesses });
       return remaining.length <= 1;
     }, { timeoutMs: 8000, label: 'harness B chromium exit' });
-    check('探针结束后关闭 B 实例的浏览器（不影响 A）', (await harnessA.invoke('browser_state', {})).value?.running === true, {
+    check('探针结束后关闭 B 实例的浏览器（不影响 A）', (await harnessA.invoke('browser_state', {}, execA)).value?.running === true, {
       expected: { A: 'running:true', B: 'closed' },
       actual: { remainingProcesses: newChromeProcesses({ scanPluginChromeProcesses }).length },
     });
+    // Release the workspace lease so the next probes start from a clean owner.
+    await harnessA.ctx.emit('agent/disposed', { agent: { id: 'probe9-session' } });
   } finally {
     await harnessB.closeBrowser().catch(() => {});
     await harnessB.dispose().catch(() => {});
@@ -1024,9 +1034,24 @@ async function probe11FramePush({ harness, httpServer, check, finding, skip, obs
   try {
     await helpers.waitForWebSocket(client, (value) => value.frames.length >= 2, { timeoutMs: 8000, label: 'two binary frames' });
   } catch { /* checked below */ }
+  const legacyEntry = harness.ctx?.__internal?.plugin?.registry?.peek?.('legacy:default');
   check('收到至少 2 个二进制帧（用于校验 seq 单调）', client.frames.length >= 2, {
     expected: { frames: '>=2' },
-    actual: { frames: client.frames.length, binaryMessages: client.binaryMessages.length, malformed: client.malformedBinary.slice(0, 2) },
+    actual: {
+      frames: client.frames.length, binaryMessages: client.binaryMessages.length, malformed: client.malformedBinary.slice(0, 2),
+      debug: {
+        wsClosed: client.closed, wsError: client.error, closeCode: client.closeCode,
+        sourceSeq: legacyEntry?.runtime?.frames?.seq, subscribers: legacyEntry?.runtime?.frames?.subscribers?.size,
+        sourceEpoch: legacyEntry?.runtime?.frames?.epoch, latestEpoch: legacyEntry?.runtime?.frames?.latest()?.epoch,
+        latestSeq: legacyEntry?.runtime?.frames?.latest()?.seq,
+        screencastFrames: legacyEntry?.runtime?.screencastFrames, screencastAcks: legacyEntry?.runtime?.screencastAcks,
+        navigationCount: legacyEntry?.runtime?.navigationCount,
+        visibility: (await harness.invoke('browser_eval', { expression: 'document.visibilityState' })).value?.value,
+        pusher: legacyEntry?.runtime?.frameTransport?.metrics?.() || null,
+        ackFailures: legacyEntry?.runtime?.ackFailures, lastError: legacyEntry?.runtime?.lastError,
+        running: legacyEntry?.runtime?.running,
+      },
+    },
   });
   const first = client.frames[0];
   check('二进制帧可解析为 [uint32BE 头长度][JSON 头][JPEG]', Boolean(first), {
@@ -1541,7 +1566,7 @@ async function main() {
     helpers: harnessModule,
   };
 
-  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 8 个 browser_* 工具，名称/参数 schema 与文档一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
+  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 16 个 browser_* 工具（9 T1 + 7 T2），名称/参数 schema 与 docs/runtime-t1.md + docs/t2-structured-gui.md §2.2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
   await runProbe({ id: 'P2-navigate-state', title: '导航与运行态', group: 'navigation', expected: 'fixture 可导航，state.url/running 正确，state.title 反映文档标题；file:// 被拒；不可达地址产生错误字符串' }, ({ check, finding }) => probe2Navigate({ harness: harnessA, check, finding, observations }));
   await runProbe({ id: 'P3-eval', title: '页面 JS 执行', group: 'js', expected: '#counter 初始 "0"；{ok,value,type} 形态；页面抛异常返回 {ok:false,error}；支持 awaitPromise' }, ({ check, finding }) => probe3Eval({ harness: harnessA, check, finding, observations }));
   await runProbe({ id: 'P4-computed-style', title: '计算样式', group: 'css', expected: '#style-target 的 color/font-size/font-weight/padding 精确命中；不存在 selector 返回 {ok:false,error}' }, ({ check, finding }) => probe4ComputedStyle({ harness: harnessA, check, finding, observations }));
@@ -1576,11 +1601,11 @@ async function main() {
   }, ({ check, finding, skip }) => probe13MetricsFallback({ harness: harnessA, httpServer: state.httpServer, check, finding, skip, observations }));
 
   const milestones = await import('./milestone-probes.mjs');
-  await runProbe({ id: 'P14-capabilities', title: '运行时能力发现', group: 'M2', expected: '8 工具声明、运行时服务探测、T2–T4 unsupported' }, ({ check }) => milestones.capabilityProbe({ harness: harnessA, check }));
+  await runProbe({ id: 'P14-capabilities', title: '运行时能力发现', group: 'M2', expected: '16 工具声明、运行时服务探测、http-request available、七项 web.t2.* 与 structured-dom available、T3/T4 unsupported' }, ({ check }) => milestones.capabilityProbe({ harness: harnessA, check }));
   await runProbe({ id: 'P15-owner-lease', title: '会话 lease、读取隔离与 disposed', group: 'M1', expected: '只有一个 owner、所有页面/网络访问校验、只读诊断跨会话、disposed 释放' }, ({ check }) => milestones.leaseProbe({ check }));
   await runProbe({ id: 'P19-target-policy', title: '导航目标与重定向安全', group: 'M1', expected: '工具/HTTP 阻断非法目标、loopback 放行、重定向目标重新校验' }, ({ check }) => milestones.targetPolicyProbe({ harness: harnessA, check, fixture: state.fixture }));
   await navigateAndWait(harnessA, state.fixture.url, { expectedTitle: 'DSH UI Testing Fixture' });
-  await runProbe({ id: 'P16-action-evidence', title: '操作 envelope 与截图附件/回退', group: 'M2', expected: '每次成功调用返回并 render 证据字段、截图 hash/time、附件和 base64 两条路径' }, ({ check }) => milestones.evidenceProbe({ harness: harnessA, check }));
+  await runProbe({ id: 'P16-action-evidence', title: '操作 envelope 与截图附件/回退', group: 'M2', expected: '16 工具（含 7 个 T2）每次成功调用返回并 render envelope + evidence、截图 hash/time、附件和 base64 两条路径' }, ({ check }) => milestones.evidenceProbe({ harness: harnessA, check }));
   await runProbe({ id: 'P17-cancel-serial', title: '取消与面板同锁串行', group: 'M0/M1', expected: 'signal 取消 1s 内 ABORTED，后续可恢复，面板输入与 Agent 不交错' }, ({ check }) => milestones.cancellationProbe({ harness: harnessA, check, fixture: state.fixture }));
   await runProbe({ id: 'P18-startup-failure', title: '启动失败清理', group: 'M0', expected: '错误明确、无 profile 遗留' }, ({ check }) => milestones.startupFailureProbe({ check }));
 
@@ -1591,8 +1616,11 @@ async function main() {
     id: 'P20-input-modifiers',
     title: '功能键与修饰键输入',
     group: 'input',
-    expected: 'Tab/Shift+Tab 焦点前进/回退、Ctrl+A 的 ctrlKey+key、virtualKeyCode→e.keyCode、位掩码/autoRepeat/mouse/wheel 修饰、老式最小调用仍生效、非法参数 INVALID_ARGUMENT 且不派发',
-  }, ({ check }) => inputModifiers.inputModifiersProbe({ harness: harnessA, check, fixture: state.fixture }));
+    expected: 'Tab/Shift+Tab 焦点前进/回退、Ctrl+A 的 ctrlKey+key、virtualKeyCode→e.keyCode、位掩码/autoRepeat/mouse/wheel 修饰、老式最小调用仍生效、非法参数 INVALID_ARGUMENT 且不派发；commands/unmodifiedText/pointerType:pen 的页面真值（不可观察时 INCONCLUSIVE）',
+  }, async ({ check, finding }) => {
+    await inputModifiers.inputModifiersProbe({ harness: harnessA, check, fixture: state.fixture });
+    await inputModifiers.inputPageTruthProbe({ harness: harnessA, check, finding, fixture: state.fixture });
+  });
 
   // P21 (task-3): the host snapshots tool values with @deepseek-ai/dsh-util-values and rejects any
   // undefined property. This probe applies that real validator to the real tool outputs.
@@ -1601,11 +1629,20 @@ async function main() {
     id: 'P21-host-output-contract',
     title: '宿主输出契约（lossless JSON）',
     group: 'host-contract',
-    expected: '8 工具成功值与 render content 通过真实 snapshotJsonValue；eval undefined/抛错/number 参数/无附件截图/失败网络条目/抛错 details/类实例附件均无 undefined 且可快照',
+    expected: '16 工具（含 7 个 T2）成功值与 render content 通过真实 snapshotJsonValue；eval undefined/抛错/number 参数/无附件截图/失败网络条目/抛错 details/类实例附件/T2 证据均无 undefined 且可快照',
   }, async ({ check, finding }) => {
     await hostContract.hostOutputContractProbe({ harness: harnessA, check, finding, fixture: state.fixture });
     await hostContract.attachmentProjectionProbe({ createHarness, check });
   });
+
+  // P22: the independent HTTP client. It never starts Chromium; its own temp loopback servers
+  // provide redirect chains / body / header edge cases.
+  await runProbe({
+    id: 'P22-http-request',
+    title: '独立 HTTP 请求',
+    group: 'http',
+    expected: '注册/默认、POST echo、500/404、默认不跟随、显式跟随+每跳复验、超限、方法规则、超时、取消、阻断/重定向阻断零派发、非法参数零副作用、正文上限与字节、无 cookie jar、脱敏、证据、lossless、未启动/关闭态、卸载清理',
+  }, ({ check, finding }) => httpRequest.httpRequestProbe({ check, finding, fixture: state.fixture }));
 
   log('\n[cleanup] closing browsers and fixtures');
   await cleanupResources('suite-complete');

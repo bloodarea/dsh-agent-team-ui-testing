@@ -6,6 +6,27 @@ const TAXONOMY = {
   CDP_DISCONNECTED: ['disconnected', true], TARGET_NOT_FOUND: ['action', false],
   EVAL_ERROR: ['app', false], INVALID_ARGUMENT: ['input', false], BUSY: ['concurrency', true],
   UNSUPPORTED: ['capability', false], INTERNAL: ['internal', false], ABORTED: ['cancelled', true],
+  // Independent HTTP client (docs/t1-http-request.md §6): HTTP timeouts are not CDP timeouts
+  // (they must never trigger the page "close the browser before releasing the queue" path).
+  HTTP_TIMEOUT: ['timeout', true], HTTP_FAILED: ['network', true], HTTP_REDIRECT_LIMIT: ['network', false],
+  // Workspace isolation (docs/workspace-isolation.md): these must never fall back to INTERNAL.
+  SCOPE_INVALID: ['input', false], SCOPE_NOT_FOUND: ['scope', false],
+  SCOPE_UNAVAILABLE: ['scope', true], SCOPE_FORBIDDEN: ['authorization', false],
+  RUNTIME_LIMIT: ['resource', true],
+  // Web T2 (structured GUI, docs/t2-structured-gui.md): a ref that no longer points at the node it
+  // was minted for, a selector that is not unique, a target that cannot be acted on, and a bounded
+  // wait that ran out. RETRYABLE only tells the caller a retry *may* help — a stale ref needs a new
+  // snapshot, not a replay.
+  REF_STALE: ['action', false], TARGET_NOT_UNIQUE: ['action', false],
+  NOT_INTERACTABLE: ['action', false], WAIT_TIMEOUT: ['timeout', true],
+  // P0 capture infrastructure (docs/capture-p0.md): the capture pipeline has its own taxonomy so a
+  // bad screenshot never masquerades as INTERNAL. Size/format refusals are not retryable (the same
+  // page would produce the same bytes); a failed CDP capture and a failed output write are.
+  // ABORTED/CDP_TIMEOUT/CDP_DISCONNECTED keep their existing codes for capture too.
+  CAPTURE_FAILED: ['capture', true], INVALID_PNG: ['capture', false],
+  CAPTURE_SIZE_MISMATCH: ['capture', false], CAPTURE_UPSCALED: ['capture', false],
+  CAPTURE_TOO_LARGE: ['resource', false], OUTPUT_PATH_INVALID: ['input', false],
+  OUTPUT_EXISTS: ['output', false], OUTPUT_WRITE_FAILED: ['output', true],
 };
 export class BrowserError extends Error {
   constructor(code, message, details = {}) {
@@ -74,7 +95,7 @@ function blockedAddress(address, allowPrivate) {
   }
   return true;
 }
-export async function validateTarget(raw, { origins = [], allowPrivate = process.env.DSH_UI_TESTING_ALLOW_PRIVATE === '1', signal } = {}) {
+export async function validateTarget(raw, { origins = [], allowPrivate = process.env.DSH_UI_TESTING_ALLOW_PRIVATE === '1', signal, resolve = lookup } = {}) {
   checkAbort(signal);
   let url;
   try { url = new URL(raw); } catch { throw new BrowserError('INVALID_ARGUMENT', '地址不是合法 URL'); }
@@ -87,7 +108,9 @@ export async function validateTarget(raw, { origins = [], allowPrivate = process
   const hostname = url.hostname.replace(/^\[|\]$/g, '');
   let addresses;
   try {
-    addresses = isIP(hostname) ? [{ address: hostname }] : await abortable(lookup(hostname, { all: true }), signal);
+    // `resolve` is an injection point for probes (mixed public/private DNS, zero-dispatch
+    // scenarios). Production always uses the real `dns/promises` lookup imported above.
+    addresses = isIP(hostname) ? [{ address: hostname }] : await abortable(resolve(hostname, { all: true }), signal);
   } catch (error) {
     if (error instanceof BrowserError) throw error;
     throw new BrowserError('NAV_FAILED', '导航域名解析失败', { url: redactUrl(raw) });
@@ -136,7 +159,7 @@ export class Cdp {
     });
   }
   send(method, params = {}, { signal, timeoutMs = 30000, sessionId } = {}) {
-    if (this.closed) return Promise.reject(new BrowserError('CDP_DISCONNECTED', 'CDP 连接已关闭'));
+    if (this.closed) return Promise.reject(new BrowserError('CDP_DISCONNECTED', 'CDP 连接已关闭', { method }));
     if (signal?.aborted) return Promise.reject(new BrowserError('ABORTED', '操作已取消'));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
@@ -147,7 +170,7 @@ export class Cdp {
         if (error) reject(error); else resolve(value);
       };
       const timer = setTimeout(() => finish(new BrowserError('CDP_TIMEOUT', 'CDP 超时: ' + method)), timeoutMs);
-      this.pending.set(id, { finish, timer });
+      this.pending.set(id, { finish, timer, method });
       signal?.addEventListener('abort', abort, { once: true });
       try { this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }
       catch {
@@ -157,7 +180,7 @@ export class Cdp {
     });
   }
   rejectPending() {
-    for (const entry of [...this.pending.values()]) entry.finish(new BrowserError('CDP_DISCONNECTED', 'CDP 连接已关闭'));
+    for (const entry of [...this.pending.values()]) entry.finish(new BrowserError('CDP_DISCONNECTED', 'CDP 连接已关闭', { method: entry.method }));
   }
   on(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   close() { this.closed = true; this.rejectPending(); try { this.ws?.close(); } catch { /* already closed */ } }

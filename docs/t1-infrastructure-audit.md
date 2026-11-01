@@ -1,6 +1,6 @@
 # T1 Web 基础设施历史审计（对照 7 条清单）
 
-> **历史快照，不作为当前实现或运行实例状态。** 下文保留 M0–M2 前的探针结论、计数和缺口，供追溯；包括“7 工具”“无租约/分类/证据”“3080 未加载”等说法。现行契约见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)。**现行计数已推进到 21 组 / 196 项必需检查（含本轮 P20 输入事件、P21 宿主返回契约），3081 重启后 verify-3081 14/14**；文中 13 组/92 项与 19 组/154 项均为历史快照，不改写。相应历史缺陷已被新实测取代。真实 Agent screenshot/provider 视图仍 NOT_RUN。3080 不重启，隔离宿主验收使用 3081。
+> **历史快照，不作为当前实现或运行实例状态。** 下文保留 M0–M2 前的探针结论、计数和缺口，供追溯；包括“7 工具”“无租约/分类/证据”“3080 未加载”等说法。现行契约见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)。**现行计数已推进到第 4 轮 22 组 / 303 项必需检查（含 P22 独立 HTTP、P21 宿主返回契约），隔离宿主 verify-3081 22/22**；文中 13 组/92 项与 19 组/154 项均为历史快照，不改写。相应历史缺陷已被新实测取代。真实 Agent screenshot/provider 视图仍 NOT_RUN。3080 不重启，隔离宿主验收使用 3081。
 
 > 索引：[docs/index.md](index.md) · 审计日期：2026-10-31 · 审计对象：`index.js`（Host 运行时）+ `skills/ui-testing/`（内置 Skill）
 >
@@ -45,7 +45,7 @@
 边界与保留意见：
 
 - `browser_input` 的事件形状仍暴露 CDP 词汇（`mousePressed`/`mouseReleased`/`buttons`/`clickCount`，`kind` + `type` 两段式），没有 `click(x,y)` / `type(selector,text)` 这类高层封装。Agent 是在“填事件对象”，不是“拼 CDP 命令”，但对初学者仍不友好。
-- 缺的能力（T2/T3/T4、独立 HTTP 客户端、视口控制）是**明示缺失**（Skill 与 manifest 标 `unsupported`），没有给出“必须手写 CDP 才能做”的通道。因此该条按“T1 范围内满足”判定。
+- 缺的能力（T2/T3/T4、视口控制；独立 HTTP 客户端已于第 4 轮实现，见 [t1-http-request.md](t1-http-request.md)）是**明示缺失**（Skill 与 manifest 标 `unsupported`），没有给出“必须手写 CDP 才能做”的通道。因此该条按“T1 范围内满足”判定。
 
 ### 2. 能力发现 — 部分满足（由内置 Skill 实现 + 缺 Runtime API）
 

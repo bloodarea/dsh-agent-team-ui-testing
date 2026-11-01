@@ -24,25 +24,87 @@
  * Everything is zero-dependency and read-only for the repository besides the evidence directory.
  */
 import { EventEmitter } from 'node:events';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { apply } from '../../index.js';
 
-/** The tool surface frozen in docs/runtime-t1.md and implemented by index.js. */
+/**
+ * The tool surface implemented by index.js: the 9 T1 tools frozen in docs/runtime-t1.md plus the
+ * 7 Web T2 structured-GUI tools frozen in docs/t2-structured-gui.md §2.2 (16 total).
+ *
+ * `required` is the *registered JSON schema* required array only. The contract's runtime
+ * constraints (exactly one of ref/selector, exactly one of direction/to, wait condition legality)
+ * are NOT expressible as a required array - they are validated at execution time - so
+ * `required: []` here never means "no arguments allowed".
+ */
 export const EXPECTED_TOOLS = Object.freeze([
+  // --- T1 (docs/runtime-t1.md) -------------------------------------------------------------
   Object.freeze({ name: 'browser_navigate', required: ['url'] }),
   Object.freeze({ name: 'browser_eval', required: ['expression'] }),
   Object.freeze({ name: 'browser_screenshot', required: [] }),
   Object.freeze({ name: 'browser_input', required: ['events'] }),
   Object.freeze({ name: 'browser_network', required: [] }),
   Object.freeze({ name: 'browser_computed_style', required: ['selector'] }),
+  Object.freeze({ name: 'browser_http_request', required: ['url'] }),
   Object.freeze({ name: 'browser_state', required: [] }),
   Object.freeze({ name: 'browser_capabilities', required: [] }),
+  // --- T2 (docs/t2-structured-gui.md §2.2) ------------------------------------------------
+  Object.freeze({ name: 'browser_snapshot', required: [] }),
+  Object.freeze({ name: 'browser_click', required: [] }),
+  Object.freeze({ name: 'browser_type', required: ['text'] }),
+  Object.freeze({ name: 'browser_scroll', required: [] }),
+  Object.freeze({ name: 'browser_fill_form', required: ['fields'] }),
+  Object.freeze({ name: 'browser_node_state', required: [] }),
+  Object.freeze({ name: 'browser_wait_for', required: [] }),
 ]);
 
+/** The seven Web T2 tools declared in docs/t2-structured-gui.md §2.2. */
+export const T2_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => [
+  'browser_snapshot', 'browser_click', 'browser_type', 'browser_scroll',
+  'browser_fill_form', 'browser_node_state', 'browser_wait_for',
+].includes(tool.name)));
+
+/** The nine Web T1 tools kept unchanged by the T2 work. */
+export const T1_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => !T2_TOOLS.some((t2) => t2.name === tool.name)));
+
 export const PROFILE_PREFIX = 'dsh-ui-testing-';
+
+/**
+ * Capture output isolation (docs/capture-p0.md §6).
+ *
+ * `browser_screenshot` writes PNGs to `DSH_UI_TESTING_CAPTURE_DIR` when set, otherwise to
+ * `<calling session cwd>/output/capture/<actionId>.png`. Acceptance suites must never write into
+ * the repository, so a suite that has not chosen a root itself gets a private temporary one here,
+ * removed best-effort on exit. This is test infrastructure, not product behaviour: production
+ * runs keep the session-workspace default.
+ *
+ * A caller that already set the variable (tests/acceptance/capture-p0.mjs sets its own per-run
+ * root before importing this module) keeps its root and owns the cleanup, so
+ * `CAPTURE_TMP_ROOT` is `undefined` for it.
+ */
+export const CAPTURE_TMP_ROOT = (() => {
+  const configured = process.env.DSH_UI_TESTING_CAPTURE_DIR;
+  if (typeof configured === 'string' && configured.trim() !== '') return undefined;
+  let dir;
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'dsh-ui-testing-capture-'));
+  } catch {
+    return undefined;
+  }
+  process.env.DSH_UI_TESTING_CAPTURE_DIR = dir;
+  process.once('exit', () => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  });
+  return dir;
+})();
+
+/** The temporary capture root this harness installed (undefined when the caller supplied one). */
+export function captureTempRoot() {
+  return CAPTURE_TMP_ROOT;
+}
 
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -136,7 +198,7 @@ export async function pathExists(target) {
 }
 
 /** Create the fake Cordis context surface used by index.js. */
-export function createFakeCordisContext({ connection, attachments } = {}) {
+export function createFakeCordisContext({ connection, attachments, sessions, sessionPersistence, workspaceRegistry } = {}) {
   const toolDefs = new Map();
   const httpHandlers = [];
   const upgradeHandlers = [];
@@ -238,12 +300,23 @@ export function createFakeCordisContext({ connection, attachments } = {}) {
       if (name === 'logger') return ctx.logger;
       if (name === 'connection') return ctx.__internal.connection;
       if (name === 'attachments') return ctx.attachments;
+      if (name === 'sessions') return ctx.__internal.sessions;
+      if (name === 'sessionPersistence') return ctx.__internal.sessionPersistence;
+      if (name === 'workspaceRegistry') return ctx.__internal.workspaceRegistry;
       return undefined;
     },
     // Cordis services can also be read as properties (ctx.connection?.requestRejection(...)).
     get connection() { return ctx.__internal.connection; },
+    get sessions() { return ctx.__internal.sessions; },
+    get sessionPersistence() { return ctx.__internal.sessionPersistence; },
+    get workspaceRegistry() { return ctx.__internal.workspaceRegistry; },
   };
-  ctx.__internal = { toolDefs, httpHandlers, upgradeHandlers, skillRegistrations, logs, effects, connection: connection ?? undefined };
+  ctx.__internal = {
+    toolDefs, httpHandlers, upgradeHandlers, skillRegistrations, logs, effects,
+    connection: connection ?? undefined,
+    sessions, sessionPersistence, workspaceRegistry,
+    plugin: undefined,
+  };
   return ctx;
 }
 
@@ -259,13 +332,14 @@ function findHttpHandler(ctx, pathname) {
  * Minimal fake IncomingMessage/ServerResponse pair. The plugin's readJson() attaches its
  * listeners synchronously when the handler starts, so emitting the body on next tick works.
  */
-export function callHttpHandler(ctx, { method = 'GET', path = '/', body, rawBody } = {}) {
+export function callHttpHandler(ctx, { method = 'GET', path = '/', body, rawBody, headers = {} } = {}) {
   const entry = findHttpHandler(ctx, path.split('?')[0]);
   if (!entry) return Promise.reject(new Error(`no HTTP handler registered for ${path}`));
   const req = new EventEmitter();
   req.url = path;
   req.method = method;
-  req.headers = {};
+  // Lower-case header names, exactly like node:http exposes them to the plugin.
+  req.headers = Object.fromEntries(Object.entries(headers).map(([name, value]) => [String(name).toLowerCase(), value]));
   req.destroy = () => {};
   const res = {
     statusCode: 0,
@@ -301,9 +375,61 @@ export function callHttpHandler(ctx, { method = 'GET', path = '/', body, rawBody
  * Mount the real plugin on a fake context.
  * @returns tools/invoke/request helpers plus lifecycle/cleanup helpers.
  */
-export async function createHarness({ name = 'harness', connection, attachments } = {}) {
-  const ctx = createFakeCordisContext({ connection, attachments });
-  apply(ctx);
+/**
+ * Default fake workspace identity: every session id maps to the same canonical directory, which
+ * the fake workspace registry resolves to one stable workspace id. This preserves the historical
+ * "one shared runtime inside one apply" semantics for the M0–M2 probes, while still exercising
+ * the real session -> cwd -> workspaceRegistry resolution chain.
+ */
+export function defaultWorkspaceDirectory() {
+  return realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
+}
+
+export function createFakeSessionsService({ cwd, sessions = new Map() } = {}) {
+  return {
+    get(id) {
+      if (sessions.has(id)) return sessions.get(id);
+      return cwd ? { id, header: { cwd } } : undefined;
+    },
+  };
+}
+
+export function createFakeWorkspaceRegistry({ path, id = 'workspace-default', workspaces = [] } = {}) {
+  const entries = [...workspaces];
+  if (path && id) entries.push({ id, path, sessionIds: [] });
+  return {
+    // DSH WorkspaceRegistry.resolveByPath is async (Promise<Workspace | undefined>); the fake
+    // mirrors that so the real async path is what the acceptance suite exercises.
+    async resolveByPath(candidate) {
+      const hit = entries.find((workspace) => workspace.path === candidate);
+      return hit ? { id: hit.id } : undefined;
+    },
+    list() { return entries.map((workspace) => ({ ...workspace, sessionIds: [...(workspace.sessionIds || [])] })); },
+  };
+}
+
+export function createFakeSessionPersistenceService({ entries = new Map(), error } = {}) {
+  return {
+    async stat(id) {
+      if (error) throw error;
+      return entries.get(id);
+    },
+  };
+}
+
+export async function createHarness({
+  name = 'harness', connection, attachments, sessions, sessionPersistence, workspaceRegistry,
+} = {}) {
+  const workspaceDir = defaultWorkspaceDirectory();
+  const ctx = createFakeCordisContext({
+    connection,
+    attachments,
+    sessions: sessions ?? createFakeSessionsService({ cwd: workspaceDir }),
+    workspaceRegistry: workspaceRegistry ?? createFakeWorkspaceRegistry({ path: workspaceDir }),
+    sessionPersistence: sessionPersistence ?? createFakeSessionPersistenceService(),
+  });
+  // The plugin returns { registry } for the fake-ctx acceptance surface (Cordis ignores it).
+  ctx.__internal.plugin = apply(ctx);
   const tools = ctx.__internal.toolDefs;
 
   const invoke = async (toolName, args = {}, exec) => {
@@ -367,6 +493,10 @@ export async function createHarness({ name = 'harness', connection, attachments 
     httpRoutes: () => [...ctx.__internal.httpHandlers],
     setConnection: (service) => { ctx.__internal.connection = service; },
     getConnection: () => ctx.__internal.connection,
+    setSessions: (service) => { ctx.__internal.sessions = service; },
+    setSessionPersistence: (service) => { ctx.__internal.sessionPersistence = service; },
+    setWorkspaceRegistry: (service) => { ctx.__internal.workspaceRegistry = service; },
+    workspaceDir,
   };
 }
 
@@ -376,17 +506,26 @@ export async function createHarness({ name = 'harness', connection, attachments 
  * ---------------------------------------------------------------------------------------------- */
 
 /** Fake `connection` service with a mutable requestRejection result (401 / 403 / undefined). */
-export function createFakeConnectionService({ rejection } = {}) {
+export function createFakeConnectionService({ rejection, admit, browserPeer } = {}) {
   let current = rejection;
   const calls = [];
+  const admits = [];
   return {
     calls,
+    admits,
+    browserPeer,
     requestRejection(request) {
       calls.push(request);
       return typeof current === 'function' ? current(request) : current;
     },
+    admit(request) {
+      admits.push(request);
+      return typeof admit === 'function' ? admit(request) : admit;
+    },
     setRejection(value) { current = value; },
     getRejection() { return current; },
+    setAdmit(value) { this.admit = (request) => { admits.push(request); return typeof value === 'function' ? value(request) : value; }; },
+    setBrowserPeer(value) { this.browserPeer = value; },
   };
 }
 

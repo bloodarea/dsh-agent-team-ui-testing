@@ -64,7 +64,32 @@ function inlineSnapshotJsonValue(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-async function loadValidator() {
+/**
+ * Resolve the real `@deepseek-ai/dsh-tools` package. The host calls
+ * `assertSupportedJsonSchema()` on every registered tool's `output.schema`; parameter schemas are
+ * only snapshotted (lossless JSON), not forced into the subset. Absence is reported, never skipped.
+ */
+export async function loadDshTools() {
+  const packageDir = join(DSH_MODULES, 'dsh-tools');
+  let manifest;
+  try { manifest = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')); }
+  catch (error) { return { real: false, packageDir, reason: `无法读取 ${join(packageDir, 'package.json')}：${String(error?.message || error)}` }; }
+  const rootExport = manifest.exports?.['.'];
+  const entry = typeof rootExport === 'string' ? rootExport
+    : rootExport && typeof rootExport === 'object' ? (rootExport.default || rootExport.import || rootExport.require) : manifest.main;
+  const entryPath = join(packageDir, String(entry || 'lib/index.js').replace(/^\.\//, ''));
+  try {
+    const module = await import(pathToFileURL(entryPath).href);
+    if (typeof module.assertSupportedJsonSchema !== 'function') {
+      return { real: false, packageDir, entryPath, version: manifest.version, reason: '模块未导出 assertSupportedJsonSchema' };
+    }
+    return { real: true, packageDir, entryPath, version: manifest.version, assertSupportedJsonSchema: module.assertSupportedJsonSchema };
+  } catch (error) {
+    return { real: false, packageDir, entryPath, version: manifest.version, reason: `import 失败：${String(error?.message || error)}` };
+  }
+}
+
+export async function loadValidator() {
   const packageDir = join(DSH_MODULES, 'dsh-util-values');
   let manifest;
   try {
@@ -101,7 +126,7 @@ async function loadValidator() {
 }
 
 /** Every path whose own value is `undefined` (what the host snapshot rejects first). */
-function undefinedPaths(value, path = 'value', out = []) {
+export function undefinedPaths(value, path = 'value', out = []) {
   if (Array.isArray(value)) {
     value.forEach((item, index) => undefinedPaths(item, `${path}[${index}]`, out));
     return out;
@@ -115,7 +140,7 @@ function undefinedPaths(value, path = 'value', out = []) {
 }
 
 /** Paths holding a non-finite number or -0 (also rejected by the host snapshot). */
-function nonFinitePaths(value, path = 'value', out = []) {
+export function nonFinitePaths(value, path = 'value', out = []) {
   if (Array.isArray(value)) {
     value.forEach((item, index) => nonFinitePaths(item, `${path}[${index}]`, out));
     return out;
@@ -190,17 +215,19 @@ export async function hostOutputContractProbe({ harness, check, finding, fixture
     ['browser_computed_style', { selector: 'body', properties: ['display'] }],
     ['browser_input', { events: [] }],
     ['browser_screenshot', {}],
+    ['browser_http_request', { url: fixture.url + 'health' }],
   ];
 
   const values = [];
   const renderProblems = [];
-  for (const [name, args] of calls) {
+  /** Run one tool call and apply the real host rules to its value and its render content. */
+  const checkCall = async (name, args) => {
     const result = await harness.invoke(name, args);
     const value = result.value;
     values.push({ name, args, result });
     if (!result.ok) {
       check(`${name} 成功返回（前置条件）`, false, { expected: 'success', actual: result.error });
-      continue;
+      return result;
     }
     const { snapshot, ok } = snapshotOf(value);
     const undefinedFound = undefinedPaths(value);
@@ -218,8 +245,44 @@ export async function hostOutputContractProbe({ harness, check, finding, fixture
     } catch (error) {
       renderProblems.push(`${name}: render 抛错 ${String(error?.message || error)}`);
     }
-  }
-  check('8 个工具的 render content 都能通过宿主快照（成功结果与失败结果都算）', renderProblems.length === 0, {
+    return result;
+  };
+  for (const [name, args] of calls) await checkCall(name, args);
+
+  // --- T2 (docs/t2-structured-gui.md §2.2): the seven structured tools, same host rules ------
+  const origin = new URL(fixture.url).origin;
+  const t2Navigation = await harness.invoke('browser_navigate', { url: origin + '/web-t2.html' });
+  await waitForEval(harness, 'document.readyState', (value) => value === 'complete', { label: 'web-t2 ready' });
+  // Pre-scroll so this lossless-output probe does not depend on auto-scroll (C17 covers that).
+  await evalValue(harness, 'document.getElementById("t2-inc").scrollIntoView({block:"center"}), 1');
+  const t2Snapshot = await harness.invoke('browser_snapshot', {});
+  const t2Refs = t2Snapshot.value?.refs || {};
+  const refEntry = (role, name) => Object.entries(t2Refs).find(([, entry]) => entry.role === role && entry.name === name)?.[0];
+  const incrementRef = refEntry('button', 'Increment');
+  const nameRef = refEntry('textbox', 'Name');
+  check('T2 页面快照可用（前置：refs 非空）', t2Navigation.ok && t2Snapshot.ok && Object.keys(t2Refs).length > 5 && Boolean(incrementRef), {
+    expected: 'snapshot with refs', actual: { running: t2Navigation.ok, snapshotOk: t2Snapshot.ok, refs: Object.keys(t2Refs).length, incrementRef, error: t2Snapshot.error?.message },
+  });
+  const t2Calls = [
+    ['browser_snapshot', {}],
+    ['browser_click', { ref: incrementRef }],
+    ['browser_type', { ref: nameRef, text: 'host-contract' }],
+    ['browser_scroll', { direction: 'down', amount: 120 }],
+    ['browser_fill_form', { fields: [{ selector: '#t2-agree', type: 'checkbox', value: true }] }],
+    ['browser_node_state', { selector: '#t2-inc' }],
+    ['browser_wait_for', { text: 'Item 1', timeoutMs: 2000 }],
+  ];
+  for (const [name, args] of t2Calls) await checkCall(name, args);
+  const t2Failure = await harness.invoke('browser_click', { selector: '#t2-host-contract-missing' });
+  check('T2 抛错路径（TARGET_NOT_FOUND）的 BrowserError 也可快照且带 version=1 evidence',
+    t2Failure.threw === true && t2Failure.error?.code === 'TARGET_NOT_FOUND'
+      && validator.isJsonValue({ name: t2Failure.error?.name, code: t2Failure.error?.code, category: t2Failure.error?.category,
+        retryable: t2Failure.error?.retryable, message: t2Failure.error?.message, details: t2Failure.error?.details }) === true
+      && t2Failure.error?.details?.evidence?.version === 1, {
+      expected: { code: 'TARGET_NOT_FOUND', evidenceVersion: 1 },
+      actual: { code: t2Failure.error?.code, evidenceVersion: t2Failure.error?.details?.evidence?.version, message: String(t2Failure.error?.message || '').slice(0, 160) },
+    });
+  check('16 个工具的 render content 都能通过宿主快照（成功结果与失败结果都算）', renderProblems.length === 0, {
     expected: [],
     actual: renderProblems,
   });
@@ -298,6 +361,38 @@ export async function hostOutputContractProbe({ harness, check, finding, fixture
     expected: { code: 'INVALID_ARGUMENT', snapshot: 'object' },
     actual: { code: invalidInput.error?.code, undefinedPaths: undefinedPaths(invalidInfo) },
   });
+
+  // --- Registered-schema guard ---------------------------------------------------------------
+  // Host registration asserts only the *output* schema against the whitelisted subset; parameter
+  // schemas must merely be lossless JSON. Parameter-subset compliance is reported advisory only.
+  const dshTools = await loadDshTools();
+  check(`dsh-tools 校验器来源：${dshTools.real ? '真实 assertSupportedJsonSchema' : '不可用（需真实 DSH 安装）'}（版本 ${dshTools.version || 'n/a'}）`,
+    dshTools.real, { expected: { real: true }, actual: dshTools }, { advisory: !dshTools.real });
+  if (dshTools.real) {
+    const outputProblems = [];
+    for (const definition of harness.toolDefinitions()) {
+      try { dshTools.assertSupportedJsonSchema(definition.output.schema); }
+      catch (error) { outputProblems.push(`${definition.name}: ${String(error?.message || error).slice(0, 240)}`); }
+    }
+    check('16 个工具的 output.schema 全部通过宿主 assertSupportedJsonSchema', outputProblems.length === 0,
+      { expected: [], actual: outputProblems });
+  }
+  const parameterProblems = [];
+  const parameterSubsetProblems = [];
+  for (const definition of harness.toolDefinitions()) {
+    const schema = definition.parameters;
+    if (!validator.isJsonValue(schema) || validator.snapshotJsonValue(schema) === undefined) parameterProblems.push(`${definition.name}: 参数 schema 不是 lossless JSON`);
+    if (!schema || schema.type !== 'object') parameterProblems.push(`${definition.name}: 参数 schema 根 type != object`);
+    if (!Array.isArray(schema?.required)) parameterProblems.push(`${definition.name}: 参数 schema 缺 required 数组`);
+    if (dshTools.real) {
+      try { dshTools.assertSupportedJsonSchema(schema); }
+      catch (error) { parameterSubsetProblems.push(`${definition.name}: ${String(error?.message || error).slice(0, 160)}`); }
+    }
+  }
+  check('16 个工具的参数 schema 可快照且根为 object/required 数组', parameterProblems.length === 0,
+    { expected: [], actual: parameterProblems });
+  check('提示：参数 schema 也落在宿主白名单子集（非必需，仅收紧）', parameterSubsetProblems.length === 0,
+    { expected: [], actual: parameterSubsetProblems }, { advisory: true });
 }
 
 /** Second half of the attachment checks, using a harness whose saveImage returns a class instance. */

@@ -6,7 +6,7 @@
 [English](README.md) | **简体中文**
 
 > [!IMPORTANT]
-> **项目状态：架构设计 / 预发布。** 当前仓库已包含可运行的 **Web T1 调试视图插件**（本地 link 安装、未发布 npm；验收状态见 [docs/status.md](docs/status.md)），其余运行环境仍为规划。下文除非明确说明，否则均为**规划能力**；仍没有已发布的安装包、兼容性矩阵或正式 Release。请勿将设计目标当作已经通过的测试结果。
+> **项目状态：架构设计 / 预发布。** 当前仓库已包含可运行的 **Web T1 + T2 调试视图插件**（本地 link 安装、未发布 npm；验收状态见 [docs/status.md](docs/status.md)），其余运行环境仍为规划。下文除非明确说明，否则均为**规划能力**；仍没有已发布的安装包、兼容性矩阵或正式 Release。请勿将设计目标当作已经通过的测试结果。
 
 ## 这是什么项目？
 
@@ -14,7 +14,7 @@
 
 项目从原来的 **`dsh-agent-team-browser` 共享 Chromium 浏览器工作区** 设计演进而来。**原有浏览器工作区不会被废弃**，它将作为跨平台测试运行时中的 Web 适配器及共享浏览器能力继续保留。
 
-**规划中的调试运行环境（共 9 个）：** Web、Windows 桌面、Linux 桌面、macOS 桌面、Android、TUI、HarmonyOS、游戏与 3D。当前只有 **Web 的 T1 程序化通道**已实现并在隔离 DSH 实例上完成验收；其余 8 个运行环境均为**规划中、未实现**，界面选择器里保持置灰。
+**规划中的调试运行环境（共 9 个）：** Web、Windows 桌面、Linux 桌面、macOS 桌面、Android、TUI、HarmonyOS、游戏与 3D。当前 **Web 的 T1 程序化通道与 T2 结构化 GUI 通道**已实现（T1 在隔离 DSH 实例完成验收；T2 由进程内真实 Chromium 验收套件验证，真实宿主会话仍为 NOT_RUN）。其余 8 个运行环境均为**规划中、未实现**，界面选择器里保持置灰。
 
 `dsh-agent-team-*` 是项目系列命名，**不意味着必须安装 Agent Team 或 [`dsh-agent-team-presets`](https://github.com/bloodarea/dsh-agent-team-presets)**。普通单 Agent 也应该能独立调用 UI 测试能力。
 
@@ -35,7 +35,7 @@ AI 编程 Agent 可以生成页面和界面代码，但仅凭代码、程序成�
 
 | 运行环境 | 当前状态 | 候选技术路线 | 目标能力 |
 | --- | --- | --- | --- |
-| **Web**（Chromium） | **T1 已实现**；T2–T4 未实现（面板可用） | Chromium、Chrome DevTools Protocol（CDP）、DOM/Accessibility API | 页面导航、表单、响应式布局、Console/Network、截图与交互 |
+| **Web**（Chromium） | **T1 + T2 已实现**；T3–T4 未实现（面板可用） | Chromium、Chrome DevTools Protocol（CDP）、DOM/Accessibility API | 页面导航、表单、响应式布局、Console/Network、截图与交互 |
 | **Windows 桌面** | 规划中，未实现（置灰） | Windows UI Automation（UIA）及系统允许的输入/采集接口 | 原生控件、窗口状态、界面流程和截图 |
 | **Linux 桌面** | 规划中，未实现（置灰） | 无障碍接口及桌面环境适配能力 | 原生控件、GUI 流程；实际支持范围受 X11/Wayland 与权限影响 |
 | **macOS 桌面** | 规划中，未实现（置灰） | macOS Accessibility（AXUIElement）及系统截屏/输入接口（需 TCC 授权） | 原生控件、窗口状态、界面流程和截图；初期不承诺完整无人值守自动化 |
@@ -45,9 +45,17 @@ AI 编程 Agent 可以生成页面和界面代码，但仅凭代码、程序成�
 | **游戏** | 规划中，未实现（置灰） | 游戏引擎/平台调试与输入接口（按引擎分别评估） | 运行时状态、输入、场景与画面证据 |
 | **3D** | 规划中，未实现（置灰） | WebGL/图形 API 与场景状态读取（待评估） | 视角/场景断言、画面证据 |
 
-以上是**候选方案，不等于已选定依赖或已完成集成**；除 Web T1 外，其余运行环境尚未定义能力分层（T1–T4 目前只针对 Web）。各运行环境适配器需要主动报告自己支持的操作，不得假装所有平台都有一样的能力。
+以上是**候选方案，不等于已选定依赖或已完成集成**；除 Web T1/T2 外，其余运行环境尚未定义能力分层（T1–T4 目前只针对 Web）。各运行环境适配器需要主动报告自己支持的操作，不得假装所有平台都有一样的能力。
 
 **初期不承诺：** iOS 自动化、macOS 完整无人值守自动化（受辅助功能/TCC 权限限制）、无限制操作系统控制、绕过 CAPTCHA 或安全限制、所有原生应用都能完全后台无焦点运行，以及游戏/3D 的通用自动化（按引擎与图形栈分别评估）。
+
+## 已实现的 Web P0 采集基础设施
+
+已有 `browser_screenshot` 增加可选的连续 `scale` 1–4、**文档CSS像素** `region:{x,y,width,height}` 、`persist:boolean=false`和持久根相对`.png`路径`out`。单次CDP PNG clip、DSF固定1，输出逐轴 `round(css×scale)`，上限1600万像素。PNG结构/CRC、尺寸、全量均匀/透明统计、JSON坐标映射、安全文件发布和附件metadata比较记录在 `capture.version=1`。均匀内容只警告，不自动判视觉失败。工具仍为16个，T3/T4视觉判断未实现。默认暂存修订Lead最终串行 **14/14、142/142**（[报告](tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json)）；T1 22/22、324/324（[报告](tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)），仅persist描述文案不同的后续代码复跑为 **21 PASS/1 FAIL、323/324必需项通过/1失败、exit1**（[05-59-53](tests/acceptance/runs/2026-11-01T05-59-53-185Z-105978/run-report.json)）。唯一失败为P21 loadingFailed快照检查，actual仅3条成功网络记录，与[04-30-43基线](tests/acceptance/runs/2026-11-01T04-30-43-916Z-53146/run-report.json)同项。Lead归类既有环境随机flake、非P0回归，但失败仍记FAIL；验收需串行，串行也不能保证消失。最终代码T2仍 **37 PASS/1 NOT_RUN、260/260、exit0**（[06-01-14](tests/acceptance/runs/2026-11-01T06-01-14-788Z-107358/run-report.json)）。暂存修订前历史：Lead两次 **13/13、117/117**（[首轮](tests/acceptance/runs/capture-p0-2026-11-01T05-15-01-055Z-85097/report.json)、[第二轮](tests/acceptance/runs/capture-p0-2026-11-01T05-15-05-476Z-85616/report.json)），下方早期计数保留为历史。权威说明见 [采集契约](docs/capture-p0.md)。
+
+原始PNG/base64字节与hash保留。`persist:boolean`默认false；默认写插件实例级 `<tmp>/dsh-ui-testing-capture-*` 暂存，绝对路径、0600、no-clobber，正常插件dispose清理。只有out/persist:true/非空DSH_UI_TESTING_CAPTURE_DIR才持久到绝对env根或可信cwd根，非法env不回退；持久路径相对根、dispose不删除。file新增pathKind/persistence/root/ephemeral区分模式；capabilities.observed.file仅persistence与relativePath（暂存null），不公开绝对路径。legacy无cwd也默认暂存，持久请求无根报OUTPUT_PATH_INVALID(root_unknown)。暂存失败仍交付图片，file=null+capture_file_unavailable；真实tmp不可写与SIGKILL残留尚未验证。附件metadata不能证明provider最终分辨率或可见性。
+
+真实Chromium+fake ctx三次连续各 **13/13探针、115/115必需项、0失败**（[末次报告](tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)）；T1回归 **22/22、324/324**（[报告](tests/acceptance/runs/2026-11-01T04-59-29-531Z-68121/run-report.json)）。公开 `capture.anomaly.maxDelta` 增量后通过 **13/13、117/117**（[报告](tests/acceptance/runs/capture-p0-2026-11-01T05-09-04-665Z-79630/report.json)），此前115项为增量前证据。P0真实宿主重启后加载、provider视觉仍 **NOT_RUN**。高密度不增加canvas/WebGL源位图细节；C13只证视口、滚动与fixture目标（含fixed）前后未变，不排除瞬时布局影响，也不解决本地文件系统TOCTOU。
 
 ## 核心设计原则
 
@@ -123,7 +131,7 @@ AI 编程 Agent 可以生成页面和界面代码，但仅凭代码、程序成�
 
 ### 测试证据与结论
 
-测试记录计划包含：目标与环境标识、测试用例、步骤、操作来源、时间、预期结果、实际观察、测试状态以及相关证据引用。敏感内容默认不采集或进行脱敏。
+测试记录计划包含：目标与环境标识、测试用例、步骤、操作来源、时间、预期结果、实际观察、测试状态以及相关证据引用。这是规划中的证据策略。当前Web P0截图是显式采集请求，保留未自动脱敏的PNG内容，默认暂存，仅out/persist:true/非空env显式持久；分享前需检查敏感内容。
 
 视觉模型可以提供判断和置信度，但**置信度分数本身不是测试通过的证明**。确定性断言、人工审查证据、平台限制必须能够区分。
 
@@ -189,7 +197,7 @@ flowchart TD
 
 - [ ] **R0 — 可行性验证：** 审计 DSH 插件/Sidebar 接口、上游许可证、目标平台能力与安全边界。
 - [ ] **R1 — Web 基础：** 保留工作区/上下文/标签页管理、后台 Chromium 执行及查看器解耦。
-- [ ] **R2 — 测试核心：** 实现结构化测试会话、T1–T4 能力选择、操作、观察、断言和证据报告。
+- [ ] **R2 — 测试核心：** 实现结构化测试会话、T1–T4 能力选择、操作、观察、断言和证据报告。_（已交付子范围：P0采集基础设施（连续密度、文档裁剪、PNG校验、安全证据落盘；默认暂存/显式持久；14/14探针与142/142必需项）+ Web T1 程序化 + Web T2 结构化 GUI（snapshot/ref、点击、输入、滚动、表单、节点状态、等待、结构化证据）与 38 条 T2 验收；T3–T4 与跨运行环境测试核心仍未完成。）_
 - [ ] **R3 — 协作控制：** 实现单/多 Agent 授权、目标归属、人工接管和并发测试协调。
 - [ ] **R4 — 桌面应用：** 验证 Windows/Linux 的无障碍、输入、截图、权限和焦点约束。
 - [ ] **R5 — Android：** 验证设备/模拟器生命周期、UI 节点、交互、截图和错误报告。

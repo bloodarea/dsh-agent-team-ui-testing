@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>P0 Capture Fixture</title>
+<!--
+  P0 capture acceptance fixture (tests/acceptance/capture-p0.mjs).
+
+  Fixed geometry, fixed colours, no clocks and no network: every assertion is a PNG pixel truth or
+  a file fact. Contract values (CSS boxes and RGB colours) are listed in
+  tests/ui_test_fixture/README.md §P0. Do not restyle this page without updating that table and
+  the expectations in capture-p0.mjs.
+
+    body         margin 0, 2600px tall (scrollable past 400), background #ffffff
+    #cap-red     left 20 top 20    60x40  rgb(255,0,0)
+    #cap-blue    left 120 top 20   40x40  rgb(0,128,255)
+    #cap-stripes left 20 top 100  120x40  1 CSS px hard black/white stripes (no grey)
+    #cap-doc-green left 20 top 1500 40x40 rgb(0,255,0)   (document-CSS / scroll mapping)
+    #cap-text    left 20 top 200   13px/16px monospace, text "P0CAPTURE-Q"
+    #cap-fixed   position:fixed, left 200 top 300, 30x30 rgb(255,0,255)
+                 (layout-stability probe for captureBeyondViewport)
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  body { height: 2600px; position: relative; }
+  #cap-red { position: absolute; left: 20px; top: 20px; width: 60px; height: 40px; background: rgb(255, 0, 0); }
+  #cap-blue { position: absolute; left: 120px; top: 20px; width: 40px; height: 40px; background: rgb(0, 128, 255); }
+  #cap-stripes {
+    position: absolute; left: 20px; top: 100px; width: 120px; height: 40px;
+    background-image: repeating-linear-gradient(90deg, #000 0 1px, #fff 1px 2px);
+  }
+  #cap-doc-green { position: absolute; left: 20px; top: 1500px; width: 40px; height: 40px; background: rgb(0, 255, 0); }
+  #cap-text { position: absolute; left: 20px; top: 200px; font: 13px/16px monospace; color: #000000; }
+  #cap-fixed { position: fixed; left: 200px; top: 300px; width: 30px; height: 30px; background: rgb(255, 0, 255); }
+</style>
+</head>
+<body>
+  <div id="cap-red"></div>
+  <div id="cap-blue"></div>
+  <div id="cap-stripes"></div>
+  <div id="cap-doc-green"></div>
+  <div id="cap-text">P0CAPTURE-Q</div>
+  <div id="cap-fixed"></div>
+</body>
+</html>

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>blank</title>
+<!--
+  Blank-page fixture for the P0 capture blank check (tests/acceptance/capture-p0.mjs C7).
+  Body is pure white with no content at all, so a viewport capture must decode to a single colour
+  (warnings: content_uniform) while still being delivered normally.
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  body { height: 800px; }
+</style>
+</head>
+<body></body>
+</html>

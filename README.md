@@ -6,7 +6,7 @@ Help AI agents operate, inspect, test, and verify Web, desktop, Android, TUI and
 **English** | [简体中文](README_zh.md)
 
 > [!IMPORTANT]
-> **Project status: architecture / pre-release.** This repository now contains a working **Web T1 debug-view plugin** (linked locally, not published to npm; verification state in [docs/status.md](docs/status.md)); other runtime environments remain planned. All other capabilities below are **planned** unless explicitly marked otherwise. There is still no published installation package, compatibility matrix, or official release. This README describes intended behavior, not completed tests.
+> **Project status: architecture / pre-release.** This repository now contains a working **Web T1 + T2 debug-view plugin** (linked locally, not published to npm; verification state in [docs/status.md](docs/status.md)); other runtime environments remain planned. All other capabilities below are **planned** unless explicitly marked otherwise. There is still no published installation package, compatibility matrix, or official release. This README describes intended behavior, not completed tests.
 
 ## What is this?
 
@@ -14,7 +14,7 @@ Help AI agents operate, inspect, test, and verify Web, desktop, Android, TUI and
 
 The project evolves from the earlier **`dsh-agent-team-browser`** concept, whose original focus was shared Chromium workspaces. **The browser workspace remains part of the plan**, but becomes one adapter within a broader UI testing runtime.
 
-**Planned runtime environments (9):** Web, Windows desktop, Linux desktop, macOS desktop, Android, TUI, HarmonyOS, games, and 3D. Only the **Web T1 programmatic channel** is implemented and verified on an isolated DSH instance; the other eight environments are **planned and not implemented**, and stay disabled in the runtime picker.
+**Planned runtime environments (9):** Web, Windows desktop, Linux desktop, macOS desktop, Android, TUI, HarmonyOS, games, and 3D. The **Web T1 programmatic channel and Web T2 structured-GUI channel** are implemented (T1 verified on an isolated DSH instance; T2 verified by the in-process real-Chromium acceptance suite — its real-host session remains NOT_RUN). The other eight environments are **planned and not implemented**, and stay disabled in the runtime picker.
 
 The `dsh-agent-team-*` name denotes the project family. **Agent Team and [`dsh-agent-team-presets`](https://github.com/bloodarea/dsh-agent-team-presets) are optional:** a single agent should be able to use the testing runtime independently.
 
@@ -35,7 +35,7 @@ This project aims to provide:
 
 | Environment | Current status | Candidate integration approach | Intended coverage |
 | --- | --- | --- | --- |
-| **Web** (Chromium) | **T1 implemented** with per-DSH-workspace page isolation (one shared Chromium/profile; Cookie/storage shared); T2–T4 not implemented (debug view available) | Chromium, Chrome DevTools Protocol (CDP), DOM/accessibility APIs | Navigation, forms, responsive layouts, console/network inspection, screenshots and interactions |
+| **Web** (Chromium) | **T1 + T2 implemented** with per-DSH-workspace page isolation (one shared Chromium/profile; Cookie/storage shared); T3–T4 not implemented (debug view available) | Chromium, Chrome DevTools Protocol (CDP), DOM/accessibility APIs | Navigation, forms, responsive layouts, console/network inspection, screenshots and interactions |
 | **Windows desktop** | Planned, not implemented (picker disabled) | Windows UI Automation (UIA) and platform-approved input/capture mechanisms | Native controls, window state, user journeys, screenshots |
 | **Linux desktop** | Planned, not implemented (picker disabled) | Accessibility interfaces and compositor/desktop-specific automation | Native controls and GUI workflows; actual coverage depends on X11/Wayland and permissions |
 | **macOS desktop** | Planned, not implemented (picker disabled) | macOS Accessibility (AXUIElement) plus system capture/input APIs (TCC authorization required) | Native controls, window state, user journeys, screenshots; full unattended automation is not an initial commitment |
@@ -45,9 +45,17 @@ This project aims to provide:
 | **Games** | Planned, not implemented (picker disabled) | Engine/platform debug and input interfaces (evaluated per engine) | Runtime state, input, scene and frame evidence |
 | **3D** | Planned, not implemented (picker disabled) | WebGL/graphics APIs and scene-state access (to be evaluated) | Viewpoint/scene assertions, frame evidence |
 
-These technologies are **candidates, not selected dependencies or verified integrations**. Apart from Web T1, no capability-tier model is defined for the other environments (T1–T4 currently apply to Web only). An adapter must report its available operations instead of pretending every platform supports the same functions.
+These technologies are **candidates, not selected dependencies or verified integrations**. Apart from Web T1/T2, no capability-tier model is defined for the other environments (T1–T4 currently apply to Web only). An adapter must report its available operations instead of pretending every platform supports the same functions.
 
 **Not included in the initial commitment:** iOS automation, fully unattended macOS automation (accessibility/TCC constraints), unrestricted OS control, bypassing CAPTCHA or application security restrictions, guarantees of background input on every native application, or generic game/3D automation (evaluated per engine and graphics stack).
+
+## Implemented Web capture infrastructure (P0)
+
+The existing `browser_screenshot` accepts optional continuous `scale` 1–4, `region:{x,y,width,height}` in **document CSS pixels**, `persist:boolean=false`, and a persistent-root-relative `.png` `out`. It uses one CDP PNG clip with DSF fixed at 1; output dimensions are `round(css × scale)`, limited to 16 million pixels. PNG structure/CRC, dimensions, full uniform/transparent pixel checks, JSON coordinate mapping, safe file publication and attachment metadata comparisons are recorded in `capture.version=1`. Uniform content produces a warning, not a visual failure. The tool count remains 16; T3/T4 visual judgement is not implemented. The staging revision passed **14/14 and 142/142** ([final report](tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json)); T1 passed22/22/324/324 ([report](tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)) while a later run with only the persist description changed recorded **21 PASS / 1 FAIL and 323/324 required checks passed, exit1** ([report](tests/acceptance/runs/2026-11-01T05-59-53-185Z-105978/run-report.json)). The sole failure is the P21 loadingFailed snapshot check, which observed only three successful network entries, matching the [baseline failure](tests/acceptance/runs/2026-11-01T04-30-43-916Z-53146/run-report.json). Lead classified this as an existing intermittent environment flake rather than a P0 regression; the failed run remains FAIL. Run acceptance serially, although serialization cannot guarantee the flake disappears. Final-code T2 remained **37 PASS / 1 NOT_RUN and 260/260**, exit0 ([report](tests/acceptance/runs/2026-11-01T06-01-14-788Z-107358/run-report.json)). Historical pre-staging verification passed **13/13 and 117/117 twice** ([run one](tests/acceptance/runs/capture-p0-2026-11-01T05-15-01-055Z-85097/report.json), [run two](tests/acceptance/runs/capture-p0-2026-11-01T05-15-05-476Z-85616/report.json)); earlier counts below are historical. See the [capture contract](docs/capture-p0.md).
+
+Original PNG/base64 bytes and hashes are preserved. `persist:boolean` defaults to false. Files now default to plugin-instance staging at `<tmp>/dsh-ui-testing-capture-*`, with an absolute path, mode 0600 and no-clobber publication; normal plugin disposal removes staging. An explicit `out`, `persist:true`, or nonempty `DSH_UI_TESTING_CAPTURE_DIR` requests persistent storage under the absolute env root or trusted workspace root; invalid env roots never fall back. Persistent paths are root-relative and survive disposal. `file.pathKind/persistence/root/ephemeral` distinguish the modes; capabilities `observed.file` includes only persistence and relativePath (null for staging), never an absolute path. Legacy calls without cwd also stage by default; persistent requests without a root fail with OUTPUT_PATH_INVALID(root_unknown). Staging failure returns the image with file=null and capture_file_unavailable. Real unwritable-tmp failure and SIGKILL leftovers remain unverified. Attachment metadata does not establish provider visibility or final resolution.
+
+Three consecutive real-Chromium/fake-context runs each passed **13/13 probes and 115/115 required checks**, with zero failed checks ([latest report](tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)); the T1 regression passed **22/22 and 324/324** ([report](tests/acceptance/runs/2026-11-01T04-59-29-531Z-68121/run-report.json)). After exposing `capture.anomaly.maxDelta`, the suite passed **13/13 and 117/117** ([incremental report](tests/acceptance/runs/capture-p0-2026-11-01T05-09-04-665Z-79630/report.json)); the earlier 115-check reports precede that addition. These reports do not establish P0 loading after a real-host restart or provider vision, both **NOT_RUN**. Higher density does not add canvas/WebGL source detail. C13 found unchanged before/after viewport, scroll and fixture rectangles, including a fixed element; transient layout effects and local filesystem TOCTOU remain outside that evidence.
 
 ## Key design principles
 
@@ -123,7 +131,7 @@ A typical intended flow:
 
 ### Evidence and verdicts
 
-Planned test records should carry a target/environment identity, test case and step, action source, timestamp, expected result, observed result, status, and references to relevant artifacts. Sensitive captures are disabled or redacted by default.
+Planned test records should carry a target/environment identity, test case and step, action source, timestamp, expected result, observed result, status, and references to relevant artifacts. This is a planned evidence policy. The implemented Web P0 screenshot is an explicit capture request, preserves unredacted PNG content, stages a file by default and persists only for out/persist:true/nonempty env; users must account for that content before sharing artifacts.
 
 A visual model may offer a finding or confidence estimate, but **a confidence score alone is not proof**. Deterministic assertions, reviewed evidence, and platform limitations must remain distinguishable.
 
@@ -189,7 +197,7 @@ These are **planned work items**, not claims of completion. Ordering may change 
 
 - [ ] **R0 — Feasibility:** audit DSH plugin/sidebar interfaces, upstream licenses, test target capabilities, and security boundaries.
 - [ ] **R1 — Web foundation:** retain workspace/context/tab management, background Chromium execution, and viewer independence.
-- [ ] **R2 — Test core:** add typed test sessions, T1–T4 capability selection, actions, observations, assertions, and evidence reports.
+- [ ] **R2 — Test core:** add typed test sessions, T1–T4 capability selection, actions, observations, assertions, and evidence reports. _(Sub-scope delivered: P0 capture infrastructure (continuous density, document clip, PNG validation, safe evidence files; default staging / explicit persistence; 14/14 probes and 142/142 required checks) + Web T1 programmatic + Web T2 structured GUI (snapshot/ref, click, type, scroll, forms, node state, wait, structured evidence) with the 38-condition T2 acceptance suite; T3–T4 and the cross-environment test core remain open.)_
 - [ ] **R3 — Collaboration:** implement agent/team authorization, target ownership, human takeover, and concurrent test scheduling.
 - [ ] **R4 — Desktop:** validate Windows/Linux adapters, accessibility/input/capture options, permissions, and focus constraints.
 - [ ] **R5 — Android:** validate device/emulator lifecycle, UI hierarchy, interaction, screenshots, and failure reporting.
