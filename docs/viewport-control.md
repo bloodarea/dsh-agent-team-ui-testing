@@ -6,6 +6,8 @@
 >
 > 本轮对截图默认密度（跟随 `view.scale`）与 scale 下界（1 → 0.1）的变更**是有意的契约变更**，已同步更新 P0/T3 文档，不能继续宣称旧工具语义完全不变。
 
+> **2026-11-02 画布式加法（已拆为独立的 P0-D 混合画布，权威契约见 [canvas-viewport.md](canvas-viewport.md)）**：本文只描述 P0-C 共享视口（`x/y`/宽高/`scale`/CAS/观测）；画布原点、空白、拖拽与滚轮缩放归属 P0-D。`view` 新增 `canvasX/canvasY`（视口左上角在文档画布上的位置，带符号 ±10,000,000）；`x/y` 保留真实 document scroll。面板 X/Y 输入与拖拽改为写 `canvasX/canvasY`（可为负/露白），`O=C-S` 时预览/截图/T3 按画布空间合成（O=0 与本文旧语义字节/像素一致）。本文 §3 的 x/y 描述、§6 的截图默认路径在 `O=0` 时仍成立；`O≠0` 以 canvas-viewport 为准。
+
 ## 1. 冻结的裁决与实施边界
 
 1. 尺寸栏每个数值输入框支持鼠标滚轮快速调整；新增视口 X/Y 输入框，同样支持滚轮。X/Y 是**页面顶层滚动位置**，即 layout viewport 左上角在文档中的 CSS 坐标，不是桌面窗口位置、容器平移或 CDP positionX/Y。
@@ -30,7 +32,7 @@
 | `capture-p0.js` | `CAPTURE_LIMITS.scaleMin=0.1`、`minOutputPixels=1`、`hasPositiveOutputSize()` |
 | `vision-t3.js` / `t3ResolveSource` | `Source.live` 保留"省略 scale"，由 Host 在调用内用冻结的 `view.scale` 解析 |
 | `browser-safety.js` | 新增 `VIEWPORT_CONFLICT`（state / retryable） |
-| `client.js` | 共享 view 采纳/草稿/滚轮/fit/painted rect 映射/帧几何屏障；尺寸栏 X/Y 与 flex-wrap |
+| `client.js` | 共享 view 采纳/草稿/滚轮/fit/painted rect 映射/帧几何屏障；尺寸栏 X/Y 与 flex-wrap；**拖拽视口（2026-11-02 用户要求）**：`☑拖拽`、抓取光标、按 painted rect 把拖动换算成 x/y 并 80ms 合并写入 |
 | `tests/acceptance/viewport.mjs` / `viewport-gui.mjs` | Host 与隔离 GUI 验收套件（见 §8） |
 
 ## 3. 数据模型与范围
@@ -174,6 +176,19 @@ GUI 实测：200% 时页面位移约是 100% 时的一半（V9.1–V9.3）。Ctr
 
 改宽高后，在新帧被证明匹配前暂停指针/滚轮输入：`onFrameLoad` 记录解码后的 `naturalWidth/Height` 与帧元数据的 `pageWidth/pageHeight`；`geometryMatches()` 优先比对 page 尺寸（±1 CSS px），没有元数据时退回纵横比（≤0.02）。屏障上限 `GEOMETRY_WAIT_MS=250`，超时后放行并清掉 pending——**这是屏障而不是保证**。**帧协议未扩展**（`frame-source.js`/`frame-push.js` 本轮未改），因此没有可信的帧几何/代次关联；该子项在 GUI 套件里记 NOT_RUN（V10.6），文档与报告都按 partial 表述。
 
+### 5.5 拖拽视口（面板「拖拽」模式，用户 2026-11-02 要求，已实现）
+
+尺寸栏在 `适应窗口` 与缩放 `%` 之间新增 `☑拖拽` 复选框（`aria-label="拖拽视口"`，无共享 `ui.view` 的旧 Host 时禁用）。语义：
+
+- **光标**：勾选后预览画面的 `cursor` 为 `grab`，按住拖动期间为 `grabbing`；不勾选时为 `auto`。
+- **方向与换算（2026-11-02 canvas v2 起）**：按住画面拖动按**内容跟手**方向平移**画布原点 C**——向右/下拖 → `canvasX/canvasY` 减小，向左/上拖 → 增大；可进入负值/露白，范围 ±10,000,000。位移按同一 painted rect 换算：`Δcanvas = ΔhostPx × W / Pw`（y 同理，`Pw` 为实际绘制宽度；缩放比例抵消）。空白区也可起手（拖拽模式 overlay）。
+- **写入路径**：与输入框相同的 `/viewport` v1/CAS 请求；面板按 80ms 合并移动事件，同一时刻最多一个 set 在途（Host 每次 set 含两帧 + ≤1000ms 稳定读回，不能被洪泛）。冲突/失败沿用 `VIEWPORT_CONFLICT` 处理，不自动重放；拖拽模式不改变 `source` 归因规则（HTTP v1 记为 `gui`）。
+- **输入抑制**：勾选期间不向目标页面派发 pointerdown/move/up（点击、拖拽、悬停都零派发）。
+- **滚轮 = 缩放画布（2026-11-02 用户要求，已实现）**：拖拽模式下画面滚轮不再滚动目标页，而是改共享 `view.scale`（步进 5%/Shift 10%/Alt 1%，Alt 优先；范围 0.1–2，越界 no-op；Ctrl/Meta+滚轮不缩放）。以**屏幕光标**为锚点（含盒子居中补偿）：`d = C + (S−R.left)/s`、`C' = d − (S−left')/s'`（`S` 光标屏幕点、`R` 盒实测矩形，两轴独立；不居中轴退回 `R.left`），`canvasX/canvasY` 与 `scale` 同 patch 且不与 `x/y` 混传；拿不到几何则只改 scale。若「适应窗口」勾选则**自动取消**（走手动改比例的同一路径）。拖拽模式外的滚轮仍是 §5.3 的滚页面语义。取消勾选、关闭尺寸栏、切换工作区（scope/binding generation 变化）都会结束拖拽并恢复默认光标与页面交互。`O≠0` 时输入使用 §5.3 的 fail-closed 屏障；空白区零派发。
+- **边界**：拖拽期间显示帧若更新（screencast 尺寸变化），换算沿用按下时的绘制矩形（一次拖拽内一致）；`x/y` 只在文档滚动范围内移动，RTL/scroll snap 等边界与 §3.1 相同，不做额外承诺。
+
+GUI 验收见 §8.2 的 V12（复选框/光标/方向/抑制页面事件/clamp/恢复交互）。
+
 ## 6. Agent 截图比例与映射
 
 ### 6.1 单图、显式密度、扩展下界（Lead 冻结）
@@ -312,13 +327,15 @@ limits.capture={scaleRange:[0.1,4],defaultScaleSource:"view.scale",defaultScale:
 | V9-t3-live | H8 T3 live 缺省比例、act 冻结原比例 | PASS（5 项） |
 | V10-ui-projection | H10 lossless JSON、close 清 observed/x/y | PASS（6 项） |
 
-**NOT_RUN（Host 侧）**：H9 screencast ACK/帧递增时序；真实宿主 30 工具（需重启）。`mode` 与同传 x/y/scale 的断言已在 V3 内通过。
+**NOT_RUN（Host 侧）**：H9 screencast ACK/帧递增时序。
+
+**真实宿主复验（2026-11-02，用户重启 3080 后）**：`dsh web` pid <pid>（01:28:05 启动）的真实 Agent 会话报告 30 工具与 `ui.view`，并实测：get 缓存诊断（`stale`/`originId:null`）、set 宽高+X/Y（回读 `mode:landscape`/`settled:true`/页面真值 1024×768、DPR 1、scrollY 120、zoom 1）、scale-only 不改几何且默认截图 666×499（`scaleSource:"view"`）、显式 scale=1 → 1024×768、`VIEWPORT_CONFLICT` 零应用、5 例 `INVALID_ARGUMENT`、tablet/wide 预设与 `mode+同传 x/y/scale`、y clamp 1520、页面自主滚动回显 `source:"page"`；截图 region 纯红 `maxDelta:0`、T3 live 默认比例 960×540。**面板交互（X/Y/滚轮/fit/命中映射/帧屏障）仍未验证**（只确认下发的 bundle 含客户端切片）。记录见 [viewport-real-host-2026-11-02.md](../tests/acceptance/evidence/viewport-real-host-2026-11-02.md)。`mode` 与同传 x/y/scale 的断言已在 V3 内通过。
 
 ### 8.2 隔离 DSH + GUI：`node tests/acceptance/viewport-gui.mjs`
 
-**73/73 PASS、0 FAIL、5 NOT_RUN、exit 0** — Lead 终验 `tests/acceptance/runs/viewport-gui-2026-11-01T16-25-59-658Z-576275/run-report.json`，证据 `tests/acceptance/evidence/viewport-gui-2026-11-01T16-25-59-658Z/`（4 张 PNG + `SUMMARY.md`）；执行者连跑两次同结果（`...16-09-04-966Z-554236`、`...16-10-07-443Z-555424`）。
+**142/142 PASS、0 FAIL、5 NOT_RUN、exit 0**（2026-11-02 画布 v2）— Lead 复跑 `tests/acceptance/runs/viewport-gui-2026-11-01T20-07-15-023Z-753710/run-report.json`，证据 `tests/acceptance/evidence/viewport-gui-2026-11-01T20-07-15-023Z/`（9 张 PNG + `SUMMARY.md`）；含 V12 拖拽 12 项 + V13 画布 41 项。拖拽前的 73/73 PASS 记录（`runs/viewport-gui-2026-11-01T16-25-59-658Z-576275/run-report.json`，执行者 `...16-09-04-966Z-554236`、`...16-10-07-443Z-555424`）保留为历史。
 
-覆盖：V0 隔离实例与本仓库构建指纹（隔离端口、token 不落 GUI/log、3080/3081 未触碰、加载的 bundle 含尺寸栏/X-Y 代码）、V1 面板与五个输入框（含精确 aria-label）与窄面板不溢出、V2 `ui.view` 字段与范围、V3 首次绑定只推一次 393×852 且用 v1 形状、V4 页面 CSS 视口=Host 尺寸且 DPR=1、V5 十五项滚轮（步长/Shift/Alt/Alt 优先/合并/不滚动宿主/不误发目标页/delta=0/Ctrl/Meta/边界 clamp）、V6 X/Y 提交与 Escape 恢复与页面自主滚动回显（V6.4/V6.4b/V6.4c）、V7 Host 侧 mode/x/y/scale 与 fit 取消与导航不隐式写、V8 fit<100% 与 200% 的真实命中（isTrusted、映射 clientX/Y）与框外零派发、V9 画面滚轮 W/Pw 缩放、V10 全程无页面异常/DPR 未被动/范围收敛、V11 窄面板 flex-wrap。
+覆盖：V0 隔离实例与本仓库构建指纹（隔离端口、token 不落 GUI/log、3080/3081 未触碰、加载的 bundle 含尺寸栏/X-Y 代码）、V1 面板与五个输入框（含精确 aria-label）与窄面板不溢出、V2 `ui.view` 字段与范围、V3 首次绑定只推一次 393×852 且用 v1 形状、V4 页面 CSS 视口=Host 尺寸且 DPR=1、V5 十五项滚轮（步长/Shift/Alt/Alt 优先/合并/不滚动宿主/不误发目标页/delta=0/Ctrl/Meta/边界 clamp）、V6 X/Y 提交与 Escape 恢复与页面自主滚动回显（V6.4/V6.4b/V6.4c）、V7 Host 侧 mode/x/y/scale 与 fit 取消与导航不隐式写、V8 fit<100% 与 200% 的真实命中（isTrusted、映射 clientX/Y）与框外零派发、V9 画面滚轮 W/Pw 缩放、V10 全程无页面异常/DPR 未被动/范围收敛、V11 窄面板 flex-wrap、**V12「拖拽」模式**、**V13 画布 v2（2026-11-02）**：ui.canvas 握手、负 canvas 输入/滚轮、O=0 无位移、四边纯白 blank、内容点击 `p=q+O`、blank 零派发、帧/滚动 fail-closed、拖拽进入负 C、空白 overlay 拖回、seed 刷新/过期丢弃/缺 provenance/fail-closed、旧 Host/无 canvas 回退、canvas 与 x/y 不混传。
 
 **5 条 NOT_RUN（原样保留，不算通过）**：
 
@@ -336,22 +353,24 @@ Lead 终验（终版代码，2026-11-01 16:19–16:45，串行单驱动者）的
 
 | 套件 | 结果 | 报告 |
 | --- | --- | --- |
-| `run.mjs`（T1） | 23/23 probes、**349/349** required、0 failed、exit 0（P21 loadingFailed flake 本轮未复现） | `runs/2026-11-01T16-43-50-413Z-599293/run-report.json` |
-| `capture-p0.mjs` | 14/14 probes、**142/142** required、0 failed、exit 0 | `runs/capture-p0-2026-11-01T16-19-51-182Z-564952/report.json` |
+| `run.mjs`（T1） | 23/23 probes、**349/349** required、0 failed、exit 0（P21 loadingFailed flake 本轮未复现） | `runs/2026-11-01T16-43-50-413Z-599293/run-report.json`（画布 v2 回归报告待 task-5 更新） |
+| `capture-p0.mjs` | 15/15 probes、**162/162** required、0 failed、exit 0 | `runs/capture-p0-2026-11-01T20-18-32-415Z-768943/report.json` |
 | `t2-structured.mjs` | 38 probes：37 PASS / 0 FAIL / 1 NOT_RUN（C38 套件边界）、**261/261** required、exit 0 | `runs/2026-11-01T16-41-28-155Z-593638/run-report.json` |
-| `t3-vision.mjs` | criteria **56/56**、**391/391** required、failedChecks 0、notApplicableChecks 3、exit 0 | `runs/2026-11-01T16-42-25-550Z-595320/run-report.json` |
+| `t3-vision.mjs` | criteria **56/56**、**415/415** required、failedChecks 0、notApplicableChecks 3、exit 0 | `runs/2026-11-01T20-18-56-169Z-770336/run-report.json` |
 | `network-p0.mjs` | criteria **52/52**、**266/266** required、failedChecks 0、notRunChecks 8、exit 0 | `runs/2026-11-01T16-43-03-471Z-597623/run-report.json` |
 | `network-chain.mjs` | criteria **12/12**、49 required、0 failed、1 NOT_RUN、exit 0 | `runs/2026-11-01T16-43-43-439Z-598890/run-report.json` |
 | `workspace-isolation.test.mjs` | **77/77**、exit 0 | `runs/workspace-isolation-1793550357248/report.json` |
 | `runtime-faults.test.mjs` | **16/16**、exit 0 | `node --test`（无 JSON 报告） |
-| `viewport-gui.mjs` | **73/73 PASS**、0 FAIL、5 NOT_RUN、exit 0 | `runs/viewport-gui-2026-11-01T16-25-59-658Z-576275/run-report.json` |
+| `viewport-gui.mjs`（拖拽前，2026-11-01） | **73/73 PASS**、0 FAIL、5 NOT_RUN、exit 0 | `runs/viewport-gui-2026-11-01T16-25-59-658Z-576275/run-report.json` |
+| `viewport-gui.mjs`（拖拽轮，2026-11-02） | **85/85 PASS**、0 FAIL、5 NOT_RUN、exit 0 | `runs/viewport-gui-2026-11-01T18-11-12-661Z-654115/run-report.json` |
+| `viewport-gui.mjs`（画布轮，2026-11-02） | **142/142 PASS**、0 FAIL、5 NOT_RUN、exit 0 | `runs/viewport-gui-2026-11-01T20-07-15-023Z-753710/run-report.json` |
 | `check-skill.mjs` / `check-skill-registry.mjs` | **30/30** / **19/19**、exit 0 | 结构/注册检查（无 JSON 报告） |
 
 T3 的 3 条 NOT_APPLICABLE（不算 PASS）：`dom-fractional-clientxy`（Blink 整数截断）、`inert-hit-test-vision`（真实浏览器 hit-test 不返回 inert 子树）、`page-drag-truth`（ABORTED 已关页，页面级 downs/ups 不可读）；C50 曾出现的失败是测试共享时间戳累计 >1000ms 的时序假象，已改为每 case 现取 context（只改测试，`index.js` 未动）。完整记录见 [status.md](status.md)「Lead 独立终验」。新增/调整的旧断言保留了显式 scale=1 回归（没有删旧高密度/CRC/预算断言来凑通过）。
 
 必须继续记为 NOT_RUN，直到有对应证据：
 
-- **真实宿主（3080，pid <pid>）**：未重启，30 工具与 `ui.view`/`browser_viewport`/面板 X/Y 在真实 Agent 会话未验证。隔离 DSH GUI 是验收证据，**不能冒充 3080**。
+- **真实宿主（3080）**：2026-11-02 01:28 重启后，30 工具、`ui.view` 与 `browser_viewport` 的 Agent 侧已复验（见 §8.1）；**面板交互（X/Y/滚轮/fit/命中映射/2026-11-02 的拖拽）仍 NOT_RUN**，隔离 DSH GUI 结果不能替代真实面板操作。
 - **H9 screencast 帧密度/ACK 时序**：未单独实测；用户提供的 DPR=2 实验结论仍只是外部事实，本轮未复测。
 - **GUI 5 条 NOT_RUN** 的归属（§8.2 表）。
 - **provider 图像可见性**：附件元数据不能证明模型收到原分辨率图像。

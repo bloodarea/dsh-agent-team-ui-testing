@@ -22,11 +22,17 @@
  *   - A fixed-coordinate element is hit at fit<100% and at scale>100%: the target page counter
  *     increases exactly once and `window.__t2` records `isTrusted:true` at the mapped point.
  *   - Frame wheel deltas are scaled by W/Pw, H/Ph (two scales measured).
+ *   - P0-C v2 (V13, docs/canvas-viewport.md §5.2–§5.3): the Host `ui.canvas` handshake, signed
+ *     canvasX/canvasY input/wheel, pure-white blank pixels and the -(C-frame.scroll)*displayScale
+ *     frame displacement, q -> p=q+O hit mapping, blank zero dispatch, fail-closed scroll/geometry
+ *     barrier (CDP-rewritten /state evidence), drag that writes a negative C, and the simulated
+ *     no-canvas / no-shared-view fallbacks (X/Y disabled or back to document scroll).
  *   - GUI screenshots are written under tests/acceptance/evidence/viewport-gui-<stamp>/.
  *
  * NOT covered here (reported, never implied as verified):
- *   - Old-Host degradation (X/Y disabled, legacy `{width,height}` body): this suite only runs a
- *     Host that exposes `ui.view`, so the legacy branch is recorded NOT_RUN.
+ *   - A real old Host binary: this suite only starts a Host that exposes `ui.view`; the old-Host
+ *     branch is exercised by V13 through CDP-rewritten `/state` snapshots (simulated projection,
+ *     not a second Host build) and the real legacy `{width,height}` write path stays NOT_RUN (V10.4).
  *   - The single-owner lease / BUSY concurrency and the `expectedRevision` conflict path are
  *     Host-slice acceptance items; this suite only asserts that GUI patches carry a revision.
  *   - The resize geometry barrier is best-effort (≤250ms, no frame-protocol extension): the
@@ -456,11 +462,16 @@ async function panelState() {
       value: input.value,
       disabled: input.disabled,
       field: input.getAttribute('data-utb-field'),
+      min: input.getAttribute('min'),
+      max: input.getAttribute('max'),
+      title: input.title,
     }));
     const byLabel = {};
     for (const input of inputs) if (input.label) byLabel[input.label] = input;
     const bar = panel.querySelector('.utb-size');
     const check = panel.querySelector('.utb-check input');
+    const panBox = panel.querySelector('.utb-check input[data-utb-check="pan"]');
+    const panLayer = panel.querySelector('[data-utb-pan-layer]');
     const zoom = panel.querySelector('.utb-zoom');
     const img = panel.querySelector('.utb-frame');
     const box = panel.querySelector('.utb-box');
@@ -481,6 +492,39 @@ async function panelState() {
       byLabel,
       fitChecked: check ? check.checked : null,
       fitTitle: panel.querySelector('.utb-check') ? panel.querySelector('.utb-check').title : null,
+      // P0-C 拖拽模式（用户 2026-11-02 要求）：复选框、光标与工具提示。
+      panChecked: panBox ? panBox.checked : null,
+      panDisabled: panBox ? panBox.disabled : null,
+      panTitle: panBox && panBox.closest('.utb-check') ? panBox.closest('.utb-check').title : null,
+      panLayer: Boolean(panLayer),
+      panLayerCursor: panLayer ? getComputedStyle(panLayer).cursor : null,
+      frameCursor: img ? getComputedStyle(img).cursor : null,
+      framePanAttr: img ? img.getAttribute('data-utb-pan') : null,
+      // P0-C v2 canvas compositing facts (docs/canvas-viewport.md §5.2): the clipping box is the
+      // measurement surface (the <img> itself is translated inside it), plus its readiness barrier.
+      canvasOn: box ? box.getAttribute('data-utb-canvas') : null,
+      canvasReady: box ? box.getAttribute('data-utb-canvas-ready') : null,
+      canvasBarrier: box ? box.getAttribute('data-utb-canvas-barrier') : null,
+      canvasDetail: box ? box.getAttribute('data-utb-canvas-detail') : null,
+      canvasBlank: box ? box.getAttribute('data-utb-canvas-blank') : null,
+      canvasChecker: box ? box.getAttribute('data-utb-canvas-checker') : null,
+      canvasZoom: box ? box.getAttribute('data-utb-canvas-zoom') : null,
+      canvasZoomAnchor: box ? box.getAttribute('data-utb-canvas-zoom-anchor') : null,
+      canvasZoomAnchorState: box ? box.getAttribute('data-utb-canvas-zoom-anchor-state') : null,
+      stage: (() => {
+        const stageEl = panel.querySelector('.utb-stage');
+        if (!stageEl) return null;
+        const rect = stageEl.getBoundingClientRect();
+        return { left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+          clientWidth: stageEl.clientWidth, clientHeight: stageEl.clientHeight,
+          scrollLeft: stageEl.scrollLeft, scrollTop: stageEl.scrollTop };
+      })(),
+      viewRevision: box && box.getAttribute('data-utb-view-revision') !== null && box.getAttribute('data-utb-view-revision') !== ''
+        ? Number(box.getAttribute('data-utb-view-revision')) : null,
+      canvasSeedClip: img ? img.getAttribute('data-utb-canvas-seed-clip') : null,
+      boxBackground: box ? getComputedStyle(box).backgroundColor : null,
+      boxBackgroundImage: box ? getComputedStyle(box).backgroundImage : null,
+      imgTransform: img ? getComputedStyle(img).transform : null,
       zoomValue: zoom ? zoom.value : null,
       zoomTitle: zoom ? zoom.title : null,
       width: byLabel[${JSON.stringify(W_LABEL)}] ? byLabel[${JSON.stringify(W_LABEL)}].value : null,
@@ -627,11 +671,67 @@ async function wheelBurst(label, count, deltaY, modifiers = 0) {
   return rect;
 }
 
-/** Real wheel event over the displayed frame (same hover precondition). */
-async function wheelOnFramePoint(point, deltaY) {
+/** Real wheel event over the displayed frame (same hover precondition; CDP modifier bitmask). */
+async function wheelOnFramePoint(point, deltaY, modifiers = 0) {
   await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0 });
   await sleep(30);
-  await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY, modifiers: 0 });
+  await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY, modifiers });
+}
+
+/** Fire a burst of wheel notches inside one debounce window (proves one merged patch). */
+async function wheelBurstOnFramePoint(point, count, deltaY) {
+  await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0 });
+  await sleep(30);
+  // Deliver every notch (40ms apart, still one 120ms debounce window) instead of racing the CDP
+  // commands: Chromium may coalesce parallel wheel events, which would not exercise accumulation.
+  for (let index = 0; index < count; index += 1) {
+    await state.chrome.cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY, modifiers: 0,
+    });
+    await sleep(40);
+  }
+  await sleep(900);
+}
+
+/** Wait until the panel's accepted shared-view revision equals the Host's. */
+async function waitPanelRevision(expected, { timeoutMs = 7000 } = {}) {
+  return waitFor(async () => {
+    const panel = await panelState();
+    return panel.viewRevision !== null && Number(panel.viewRevision) === Number(expected) ? panel : undefined;
+  }, { timeoutMs, intervalMs: 100, label: `panel accepted view revision ${expected}` });
+}
+
+/** Wait for the strict screen-anchor post-layout check to settle. */
+async function waitZoomAnchorState(expected = 'settled', { timeoutMs = 7000 } = {}) {
+  return waitFor(async () => {
+    const panel = await panelState();
+    return panel.canvasZoomAnchorState === expected ? panel : undefined;
+  }, { timeoutMs, intervalMs: 100, label: `zoom anchor state ${expected}` });
+}
+
+/** Reset the zoom test base (scale 1, C=-100/-100, fit off) and wait for the panel to adopt it. */
+async function resetZoomBase() {
+  await clickFit(false);
+  await hostViewportSet({ width: 400, height: 300, scale: 1, x: 0, y: 0 });
+  await waitHostView((view) => Number(view.width) === 400 && Number(view.height) === 300 && closeTo(view.scale, 1, 0.0011));
+  const set = await hostViewportSet({ canvasX: -100, canvasY: -100 });
+  const view = await waitHostView((v) => near(v.canvasX, -100, 1) && near(v.canvasY, -100, 1) && near(v.x, 0, 1) && near(v.y, 0, 1));
+  await waitPanelMirrorsHost();
+  await waitPanelRevision(view.view.revision);
+  return view.view;
+}
+
+/** A point inside the current viewport box at box-relative (bx, by), kept visible in the stage. */
+async function frameBoxPoint(b) {
+  let panel = await panelState();
+  if (!panel.frame || !panel.frame.box) throw new Error('no displayed frame box for the zoom point');
+  let box = panel.frame.box;
+  let point = { x: box.left + b.x, y: box.top + b.y };
+  await ensurePointVisible(point);
+  panel = await panelState();
+  box = panel.frame.box;
+  point = { x: box.left + b.x, y: box.top + b.y };
+  return { point, box };
 }
 
 /** Emulation override for the GUI window; this Chromium requires the screen dimensions too. */
@@ -677,6 +777,66 @@ async function clickFit(checked) {
     return true;
   `));
   await sleep(STEP_SETTLE_MS);
+}
+
+/** Rect of the drag-mode checkbox (user request 2026-11-02). */
+async function panCheckboxRect() {
+  const rect = await pageEvaluate(panelExpr(`
+    const box = panel.querySelector('.utb-check input[data-utb-check="pan"]');
+    if (!box) return null;
+    const r = box.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, left: r.left, top: r.top, width: r.width, height: r.height };
+  `));
+  if (!rect) throw new Error('drag-mode checkbox not found');
+  return rect;
+}
+
+/** Toggle drag mode with a real click; returns the panel state after it. */
+async function togglePan(expected) {
+  await dismissShellDialogs();
+  const rect = await panCheckboxRect();
+  await clickAt(rect.x, rect.y);
+  await sleep(220);
+  let snapshot = await panelState();
+  if (expected !== undefined && snapshot.panChecked !== expected) {
+    await dismissShellDialogs();
+    const again = await panCheckboxRect();
+    await clickAt(again.x, again.y);
+    await sleep(220);
+    snapshot = await panelState();
+  }
+  return snapshot;
+}
+
+/**
+ * Real mouse drag across the displayed frame (CDP input, pointer capture). Reads the grab cursor
+ * while the button is held. `dx`/`dy` are host CSS pixels; the panel maps them through the painted
+ * rect so the page scroll delta equals dx/scale (content-follow direction).
+ */
+async function dragOnFrame(dx, dy, { steps = 8, holdMs = 40 } = {}) {
+  const first = paintedOf(await waitForFrame());
+  if (!first) throw new Error('no displayed frame for the drag');
+  await ensurePointVisible({ x: first.left + first.width / 2, y: first.top + first.height / 2 });
+  await sleep(120);
+  const painted = paintedOf(await waitForFrame());
+  if (!painted) throw new Error('frame disappeared before the drag');
+  const start = { x: painted.left + painted.width / 2, y: painted.top + painted.height / 2 };
+  const send = (type, x, y, buttons, button) => state.chrome.cdp.send('Input.dispatchMouseEvent', {
+    type, x, y, button, buttons, clickCount: type === 'mouseMoved' ? 0 : 1,
+  });
+  await send('mouseMoved', start.x, start.y, 0, 'none');
+  await sleep(30);
+  await send('mousePressed', start.x, start.y, 1, 'left');
+  await sleep(80);
+  const cursorDuringDrag = (await panelState()).frameCursor;
+  for (let index = 1; index <= steps; index += 1) {
+    await sleep(holdMs);
+    await send('mouseMoved', start.x + (dx * index) / steps, start.y + (dy * index) / steps, 1, 'left');
+  }
+  await sleep(holdMs);
+  await send('mouseReleased', start.x + dx, start.y + dy, 0, 'left');
+  await sleep(250);
+  return { start, painted, dx, dy, cursorDuringDrag };
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -763,6 +923,22 @@ async function waitForFrame(timeoutMs = 25000) {
     const frame = snapshot.frame;
     return frame && frame.complete && frame.naturalWidth > 0 ? frame : undefined;
   }, { timeoutMs, intervalMs: 200, label: 'displayed frame decoded' });
+}
+
+/** Wait for a frame whose decoded natural size has stopped changing (two equal samples). */
+async function waitFrameStable({ timeoutMs = 9000, intervalMs = 350 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let previous = null;
+  while (Date.now() < deadline) {
+    const frame = await waitForFrame().catch(() => null);
+    if (frame) {
+      const key = `${frame.naturalWidth}x${frame.naturalHeight}`;
+      if (previous === key) return frame;
+      previous = key;
+    }
+    await sleep(intervalMs);
+  }
+  return waitForFrame();
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -958,12 +1134,17 @@ async function waitPanelMirrorsHost({ timeoutMs = 6000 } = {}) {
 
 function paintedOf(frame) {
   if (!frame || !frame.naturalWidth || !frame.naturalHeight) return null;
-  const k = Math.min(frame.img.width / frame.naturalWidth, frame.img.height / frame.naturalHeight);
+  // The Host canvas composite translates the <img> inside a clipping box. Measure the box (which
+  // never moves) so pointer mapping stays in viewport space; when the transform is zero this is
+  // byte-for-byte the historical img rectangle (the img fills the box).
+  const host = frame.box || frame.img;
+  if (!host) return null;
+  const k = Math.min(host.width / frame.naturalWidth, host.height / frame.naturalHeight);
   const width = frame.naturalWidth * k;
   const height = frame.naturalHeight * k;
   return {
-    left: frame.img.left + (frame.img.width - width) / 2,
-    top: frame.img.top + (frame.img.height - height) / 2,
+    left: host.left + (host.width - width) / 2,
+    top: host.top + (host.height - height) / 2,
     width,
     height,
   };
@@ -974,6 +1155,414 @@ function guiPointFor(painted, viewWidth, viewHeight, viewportX, viewportY) {
     x: painted.left + (viewportX / viewWidth) * painted.width,
     y: painted.top + (viewportY / viewHeight) * painted.height,
   };
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * P0-C v2 canvas probes (docs/canvas-viewport.md §5.2–§5.3).
+ * ---------------------------------------------------------------------------------------------- */
+
+/** Host-side canvas truth through the authenticated /state projection. */
+async function hostCanvas() {
+  const snapshot = await hostView();
+  return {
+    canvas: snapshot.ui && snapshot.ui.canvas ? snapshot.ui.canvas : null,
+    view: snapshot.view,
+    ui: snapshot.ui,
+  };
+}
+
+/** Wait until the panel reports the canvas capability and its input barrier state. */
+async function waitCanvasState(expectedOn, expectedReady, { timeoutMs = 6000 } = {}) {
+  let last = null;
+  try {
+    return await waitFor(async () => {
+      const panel = await panelState();
+      last = panel;
+      if (expectedOn !== undefined && panel.canvasOn !== (expectedOn ? 'on' : 'off')) return undefined;
+      if (expectedReady !== undefined && panel.canvasReady !== (expectedReady ? 'true' : 'false')) return undefined;
+      return panel;
+    }, { timeoutMs, intervalMs: 100, label: `canvas on=${expectedOn} ready=${expectedReady}` });
+  } catch (error) {
+    log(`  [debug] canvas state timeout: on=${last && last.canvasOn} ready=${last && last.canvasReady} barrier=${last && last.canvasBarrier} detail=${last && last.canvasDetail} transform=${last && last.imgTransform} frame=${JSON.stringify(last && last.frame)}`);
+    log(`  [debug] host view: ${JSON.stringify(await hostView().catch(() => null))}`);
+    const metrics = await pageHostFetch('/metrics', { headers: requireScope() }).catch(() => null);
+    log(`  [debug] host metrics: ${JSON.stringify(metrics && metrics.json && metrics.json.host ? { seq: metrics.json.host.seq, pushed: metrics.json.host.pushed, coalesced: metrics.json.host.coalesced, blocked: metrics.json.host.blocked, stale: metrics.json.host.stale } : metrics && metrics.text).slice(0, 800)}`);
+    throw error;
+  }
+}
+
+/** GUI point for a canvas-viewport point q (relative to the viewport's top-left). */
+function guiPointForViewport(painted, viewWidth, viewHeight, qx, qy) {
+  return guiPointFor(painted, viewWidth, viewHeight, qx, qy);
+}
+
+/** Element centre in document CSS px without scrolling the page (scrollIntoView would change S). */
+async function elementDocumentRect(selector) {
+  const rect = await targetEval(`(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return {
+      docX: r.left + window.scrollX + r.width / 2,
+      docY: r.top + window.scrollY + r.height / 2,
+      scrollX: window.scrollX, scrollY: window.scrollY,
+      innerWidth: window.innerWidth, innerHeight: window.innerHeight,
+    };
+  })()`);
+  if (!rect) throw new Error(`target element not found: ${selector}`);
+  return rect;
+}
+
+/** Panel POSTs to the seed screenshot route (canvas provenance path). */
+function panelScreenshotPosts(since = 0) {
+  return state.requests.filter((entry) => !entry.script
+    && entry.method === 'POST'
+    && entry.url.includes('/plugins/ui-testing/screenshot')
+    && entry.at >= since).map(parseBody);
+}
+
+/** Parse the client's bounded canvas-barrier diagnostic attribute. */
+function canvasDetailOf(panel) {
+  try { return JSON.parse(panel && panel.canvasDetail ? panel.canvasDetail : '{}') || {}; }
+  catch { return {}; }
+}
+
+/** Panel POSTs to one plugin endpoint issued by the panel itself (never by this script). */
+function panelPosts(endpoint, since = 0) {
+  return state.requests.filter((entry) => !entry.script
+    && entry.method === 'POST'
+    && entry.url.includes('/plugins/ui-testing/' + endpoint)
+    && entry.at >= since);
+}
+
+/** Decode one PNG frame captured through CDP (8-bit RGB/RGBA, the format Chrome returns). */
+let pngToolsModule = null;
+async function pngTools() {
+  if (!pngToolsModule) pngToolsModule = await import(pathToFileURL(join(REPO_ROOT, 'capture-p0.js')).href);
+  return pngToolsModule;
+}
+async function decodeScreenshotPng(png) {
+  return (await pngTools()).decodePng(png);
+}
+
+/** Capture the displayed clipping box and return decoded pixels (clip is in GUI viewport CSS px). */
+async function captureBoxPixels(box) {
+  const clip = {
+    x: Math.max(0, Math.round(box.left)),
+    y: Math.max(0, Math.round(box.top)),
+    width: Math.max(1, Math.round(box.width)),
+    height: Math.max(1, Math.round(box.height)),
+    scale: 1,
+  };
+  const shot = await state.chrome.cdp.send('Page.captureScreenshot', { format: 'png', clip });
+  const png = Buffer.from(shot.data, 'base64');
+  const decoded = await decodeScreenshotPng(png);
+  if (!decoded || decoded.ok === false) throw new Error(`cannot decode GUI screenshot: ${JSON.stringify(decoded)}`);
+  return { decoded, clip, png };
+}
+
+function pixelAt(decoded, x, y) {
+  const px = Math.max(0, Math.min(decoded.width - 1, Math.round(x)));
+  const py = Math.max(0, Math.min(decoded.height - 1, Math.round(y)));
+  const channels = decoded.channels;
+  const base = (py * decoded.width + px) * channels;
+  return { r: decoded.data[base], g: decoded.data[base + 1], b: decoded.data[base + 2], a: channels > 3 ? decoded.data[base + 3] : 255 };
+}
+
+function isPureWhite(pixel) {
+  return pixel.r >= 250 && pixel.g >= 250 && pixel.b >= 250;
+}
+
+/** Parse the client's panel-only checkerboard diagnostic: "14px #2b2b2b #3f3f3f". */
+function checkerboardOf(panelOrText) {
+  const text = typeof panelOrText === 'string' ? panelOrText : (panelOrText && panelOrText.canvasChecker);
+  const match = /^(\d+(?:\.\d+)?)px\s+#([0-9a-f]{6})\s+#([0-9a-f]{6})$/i.exec(String(text || '').trim());
+  if (!match) return null;
+  const rgb = (hex) => ({ r: parseInt(hex.slice(0, 2), 16), g: parseInt(hex.slice(2, 4), 16), b: parseInt(hex.slice(4, 6), 16) });
+  return { size: Number(match[1]), colors: [rgb(match[2]), rgb(match[3])] };
+}
+
+function nearColor(pixel, rgb, tolerance = 2) {
+  return Math.abs(pixel.r - rgb.r) <= tolerance && Math.abs(pixel.g - rgb.g) <= tolerance && Math.abs(pixel.b - rgb.b) <= tolerance;
+}
+
+/** Sample points (image-relative px) and classify them as checker/solid/contents. */
+function checkerSample(decoded, checker, points) {
+  if (!checker) return { checker: null, pixels: [], colorIndex: [], allChecker: false, both: false };
+  const pixels = points.map(([x, y]) => pixelAt(decoded, x, y));
+  const colorIndex = pixels.map((pixel) => {
+    for (let index = 0; index < checker.colors.length; index += 1) {
+      if (nearColor(pixel, checker.colors[index])) return index;
+    }
+    return -1;
+  });
+  return {
+    checker,
+    pixels,
+    colorIndex,
+    allChecker: colorIndex.every((index) => index >= 0),
+    both: colorIndex.includes(0) && colorIndex.includes(1),
+    white: pixels.filter(isPureWhite).length,
+  };
+}
+
+/** Parse the translate component of a computed CSS transform (matrix / matrix3d), in CSS px. */
+function transformTranslate(value) {
+  const text = String(value || '');
+  const matrix = /^matrix\(([^)]+)\)$/.exec(text);
+  if (matrix) {
+    const parts = matrix[1].split(',').map(Number);
+    return { x: parts[4] || 0, y: parts[5] || 0 };
+  }
+  const matrix3d = /^matrix3d\(([^)]+)\)$/.exec(text);
+  if (matrix3d) {
+    const parts = matrix3d[1].split(',').map(Number);
+    return { x: parts[12] || 0, y: parts[13] || 0 };
+  }
+  return { x: 0, y: 0 };
+}
+
+/**
+ * Rewrite the panel's `/state` response bodies in-flight (CDP Fetch, Response stage). The script's
+ * own `hostState()` requests carry `utbViewportAcceptance=1` and always pass through untouched, so
+ * Host truth stays real while the panel can be driven through simulated Host snapshots.
+ */
+async function startStateRewrite(rewrite) {
+  const { cdp } = state.chrome;
+  const handler = async (message) => {
+    if (message.method !== 'Fetch.requestPaused') return;
+    const params = message.params || {};
+    const requestId = params.requestId;
+    const url = String((params.request && params.request.url) || '');
+    if (!requestId) return;
+    if (!url.includes('/plugins/ui-testing/state') || url.includes('utbViewportAcceptance=1')) {
+      await cdp.send('Fetch.continueRequest', { requestId }).catch(() => {});
+      return;
+    }
+    try {
+      const body = await cdp.send('Fetch.getResponseBody', { requestId });
+      const text = body.base64Encoded ? Buffer.from(body.body, 'base64').toString('utf8') : body.body;
+      const json = JSON.parse(text);
+      const next = rewrite(json) || json;
+      const output = JSON.stringify(next);
+      const headers = (params.responseHeaders || [])
+        .filter((header) => !['content-length', 'content-encoding', 'transfer-encoding'].includes(String(header.name).toLowerCase()))
+        .concat([{ name: 'content-length', value: String(Buffer.byteLength(output)) }]);
+      await cdp.send('Fetch.fulfillRequest', {
+        requestId,
+        responseCode: 200,
+        responseHeaders: headers,
+        body: Buffer.from(output).toString('base64'),
+      });
+    } catch {
+      await cdp.send('Fetch.continueRequest', { requestId }).catch(() => {});
+    }
+  };
+  const off = cdp.on(handler);
+  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*/plugins/ui-testing/state*', requestStage: 'Response' }] });
+  return async function stop() {
+    try { await cdp.send('Fetch.disable'); } catch { /* ignore */ }
+    off();
+  };
+}
+
+/**
+ * Intercept the panel's `/screenshot` seed requests and fulfill them from the test. Used only for
+ * the negative seed cases (stale / missing provenance / HTTP failure); the happy path uses the
+ * real Host composition.
+ */
+async function startScreenshotInterceptor() {
+  const { cdp } = state.chrome;
+  const paused = [];
+  const listeners = [];
+  const fulfill = async (entry, response) => {
+    if (!entry || entry.done) throw new Error('seed request already fulfilled');
+    const payload = response && response.body !== undefined ? response.body : response;
+    const output = JSON.stringify(payload === undefined ? {} : payload);
+    const headers = [
+      { name: 'content-type', value: 'application/json' },
+      { name: 'content-length', value: String(Buffer.byteLength(output)) },
+    ];
+    await cdp.send('Fetch.fulfillRequest', {
+      requestId: entry.requestId,
+      responseCode: Number(response && response.status) || 200,
+      responseHeaders: headers,
+      body: Buffer.from(output).toString('base64'),
+    });
+    entry.done = true;
+  };
+  const handler = async (message) => {
+    if (message.method !== 'Fetch.requestPaused') return;
+    const params = message.params || {};
+    const url = String((params.request && params.request.url) || '');
+    if (!url.includes('/plugins/ui-testing/screenshot')) {
+      await cdp.send('Fetch.continueRequest', { requestId: params.requestId }).catch(() => {});
+      return;
+    }
+    let body = {};
+    try { body = JSON.parse(params.request.postData || '{}'); } catch { body = {}; }
+    const entry = { requestId: params.requestId, body, at: Date.now(), done: false, url };
+    paused.push(entry);
+    for (const listener of listeners) { try { listener(entry); } catch { /* ignore */ } }
+  };
+  const off = cdp.on(handler);
+  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*/plugins/ui-testing/screenshot*', requestStage: 'Request' }] });
+  return {
+    requests: paused,
+    waitForRequest(index, timeoutMs = 8000) {
+      return waitFor(() => (paused.length > index ? paused[index] : undefined),
+        { timeoutMs, intervalMs: 100, label: `seed screenshot request #${index + 1}` });
+    },
+    waitForNew(mark, timeoutMs = 8000) {
+      return waitFor(() => paused.find((entry) => !entry.done && entry.at >= mark),
+        { timeoutMs, intervalMs: 100, label: 'new seed screenshot request' });
+    },
+    pending() { return paused.filter((entry) => !entry.done); },
+    onChange(listener) { listeners.push(listener); },
+    respond(entry, response) { return fulfill(entry, response); },
+    async stop() {
+      try { await cdp.send('Fetch.disable'); } catch { /* ignore */ }
+      off();
+    },
+  };
+}
+
+/**
+ * Hold the first panel `/viewport` request at the CDP Request stage. Used by V14 to prove that a
+ * zoom notch survives a CAS conflict and that a second notch is queued (not lost) while one set is
+ * in flight. Script requests (`utbViewportAcceptance=1`) are always continued.
+ */
+async function startViewportHold() {
+  const { cdp } = state.chrome;
+  const requests = [];
+  let held = null;
+  let heldOnce = false;
+  const handler = async (message) => {
+    if (message.method !== 'Fetch.requestPaused') return;
+    const params = message.params || {};
+    const url = String((params.request && params.request.url) || '');
+    // Hold exactly the first panel request; later ones (e.g. a conflict retry or the queued second
+    // notch) must continue, otherwise the very fix under test would be deadlocked by the test.
+    if (!url.includes('/plugins/ui-testing/viewport') || url.includes('utbViewportAcceptance=1') || heldOnce) {
+      await cdp.send('Fetch.continueRequest', { requestId: params.requestId }).catch(() => {});
+      return;
+    }
+    let body = {};
+    try { body = JSON.parse(params.request.postData || '{}'); } catch { body = {}; }
+    heldOnce = true;
+    held = { requestId: params.requestId, body, at: Date.now(), url };
+    requests.push(held);
+  };
+  const off = cdp.on(handler);
+  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*/plugins/ui-testing/viewport*', requestStage: 'Request' }] });
+  return {
+    requests,
+    waitForHeld(timeoutMs = 7000) {
+      return waitFor(() => held || undefined, { timeoutMs, intervalMs: 100, label: 'held /viewport request' });
+    },
+    async release() {
+      if (!held) return false;
+      const entry = held;
+      held = null;
+      await cdp.send('Fetch.continueRequest', { requestId: entry.requestId }).catch(() => {});
+      return true;
+    },
+    async stop() {
+      if (held) {
+        const entry = held;
+        held = null;
+        await cdp.send('Fetch.continueRequest', { requestId: entry.requestId }).catch(() => {});
+      }
+      try { await cdp.send('Fetch.disable'); } catch { /* ignore */ }
+      off();
+    },
+  };
+}
+
+/** Current real Host facts for a seed response (capture-time view + canvas box). */
+async function seedFactsNow() {
+  const snapshot = await hostCanvas();
+  const view = snapshot.view;
+  const canvas = snapshot.canvas;
+  const observed = snapshot.observed || {};
+  if (!view || !canvas) throw new Error('seedFactsNow: missing view/canvas');
+  const scrollX = num(observed.x) !== null ? Number(observed.x) : Number(view.x);
+  const scrollY = num(observed.y) !== null ? Number(observed.y) : Number(view.y);
+  return {
+    canvasX: Number(canvas.x),
+    canvasY: Number(canvas.y),
+    scrollX,
+    scrollY,
+    viewRevision: Number(view.revision),
+    scale: Number(view.scale),
+    width: Number(view.width),
+    height: Number(view.height),
+    contentWidth: Number(canvas.contentWidth),
+    contentHeight: Number(canvas.contentHeight),
+  };
+}
+
+/** Synthetic composed canvas PNG + provenance for one seed response (test-side composition). */
+async function seedResponseFor(facts, options = {}) {
+  const width = Math.max(1, Math.round(facts.width));
+  const height = Math.max(1, Math.round(facts.height));
+  const rgba = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const inside = x + facts.canvasX >= 0 && x + facts.canvasX < facts.contentWidth
+        && y + facts.canvasY >= 0 && y + facts.canvasY < facts.contentHeight;
+      const offset = (y * width + x) * 4;
+      rgba[offset] = inside ? 200 : 255;
+      rgba[offset + 1] = inside ? 30 : 255;
+      rgba[offset + 2] = inside ? 30 : 255;
+      rgba[offset + 3] = 255;
+    }
+  }
+  const tools = await pngTools();
+  const png = tools.encodePngRgba({ width, height, rgba });
+  const revision = options.revision !== undefined ? Number(options.revision) : facts.viewRevision;
+  const contentRect = {
+    x: Math.max(0, facts.canvasX),
+    y: Math.max(0, facts.canvasY),
+    width: Math.max(0, Math.min(width, facts.contentWidth - Math.max(0, facts.canvasX))),
+    height: Math.max(0, Math.min(height, facts.contentHeight - Math.max(0, facts.canvasY))),
+  };
+  return {
+    ok: true,
+    image: Buffer.from(png).toString('base64'),
+    capturedAt: Date.now(),
+    view: {
+      version: 1, x: facts.scrollX, y: facts.scrollY, canvasX: facts.canvasX, canvasY: facts.canvasY,
+      width, height, scale: facts.scale, revision, source: 'gui',
+    },
+    capture: {
+      viewRevision: revision,
+      requestedScale: facts.scale,
+      viewport: { width, height },
+      canvas: {
+        version: 1, space: 'canvas-css-px', x: facts.canvasX, y: facts.canvasY,
+        scrollX: facts.scrollX, scrollY: facts.scrollY,
+        offsetX: facts.canvasX - facts.scrollX, offsetY: facts.canvasY - facts.scrollY,
+        contentWidth: facts.contentWidth, contentHeight: facts.contentHeight,
+        blank: '#ffffff', composite: true, source: 'cdp-page-capture-screenshot',
+      },
+      contentRect,
+      composite: true,
+      scroll: { x: facts.scrollX, y: facts.scrollY },
+    },
+  };
+}
+
+/** Apply a mutator to the nested `ui` object of a /state JSON body (top-level or `.state`). */
+function mutateStateUi(json, mutate) {
+  const visit = (root) => {
+    if (!root || typeof root !== 'object') return;
+    const ui = root.ui && typeof root.ui === 'object' ? root.ui : null;
+    if (ui) mutate(ui);
+  };
+  visit(json);
+  if (json && json.state && json.state !== json) visit(json.state);
+  return json;
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -1038,28 +1627,44 @@ async function clickRecords() {
 
 /** Click a target-page element through the panel and read the page's own event truth. */
 async function clickThroughPanel(selector, viewWidth, viewHeight) {
-  const center = await elementCenter(selector);
-  const mapped = guiPointFor(paintedOf(await waitForFrame()), viewWidth, viewHeight, center.x, center.y);
-  await ensurePointVisible(mapped);
-  const painted = paintedOf(await waitForFrame());
-  const point = guiPointFor(painted, viewWidth, viewHeight, center.x, center.y);
-  await resetTargetInstrumentation();
-  const clicksBefore = await targetEval('window.__t3 ? window.__t3.counters.clicks : -1');
-  await clickAt(point.x, point.y);
-  await sleep(800);
-  const clicksAfter = await targetEval('window.__t3 ? window.__t3.counters.clicks : -1');
-  const record = await targetEval(`(() => {
-    if (!window.__t3) return null;
-    const clicks = window.__t3.events.filter((event) => event.type === 'click');
-    return clicks.length ? clicks[clicks.length - 1] : null;
-  })()`);
+  // A panel can transiently gate pointer writes while its main view is (re)loading; one bounded
+  // retry after recomputing the page/box geometry keeps the assertion about a *real* trusted click
+  // honest without weakening it (the final attempt still must hit the mapped target).
+  let center = null;
+  let point = null;
+  let painted = null;
+  let clicksDelta = 0;
+  let record = null;
+  let attempts = 0;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    attempts = attempt;
+    center = await elementCenter(selector);
+    const mapped = guiPointFor(paintedOf(await waitForFrame()), viewWidth, viewHeight, center.x, center.y);
+    await ensurePointVisible(mapped);
+    painted = paintedOf(await waitForFrame());
+    point = guiPointFor(painted, viewWidth, viewHeight, center.x, center.y);
+    await resetTargetInstrumentation();
+    const clicksBefore = await targetEval('window.__t3 ? window.__t3.counters.clicks : -1');
+    await clickAt(point.x, point.y);
+    await sleep(800);
+    const clicksAfter = await targetEval('window.__t3 ? window.__t3.counters.clicks : -1');
+    clicksDelta = Number(clicksAfter) - Number(clicksBefore);
+    record = await targetEval(`(() => {
+      if (!window.__t3) return null;
+      const clicks = window.__t3.events.filter((event) => event.type === 'click');
+      return clicks.length ? clicks[clicks.length - 1] : null;
+    })()`);
+    if (clicksDelta > 0) break;
+    await sleep(300);
+  }
   return {
-    clicksDelta: Number(clicksAfter) - Number(clicksBefore),
+    clicksDelta,
     record: record ? { isTrusted: record.isTrusted, clientX: record.clientX, clientY: record.clientY, target: record.target } : null,
-    viewportX: center.x,
-    viewportY: center.y,
+    viewportX: center ? center.x : null,
+    viewportY: center ? center.y : null,
     point,
     painted,
+    attempts,
   };
 }
 
@@ -1632,6 +2237,1058 @@ async function main() {
         delta100 > 0 && delta200 / delta100 > 0.25 && delta200 / delta100 < 0.8,
         { ratio: '≈0.5' }, { ratio: delta100 ? Number((delta200 / delta100).toFixed(3)) : null, delta200, delta100 });
       await capturePanel('shot-04-frame-wheel');
+    });
+
+    await scenario('V12 drag-to-pan (user request 2026-11-02)', async () => {
+      await navigateTarget(`${fixtureBase}/web-t3.html`);
+      await waitForFrame();
+      await ensureHorizontalOverflow();
+      await hostViewportSet({ width: 640, height: 480, scale: 1, x: 300, y: 300 });
+      await waitHostView((view) => Number(view.width) === 640 && Number(view.height) === 480 && near(view.x, 300, 1) && near(view.y, 300, 1));
+      await waitPanelMirrorsHost();
+      await waitFrameStable();
+      await waitPanelValues({ x: 300, y: 300 });
+
+      const off = await panelState();
+      check('V12.1', 'the size bar has a drag checkbox (unchecked, enabled, explains the mode)',
+        off.panChecked === false && off.panDisabled === false
+          && /拖拽/.test(String(off.panTitle || '')) && /页面交互/.test(String(off.panTitle || '')),
+        { checked: false, disabled: false, title: '拖拽…页面交互' },
+        { checked: off.panChecked, disabled: off.panDisabled, title: off.panTitle });
+      check('V12.2', 'the frame is not a grab hand while drag mode is off',
+        off.frameCursor !== 'grab' && off.frameCursor !== 'grabbing',
+        { cursor: 'auto' }, { cursor: off.frameCursor, attr: off.framePanAttr });
+
+      const on = await togglePan(true);
+      check('V12.3', 'checking drag mode turns the frame into a grab hand',
+        on.panChecked === true && on.frameCursor === 'grab',
+        { checked: true, cursor: 'grab' }, { checked: on.panChecked, cursor: on.frameCursor });
+
+      // While drag mode is on, a plain click on the frame must not reach the target page.
+      await resetTargetInstrumentation();
+      const paintedBefore = paintedOf(await waitForFrame());
+      const center = { x: paintedBefore.left + paintedBefore.width / 2, y: paintedBefore.top + paintedBefore.height / 2 };
+      await clickAt(center.x, center.y);
+      await sleep(350);
+      const eventsAfterClick = await targetEval('window.__t3 ? window.__t3.events.length : -1');
+      check('V12.4', 'drag mode suppresses page interaction (a plain frame click dispatches no page events)',
+        eventsAfterClick === 0, { pageEvents: 0 }, { pageEvents: eventsAfterClick, point: center });
+
+      // Content-follow drag: right/down means the viewport moves left/up in the document.
+      const drag = await dragOnFrame(120, 80);
+      // The panel maps through the *displayed* painted rect (contract §5.1); compute the expected
+      // page delta from the same geometry instead of assuming a 1:1 frame size.
+      const expectedDragX = Math.round(300 - (120 * 640) / Math.max(1, drag.painted.width));
+      const expectedDragY = Math.round(300 - (80 * 480) / Math.max(1, drag.painted.height));
+      check('V12.5', 'the cursor becomes a grabbing hand while the drag button is held',
+        drag.cursorDuringDrag === 'grabbing', { cursor: 'grabbing' }, { cursor: drag.cursorDuringDrag });
+      const afterDrag = await waitHostView((view) => near(view.x, expectedDragX, 3) && near(view.y, expectedDragY, 3));
+      check('V12.6', `dragging right/down pans the page with content-follow direction (x 300→≈${expectedDragX}, y 300→≈${expectedDragY})`,
+        near(afterDrag.view.x, expectedDragX, 3) && near(afterDrag.view.y, expectedDragY, 3),
+        { x: expectedDragX, y: expectedDragY }, { x: afterDrag.view.x, y: afterDrag.view.y, source: afterDrag.view.source, painted: drag.painted });
+      const dragTruth = await targetTruth();
+      check('V12.7', 'the target page really scrolled to the dragged view',
+        near(dragTruth.scrollX, afterDrag.view.x, 2) && near(dragTruth.scrollY, afterDrag.view.y, 2),
+        { scrollX: '≈view.x', scrollY: '≈view.y' },
+        { scrollX: dragTruth.scrollX, scrollY: dragTruth.scrollY, view: { x: afterDrag.view.x, y: afterDrag.view.y } });
+      const dragClicks = await clickRecords();
+      const dragEvents = await targetEval('window.__t3 ? window.__t3.events.length : -1');
+      check('V12.8', 'the drag sends no click and no pointer/mouse events into the page',
+        dragClicks.length === 0 && dragEvents === 0,
+        { clicks: 0, pageEvents: 0 }, { clicks: dragClicks.length, pageEvents: dragEvents });
+      const mirrored = await waitPanelValues({ x: afterDrag.view.x, y: afterDrag.view.y }).catch(() => panelState());
+      check('V12.9', 'the X/Y inputs mirror the dragged Host scroll',
+        near(mirrored.x, afterDrag.view.x, 2) && near(mirrored.y, afterDrag.view.y, 2),
+        { x: afterDrag.view.x, y: afterDrag.view.y }, { x: mirrored.x, y: mirrored.y });
+
+      // At the document start, dragging right/down clamps instead of going negative.
+      await hostViewportSet({ x: 0, y: 0 });
+      await waitHostView((view) => near(view.x, 0, 1) && near(view.y, 0, 1));
+      await waitPanelMirrorsHost();
+      await waitPanelValues({ x: 0, y: 0 });
+      await waitFrameStable();
+      await dragOnFrame(160, 120);
+      await sleep(800);
+      const clampedView = (await hostView()).view;
+      const clampedTruth = await targetTruth();
+      check('V12.10', 'drag pan clamps at the document start (x/y stay 0, no negative scroll)',
+        near(clampedView.x, 0, 1) && near(clampedView.y, 0, 1) && near(clampedTruth.scrollX, 0, 1) && near(clampedTruth.scrollY, 0, 1),
+        { x: 0, y: 0, scrollX: 0, scrollY: 0 },
+        { x: clampedView.x, y: clampedView.y, scrollX: clampedTruth.scrollX, scrollY: clampedTruth.scrollY });
+
+      const back = await togglePan(false);
+      check('V12.11', 'unchecking drag mode restores the default frame cursor',
+        back.panChecked === false && back.frameCursor !== 'grab' && back.frameCursor !== 'grabbing',
+        { checked: false, cursor: 'auto' }, { checked: back.panChecked, cursor: back.frameCursor });
+
+      // Interaction restored: the same panel click now reaches the page again.
+      await navigateTarget(`${fixtureBase}/web-t3.html`);
+      await waitForFrame();
+      await hostViewportSet({ width: 640, height: 480, scale: 1, x: 0, y: 0 });
+      await waitHostView((view) => Number(view.width) === 640 && Number(view.height) === 480);
+      await waitPanelMirrorsHost();
+      await waitPanelValues({ x: 0, y: 0 });
+      await waitFrameStable();
+      const restored = await clickThroughPanel('#t3-click', 640, 480);
+      check('V12.12', 'after drag mode is off, a panel click reaches the page again (real trusted click)',
+        restored.clicksDelta === 1 && restored.record && restored.record.isTrusted === true,
+        { clicksDelta: 1, isTrusted: true },
+        { clicksDelta: restored.clicksDelta, record: restored.record, point: restored.point });
+      await capturePanel('shot-05-drag-pan');
+    });
+
+    await scenario('V13 canvas viewport (P0-C v2)', async () => {
+      const v13Start = Date.now();
+      const initial = await hostCanvas();
+      if (!initial.canvas) {
+        notRun('V13.0', 'Host exposes ui.canvas (P0-C v2 capability handshake)',
+          '隔离 Host 未提供 ui.canvas（Host task-1 未加载）；画布坐标/预览合成/输入映射/拖拽切片无法验收，不使用替代断言',
+          { uiVersion: initial.ui && initial.ui.version, view: initial.view });
+        return;
+      }
+      check('V13.0', 'Host exposes ui.canvas version 1 in canvas-css-px with white blank',
+        Number(initial.canvas.version) === 1 && initial.canvas.space === 'canvas-css-px' && initial.canvas.blank === 'white',
+        { version: 1, space: 'canvas-css-px', blank: 'white' }, initial.canvas);
+
+      await navigateTarget(`${fixtureBase}/web-t3.html`);
+      await waitForFrame();
+      await ensureHorizontalOverflow();
+      // A non-white page background makes "blank is pure white" distinguishable in pixels below.
+      await targetEval(`(() => {
+        document.documentElement.style.background = 'rgb(200, 30, 30)';
+        document.body.style.background = 'rgb(200, 30, 30)';
+        return true;
+      })()`);
+      // Keep fit out of the equations: the canvas displacement must be measured at the shared 100 %.
+      await clickFit(false);
+      await hostViewportSet({ width: 400, height: 300, scale: 1, x: 0, y: 0 });
+      await waitHostView((view) => Number(view.width) === 400 && Number(view.height) === 300 && near(view.x, 0, 1) && near(view.y, 0, 1));
+      await waitPanelMirrorsHost();
+      const contentBox = await waitFor(async () => {
+        const snapshot = await hostCanvas();
+        const canvas = snapshot.canvas;
+        return canvas && Number.isFinite(Number(canvas.contentWidth)) && Number(canvas.contentWidth) > 0
+          && Number.isFinite(Number(canvas.contentHeight)) && Number(canvas.contentHeight) > 0 ? canvas : undefined;
+      }, { timeoutMs: 8000, intervalMs: 150, label: 'Host observed the canvas content box' });
+      check('V13.0b', 'ui.canvas reports the measured content box',
+        Number(contentBox.contentWidth) > 400 && Number(contentBox.contentHeight) > 300,
+        { contentWidth: '> 400', contentHeight: '> 300' },
+        { contentWidth: contentBox.contentWidth, contentHeight: contentBox.contentHeight });
+      await hostViewportSet({ canvasX: 0, canvasY: 0 });
+      await waitHostView((view) => near(view.canvasX, 0, 1) && near(view.canvasY, 0, 1) && near(view.x, 0, 1) && near(view.y, 0, 1));
+      // O=0 returns "ready" regardless of frame metadata (old behaviour); still wait for an actual
+      // capture-time scroll=0 frame so the zero transform is real and not the previous frame's lag.
+      const oZeroPanel = await waitFor(async () => {
+        const panel = await panelState();
+        const shift = transformTranslate(panel.imgTransform);
+        return panel.canvasOn === 'on' && near(shift.x, 0, 0.5) && near(shift.y, 0, 0.5) ? panel : undefined;
+      }, { timeoutMs: 6000, intervalMs: 150, label: 'O=0 frame with zero displacement' });
+      const oZeroShift = transformTranslate(oZeroPanel.imgTransform);
+      check('V13.0c', 'O=0 (C=S) leaves the frame untranslated, so the old pixels are preserved',
+        near(oZeroShift.x, 0, 0.01) && near(oZeroShift.y, 0, 0.01) && oZeroPanel.canvasOn === 'on',
+        { translateX: 0, translateY: 0, canvas: 'on' },
+        { translate: oZeroShift, canvas: oZeroPanel.canvasOn, boxBackground: oZeroPanel.boxBackground });
+      // The panel blank is now a dark checkerboard, but O=0 + a matching frame covers it fully:
+      // the same pixels as the old white-background implementation must remain.
+      await waitCanvasState(true, true);
+      const oZeroPreview = await waitFrameStable();
+      await ensurePointVisible({ x: oZeroPreview.box.left + oZeroPreview.box.width / 2, y: oZeroPreview.box.top + oZeroPreview.box.height / 2 });
+      await sleep(300);
+      const oZeroFrame = await waitFrameStable();
+      const oZeroLatest = await panelState();
+      const oZeroPainted = paintedOf(oZeroFrame);
+      const oZeroShot = await captureBoxPixels(oZeroFrame.box);
+      const oZeroChecker = checkerboardOf(oZeroLatest);
+      const oZeroProbe = checkerSample(oZeroShot.decoded, oZeroChecker, [[7, 7], [21, 7], [35, 7], [49, 7], [7, 21], [21, 21], [35, 21]]);
+      check('V13.0d', 'O=0: the image covers the box and the checkerboard never shows (old pixels preserved)',
+        oZeroLatest.canvasBlank === 'checkerboard' && Boolean(oZeroChecker)
+          && Boolean(oZeroPainted) && near(oZeroPainted.width, oZeroFrame.box.width, 1) && near(oZeroPainted.height, oZeroFrame.box.height, 1)
+          && oZeroProbe.colorIndex.every((index) => index === -1),
+        { blankStyle: 'checkerboard', covered: true, checkerPixels: 0 },
+        { blankStyle: oZeroLatest.canvasBlank, checker: oZeroChecker, probe: oZeroProbe, painted: oZeroPainted, box: oZeroFrame.box });
+
+      // ---- V13.1 negative canvas origin: C is authoritative, S stays clamped at 0 ----
+      const setNegative = await hostViewportSet({ canvasX: -100, canvasY: -50 });
+      check('V13.1', 'POST /viewport accepts negative canvasX/canvasY (v1)',
+        setNegative.status === 200 && setNegative.json && setNegative.json.ok !== false,
+        { status: 200 }, { status: setNegative.status, code: setNegative.json && setNegative.json.code });
+      const negative = await waitHostView((view) => near(view.canvasX, -100, 1) && near(view.canvasY, -50, 1)
+        && near(view.x, 0, 0.5) && near(view.y, 0, 0.5));
+      const negativeCanvas = (await hostCanvas()).canvas;
+      check('V13.2', 'negative C keeps the real document scroll at 0-0 and exposes offset O=C-S',
+        near(negative.view.x, 0, 0.5) && near(negative.view.y, 0, 0.5)
+          && near(negativeCanvas.offsetX, -100, 1) && near(negativeCanvas.offsetY, -50, 1),
+        { x: 0, y: 0, offsetX: -100, offsetY: -50 },
+        { x: negative.view.x, y: negative.view.y, offsetX: negativeCanvas.offsetX, offsetY: negativeCanvas.offsetY });
+      const negativeTruth = await targetTruth();
+      check('V13.3', 'the target page itself never scrolls negative (canvas C is a view-layer fact)',
+        near(negativeTruth.scrollX, 0, 0.5) && near(negativeTruth.scrollY, 0, 0.5),
+        { scrollX: 0, scrollY: 0 }, { scrollX: negativeTruth.scrollX, scrollY: negativeTruth.scrollY });
+      const negativePanel = await waitPanelValues({ x: -100, y: -50 });
+      check('V13.4', 'X/Y inputs show the signed canvas origin C (not the clamped scroll)',
+        near(negativePanel.x, -100, 1.5) && near(negativePanel.y, -50, 1.5),
+        { x: -100, y: -50 }, { x: negativePanel.x, y: negativePanel.y, title: negativePanel.byLabel[X_LABEL] && negativePanel.byLabel[X_LABEL].title });
+
+      // ---- V13.5 negative wheel steps and typed negative values stay on canvasX/canvasY ----
+      await hostViewportSet({ canvasX: -20, canvasY: -10 });
+      await waitHostView((view) => near(view.canvasX, -20, 1) && near(view.canvasY, -10, 1) && near(view.x, 0, 0.5));
+      await waitPanelMirrorsHost();
+      await waitPanelValues({ x: -20, y: -10 });
+      const markWheel = Date.now();
+      await wheelOnField(X_LABEL, 120);
+      const wheeled = await waitHostView((view) => near(view.canvasX, -30, 1) && near(view.x, 0, 0.5));
+      const wheelPosts = panelPosts('viewport', markWheel).map(parseBody);
+      check('V13.5', 'a downward wheel notch decreases canvasX into negative territory and posts canvasX (never x)',
+        near(wheeled.view.canvasX, -30, 1) && near(wheeled.view.x, 0, 0.5)
+          && wheelPosts.some((body) => Number(body.canvasX) === -30 && body.x === undefined),
+        { canvasX: -30, x: 0, field: 'canvasX' },
+        { canvasX: wheeled.view.canvasX, x: wheeled.view.x, bodies: wheelPosts });
+
+      const markTyped = Date.now();
+      await typeIntoField(X_LABEL, '-100', { enter: true });
+      const typed = await waitHostView((view) => near(view.canvasX, -100, 1) && near(view.x, 0, 0.5));
+      const typedPosts = panelPosts('viewport', markTyped).map(parseBody);
+      check('V13.6', 'typing -100 + Enter commits canvasX=-100 (negative canvas value, no document scroll)',
+        near(typed.view.canvasX, -100, 1) && near(typed.view.x, 0, 0.5)
+          && typedPosts.some((body) => Number(body.canvasX) === -100 && body.x === undefined),
+        { canvasX: -100, x: 0, field: 'canvasX' },
+        { canvasX: typed.view.canvasX, x: typed.view.x, bodies: typedPosts });
+
+      const markRange = Date.now();
+      await typeIntoField(X_LABEL, '-10000001', { enter: true });
+      await sleep(500);
+      const afterRange = await panelState();
+      const rangePosts = panelPosts('viewport', markRange).map(parseBody);
+      check('V13.7', 'a canvas value outside ±10,000,000 is rejected locally (no request, input reverts)',
+        near(afterRange.x, -100, 1.5) && !rangePosts.some((body) => body.canvasX !== undefined),
+        { x: -100, requests: 0 }, { x: afterRange.x, bodies: rangePosts });
+
+      // ---- V13.8 preview compositing: left blank is pure white, content shifted by -C ----
+      await hostViewportSet({ canvasX: -100, canvasY: 0 });
+      await waitHostView((view) => near(view.canvasX, -100, 1) && near(view.x, 0, 0.5));
+      await waitPanelMirrorsHost();
+      await waitCanvasState(true, true);
+      const leftPreview = await waitFrameStable();
+      await ensurePointVisible({ x: leftPreview.box.left + leftPreview.box.width / 2, y: leftPreview.box.top + leftPreview.box.height / 2 });
+      await sleep(500);
+      // A seed/live replacement can land while we wait for the stage: re-prove the barrier before
+      // reading pixels, otherwise a one-frame revision bump would be reported as a product failure.
+      await waitCanvasState(true, true, { timeoutMs: 10000 });
+      const leftFrame = await waitFrameStable();
+      const leftPanel = await panelState();
+      const leftDetail = canvasDetailOf(leftPanel);
+      const leftShift = transformTranslate(leftPanel.imgTransform);
+      const leftSeed = leftDetail.seed === true;
+      const leftShot = await captureBoxPixels(leftFrame.box);
+      const leftContent = pixelAt(leftShot.decoded, 160, Math.round(leftFrame.box.height * 0.96));
+      const leftChecker = checkerboardOf(leftPanel);
+      const leftProbe = checkerSample(leftShot.decoded, leftChecker,
+        [[7, 7], [21, 7], [35, 7], [49, 7], [63, 7], [77, 7], [91, 7]]);
+      const leftClip = leftSeed ? String(leftPanel.canvasSeedClip || '') : 'off';
+      check('V13.8', 'C=-100 shows a dark checkerboard blank band and content shifted right (composed seed clipped; live frame uses -C=100)',
+        leftPanel.canvasBlank === 'checkerboard' && Boolean(leftChecker)
+          && leftProbe.allChecker && leftProbe.both && leftProbe.white === 0
+          && leftContent.r >= 150 && leftContent.g <= 120 && leftContent.b <= 120
+          && near(leftShift.x, leftSeed ? 0 : 100, 2) && near(leftShift.y, 0, 1)
+          && (leftSeed ? leftPanel.canvasBarrier === 'seed-aligned' && leftClip.includes('25%') : leftPanel.canvasBarrier === 'aligned' && leftClip === 'off'),
+        { blank: 'checkerboard', colors: 'both dark tones', content: 'page background', translateX: leftSeed ? 0 : 100, seedClip: leftSeed ? 'left 25%' : 'off' },
+        { blank: leftPanel.canvasBlank, checker: leftChecker, probe: leftProbe, content: leftContent, translate: leftShift, barrier: leftPanel.canvasBarrier, seedClip: leftClip, detail: leftDetail, box: leftFrame.box });
+      const seedPosts = panelScreenshotPosts(v13Start);
+      if (leftSeed) {
+        check('V13.8b', 'a static-page mismatch refreshed a composed seed: /screenshot carried {canvas:true} and the Host provenance is aligned',
+          seedPosts.some((body) => body.canvas === true) && leftPanel.canvasBarrier === 'seed-aligned',
+          { body: { canvas: true }, barrier: 'seed-aligned' },
+          { requests: seedPosts, barrier: leftPanel.canvasBarrier, detail: leftDetail });
+      } else {
+        notRun('V13.8b', 'static-page composed seed accepted',
+          'the displayed frame was a matching live frame, so no seed refresh was needed in this run', { detail: leftDetail, seedPosts });
+      }
+      await capturePanel('shot-06-canvas-negative');
+
+      // ---- V13.8c-e seed provenance mechanics (real Host happy path above; negatives simulated) ----
+      if (leftSeed) {
+        const interceptor = await startScreenshotInterceptor();
+        try {
+          // Drain a still-pending real seed refresh before simulating (the transport allows one
+          // request at a time; a paused leftover would block every later seed request).
+          for (const entry of interceptor.pending()) {
+            await interceptor.respond(entry, { status: 500, body: { ok: false, error: 'drain', code: 'INTERNAL' } });
+          }
+          await sleep(250);
+          // 1) Stale (in-flight) response: capture at -150 is answered after the shell moved to -200.
+          const staleMark = Date.now();
+          await hostViewportSet({ canvasX: -150 });
+          await waitHostView((view) => near(view.canvasX, -150, 1) && near(view.x, 0, 1));
+          await waitPanelValues({ x: -150 });
+          const staleRequest = await interceptor.waitForNew(staleMark);
+          check('V13.8c0', 'the client asks for a composed seed with body {canvas:true}',
+            staleRequest.body && staleRequest.body.canvas === true,
+            { canvas: true }, { body: staleRequest.body, url: staleRequest.url });
+          const staleFacts = await seedFactsNow();
+          await hostViewportSet({ canvasX: -200 });
+          await waitHostView((view) => near(view.canvasX, -200, 1) && near(view.x, 0, 1));
+          await waitPanelValues({ x: -200 });
+          const refreshMark = Date.now();
+          await interceptor.respond(staleRequest, { body: await seedResponseFor(staleFacts) });
+          await sleep(1200);
+          const afterStale = await panelState();
+          const refreshedRequest = await interceptor.waitForNew(refreshMark);
+          const refreshedFacts = await seedFactsNow();
+          await interceptor.respond(refreshedRequest, { body: await seedResponseFor(refreshedFacts) });
+          const refreshed = await waitCanvasState(true, true, { timeoutMs: 8000 });
+          check('V13.8c', 'an in-flight seed answered after the shell moved is dropped as stale; the next state refreshes to seed-aligned',
+            afterStale.canvasBarrier !== 'seed-aligned' && refreshed.canvasBarrier === 'seed-aligned',
+            { afterStale: 'not seed-aligned', refreshed: 'seed-aligned' },
+            { afterStale: afterStale.canvasBarrier, refreshed: refreshed.canvasBarrier, staleFacts, refreshedFacts });
+
+          // 2) Missing provenance: a 200 without view/capture is rejected, a state change retries.
+          const missingMark = Date.now();
+          await hostViewportSet({ canvasX: -250 });
+          await waitHostView((view) => near(view.canvasX, -250, 1) && near(view.x, 0, 1));
+          await waitPanelValues({ x: -250 });
+          const missingRequest = await interceptor.waitForNew(missingMark);
+          await interceptor.respond(missingRequest, { body: { ok: true, image: (await seedResponseFor(refreshedFacts)).image } });
+          await sleep(1200);
+          const afterMissing = await panelState();
+          const missingRetryMark = Date.now();
+          await hostViewportSet({ canvasX: -300 });
+          await waitHostView((view) => near(view.canvasX, -300, 1) && near(view.x, 0, 1));
+          await waitPanelValues({ x: -300 });
+          const retryRequest = await interceptor.waitForNew(missingRetryMark);
+          const retryFacts = await seedFactsNow();
+          await interceptor.respond(retryRequest, { body: await seedResponseFor(retryFacts) });
+          const recovered = await waitCanvasState(true, true, { timeoutMs: 8000 });
+          check('V13.8d', 'a seed response without canvas provenance is rejected (fail-closed); a shell change retries and aligns',
+            afterMissing.canvasBarrier !== 'seed-aligned' && recovered.canvasBarrier === 'seed-aligned',
+            { missing: 'not seed-aligned', recovered: 'seed-aligned' },
+            { missing: afterMissing.canvasBarrier, recovered: recovered.canvasBarrier });
+
+          // 3) HTTP failure: same fail-closed + retry-on-state-change rule.
+          const failMark = Date.now();
+          await hostViewportSet({ canvasX: -350 });
+          await waitHostView((view) => near(view.canvasX, -350, 1) && near(view.x, 0, 1));
+          await waitPanelValues({ x: -350 });
+          const failRequest = await interceptor.waitForNew(failMark);
+          await interceptor.respond(failRequest, { status: 500, body: { ok: false, error: 'boom', code: 'INTERNAL' } });
+          await sleep(1200);
+          const afterFail = await panelState();
+          const failRetryMark = Date.now();
+          await hostViewportSet({ canvasX: -400 });
+          await waitHostView((view) => near(view.canvasX, -400, 1) && near(view.x, 0, 1));
+          await waitPanelValues({ x: -400 });
+          const failRetryRequest = await interceptor.waitForNew(failRetryMark);
+          const failRetryFacts = await seedFactsNow();
+          await interceptor.respond(failRetryRequest, { body: await seedResponseFor(failRetryFacts) });
+          const afterFailRecovered = await waitCanvasState(true, true, { timeoutMs: 8000 });
+          check('V13.8e', 'a failed seed request leaves input fail-closed; a shell change retries and aligns',
+            afterFail.canvasBarrier !== 'seed-aligned' && afterFailRecovered.canvasBarrier === 'seed-aligned',
+            { failed: 'not seed-aligned', recovered: 'seed-aligned' },
+            { failed: afterFail.canvasBarrier, recovered: afterFailRecovered.canvasBarrier });
+          const quietMark = Date.now();
+          await sleep(1500);
+          const quietRequests = interceptor.requests.filter((entry) => entry.at >= quietMark);
+          check('V13.8f', 'a successful seed is not re-requested for the same shell signature (no screenshot loop)',
+            quietRequests.length === 0,
+            { requests: 0 }, { requests: quietRequests.length, bodies: quietRequests.map((entry) => entry.body) });
+
+          // 4) Seed input mapping: a composed seed at C=-100 still maps q -> p=q+O and blank-zero.
+          const clickSeedMark = Date.now();
+          await hostViewportSet({ canvasX: -100 });
+          await waitHostView((view) => near(view.canvasX, -100, 1) && near(view.x, 0, 1));
+          await waitPanelValues({ x: -100 });
+          const clickSeedRequest = await interceptor.waitForNew(clickSeedMark);
+          const clickSeedFacts = await seedFactsNow();
+          await interceptor.respond(clickSeedRequest, { body: await seedResponseFor(clickSeedFacts) });
+          const clickSeedPanel = await waitCanvasState(true, true, { timeoutMs: 8000 });
+          check('V13.8g', 'seed-displayed state is seed-aligned and does not add a live-frame transform',
+            clickSeedPanel.canvasBarrier === 'seed-aligned' && transformTranslate(clickSeedPanel.imgTransform).x === 0,
+            { barrier: 'seed-aligned', translateX: 0 },
+            { barrier: clickSeedPanel.canvasBarrier, translate: transformTranslate(clickSeedPanel.imgTransform) });
+          const seedClickView = (await hostView()).view;
+          const seedClickCanvas = (await hostCanvas()).canvas;
+          const seedTarget = await elementDocumentRect('#t3-canvas');
+          const seedQ = { x: seedTarget.docX - Number(seedClickCanvas.x), y: seedTarget.docY - Number(seedClickCanvas.y) };
+          let seedPainted = paintedOf(await waitFrameStable());
+          let seedPoint = guiPointForViewport(seedPainted, Number(seedClickView.width), Number(seedClickView.height), seedQ.x, seedQ.y);
+          await ensurePointVisible(seedPoint);
+          seedPainted = paintedOf(await waitFrameStable());
+          seedPoint = guiPointForViewport(seedPainted, Number(seedClickView.width), Number(seedClickView.height), seedQ.x, seedQ.y);
+          await resetTargetInstrumentation();
+          const seedClicksBefore = await targetEval('window.__t3 ? window.__t3.counters.canvasClicks : -1');
+          await clickAt(seedPoint.x, seedPoint.y);
+          await sleep(800);
+          const seedClicksAfter = await targetEval('window.__t3 ? window.__t3.counters.canvasClicks : -1');
+          const seedClickRecord = await targetEval('window.__t3 ? window.__t3.last.click : null');
+          check('V13.8h', `seed-displayed content click maps q=${Math.round(seedQ.x)} through O=-100 to p=${Math.round(seedQ.x - 100)}`,
+            Number(seedClicksAfter) - Number(seedClicksBefore) === 1
+              && seedClickRecord && seedClickRecord.isTrusted === true && seedClickRecord.target === 't3-canvas'
+              && near(seedClickRecord.clientX, seedTarget.docX - seedTarget.scrollX, 1.5),
+            { clicks: 1, target: 't3-canvas', clientX: seedTarget.docX - seedTarget.scrollX },
+            { clicks: Number(seedClicksAfter) - Number(seedClicksBefore), record: seedClickRecord, q: seedQ, point: seedPoint });
+          const seedBlankQ = { x: 50, y: 250 };
+          const seedBlankPainted = paintedOf(await waitForFrame());
+          const seedBlankPoint = guiPointForViewport(seedBlankPainted, Number(seedClickView.width), Number(seedClickView.height), seedBlankQ.x, seedBlankQ.y);
+          await resetTargetInstrumentation();
+          const seedInputMark = Date.now();
+          await clickAt(seedBlankPoint.x, seedBlankPoint.y);
+          await sleep(500);
+          const seedBlankEvents = await targetEval('window.__t3 ? window.__t3.events.length : -1');
+          check('V13.8i', 'a click on the blank of a composed seed dispatches zero page events and zero /input',
+            seedBlankEvents === 0 && panelPosts('input', seedInputMark).length === 0,
+            { pageEvents: 0, inputPosts: 0 },
+            { pageEvents: seedBlankEvents, inputPosts: panelPosts('input', seedInputMark).length });
+        } finally {
+          for (const entry of interceptor.pending()) {
+            await interceptor.respond(entry, { status: 500, body: { ok: false, error: 'cleanup', code: 'INTERNAL' } }).catch(() => {});
+          }
+          await interceptor.stop();
+        }
+      } else {
+        notRun('V13.8c', 'seed provenance negative cases (stale/missing/failure)',
+          'the displayed frame was a matching live frame in this run, so the canvas seed path was not exercised', { detail: leftDetail });
+      }
+
+      // ---- V13.9 C beyond max scroll: the right band is blank, content is shifted left ----
+      const overflowForCanvas = await ensureHorizontalOverflow();
+      const maxScrollX = Number(overflowForCanvas.maxScrollX);
+      const rightC = maxScrollX + 80;
+      await hostViewportSet({ canvasX: rightC, canvasY: 0 });
+      await waitHostView((view) => near(view.canvasX, rightC, 1) && near(view.x, maxScrollX, 2));
+      await waitPanelMirrorsHost();
+      await waitCanvasState(true, true);
+      const rightPreview = await waitFrameStable();
+      await ensurePointVisible({ x: rightPreview.box.left + rightPreview.box.width / 2, y: rightPreview.box.top + rightPreview.box.height / 2 });
+      await sleep(500);
+      const rightFrame = await waitFrameStable();
+      const rightPanel = await panelState();
+      const rightDetail = canvasDetailOf(rightPanel);
+      const rightSeed = rightDetail.seed === true;
+      const rightShift = transformTranslate(rightPanel.imgTransform);
+      const rightShot = await captureBoxPixels(rightFrame.box);
+      const rightBlankX = Math.round(rightFrame.box.width - 73);
+      const rightChecker = checkerboardOf(rightPanel);
+      const rightProbe = checkerSample(rightShot.decoded, rightChecker,
+        [[rightBlankX, 7], [rightBlankX + 14, 7], [rightBlankX + 28, 7], [rightBlankX + 42, 7], [rightBlankX + 56, 7]]);
+      const rightContent = pixelAt(rightShot.decoded, Math.round(rightFrame.box.width - 150), Math.round(rightFrame.box.height * 0.96));
+      const rightClip = rightSeed ? String(rightPanel.canvasSeedClip || '') : 'off';
+      check('V13.9', 'C > max scroll shows a dark checkerboard right band and content left (composed seed clipped; live frame shifted by O=80)',
+        rightPanel.canvasBlank === 'checkerboard' && Boolean(rightChecker)
+          && rightProbe.allChecker && rightProbe.both && rightProbe.white === 0
+          && rightContent.r >= 150 && rightContent.g <= 120 && rightContent.b <= 120
+          && near(rightShift.x, rightSeed ? 0 : -80, 2)
+          && (rightSeed ? rightPanel.canvasBarrier === 'seed-aligned' && rightClip.includes('20%') : rightPanel.canvasBarrier === 'aligned' && rightClip === 'off'),
+        { blank: 'checkerboard', colors: 'both dark tones', content: 'page background', translateX: rightSeed ? 0 : -80, seedClip: rightSeed ? 'right 20%' : 'off' },
+        { blank: rightPanel.canvasBlank, checker: rightChecker, probe: rightProbe, content: rightContent, translate: rightShift, barrier: rightPanel.canvasBarrier, seedClip: rightClip, C: rightC, maxScrollX, detail: rightDetail });
+      await capturePanel('shot-07-canvas-right-blank');
+
+      // ---- V13.10 content hit maps q -> p = q + O (scroll 0, C=-100 => O=-100) ----
+      await hostViewportSet({ canvasX: -100, canvasY: 0 });
+      await waitHostView((view) => near(view.canvasX, -100, 1) && near(view.x, 0, 1));
+      await waitPanelMirrorsHost();
+      await waitCanvasState(true, true);
+      await waitFrameStable();
+      await sleep(300); // let the best-effort resize barrier (≤250 ms) clear too
+      const clickView = (await hostView()).view;
+      const clickCanvas = (await hostCanvas()).canvas;
+      const clickTarget = await elementDocumentRect('#t3-canvas');
+      const q = { x: clickTarget.docX - Number(clickCanvas.x), y: clickTarget.docY - Number(clickCanvas.y) };
+      let clickPainted = paintedOf(await waitForFrame());
+      let clickPoint = guiPointForViewport(clickPainted, Number(clickView.width), Number(clickView.height), q.x, q.y);
+      await ensurePointVisible(clickPoint);
+      clickPainted = paintedOf(await waitForFrame());
+      clickPoint = guiPointForViewport(clickPainted, Number(clickView.width), Number(clickView.height), q.x, q.y);
+      await resetTargetInstrumentation();
+      const clicksBeforeCanvas = await targetEval('window.__t3 ? window.__t3.counters.canvasClicks : -1');
+      await clickAt(clickPoint.x, clickPoint.y);
+      await sleep(800);
+      const clicksAfterCanvas = await targetEval('window.__t3 ? window.__t3.counters.canvasClicks : -1');
+      const canvasClickRecord = await targetEval(`(() => {
+        if (!window.__t3) return null;
+        const clicks = window.__t3.events.filter((event) => event.type === 'click');
+        return clicks.length ? clicks[clicks.length - 1] : null;
+      })()`);
+      check('V13.10', `content click maps q=${Math.round(q.x)} through O=-100 to page point p=${Math.round(q.x - 100)} (hits #t3-canvas, trusted)`,
+        Number(clicksAfterCanvas) - Number(clicksBeforeCanvas) === 1
+          && canvasClickRecord && canvasClickRecord.isTrusted === true
+          && canvasClickRecord.target === 't3-canvas'
+          && near(canvasClickRecord.clientX, clickTarget.docX - clickTarget.scrollX, 1.5)
+          && near(canvasClickRecord.clientY, clickTarget.docY - clickTarget.scrollY, 1.5)
+          && near(canvasClickRecord.clientX, q.x + (Number(clickCanvas.x) - Number(clickView.x)), 1.5),
+        { clicks: 1, isTrusted: true, target: 't3-canvas', clientX: clickTarget.docX - clickTarget.scrollX },
+        { clicks: Number(clicksAfterCanvas) - Number(clicksBeforeCanvas), record: canvasClickRecord, q, clickPoint });
+
+      // ---- V13.11 blank: click and wheel dispatch nothing into the page ----
+      const blankQ = { x: 50, y: 250 }; // d = q + C = (-50, 250): outside the content box
+      const blankPainted = paintedOf(await waitForFrame());
+      const blankPoint = guiPointForViewport(blankPainted, Number(clickView.width), Number(clickView.height), blankQ.x, blankQ.y);
+      await resetTargetInstrumentation();
+      const inputMark = Date.now();
+      await clickAt(blankPoint.x, blankPoint.y);
+      await sleep(400);
+      const blankEvents = await targetEval('window.__t3 ? window.__t3.events.length : -1');
+      const scrollBeforeBlankWheel = await targetTruth();
+      await wheelOnFramePoint(blankPoint, 240);
+      await sleep(700);
+      const scrollAfterBlankWheel = await targetTruth();
+      const blankInputPosts = panelPosts('input', inputMark);
+      check('V13.11', 'a click on the canvas blank dispatches zero page events and zero /input requests',
+        blankEvents === 0 && blankInputPosts.length === 0,
+        { pageEvents: 0, inputPosts: 0 }, { pageEvents: blankEvents, inputPosts: blankInputPosts.length, point: blankPoint });
+      check('V13.12', 'a wheel on the canvas blank does not scroll the target page',
+        near(scrollAfterBlankWheel.scrollX, scrollBeforeBlankWheel.scrollX, 0.5)
+          && near(scrollAfterBlankWheel.scrollY, scrollBeforeBlankWheel.scrollY, 0.5)
+          && panelPosts('input', inputMark + 500).length === 0,
+        { scrollX: scrollBeforeBlankWheel.scrollX, scrollY: scrollBeforeBlankWheel.scrollY },
+        { scrollX: scrollAfterBlankWheel.scrollX, scrollY: scrollAfterBlankWheel.scrollY, inputPosts: panelPosts('input', inputMark + 500).length });
+
+      // ---- V13.13 fail-closed: if the accepted S disagrees with the displayed frame's scroll, no input ----
+      let stopRewrite = null;
+      try {
+        stopRewrite = await startStateRewrite((json) => mutateStateUi(json, (ui) => {
+          if (ui.view) { ui.view.x = 50; ui.view.y = 50; }
+          if (ui.observed) { ui.observed.x = 50; ui.observed.y = 50; }
+          return ui;
+        }));
+        const stalled = await waitFor(async () => {
+          const panel = await panelState();
+          return panel.canvasOn === 'on' && panel.canvasReady === 'false' && panel.canvasBarrier === 'scroll-mismatch'
+            ? panel : undefined;
+        }, { timeoutMs: 5000, intervalMs: 100, label: 'fail-closed scroll mismatch' });
+        check('V13.13', 'O≠0 + accepted S≠frame.scroll makes the input barrier fail closed (reason=scroll-mismatch, no 250 ms timeout bypass)',
+          stalled.canvasReady === 'false' && stalled.canvasBarrier === 'scroll-mismatch',
+          { canvasReady: 'false', reason: 'scroll-mismatch' },
+          { canvasReady: stalled.canvasReady, reason: stalled.canvasBarrier });
+        const inputBeforeStall = panelPosts('input').length;
+        await resetTargetInstrumentation();
+        const stallPainted = paintedOf(await waitForFrame());
+        let stallPoint = guiPointForViewport(stallPainted, Number(clickView.width), Number(clickView.height), q.x, q.y);
+        await ensurePointVisible(stallPoint);
+        const stallPaintedAgain = paintedOf(await waitForFrame());
+        stallPoint = guiPointForViewport(stallPaintedAgain, Number(clickView.width), Number(clickView.height), q.x, q.y);
+        await clickAt(stallPoint.x, stallPoint.y);
+        await sleep(500);
+        const stalledEvents = await targetEval('window.__t3 ? window.__t3.events.length : -1');
+        check('V13.14', 'the same content point that worked before dispatches nothing while frame.scroll is inconsistent',
+          stalledEvents === 0 && panelPosts('input').length === inputBeforeStall,
+          { pageEvents: 0, inputPosts: inputBeforeStall },
+          { pageEvents: stalledEvents, inputPosts: panelPosts('input').length, point: stallPoint });
+      } catch (error) {
+        notRun('V13.13', 'fail-closed scroll barrier (inconsistent frame.scroll)',
+          'CDP Fetch response rewriting is unavailable in this environment', sanitize(errorMessage(error)));
+      } finally {
+        if (stopRewrite) await stopRewrite();
+      }
+      const recovered = await waitCanvasState(true, true, { timeoutMs: 8000 }).catch(() => null);
+      check('V13.15', 'the canvas input barrier recovers when the Host scroll evidence agrees again',
+        Boolean(recovered), { canvasReady: 'true' }, recovered ? { canvasReady: recovered.canvasReady } : { canvasReady: null });
+
+      // ---- V13.16 drag writes the canvas origin C and may go negative ----
+      await hostViewportSet({ width: 400, height: 300, scale: 1, x: 0, y: 0 });
+      await waitHostView((view) => Number(view.width) === 400 && Number(view.height) === 300 && near(view.x, 0, 1) && near(view.y, 0, 1));
+      await waitPanelMirrorsHost();
+      await hostViewportSet({ canvasX: 50, canvasY: 50 });
+      await waitHostView((view) => near(view.canvasX, 50, 1) && near(view.canvasY, 50, 1) && near(view.x, 50, 1));
+      await waitPanelMirrorsHost();
+      await waitCanvasState(true, true);
+      await waitFrameStable();
+      const panOn = await togglePan(true);
+      check('V13.16', 'the drag checkbox is enabled on a canvas Host and checked after a real click',
+        panOn.panChecked === true && panOn.frameCursor === 'grab',
+        { checked: true, cursor: 'grab' }, { checked: panOn.panChecked, cursor: panOn.frameCursor });
+      const canvasDrag = await dragOnFrame(140, 90);
+      const expectedCanvasX = Math.round(50 - (140 * 400) / Math.max(1, canvasDrag.painted.width));
+      const expectedCanvasY = Math.round(50 - (90 * 300) / Math.max(1, canvasDrag.painted.height));
+      const draggedCanvas = await waitHostView((view) => near(view.canvasX, expectedCanvasX, 6)
+        && near(view.canvasY, expectedCanvasY, 6) && near(view.x, 0, 1) && near(view.y, 0, 1));
+      check('V13.17', `dragging right/down moves canvas C into negative values (${expectedCanvasX}, ${expectedCanvasY}) and keeps real scroll clamped at 0`,
+        near(draggedCanvas.view.canvasX, expectedCanvasX, 6) && near(draggedCanvas.view.canvasY, expectedCanvasY, 6)
+          && Number(draggedCanvas.view.canvasX) < 0 && Number(draggedCanvas.view.canvasY) < 0
+          && near(draggedCanvas.view.x, 0, 1) && near(draggedCanvas.view.y, 0, 1),
+        { canvasX: expectedCanvasX, canvasY: expectedCanvasY, x: 0, y: 0 },
+        { view: draggedCanvas.view, painted: canvasDrag.painted });
+      const draggedPanel = await waitPanelValues({ x: draggedCanvas.view.canvasX, y: draggedCanvas.view.canvasY }).catch(() => panelState());
+      check('V13.18', 'the X/Y inputs mirror the negative canvas C after the drag',
+        near(draggedPanel.x, draggedCanvas.view.canvasX, 2) && near(draggedPanel.y, draggedCanvas.view.canvasY, 2),
+        { x: draggedCanvas.view.canvasX, y: draggedCanvas.view.canvasY }, { x: draggedPanel.x, y: draggedPanel.y });
+      const panOff = await togglePan(false);
+      check('V13.19', 'unchecking drag restores the default cursor and page interaction surface',
+        panOff.panChecked === false && panOff.frameCursor !== 'grab' && panOff.frameCursor !== 'grabbing',
+        { checked: false, cursor: 'auto' }, { checked: panOff.panChecked, cursor: panOff.frameCursor });
+      await capturePanel('shot-08-canvas-drag');
+
+      // ---- V13.19b pan-only overlay: a fully blank canvas can still be dragged back ----
+      const liveContent = (await hostCanvas()).canvas;
+      const dragViewWidth = Number((await hostView()).view.width);
+      const farC = Number(liveContent.contentWidth) + 100;
+      const maxScrollFar = Math.max(0, Number(liveContent.contentWidth) - dragViewWidth);
+      await hostViewportSet({ canvasX: farC, canvasY: 0 });
+      const farView = await waitHostView((view) => near(view.canvasX, farC, 2) && near(view.x, maxScrollFar, 2));
+      await waitPanelMirrorsHost();
+      await waitCanvasState(true, true);
+      await waitFrameStable();
+      const farPreview = await waitFrameStable();
+      await ensurePointVisible({ x: farPreview.box.left + farPreview.box.width / 2, y: farPreview.box.top + farPreview.box.height / 2 });
+      await sleep(400);
+      const farFrame = await waitFrameStable();
+      const farPanel = await panelState();
+      const farDetail = canvasDetailOf(farPanel);
+      const farSeed = farDetail.seed === true;
+      const farShift = transformTranslate(farPanel.imgTransform);
+      const farShot = await captureBoxPixels(farFrame.box);
+      const farChecker = checkerboardOf(farPanel);
+      const farProbe = checkerSample(farShot.decoded, farChecker,
+        [[7, 7], [21, 7], [35, 7], [49, 7], [63, 7], [77, 7], [7, 21], [21, 21], [35, 21], [49, 21], [63, 21], [77, 21], [7, 35], [21, 35], [35, 35]]);
+      const farClip = farSeed ? String(farPanel.canvasSeedClip || '') : 'off';
+      const farExpectedShift = farSeed ? 0 : -(Number(liveContent.contentWidth) + 100 - maxScrollFar);
+      check('V13.19b', 'C fully beyond the content box shows an all-checkerboard canvas (live frame out; composed seed fully clipped)',
+        farPanel.canvasBlank === 'checkerboard' && Boolean(farChecker)
+          && farProbe.allChecker && farProbe.both && farProbe.white === 0
+          && near(farShift.x, farExpectedShift, 3)
+          && (farSeed ? farPanel.canvasBarrier === 'seed-aligned' && farClip !== 'off' && farClip.includes('100%') : farPanel.canvasBarrier === 'aligned' && farClip === 'off'),
+        { blank: 'checkerboard', colors: 'both dark tones', translateX: farExpectedShift, seedClip: farSeed ? 'all blank' : 'off' },
+        { blank: farPanel.canvasBlank, checker: farChecker, probe: farProbe, translate: farShift, barrier: farPanel.canvasBarrier, seedClip: farClip, C: farC, maxScroll: maxScrollFar, detail: farDetail, view: farView.view });
+      await capturePanel('shot-09-canvas-all-blank');
+
+      const panAgain = await togglePan(true);
+      check('V13.19c', 'drag mode adds a pan-only transparent layer over the blank viewport (grab cursor)',
+        panAgain.panChecked === true && panAgain.panLayer === true && panAgain.panLayerCursor === 'grab',
+        { checked: true, layer: true, cursor: 'grab' },
+        { checked: panAgain.panChecked, layer: panAgain.panLayer, cursor: panAgain.panLayerCursor });
+
+      // The frame is entirely outside the box: this drag can only start on the blank overlay.
+      const blankDrag = await dragOnFrame(200, 0);
+      const recoveredC = Math.round(farC - (200 * dragViewWidth) / Math.max(1, blankDrag.painted.width));
+      const blankDragged = await waitHostView((view) => near(view.canvasX, recoveredC, 8) && near(view.x, maxScrollFar, 2));
+      check('V13.19d', `dragging from the blank recovers the viewport (canvasX ${Math.round(farC)}→≈${recoveredC})`,
+        near(blankDragged.view.canvasX, recoveredC, 8) && Number(blankDragged.view.canvasX) < farC,
+        { canvasX: recoveredC }, { canvasX: blankDragged.view.canvasX, startedBlank: true, painted: blankDrag.painted });
+      await waitCanvasState(true, true);
+      const recoveredFrame = await waitFrameStable();
+      const recoveredPanel = await panelState();
+      const recoveredDetail = canvasDetailOf(recoveredPanel);
+      const recoveredSeed = recoveredDetail.seed === true;
+      const recoveredShift = transformTranslate(recoveredPanel.imgTransform);
+      const recoveredShot = await captureBoxPixels(recoveredFrame.box);
+      const recoveredLeft = pixelAt(recoveredShot.decoded, 30, Math.round(recoveredFrame.box.height * 0.5));
+      const recoveredChecker = checkerboardOf(recoveredPanel);
+      const recoveredRightX = Math.round(recoveredFrame.box.width - 73);
+      const recoveredProbe = checkerSample(recoveredShot.decoded, recoveredChecker,
+        [[recoveredRightX, 7], [recoveredRightX + 14, 7], [recoveredRightX + 28, 7], [recoveredRightX + 42, 7], [recoveredRightX + 56, 7]]);
+      const recoveredClip = recoveredSeed ? String(recoveredPanel.canvasSeedClip || '') : 'off';
+      const recoveredExpectedShift = recoveredSeed ? 0 : -(recoveredC - maxScrollFar);
+      check('V13.19e', 'after the blank drag the content is visible on the left and the right band is checkerboard (seed clipped)',
+        recoveredLeft.r >= 150 && recoveredLeft.g <= 120 && recoveredLeft.b <= 120
+          && recoveredPanel.canvasBlank === 'checkerboard' && Boolean(recoveredChecker)
+          && recoveredProbe.allChecker && recoveredProbe.both && recoveredProbe.white === 0
+          && near(recoveredShift.x, recoveredExpectedShift, 3)
+          && (recoveredSeed ? recoveredPanel.canvasBarrier === 'seed-aligned' && recoveredClip.includes('75%') : recoveredPanel.canvasBarrier === 'aligned' && recoveredClip === 'off'),
+        { left: 'page background', right: 'checkerboard', translateX: recoveredExpectedShift, seedClip: recoveredSeed ? 'right 75%' : 'off' },
+        { left: recoveredLeft, checker: recoveredChecker, probe: recoveredProbe, translate: recoveredShift, barrier: recoveredPanel.canvasBarrier, seedClip: recoveredClip, C: recoveredC, maxScroll: maxScrollFar, detail: recoveredDetail });
+      const panFinallyOff = await togglePan(false);
+      check('V13.19f', 'leaving drag mode removes the pan overlay and restores the normal hit surface',
+        panFinallyOff.panChecked === false && panFinallyOff.panLayer === false && panFinallyOff.frameCursor !== 'grab',
+        { checked: false, layer: false, cursor: 'auto' },
+        { checked: panFinallyOff.panChecked, layer: panFinallyOff.panLayer, cursor: panFinallyOff.frameCursor });
+
+      // Reset to a neutral canvas before the fallback simulations (their X/Y display is scroll 0).
+      await hostViewportSet({ width: 400, height: 300, scale: 1, x: 0, y: 0 });
+      await waitHostView((view) => Number(view.width) === 400 && Number(view.height) === 300 && near(view.x, 0, 2) && near(view.y, 0, 1));
+      await hostViewportSet({ canvasX: 0, canvasY: 0 });
+      await waitHostView((view) => near(view.canvasX, 0, 1) && near(view.canvasY, 0, 1) && near(view.x, 0, 1));
+      await waitPanelMirrorsHost();
+      await waitCanvasState(true, true);
+
+      // ---- V13.20 simulated Host without ui.canvas: old scroll fallback + drag disabled ----
+      let stopNoCanvas = null;
+      try {
+        stopNoCanvas = await startStateRewrite((json) => mutateStateUi(json, (ui) => {
+          delete ui.canvas;
+          return ui;
+        }));
+        const noCanvas = await waitCanvasState(false, undefined, { timeoutMs: 5000 });
+        await waitPanelValues({ x: 0, y: 0 }).catch(() => undefined);
+        const noCanvasPanel = await panelState();
+        check('V13.20', 'without ui.canvas the drag mode is disabled and X/Y fall back to document scroll (0, not the stale C)',
+          noCanvasPanel.canvasOn === 'off' && noCanvasPanel.panDisabled === true && noCanvasPanel.xDisabled === false
+            && near(noCanvasPanel.x, 0, 1.5) && near(noCanvasPanel.y, 0, 1.5),
+          { canvas: 'off', panDisabled: true, xDisabled: false, x: 0, y: 0 },
+          { canvas: noCanvasPanel.canvasOn, panDisabled: noCanvasPanel.panDisabled, xDisabled: noCanvasPanel.xDisabled,
+            x: noCanvasPanel.x, y: noCanvasPanel.y });
+        const markNoCanvas = Date.now();
+        await typeIntoField(X_LABEL, '-50', { enter: true });
+        await sleep(500);
+        const noCanvasPanelAfter = await panelState();
+        const noCanvasPosts = panelPosts('viewport', markNoCanvas).map(parseBody);
+        check('V13.21', 'the fallback rejects a negative scroll draft and never posts canvasX/canvasY',
+          near(noCanvasPanelAfter.x, 0, 1.5)
+            && !noCanvasPosts.some((body) => body.canvasX !== undefined || body.canvasY !== undefined),
+          { x: 0, canvasFields: 0 }, { x: noCanvasPanelAfter.x, bodies: noCanvasPosts });
+      } catch (error) {
+        notRun('V13.20', 'simulated Host without ui.canvas',
+          'CDP Fetch response rewriting is unavailable in this environment', sanitize(errorMessage(error)));
+      } finally {
+        if (stopNoCanvas) await stopNoCanvas();
+      }
+      await waitCanvasState(true, true, { timeoutMs: 8000 }).catch(() => undefined);
+
+      // ---- V13.22 simulated pre-P0-C Host (no ui.view at all): X/Y and drag disabled ----
+      let stopOldHost = null;
+      try {
+        stopOldHost = await startStateRewrite((json) => mutateStateUi(json, (ui) => {
+          delete ui.view;
+          delete ui.canvas;
+          return ui;
+        }));
+        const oldHostPanel = await waitFor(async () => {
+          const panel = await panelState();
+          return panel.canvasOn === 'off' && panel.xDisabled === true && panel.panDisabled === true ? panel : undefined;
+        }, { timeoutMs: 5000, intervalMs: 150, label: 'old Host fallback disables X/Y and drag' });
+        check('V13.22', 'an old Host snapshot (no ui.view/ui.canvas) disables X/Y and drag instead of guessing',
+          oldHostPanel.xDisabled === true && oldHostPanel.yDisabled === true && oldHostPanel.panDisabled === true,
+          { xDisabled: true, yDisabled: true, panDisabled: true },
+          { xDisabled: oldHostPanel.xDisabled, yDisabled: oldHostPanel.yDisabled, panDisabled: oldHostPanel.panDisabled });
+      } catch (error) {
+        notRun('V13.22', 'simulated pre-P0-C Host (no shared view)',
+          'CDP Fetch response rewriting is unavailable in this environment', sanitize(errorMessage(error)));
+      } finally {
+        if (stopOldHost) await stopOldHost();
+      }
+      const restoredCanvas = await waitCanvasState(true, true, { timeoutMs: 8000 }).catch(() => null);
+      check('V13.23', 'the canvas inputs/drag re-enable once the Host projection returns',
+        Boolean(restoredCanvas) && restoredCanvas.panDisabled === false,
+        { canvas: 'on', panDisabled: false },
+        restoredCanvas ? { canvas: restoredCanvas.canvasOn, panDisabled: restoredCanvas.panDisabled } : { canvas: null });
+
+      // The Host rejects a patch carrying both coordinate spaces; the panel must never send one.
+      const allPanelPatches = state.requests
+        .filter((entry) => !entry.script && entry.method === 'POST' && entry.url.includes('/plugins/ui-testing/viewport'))
+        .map((entry) => parseBody(entry));
+      const mixedPatches = allPanelPatches.filter((body) => (body.canvasX !== undefined || body.canvasY !== undefined)
+        && (body.x !== undefined || body.y !== undefined));
+      check('V13.24', 'no panel /viewport patch ever mixes canvasX/canvasY with x/y',
+        mixedPatches.length === 0, { mixed: 0 }, { mixed: mixedPatches.length, bodies: mixedPatches.slice(0, 3) });
+    });
+
+    await scenario('V14 pan-mode wheel zoom', async () => {
+      // Base state: O != 0 on both axes (top-left blank) so a cursor-anchored zoom keeps the real
+      // page scroll at 0 while C changes; fit is off and pan mode is on.
+      await navigateTarget(`${fixtureBase}/web-t3.html`);
+      await waitForFrame();
+      await ensureHorizontalOverflow();
+      await clickFit(false);
+      await hostViewportSet({ width: 400, height: 300, scale: 1, x: 0, y: 0 });
+      await waitHostView((view) => Number(view.width) === 400 && Number(view.height) === 300 && closeTo(view.scale, 1, 0.0011));
+      await hostViewportSet({ canvasX: -100, canvasY: -100 });
+      await waitHostView((view) => near(view.canvasX, -100, 1) && near(view.canvasY, -100, 1) && near(view.x, 0, 1) && near(view.y, 0, 1));
+      await waitPanelMirrorsHost();
+      await waitCanvasState(true, true);
+      await waitFrameStable();
+      const panOn = await togglePan(true);
+      check('V14.0', 'drag mode advertises the wheel-zoom surface',
+        panOn.panChecked === true && panOn.canvasZoom === 'wheel',
+        { checked: true, zoom: 'wheel' }, { checked: panOn.panChecked, zoom: panOn.canvasZoom });
+
+      const b = { x: 40, y: 40 };
+      const setup = await frameBoxPoint(b);
+      const beforePanel = await panelState();
+      const beforeBox = setup.box;
+      const point = setup.point;
+      const beforeView = (await hostView()).view;
+      const beforeCanvas = (await hostCanvas()).canvas;
+      const s0 = beforeBox.width / Number(beforeView.width);
+      // The canvas point under the cursor's *screen* point S; the strict assertion is that d0
+      // remains at S after layout, not merely at the same box-relative coordinate.
+      const d0 = { x: Number(beforeCanvas.x) + (point.x - beforeBox.left) / s0, y: Number(beforeCanvas.y) + (point.y - beforeBox.top) / s0 };
+      const scrollBefore = await targetTruth();
+      await capturePanel('shot-12-zoom-anchor-before');
+      const mark = Date.now();
+      await wheelOnFramePoint(point, -120);
+      const zoomed = await waitHostView((view) => closeTo(view.scale, 1.05, 0.0011) && near(view.x, 0, 1) && near(view.y, 0, 1));
+      await waitPanelMirrorsHost();
+      await waitZoomAnchorState('settled');
+      await sleep(250);
+      const posts = panelPosts('viewport', mark).map(parseBody);
+      const inputPosts = panelPosts('input', mark);
+      const scrollAfter = await targetTruth();
+      const afterPanel = await panelState();
+      const afterBox = afterPanel.frame.box;
+      const afterView = (await hostView()).view;
+      const afterCanvas = (await hostCanvas()).canvas;
+      const s1 = afterBox.width / Number(afterView.width);
+      const screen1 = {
+        x: afterBox.left + (d0.x - Number(afterCanvas.x)) * s1,
+        y: afterBox.top + (d0.y - Number(afterCanvas.y)) * s1,
+      };
+      const drift = Math.max(Math.abs(screen1.x - point.x), Math.abs(screen1.y - point.y));
+      const body = posts.length ? posts[0] : {};
+      check('V14.1', 'drag-mode wheel applies the 5% scale step through one scale+canvasX/Y patch (no x/y, no page scroll, no /input)',
+        closeTo(zoomed.view.scale, 1.05, 0.0011) && posts.length === 1
+          && closeTo(body.scale, 1.05, 0.0011)
+          && num(body.canvasX) !== null && num(body.canvasY) !== null
+          && body.x === undefined && body.y === undefined
+          && near(scrollAfter.scrollX, scrollBefore.scrollX, 0.5) && near(scrollAfter.scrollY, scrollBefore.scrollY, 0.5)
+          && inputPosts.length === 0,
+        { scale: 1.05, patch: ['scale', 'canvasX', 'canvasY'], scroll: 'unchanged', input: 0 },
+        { scale: zoomed.view.scale, posts, inputPosts: inputPosts.length, scrollBefore, scrollAfter, body });
+      check('V14.2', 'strict screen anchor: the same cursor screen point stays ≤2 CSS px after 5% and again after 5%→10%',
+        afterPanel.canvasZoomAnchor === 'screen' && afterPanel.canvasZoomAnchorState === 'settled' && drift <= 2,
+        { anchor: 'screen', residual: '<=2', first: '5%', second: '5%→10%' },
+        { anchor: afterPanel.canvasZoomAnchor, anchorState: afterPanel.canvasZoomAnchorState, drift, point, screen1, d0, s0, s1, beforeBox, afterBox });
+      await capturePanel('shot-13-zoom-anchor-after-5');
+      // Centering compensation: with the box centered and stage wider, the box left moves by
+      // W·(s'−s)/2; the screen formula must fold that into C. A box-relative C would leave that
+      // amount of screen drift.
+      const stage = beforePanel.stage;
+      const centeredX = Boolean(stage) && Math.abs((stage.left + stage.clientWidth / 2) - (beforeBox.left + beforeBox.width / 2)) <= 1;
+      const centeredY = Boolean(stage) && Math.abs((stage.top + stage.clientHeight / 2) - (beforeBox.top + beforeBox.height / 2)) <= 1;
+      const noCompX = Number(beforeView.width) * (s1 - s0) / 2;
+      const noCompY = Number(beforeView.height) * (s1 - s0) / 2;
+      const boxShiftX = beforeBox.left - afterBox.left;
+      const boxShiftY = beforeBox.top - afterBox.top;
+      const boxRelativeC = {
+        x: Number(beforeCanvas.x) + (point.x - beforeBox.left) * (1 / s0 - 1 / s1),
+        y: Number(beforeCanvas.y) + (point.y - beforeBox.top) * (1 / s0 - 1 / s1),
+      };
+      const compensation = { x: boxRelativeC.x - Number(afterCanvas.x), y: boxRelativeC.y - Number(afterCanvas.y) };
+      const boxRelativeMapped = {
+        x: boxRelativeC.x + (point.x - beforeBox.left) / s1,
+        y: boxRelativeC.y + (point.y - beforeBox.top) / s1,
+      };
+      const boxRelativeResidual = Math.max(Math.abs(boxRelativeMapped.x - d0.x), Math.abs(boxRelativeMapped.y - d0.y));
+      check('V14.2b', 'centering offset is folded into C (without it the screen would drift ≈W·(s′−s)/2)',
+        centeredX && centeredY && Math.abs(boxShiftX - noCompX) <= 1.5 && Math.abs(boxShiftY - noCompY) <= 1.5
+          && Math.abs(compensation.x - noCompX / s1) <= 2 && Math.abs(compensation.y - noCompY / s1) <= 2 && drift <= 2,
+        { noCompensationDrift: noCompX, compensation: noCompX / s1, centered: true },
+        { noCompensationDrift: noCompX, noCompensationDriftY: noCompY, boxShift: boxShiftX, boxShiftY,
+          compensation, boxRelativeC, boxRelativeMapped, boxRelativeResidual, actualC: afterCanvas, s0, s1, drift, centeredX, centeredY, stage });
+      // Advisory: the historical box-relative anchor still maps d0 to itself in box coordinates; the
+      // screen-anchor change only adds the box-position compensation on top.
+      check('V14.2d', 'box-relative anchor residual remains ≤2 CSS px (advisory, kept from the previous contract)',
+        boxRelativeResidual <= 2,
+        { residual: '<=2' },
+        { boxRelativeResidual, boxRelativeMapped, d0 });
+      // Second 5% at the same screen point (5%→10%): the anchor must still hold.
+      const d1 = { x: Number(afterCanvas.x) + (point.x - afterBox.left) / s1, y: Number(afterCanvas.y) + (point.y - afterBox.top) / s1 };
+      const markSecond = Date.now();
+      await wheelOnFramePoint(point, -120);
+      await waitHostView((view) => closeTo(view.scale, 1.10, 0.0011));
+      await waitPanelMirrorsHost();
+      await waitZoomAnchorState('settled');
+      await sleep(250);
+      const secondPanel = await panelState();
+      const secondBox = secondPanel.frame.box;
+      const secondView = (await hostView()).view;
+      const secondCanvas = (await hostCanvas()).canvas;
+      const s2 = secondBox.width / Number(secondView.width);
+      const screen2 = {
+        x: secondBox.left + (d1.x - Number(secondCanvas.x)) * s2,
+        y: secondBox.top + (d1.y - Number(secondCanvas.y)) * s2,
+      };
+      const drift2 = Math.max(Math.abs(screen2.x - point.x), Math.abs(screen2.y - point.y));
+      check('V14.2c', 'consecutive 5%→10% zoom keeps the same screen anchor ≤2 CSS px',
+        secondPanel.canvasZoomAnchor === 'screen' && drift2 <= 2,
+        { residual: '<=2', scale: 1.10 },
+        { drift2, point, screen2, d1, s1, s2, secondBox, secondCanvas, posts: panelPosts('viewport', markSecond).length });
+      await capturePanel('shot-14-zoom-anchor-after-10');
+      await capturePanel('shot-11-zoom-after');
+
+      // Fit auto-unlock: a checked fit box must turn unchecked and stay unchecked after polls.
+      await hostViewportSet({ width: 400, height: 300, scale: 1, x: 0, y: 0 });
+      await waitHostView((view) => closeTo(view.scale, 1, 0.0011));
+      await hostViewportSet({ canvasX: -100, canvasY: -100 });
+      await waitHostView((view) => near(view.canvasX, -100, 1) && near(view.canvasY, -100, 1) && near(view.x, 0, 1) && near(view.y, 0, 1));
+      await waitPanelMirrorsHost();
+      // Let any in-flight /state poll from before the reset land before toggling the local fit
+      // preference; a stale poll would otherwise cancel fit right after the click.
+      await sleep(700);
+      await clickFit(true);
+      await sleep(900);
+      let fitBefore = await panelState();
+      if (fitBefore.fitChecked !== true) {
+        await clickFit(true);
+        await sleep(900);
+        fitBefore = await panelState();
+      }
+      const fitSetup = await frameBoxPoint(b);
+      await wheelOnFramePoint(fitSetup.point, -120);
+      const fitExpected = (Math.round(Number(fitBefore.zoomValue)) + 5) / 100;
+      const fitZoom = await waitHostView((view) => closeTo(view.scale, fitExpected, 0.0011));
+      await sleep(1600);
+      const fitAfter = await panelState();
+      const fitView = (await hostView()).view;
+      const fitMirror = await waitPanelMirrorsHost().catch(() => ({ panel: fitAfter, view: fitView }));
+      check('V14.3', 'zoom auto-unchecks fit and later state polls never restore it',
+        fitBefore.fitChecked === true && fitAfter.fitChecked === false
+          && closeTo(fitAfter.zoomValue, Number(fitView.scale) * 100, 1.5)
+          && closeTo(fitView.scale, fitExpected, 0.0011)
+          && fitMirror.panel.fitChecked === false,
+        { fitBefore: true, fitAfter: false, scale: fitExpected },
+        { fitBefore: fitBefore.fitChecked, fitAfter: fitAfter.fitChecked, zoom: fitAfter.zoomValue, viewScale: fitView.scale, expected: fitExpected, mirrored: fitMirror.panel.fitChecked });
+
+      // Step rules: Alt 1%, Shift 10%, Alt wins over Shift. Run the whole sequence five times from
+      // a freshly adopted base so a single lost notch (CAS/state race) cannot hide behind a retry.
+      const stepRounds = [];
+      for (let round = 0; round < 5; round += 1) {
+        await resetZoomBase();
+        const altSetup = await frameBoxPoint(b);
+        await wheelOnFramePoint(altSetup.point, -120, ALT);
+        const altStep = await waitHostView((view) => closeTo(view.scale, 1.01, 0.0011));
+        const shiftSetup = await frameBoxPoint(b);
+        await wheelOnFramePoint(shiftSetup.point, -120, SHIFT);
+        const shiftStep = await waitHostView((view) => closeTo(view.scale, 1.11, 0.0011));
+        const bothSetup = await frameBoxPoint(b);
+        await wheelOnFramePoint(bothSetup.point, -120, ALT | SHIFT);
+        const bothStep = await waitHostView((view) => closeTo(view.scale, 1.12, 0.0011));
+        stepRounds.push({
+          round: round + 1,
+          alt: altStep.view.scale, shift: shiftStep.view.scale, both: bothStep.view.scale,
+          timedOut: altStep.timedOut === true || shiftStep.timedOut === true || bothStep.timedOut === true,
+        });
+      }
+      check('V14.4', 'wheel zoom steps: Alt=1%, Shift=10%, Alt wins (5 consecutive reset rounds)',
+        stepRounds.length === 5 && stepRounds.every((entry) => !entry.timedOut
+          && closeTo(entry.alt, 1.01, 0.0011) && closeTo(entry.shift, 1.11, 0.0011) && closeTo(entry.both, 1.12, 0.0011)),
+        { rounds: 5, alt: 1.01, shift: 1.11, both: 1.12 },
+        { rounds: stepRounds });
+
+      // Ctrl/Meta never change the view scale and must not be turned into browser zoom.
+      await hostViewportSet({ width: 400, height: 300, scale: 1, x: 0, y: 0 });
+      await waitHostView((view) => closeTo(view.scale, 1, 0.0011));
+      await hostViewportSet({ canvasX: -100, canvasY: -100 });
+      await waitHostView((view) => near(view.canvasX, -100, 1) && near(view.canvasY, -100, 1) && near(view.x, 0, 1) && near(view.y, 0, 1));
+      await waitPanelMirrorsHost();
+      const ctrlSetup = await frameBoxPoint(b);
+      const dprBefore = await pageEvaluate('window.devicePixelRatio');
+      const scaleBeforeCtrl = Number((await hostView()).view.scale);
+      const markCtrl = Date.now();
+      await wheelOnFramePoint(ctrlSetup.point, -120, CTRL);
+      await sleep(500);
+      const afterCtrl = Number((await hostView()).view.scale);
+      await wheelOnFramePoint(ctrlSetup.point, -120, 4 /* Meta */);
+      await sleep(500);
+      const afterMeta = Number((await hostView()).view.scale);
+      const dprAfter = await pageEvaluate('window.devicePixelRatio');
+      const ctrlPosts = panelPosts('viewport', markCtrl);
+      const ctrlPanel = await panelState();
+      check('V14.5', 'Ctrl/Meta+wheel in drag mode changes neither view.scale nor DPR and posts no /viewport',
+        closeTo(afterCtrl, scaleBeforeCtrl, 0.0011) && closeTo(afterMeta, scaleBeforeCtrl, 0.0011)
+          && Number(dprAfter) === Number(dprBefore) && ctrlPosts.length === 0 && ctrlPanel.fitChecked === false,
+        { scale: scaleBeforeCtrl, dpr: dprBefore, requests: 0 },
+        { ctrl: afterCtrl, meta: afterMeta, dprBefore, dprAfter, requests: ctrlPosts.length, fit: ctrlPanel.fitChecked });
+
+      // Scale boundaries are consumed but send nothing and do not unlock/relock fit.
+      await hostViewportSet({ width: 400, height: 300, scale: 0.1, x: 0, y: 0 });
+      await waitHostView((view) => closeTo(view.scale, 0.1, 0.0011));
+      await hostViewportSet({ canvasX: -100, canvasY: -100 });
+      await waitHostView((view) => near(view.canvasX, -100, 1) && near(view.canvasY, -100, 1));
+      await waitPanelMirrorsHost();
+      const lowSetup = await frameBoxPoint({ x: 10, y: 10 });
+      const markLow = Date.now();
+      await wheelOnFramePoint(lowSetup.point, 120);
+      await sleep(600);
+      const lowView = (await hostView()).view;
+      const lowPosts = panelPosts('viewport', markLow);
+      check('V14.6', 'lower scale boundary 0.1: wheel-down is a no-op (no request)',
+        closeTo(lowView.scale, 0.1, 0.0011) && lowPosts.length === 0,
+        { scale: 0.1, requests: 0 }, { scale: lowView.scale, requests: lowPosts.length });
+      await hostViewportSet({ scale: 2 });
+      await waitHostView((view) => closeTo(view.scale, 2, 0.0011));
+      await waitPanelMirrorsHost();
+      const highSetup = await frameBoxPoint(b);
+      const markHigh = Date.now();
+      await wheelOnFramePoint(highSetup.point, -120);
+      await sleep(600);
+      const highView = (await hostView()).view;
+      const highPosts = panelPosts('viewport', markHigh);
+      check('V14.7', 'upper scale boundary 2.0: wheel-up is a no-op (no request)',
+        closeTo(highView.scale, 2, 0.0011) && highPosts.length === 0,
+        { scale: 2, requests: 0 }, { scale: highView.scale, requests: highPosts.length });
+
+      // Burst: three notches in one debounce window merge into one patch with the accumulated scale.
+      await hostViewportSet({ width: 400, height: 300, scale: 1, x: 0, y: 0 });
+      await waitHostView((view) => closeTo(view.scale, 1, 0.0011));
+      await hostViewportSet({ canvasX: -100, canvasY: -100 });
+      await waitHostView((view) => near(view.canvasX, -100, 1) && near(view.canvasY, -100, 1) && near(view.x, 0, 1));
+      await waitPanelMirrorsHost();
+      const burstSetup = await frameBoxPoint(b);
+      const markBurst = Date.now();
+      await wheelBurstOnFramePoint(burstSetup.point, 3, -120);
+      const burstView = await waitHostView((view) => closeTo(view.scale, 1.15, 0.0011));
+      await sleep(200);
+      const burstPosts = panelPosts('viewport', markBurst).map(parseBody);
+      const burstBody = burstPosts.length ? burstPosts[0] : {};
+      check('V14.8', 'a wheel burst merges into one /viewport patch with the accumulated 15% scale',
+        burstPosts.length === 1 && closeTo(burstBody.scale, 1.15, 0.0011)
+          && burstBody.x === undefined && burstBody.y === undefined,
+        { scale: 1.15, patches: 1 },
+        { scale: burstView.view.scale, patches: burstPosts.length, body: burstBody });
+
+      // A CAS conflict must replay the same notch once (the request is held, the Host revision is
+      // advanced by a script set, then the held request is released -> 409 + one bounded retry).
+      await resetZoomBase();
+      const conflictHold = await startViewportHold();
+      try {
+        const conflictSetup = await frameBoxPoint(b);
+        await wheelOnFramePoint(conflictSetup.point, -120);
+        const heldRequest = await conflictHold.waitForHeld();
+        await hostViewportSet({ canvasX: -99, canvasY: -99 });
+        await waitHostView((view) => near(view.canvasX, -99, 1) && near(view.x, 0, 1));
+        await conflictHold.release();
+        const conflictFinal = await waitHostView((view) => closeTo(view.scale, 1.05, 0.0011), { timeoutMs: 10000 });
+        const conflictDebug = await pageEvaluate('window.__utbZoomDebug || []');
+        check('V14.10', 'a CAS conflict on the zoom patch replays the same notch once (no lost notch)',
+          conflictFinal.timedOut !== true && closeTo(conflictFinal.view.scale, 1.05, 0.0011),
+          { scale: 1.05 }, { scale: conflictFinal.view.scale, timedOut: conflictFinal.timedOut === true, held: heldRequest.body, debug: conflictDebug.slice(-14) });
+      } finally {
+        await conflictHold.stop();
+      }
+
+      // Two notches while the first zoom patch is in flight: the second must be queued, not lost.
+      await resetZoomBase();
+      const inflightHold = await startViewportHold();
+      try {
+        const firstSetup = await frameBoxPoint(b);
+        await wheelOnFramePoint(firstSetup.point, -120);
+        const firstHeld = await inflightHold.waitForHeld();
+        const secondSetup = await frameBoxPoint(b);
+        await wheelOnFramePoint(secondSetup.point, -120);
+        await sleep(300);
+        await inflightHold.release();
+        const inflightFinal = await waitHostView((view) => closeTo(view.scale, 1.10, 0.0011), { timeoutMs: 10000 });
+        const inflightDebug = await pageEvaluate('window.__utbZoomDebug || []');
+        check('V14.11', 'a second notch sent while the first zoom patch is in flight is queued and applied (no loss)',
+          inflightFinal.timedOut !== true && closeTo(inflightFinal.view.scale, 1.10, 0.0011),
+          { scale: 1.10 }, { scale: inflightFinal.view.scale, timedOut: inflightFinal.timedOut === true, first: firstHeld.body, debug: inflightDebug.slice(-14) });
+      } finally {
+        await inflightHold.stop();
+      }
+
+      // Leaving drag mode restores the historical frame wheel -> page scroll, with no scale write.
+      await hostViewportSet({ width: 400, height: 300, scale: 1, x: 0, y: 0 });
+      await waitHostView((view) => closeTo(view.scale, 1, 0.0011));
+      await hostViewportSet({ canvasX: 0, canvasY: 0 });
+      await waitHostView((view) => near(view.x, 0, 1) && near(view.y, 0, 1) && near(view.canvasX, 0, 1) && near(view.canvasY, 0, 1));
+      await waitPanelMirrorsHost();
+      const panOff = await togglePan(false);
+      await waitCanvasState(true, true);
+      await waitFrameStable();
+      const scrollBeforePageWheel = await targetTruth();
+      const pageBox = (await panelState()).frame.box;
+      let pagePoint = { x: pageBox.left + pageBox.width / 2, y: pageBox.top + pageBox.height / 2 };
+      await ensurePointVisible(pagePoint);
+      const pageBoxAgain = (await panelState()).frame.box;
+      pagePoint = { x: pageBoxAgain.left + pageBoxAgain.width / 2, y: pageBoxAgain.top + pageBoxAgain.height / 2 };
+      const markPageWheel = Date.now();
+      await wheelOnFramePoint(pagePoint, 200);
+      await sleep(900);
+      const pageAfter = await targetTruth();
+      const pageView = (await hostView()).view;
+      check('V14.9', 'after leaving drag mode the frame wheel scrolls the page again and does not write view.scale',
+        panOff.panChecked === false && closeTo(pageView.scale, 1, 0.0011)
+          && pageAfter.scrollY > scrollBeforePageWheel.scrollY + 80
+          && panelPosts('viewport', markPageWheel).length === 0,
+        { scrollY: `> ${scrollBeforePageWheel.scrollY + 80}`, scale: 1, viewportPosts: 0 },
+        { pan: panOff.panChecked, scrollY: pageAfter.scrollY, before: scrollBeforePageWheel.scrollY, scale: pageView.scale, posts: panelPosts('viewport', markPageWheel).length });
     });
 
     await scenario('V11 narrow size bar layout', async () => {

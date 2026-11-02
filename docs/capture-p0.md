@@ -1,6 +1,8 @@
 # P0 采集基础设施契约
 
 > 索引：[index.md](index.md) · 2026-11-01 · 本文是 `browser_screenshot` P0 的权威实施与验收契约，已纳入 Lead 的接口裁决。
+
+> **2026-11-02 画布 v2（P0-C，权威见 [canvas-viewport.md](canvas-viewport.md)）**：截图 `region` 改为 **canvas CSS 空间**（`O=0` 时与文档 CSS 完全相同）；`O≠0` 时默认截图与显式 region 在白色画布上合成（`#ffffff` blank、可能重编码，`capture.canvas.composite=true` 披露）；`capture.request.space`/`mapping.canvas/contentRect/blank` 与 `coordinateSpace:'canvas-css-px'` 为加性字段。`O=0` 仍走本文的单次 CDP PNG 路径（字节/断言不变）；16M 预算按最终合成图。
 >
 > **2026-11-01 共享视口修订（见 [viewport-control.md](viewport-control.md) §6）**：显式 `scale` 下界从 1 扩到 **0.1**（上界仍 4）；**省略 `scale` 不再等于 1**，而是由 Host 在调用内解析为当前共享 `view.scale`（cold 为 1）；两轴期望像素 <1 时在派发前报 `INVALID_ARGUMENT(reason=empty-output-dimensions)`；`capture.version` 仍为 **1**，新增 `capture.request.scaleSource/viewRevision` 与 `capture.mapping.cssPerPixel/scrollAtCapture`。除这些加法/范围变更外，本文其余语义（单次原始 PNG、CRC/尺寸、16M 预算、落盘与附件规则）不变。本文属于静态设计交付；实现、运行验收与已加载构建须由执行报告另证。§9.1 的事实来自 Lead 提供的 Chrome 152 / Linux headless 实测记录，本文作者未重新运行这些实验。现行 T1/T2 基线见 [T1 契约](t1-m0-m2-contract.md)、[T2 契约](t2-structured-gui.md) 与 [状态记录](status.md)。
 
@@ -21,7 +23,7 @@ P0 提供 Web T1–T4 可复用的**采集、校验、落盘与证据**基础设
 | 参数 | 类型、默认与边界 | 语义 |
 | --- | --- | --- |
 | `scale` | 可选 finite number，连续区间 `[0.1,4]`；**省略时 = 当前共享 `view.scale`**（cold 1），不是固定的 1 | CDP `clip.scale`；1.11、1.25、1.5、0.65 等小数合法；字符串、NaN、越界为 `INVALID_ARGUMENT`；两轴期望像素 <1 → `INVALID_ARGUMENT(empty-output-dimensions)` |
-| `region` | 可选 `{x,y,width,height}`；四项均为有限数，`width/height >= 1` | 文档 CSS px 矩形；字段使用 `width/height`，不使用 `w/h`；省略时取采集前现场 layout viewport 的文档原点和大小 |
+| `region` | 可选 `{x,y,width,height}`；四项均为有限数，`width/height >= 1`；2026-11-02 起允许负坐标 | **canvas CSS px** 矩形（`O=0` 时与文档 CSS 相同）；省略时取 canvas 视口 `[C,C+W)×[C+H)`；`O≠0` 时内容交集贴图、其余纯白 blank |
 | `persist` | boolean，默认false；非布尔为INVALID_ARGUMENT | true表示持久留存；false不取消out/env表达的持久意图 |
 | `out` | 可选string，持久根相对POSIX路径，以`.png`结尾 | 提供即请求持久留存；持久模式省略out时用`output/capture/<actionId>.png`；无持久意图默认暂存，见§6 |
 
@@ -79,7 +81,7 @@ code/reason 仅在不满足 ok 时使用。一边超出、另一边相等为 `CA
 
 ### 3.3 文档、视口与图片映射
 
-`region`、`mapping.originCss/cssRect` 始终使用**文档 CSS px**；T1 输入与 T2 bbox/点击点通常使用**视口 CSS px**，不可直接混用。令采集前滚动原点为 `S`，区域原点为 `R`，密度为 `p`：
+`region`、`mapping.originCss/cssRect` 使用**canvas CSS px**（画布 v2 起；`O=0` 与文档 CSS 相同）；T1 输入与 T2 bbox/点击点通常使用**视口 CSS px**，不可直接混用。令采集前滚动原点为 `S`，区域原点为 `R`，密度为 `p`：
 
 ```text
 documentCss = viewportCss + S
@@ -106,12 +108,12 @@ viewportCss = documentCss - S
 | --- | --- | --- |
 | `capture.version` | integer，1 | 此契约版本 |
 | `format` / `transport` | `'png'` / `'cdp-page-capture-screenshot'` | 采集路径声明 |
-| `request` | `{scale,scaleSource:'explicit'\|'view',viewRevision,region:null\|Rect,coordinateSpace:'document-css-px',persist:boolean,out:null\|string}` | 调用参数（`scale` 为已解析值）；`scaleSource` 说明是显式给的还是跟随共享 `view.scale`，`viewRevision` 记录解析时的 view 版本；null region/out 表示未显式请求，不把有效区域冒充显式请求 |
+| `request` | `{scale,scaleSource:'explicit'\|'view',viewRevision,region:null\|Rect,space:'canvas-css-px',coordinateSpace:'document-css-px'|'canvas-css-px',persist:boolean,out:null\|string}` | 调用参数（`scale` 为已解析值）；`scaleSource` 说明是显式给的还是跟随共享 `view.scale`，`viewRevision` 记录解析时的 view 版本；null region/out 表示未显式请求，不把有效区域冒充显式请求 |
 | `environment` | `{browser:'chromium',pageDevicePixelRatio:number\|null,deviceScaleFactor:1,deviceScaleFactorSource:'runtime-override',viewport:{width,height},scroll:{x,y},headless:boolean\|null,headlessSource:'product'\|'userAgent'\|null}` | viewport/scroll 为采集前读回；页面 DPR 读取失败为 null；headless 联合检查已有浏览器版本 product/userAgent 的 HeadlessChrome 标记，任一命中为 true（product 优先），headlessSource 记录判定来源；取不到观测值时两者为 null，不为判定启动浏览器 |
 | `png` | `{width,height,bytes,chunks,crc:'ok'}` | 原始 PNG 结构/CRC 校验；`chunks` 为块数量，不是图片内容摘要 |
 | `expected` | `{width,height,pixelsPerCssPixel}` | §2.2 公式结果，不能冒充 PNG 实际值 |
 | `sizeCheck` | `{ok,actual:{width,height},expected:{width,height,pixelsPerCssPixel},upscaled:false}` | 成功分支实际/期望相等；失败信息见 §5 |
-| `mapping` | `{coordinateSpace,originCss:{x,y},imagePixels:{width,height},pixelsPerCssPixel,cssRect:{x,y,width,height},formulas}` | 文档 CSS→图片的纯 JSON 投影；`imagePixels` 与已校验实际尺寸一致；`formulas` 为正反映射公式文本，不是可执行函数 |
+| `mapping` | `{coordinateSpace,originCss:{x,y},imagePixels:{width,height},pixelsPerCssPixel,cssRect:{x,y,width,height},canvas?,contentRect?,blank?,formulas}` | canvas/文档 CSS→图片的纯 JSON 投影（O≠0 加 canvas/contentRect/blank）；`imagePixels` 与已校验实际尺寸一致；`formulas` 为正反映射公式文本，不是可执行函数 |
 | `anomaly` | `{checked,uniform,transparent,sampledPixels,tolerance,maxDelta,averageColor,distinctColors}` | 解码像素统计；tolerance=0；≤16M 像素全量扫描；averageColor 固定 `{r,g,b,a}`；maxDelta是公开字段，checked=false为null，checked=true为相对首像素最大通道差；未检查的判断/颜色值为 null，扫描数为 0，不伪称 false |
 | `file` | null或`{path,pathKind:'relative'\|'absolute',persistence:'persistent'\|'staging',root:'workspace'\|'env'\|'staging',ephemeral,bytes,sha256,width,height,mode:'0600',noClobber:true,createdAt}` | persistent为根相对路径/ephemeral=false；staging为插件暂存绝对路径/ephemeral=true；仅暂存路径可公开绝对值，见§6 |
 | `delivery` | `{compare:'attachment-metadata',original,image,downscaled,reencoded}` | §4.2；附件元数据证据与源图分开 |
@@ -176,7 +178,7 @@ viewportCss = documentCss - S
 | `blank_check_skipped` | 解码不支持、无法完成像素检查或超检查预算 | 未得出 uniform/transparent 结论 |
 | `capture_file_unavailable` | 默认暂存目录创建或文件发布失败 | 原始图仍交付，file=null；不代表已有可引用文件；不新增warning词 |
 | `attachment_unavailable` | 无附件服务或附件保存失败 | base64-fallback；不能宣称模型可见 |
-| `capture_beyond_viewport` | 显式 region 与现场可见矩形完全无交集 | 使用文档区域采集；不代表已滚动 |
+| `capture_beyond_viewport` | 显式 canvas region 与现场可见矩形完全无交集 | 使用 canvas/文档区域采集；`O≠0` 时由合成路径处理，不代表已滚动 |
 
 不悄悄添加其它词；页面 DPR 读回失败按 null 记录，不扩 warnings。多个条件可同时出现，去重保序；不得为了“成功”移除警告。
 
@@ -275,7 +277,7 @@ fixture 真值由 task-3 维护：红块文档 (20,20) 60×40；蓝块 (120,20) 
 
 ## 9. 已测事实、未验证与不做承诺
 
-**默认暂存修订（当前）**：Lead独立串行真实Chromium+fake ctx **14/14 probes、142/142必需项、0失败、exit0**（[最终报告](../tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json)）；新增C14 23项、C1增加2项。T1 **22/22、324/324**（[报告](../tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)）、T2 **37/38+1 NOT_RUN、260/260**（[报告](../tests/acceptance/runs/2026-11-01T05-50-44-987Z-101531/run-report.json)）。unit26/26、faults16/16由Lead交接；文档后skill/registry由Lead最终复核。执行者05-45-29的142项报告亦通过，保留为过程记录。下方115/117报告属于本次修订前历史。tmp不可写真实失败场景、SIGKILL残留与真实宿主重载/provider仍NOT_RUN。
+**默认暂存修订（当前）**：画布 v2 轮 Lead/执行者串行真实 Chromium+fake ctx **15/15 probes、162/162 必需项、0失败、exit0**（[画布轮报告](../tests/acceptance/runs/capture-p0-2026-11-01T20-18-32-415Z-768943/report.json)）；新增 C15 20 项（O=0 不合成、O≠0 四边 blank/内容平移/负 region/全 blank/scale2/16M/composite provenance）。此前 14/14、142/142 报告保留为历史。T1 **22/22、324/324**（[报告](../tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)）、T2 **37/38+1 NOT_RUN、260/260**（[报告](../tests/acceptance/runs/2026-11-01T05-50-44-987Z-101531/run-report.json)）。unit26/26、faults16/16由Lead交接；文档后skill/registry由Lead最终复核。执行者05-45-29的142项报告亦通过，保留为过程记录。下方115/117报告属于本次修订前历史。tmp不可写真实失败场景、SIGKILL残留与真实宿主重载/provider仍NOT_RUN。
 
 T1最终文案代码复跑 **21 PASS/1 FAIL、323/324通过/1失败、exit1**（[05-59-53](../tests/acceptance/runs/2026-11-01T05-59-53-185Z-105978/run-report.json)），与上方05-49-22的22/22并列。两次行为实现相同、仅persist描述不同。唯一失败P21-host-output-contract→“失败网络条目（loadingFailed）可快照且无undefined字段”，actual仅3条成功网络条目，与[基线04-30-43](../tests/acceptance/runs/2026-11-01T04-30-43-916Z-53146/run-report.json)同项。Lead判为既有环境随机flake，非P0回归；失败仍为FAIL，验收需串行且不能保证消失。T2最终代码仍37/38+1 NOT_RUN、260/260、exit0（[06-01-14](../tests/acceptance/runs/2026-11-01T06-01-14-788Z-107358/run-report.json)）；P0独立142项结果不因此改写。
 
@@ -287,7 +289,7 @@ T1最终文案代码复跑 **21 PASS/1 FAIL、323/324通过/1失败、exit1**（
 | --- | --- | --- |
 | Runtime 初始环境 | metrics override：1280×800、DSF1；CSS innerHeight=800 | 当前默认受控视口/DSF |
 | headless 标记（Lead 补充实测） | Chrome 152 `--headless=new` 的 `Browser.getVersion.product` 为 `Chrome/152.0.7977.82`，不含 HeadlessChrome；标记出现在 userAgent | product/userAgent 任一命中为 true，headlessSource 为 product 或 userAgent（product 优先）；取不到观测值为 null，不能只因 product 未命中就断言 false |
-| clip 坐标 | `captureBeyondViewport:true` 下按文档 CSS 坐标截取 | region 使用文档 CSS px；不自动转换成视口坐标 |
+| clip 坐标 | `captureBeyondViewport:true` 下按文档 CSS 坐标截取（内部实现） | region 使用 canvas CSS px；`O=0` 与文档相同；负坐标的 CDP clip 会被当作 0（2026-11-02 实测），所以负区域走 Host 合成，不依赖原生负 clip |
 | scale 舍入 | 101×1.25→126；101×1.5→152；101×2→202；101×3→303 | 当前 Chrome 路径按 round 公式；其它引擎未测 |
 | DOM/CSS 条纹 | 1 CSS px 黑白条纹在 scale2 输出纯色 2px 交替、灰阶0 | 支持当前 CDP clip.scale 的重光栅解释；不概括所有内容 |
 | DSF 与 scale 叠乘 | DSF2、scale2 同时使用，100×100 CSS 区域输出400×400 | 固定 DSF1、只用 clip.scale，避免双重缩放 |
@@ -301,7 +303,7 @@ T1最终文案代码复跑 **21 PASS/1 FAIL、323/324通过/1失败、exit1**（
 
 | 项目 | 状态 | 不做的承诺/下一证据 |
 | --- | --- | --- |
-| P0进程内集成 C1–C14 | 当前默认暂存修订14/14、142/142；见§9最终报告 | 仅报告覆盖路径；本文作者未重新运行，真实宿主重载与provider仍NOT_RUN |
+| P0进程内集成 C1–C15 | 画布轮 15/15、162/162；C15 覆盖 canvas 合成；[报告](../tests/acceptance/runs/capture-p0-2026-11-01T20-18-32-415Z-768943/report.json) | 仅报告覆盖路径；本文作者未重新运行；真实宿主重载已于 2026-11-02 冒烟（默认/显式比例、region、mapping、networkWindow，[证据](../tests/acceptance/evidence/viewport-real-host-2026-11-02.md)），provider 仍 NOT_RUN |
 | `captureBeyondViewport` 对 fixed/sticky/布局的瞬时影响 | C13前后布局通过，瞬时影响仍未专项验证 | C5 scroll不变不能代替；C13前后读数相同也不能排除瞬时变化，必要时补CDP事件/截图像素专项证据 |
 | 文字/矢量在不同 scale 的可读性 | 无视觉判定 | 可补可复现的文字/矢量频率或边缘探针；不声称所有截图更清晰 |
 | canvas/WebGL/低分辨率位图 | 明确源分辨率限制 | scale 不增加源细节；不承诺变清晰 |

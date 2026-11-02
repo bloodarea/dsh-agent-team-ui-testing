@@ -18,6 +18,16 @@ function toPositiveInt(value) {
   return Number.isFinite(number) && number > 0 ? Math.round(number) : 0;
 }
 
+/**
+ * Capture-time top-level scroll (docs/canvas-viewport.md §5.1): a finite non-negative CSS px value;
+ * 0 is legal. Missing/invalid metadata is stored as 0, never as NaN/undefined (the value is lossless
+ * JSON on both the HTTP `/frame` payload and the WS binary header).
+ */
+function toScrollOffset(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
 function normalizeCapturedAt(value, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return fallback;
@@ -42,7 +52,8 @@ export class FrameSource {
 
   /**
    * Accept one captured JPEG frame.
-   * @param {{data: string, width?: number, height?: number, pageWidth?: number, pageHeight?: number, capturedAt?: number, format?: string}} input
+   * @param {{data: string, width?: number, height?: number, pageWidth?: number, pageHeight?: number,
+   *          scrollX?: number, scrollY?: number, capturedAt?: number, format?: string}} input
    * @returns {object} the stored frame (the same object is handed to subscribers).
    */
   accept(input) {
@@ -58,6 +69,10 @@ export class FrameSource {
       height: toPositiveInt(input.height),
       pageWidth: toPositiveInt(input.pageWidth) || toPositiveInt(input.width),
       pageHeight: toPositiveInt(input.pageHeight) || toPositiveInt(input.height),
+      // The page's top-level scroll when this frame was captured; the panel uses it to place the
+      // frame in canvas space (docs/canvas-viewport.md §5.1).
+      scrollX: toScrollOffset(input.scrollX),
+      scrollY: toScrollOffset(input.scrollY),
       capturedAt,
       receivedAt,
     };

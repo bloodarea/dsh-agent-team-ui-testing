@@ -16,8 +16,9 @@ import https from 'node:https';
 import { performance } from 'node:perf_hooks';
 import { BrowserError, Cdp, asBrowserError, checkAbort, abortable, redactUrl, redactText, validateTarget } from './browser-safety.js';
 import {
-  CAPTURE_LIMITS, checkPixelSize, createCaptureMapping, decodePng, detectImageAnomaly,
-  expectedPixelSize, hasPositiveOutputSize, inspectPng, projectCaptureMapping, publishCapture, resolveCapturePath,
+  CAPTURE_LIMITS, checkPixelSize, composeCanvasImage, createCaptureMapping, decodePng, detectImageAnomaly,
+  encodePngRgba, expectedPixelSize, hasPositiveOutputSize, inspectPng, intersectRects,
+  projectCaptureMapping, publishCapture, resolveCapturePath,
 } from './capture-p0.js';
 // Web T3 static vision (docs/t3-vision.md, docs/t3-implementation-plan.md §2). The Host layer never
 // re-implements the pixel algorithms: it validates arguments, resolves sources, owns the product
@@ -385,7 +386,11 @@ const VIEW_LIMITS = Object.freeze({
   width: Object.freeze([200, 4096]),
   height: Object.freeze([200, 4096]),
   scroll: Object.freeze([0, 10000000]),
+  /** Canvas coordinates may be negative and may leave the content box (docs/canvas-viewport.md §2). */
+  canvas: Object.freeze([-10000000, 10000000]),
   scale: Object.freeze([0.1, 2]),
+  /** ui.canvas / capture provenance advertise the composited blank colour (docs/canvas-viewport.md §2). */
+  canvasBlankColor: '#ffffff',
   default: Object.freeze({ width: 1280, height: 800, x: 0, y: 0, scale: 1 }),
   /** Contract §3.2: at most one metrics read every 200ms while a viewer is attached. */
   scrollPollMinMs: 200,
@@ -396,7 +401,7 @@ const VIEW_LIMITS = Object.freeze({
 });
 
 /** Fields a `view` patch may carry; `mode` expands to width/height and is never stored. */
-const VIEW_FIELDS = Object.freeze(['mode', 'x', 'y', 'width', 'height', 'scale']);
+const VIEW_FIELDS = Object.freeze(['mode', 'x', 'y', 'canvasX', 'canvasY', 'width', 'height', 'scale']);
 
 /** Derived mode name for a final width/height pair. */
 function viewModeFor(width, height) {
@@ -460,6 +465,29 @@ function normalizeViewportRequest(args) {
     }
     patch[key] = value;
   }
+  // Canvas coordinates (docs/canvas-viewport.md §2/§3): C = viewport origin on the canvas, can be
+  // negative or outside the content box. They are a different coordinate space from x/y (document
+  // scroll), so one patch must never carry both — the caller has to choose which one it means.
+  for (const key of ['canvasX', 'canvasY']) {
+    if (input[key] === undefined) continue;
+    const value = input[key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new BrowserError('INVALID_ARGUMENT', `${key} 必须是有限数字（画布 CSS 像素，可为负）`, {
+        field: key, valueType: Array.isArray(value) ? 'array' : typeof value,
+      });
+    }
+    if (value < VIEW_LIMITS.canvas[0] || value > VIEW_LIMITS.canvas[1]) {
+      throw new BrowserError('INVALID_ARGUMENT', `${key} 超出允许范围`, {
+        field: key, min: VIEW_LIMITS.canvas[0], max: VIEW_LIMITS.canvas[1], value,
+      });
+    }
+    patch[key] = value;
+  }
+  if ((patch.canvasX !== undefined || patch.canvasY !== undefined) && (patch.x !== undefined || patch.y !== undefined)) {
+    throw new BrowserError('INVALID_ARGUMENT', 'canvasX/canvasY 不能与 x/y 同时给出（画布坐标与文档滚动是两种坐标空间）', {
+      fields: ['canvasX', 'canvasY', 'x', 'y'],
+    });
+  }
   for (const key of ['width', 'height']) {
     if (input[key] === undefined) continue;
     const value = input[key];
@@ -495,7 +523,7 @@ function normalizeViewportRequest(args) {
     });
   }
   if (Object.keys(patch).length === 0) {
-    throw new BrowserError('INVALID_ARGUMENT', 'action=set 至少需要一个 view 字段（mode/x/y/width/height/scale）', {
+    throw new BrowserError('INVALID_ARGUMENT', 'action=set 至少需要一个 view 字段（mode/x/y/canvasX/canvasY/width/height/scale）', {
       fields: [...VIEW_FIELDS],
     });
   }
@@ -535,7 +563,8 @@ function expandViewPatch(patch) {
  * `scale` must be a finite number in the continuous range [0.1,4] (fractions such as 1.11 are
  * legal; the output size is round(css x scale)). **Omitted is not 1**: `scale: null` is returned
  * and the caller resolves it from the shared `view.scale` inside the call (docs/viewport-control.md
- * §6.1). `region` is a document-CSS rectangle with four finite numbers and width/height >= 1;
+ * §6.1). `region` is a canvas-CSS rectangle with four finite numbers and width/height >= 1
+ * (identical to document CSS when the canvas offset O=0);
  * `out` is an optional relative .png path.
  */
 function normalizeCaptureRequest(args) {
@@ -558,7 +587,7 @@ function normalizeCaptureRequest(args) {
   if (input.region !== undefined && input.region !== null) {
     const raw = input.region;
     if (typeof raw !== 'object' || Array.isArray(raw)) {
-      throw new BrowserError('INVALID_ARGUMENT', 'region 必须是 {x,y,width,height} 对象（文档 CSS 像素）', { field: 'region' });
+      throw new BrowserError('INVALID_ARGUMENT', 'region 必须是 {x,y,width,height} 对象（canvas CSS 像素；O=0 时与文档相同）', { field: 'region' });
     }
     const rect = {};
     for (const key of ['x', 'y', 'width', 'height']) {
@@ -2117,6 +2146,10 @@ export class Runtime {
       version: 1,
       x: VIEW_LIMITS.default.x,
       y: VIEW_LIMITS.default.y,
+      // Canvas origin C (docs/canvas-viewport.md §2): the viewport's top-left on the document canvas,
+      // allowed to be negative / outside the content box. O = C - S is always derived, never stored.
+      canvasX: 0,
+      canvasY: 0,
       width: VIEW_LIMITS.default.width,
       height: VIEW_LIMITS.default.height,
       scale: VIEW_LIMITS.default.scale,
@@ -2292,15 +2325,25 @@ export class Runtime {
   async run(operation, { signal, sessionId = 'anonymous', agent = false, action } = {}) {
     checkAbort(signal);
     this.inflight += 1;
-    if (agent) { this.claim(sessionId); this.activeOwner = sessionId; this.active += 1; }
-    // The page being operated must be the compositing one, otherwise its preview freezes.
-    this.activate();
+    // Everything that can throw after the counter moved must sit inside the try/finally below:
+    // a BUSY claim (another session already owns the page) used to leak `inflight` forever, which
+    // in turn permanently blocked the coalesced view observation (`#runViewObservation` defers
+    // while inflight > 0) — the page kept working but its scroll echo silently froze.
     const previous = this.queue;
     let unlock;
     const turn = new Promise((resolve) => { unlock = resolve; });
     this.queue = previous.then(() => turn);
     let entered = false;
+    let claimed = false;
     try {
+      if (agent) {
+        this.claim(sessionId);
+        claimed = true;
+        this.activeOwner = sessionId;
+        this.active += 1;
+      }
+      // The page being operated must be the compositing one, otherwise its preview freezes.
+      this.activate();
       await abortable(previous, signal);
       checkAbort(signal);
       if (agent) this.claim(sessionId);
@@ -2323,7 +2366,7 @@ export class Runtime {
       throw classified;
     } finally {
       this.inflight = Math.max(0, this.inflight - 1);
-      if (agent) {
+      if (claimed) {
         this.active -= 1;
         if (this.lease?.sessionId === sessionId) this.lease.expiresAt = Date.now() + AGENT_HOLD_MS;
       }
@@ -2581,6 +2624,10 @@ export class Runtime {
       const scale = metadata.pageScaleFactor || 1;
       const width = Number(metadata.deviceWidth) || this.viewport.width;
       const height = Number(metadata.deviceHeight) || this.viewport.height;
+      // Capture-time top-level scroll (docs/canvas-viewport.md §5.1): prefer the CDP metadata, fall
+      // back to the last measured S. The value is a finite non-negative number; 0 is legal.
+      const scrollX = Number.isFinite(metadata.scrollOffsetX) ? metadata.scrollOffsetX : this.view.x;
+      const scrollY = Number.isFinite(metadata.scrollOffsetY) ? metadata.scrollOffsetY : this.view.y;
       this.frames.accept({
         data: params.data,
         format: 'jpeg',
@@ -2588,6 +2635,8 @@ export class Runtime {
         height,
         pageWidth: Math.round(width / scale),
         pageHeight: Math.round(height / scale),
+        scrollX,
+        scrollY,
         capturedAt: metadata.timestamp,
       });
       // ACK immediately after the frame is cached: Chromium will not emit the next frame
@@ -2616,6 +2665,9 @@ export class Runtime {
       // refs — the nodes are still there, and identity is re-verified per action.
       this.#t2BumpDocumentEpoch();
       this.frames.markNavigation(redactUrl(this.url));
+      // A new document has no canvas residual: O=0 (docs/canvas-viewport.md §3). C then follows the
+      // browser's final scroll S through the normal coalesced readback below.
+      this.#resetCanvasOnNavigation();
       // Page-state ↔ network correlation (docs/network-p0.md §3.3 / G2.6): one state mark per
       // committed main-frame navigation, so the timeline can show which page the traffic belongs to.
       this.netMark({ kind: 'state', text: 'navigate', url: this.url });
@@ -3446,12 +3498,58 @@ export class Runtime {
       mode: this.viewMode(),
       x: view.x,
       y: view.y,
+      canvasX: view.canvasX,
+      canvasY: view.canvasY,
       width: view.width,
       height: view.height,
       scale: view.scale,
       source: view.source,
       revision: view.revision,
     };
+  }
+
+  /** Content box as measured by the last real readback; null values when nothing was observed. */
+  contentProjection() {
+    const observed = this.observed;
+    return {
+      width: observed && Number.isFinite(observed.contentWidth) ? observed.contentWidth : null,
+      height: observed && Number.isFinite(observed.contentHeight) ? observed.contentHeight : null,
+    };
+  }
+
+  /**
+   * `ui.canvas` (docs/canvas-viewport.md §2): the viewport origin on the canvas plus the derived
+   * residual O = C - S. Safe numbers only; blank is the documented compositing colour and never a
+   * page fact (the blank area does not exist in the DOM).
+   */
+  canvasProjection() {
+    const view = this.view;
+    const content = this.contentProjection();
+    return {
+      version: 1,
+      space: 'canvas-css-px',
+      x: view.canvasX,
+      y: view.canvasY,
+      offsetX: view.canvasX - view.x,
+      offsetY: view.canvasY - view.y,
+      contentWidth: content.width,
+      contentHeight: content.height,
+      blank: 'white',
+    };
+  }
+
+  /**
+   * Derived canvas residual O = C - S from the authoritative view (docs/canvas-viewport.md §1).
+   * Never stored separately; capture/T3 use it to decide whether a page-frame composite is needed.
+   */
+  canvasOffset() {
+    return { x: this.view.canvasX - this.view.x, y: this.view.canvasY - this.view.y };
+  }
+
+  /** Whether the canvas framing differs from the page frame (any axis) beyond float noise. */
+  canvasSpaceActive() {
+    const offset = this.canvasOffset();
+    return Math.abs(offset.x) > 1e-6 || Math.abs(offset.y) > 1e-6;
   }
 
   /** `observed` projection: null until a real readback; unknown values stay null, never guessed. */
@@ -3489,6 +3587,8 @@ export class Runtime {
       ok: true,
       running: this.running,
       view: this.viewProjection(),
+      canvas: this.canvasProjection(),
+      content: this.contentProjection(),
       observed: this.observedProjection(),
       viewMeta: this.viewMeta(),
     };
@@ -3596,9 +3696,16 @@ export class Runtime {
   /**
    * Commit one observation: x/y/width/height come from the real metrics, `scale` from the patch.
    * `revision` only moves when the content actually changed; `source` records who changed it.
+   *
+   * Canvas coordinate rule (docs/canvas-viewport.md §3): O = C - S is preserved unless the caller
+   * supplies the offset it just applied. With `offset` the residual is authoritative (a canvas patch
+   * computes it from the requested C and the target S), otherwise the old O is kept and
+   * `C = S_observed + O` — that is what makes a pure x/y set or a resize keep the canvas framing.
    */
-  #commitViewObservation(observed, { source = null, originId, scale = null } = {}) {
+  #commitViewObservation(observed, { source = null, originId, scale = null, offset = null } = {}) {
     const view = this.view;
+    const previousX = view.x;
+    const previousY = view.y;
     let changed = false;
     if (observed) {
       this.observed = observed;
@@ -3606,6 +3713,16 @@ export class Runtime {
         if (!Number.isFinite(observed[key])) continue;
         if (Math.abs(observed[key] - view[key]) > 1e-6) { view[key] = observed[key]; changed = true; }
       }
+    }
+    const offsetX = offset && Number.isFinite(offset.x) ? offset.x : view.canvasX - previousX;
+    const offsetY = offset && Number.isFinite(offset.y) ? offset.y : view.canvasY - previousY;
+    if (Number.isFinite(view.x)) {
+      const canvasX = view.x + offsetX;
+      if (Math.abs(canvasX - view.canvasX) > 1e-6) { view.canvasX = canvasX; changed = true; }
+    }
+    if (Number.isFinite(view.y)) {
+      const canvasY = view.y + offsetY;
+      if (Math.abs(canvasY - view.canvasY) > 1e-6) { view.canvasY = canvasY; changed = true; }
     }
     if (Number.isFinite(scale) && Math.abs(scale - view.scale) > 1e-9) {
       view.scale = scale;
@@ -3707,21 +3824,46 @@ export class Runtime {
    * Commit a background reading: refresh `observed`/`observedAt`, and echo a *position* change into
    * `view.x/y` with `source:'page'` and `revision+1`. Width/height/scale are owned by set (which has
    * its own bounded readback), so a background sample never rewrites them; a same-value sample never
-   * bumps the revision.
+   * bumps the revision. The canvas residual O is preserved: `C = S_new + O` (docs/canvas-viewport.md
+   * §3, invariant 4) — the page may scroll itself without the canvas framing moving.
    */
   #commitObservedPosition(observed) {
     if (!observed) return false;
     this.observed = observed;
     const view = this.view;
+    const offsetX = view.canvasX - view.x;
+    const offsetY = view.canvasY - view.y;
     let changed = false;
     for (const key of ['x', 'y']) {
       if (!Number.isFinite(observed[key])) continue;
       if (Math.abs(observed[key] - view[key]) > 1e-6) { view[key] = observed[key]; changed = true; }
     }
+    if (Number.isFinite(view.x)) {
+      const canvasX = view.x + offsetX;
+      if (Math.abs(canvasX - view.canvasX) > 1e-6) { view.canvasX = canvasX; changed = true; }
+    }
+    if (Number.isFinite(view.y)) {
+      const canvasY = view.y + offsetY;
+      if (Math.abs(canvasY - view.canvasY) > 1e-6) { view.canvasY = canvasY; changed = true; }
+    }
     if (changed) {
       view.source = 'page';
       view.revision += 1;
     }
+    return changed;
+  }
+
+  /**
+   * A committed main-frame navigation / reload starts a new document: the canvas residual is dropped
+   * (O=0, docs/canvas-viewport.md §3 invariant 5). The origin C is anchored to the last measured S,
+   * and the coalesced readback that follows moves both to the browser's final scroll position.
+   */
+  #resetCanvasOnNavigation() {
+    const view = this.view;
+    let changed = false;
+    if (Number.isFinite(view.x) && Math.abs(view.canvasX - view.x) > 1e-6) { view.canvasX = view.x; changed = true; }
+    if (Number.isFinite(view.y) && Math.abs(view.canvasY - view.y) > 1e-6) { view.canvasY = view.y; changed = true; }
+    if (changed) { view.source = 'page'; view.revision += 1; }
     return changed;
   }
 
@@ -3744,14 +3886,28 @@ export class Runtime {
         expected: expectedRevision, actual: this.view.revision, view: this.viewProjection(),
       });
     }
+    const wantsScroll = patch.x !== undefined || patch.y !== undefined;
+    const wantsCanvas = patch.canvasX !== undefined || patch.canvasY !== undefined;
+    if (wantsScroll && wantsCanvas) {
+      throw new BrowserError('INVALID_ARGUMENT', 'canvasX/canvasY 不能与 x/y 同时给出（画布坐标与文档滚动是两种坐标空间）', {
+        fields: ['canvasX', 'canvasY', 'x', 'y'],
+      });
+    }
     const before = this.viewProjection();
     const requested = { ...patch };
     const targetWidth = patch.width !== undefined ? patch.width : this.view.width;
     const targetHeight = patch.height !== undefined ? patch.height : this.view.height;
     const needsOverride = targetWidth !== this.view.width || targetHeight !== this.view.height;
-    const wantsScroll = patch.x !== undefined || patch.y !== undefined;
     const appliedFields = [];
     let overrideApplied = false;
+    // Derived residual O = C - S at call time (docs/canvas-viewport.md §3). The axis rules:
+    //   canvasX/Y given : O = C_requested - S_target (browser may clamp S_target)
+    //   only x/y given  : keep O, so C_new = S_target + O_old
+    //   neither (resize): keep O, so C_new = S_actual + O_old
+    let offsetX = before.canvasX - before.x;
+    let offsetY = before.canvasY - before.y;
+    /** Offset that was actually dispatched to the browser (used by the partial-apply error path). */
+    let appliedOffset = null;
     try {
       await this.ensure(signal);
       if (needsOverride) {
@@ -3762,7 +3918,26 @@ export class Runtime {
         if (patch.width !== undefined) appliedFields.push('width');
         if (patch.height !== undefined) appliedFields.push('height');
       }
-      if (wantsScroll) {
+      if (wantsCanvas) {
+        // Content bounds come from a live read (after any metrics override): S_target = clamp(C,0,max).
+        const live = await this.#readViewMetrics(signal);
+        const contentWidth = Number.isFinite(live.contentWidth) ? live.contentWidth : targetWidth;
+        const contentHeight = Number.isFinite(live.contentHeight) ? live.contentHeight : targetHeight;
+        const maxX = Math.max(0, contentWidth - targetWidth);
+        const maxY = Math.max(0, contentHeight - targetHeight);
+        // A preserved axis keeps O against the live scroll; both axes still get a scroll target so the
+        // untouched axis is a no-op instead of an implicit jump.
+        const canvasX = patch.canvasX !== undefined ? patch.canvasX : live.x + offsetX;
+        const canvasY = patch.canvasY !== undefined ? patch.canvasY : live.y + offsetY;
+        const targetX = Math.min(Math.max(canvasX, 0), maxX);
+        const targetY = Math.min(Math.max(canvasY, 0), maxY);
+        offsetX = canvasX - targetX;
+        offsetY = canvasY - targetY;
+        await this.#scrollViewTo(targetX, targetY, signal);
+        appliedOffset = { x: offsetX, y: offsetY };
+        if (patch.canvasX !== undefined) appliedFields.push('canvasX');
+        if (patch.canvasY !== undefined) appliedFields.push('canvasY');
+      } else if (wantsScroll) {
         // The preserved axis uses the live scroll position, not the cached view value.
         const live = await this.#readViewMetrics(signal);
         const target = {
@@ -3776,7 +3951,9 @@ export class Runtime {
       if (patch.scale !== undefined) appliedFields.push('scale');
       const { observed, settled } = await this.#settleViewObservation(signal);
       this.#commitViewObservation(observed, {
-        source, originId, scale: patch.scale !== undefined ? patch.scale : null,
+        source, originId,
+        scale: patch.scale !== undefined ? patch.scale : null,
+        offset: { x: offsetX, y: offsetY },
       });
       const view = this.viewProjection();
       return {
@@ -3784,6 +3961,12 @@ export class Runtime {
         requested,
         before,
         view,
+        // Additive top-level canvas facts (docs/canvas-viewport.md §3 step 7): the same numbers as
+        // the `view` projection plus the derived offset and measured content box.
+        canvasX: view.canvasX,
+        canvasY: view.canvasY,
+        offset: { x: view.canvasX - view.x, y: view.canvasY - view.y },
+        content: this.contentProjection(),
         observed: this.observedProjection(),
         viewMeta: this.viewMeta(),
         applied: true,
@@ -3791,6 +3974,8 @@ export class Runtime {
         clamped: {
           x: requested.x !== undefined && Math.abs(observed.x - requested.x) > 0.01,
           y: requested.y !== undefined && Math.abs(observed.y - requested.y) > 0.01,
+          canvasX: requested.canvasX !== undefined && Math.abs(view.canvasX - requested.canvasX) > 0.01,
+          canvasY: requested.canvasY !== undefined && Math.abs(view.canvasY - requested.canvasY) > 0.01,
         },
         // Evidence only (additive): whether this set actually sent the emulation override.
         overrideApplied,
@@ -3816,11 +4001,20 @@ export class Runtime {
       }
       if (last) {
         this.observed = last;
+        const commitOffset = appliedOffset || { x: this.view.canvasX - this.view.x, y: this.view.canvasY - this.view.y };
         for (const key of ['x', 'y']) {
           if (Number.isFinite(last[key]) && Math.abs(last[key] - this.view[key]) > 1e-6) {
             this.view[key] = last[key];
             changed = true;
           }
+        }
+        if (Number.isFinite(this.view.x)) {
+          const canvasX = this.view.x + commitOffset.x;
+          if (Math.abs(canvasX - this.view.canvasX) > 1e-6) { this.view.canvasX = canvasX; changed = true; }
+        }
+        if (Number.isFinite(this.view.y)) {
+          const canvasY = this.view.y + commitOffset.y;
+          if (Math.abs(canvasY - this.view.canvasY) > 1e-6) { this.view.canvasY = canvasY; changed = true; }
         }
       }
       if (changed) {
@@ -3832,6 +4026,7 @@ export class Runtime {
         phase: classified.details && classified.details.phase ? classified.details.phase : (overrideApplied ? 'afterOverride' : 'apply'),
         appliedFields,
         view: this.viewProjection(),
+        canvas: this.canvasProjection(),
         observed: this.observedProjection(),
       };
       throw classified;
@@ -3909,8 +4104,10 @@ export class Runtime {
       title: this.title,
       viewport: this.viewport,
       // Safe view projection (no page text, no path): browser_state and the authenticated
-      // `ui.view` serve the same data (docs/viewport-control.md §4.2).
+      // `ui.view` serve the same data (docs/viewport-control.md §4.2). `canvas` is the safe
+      // canvas-space projection (docs/canvas-viewport.md §2).
       view: this.viewProjection(),
+      canvas: this.canvasProjection(),
       seq: this.frames.seq,
       running: Boolean(this.cdp && !this.cdp.closed),
       error: redactText(this.lastError),
@@ -3944,6 +4141,8 @@ export class Runtime {
         // Shared viewport projection (docs/viewport-control.md §4.2): the same `view` the Agent
         // tool reads, plus the observation and its freshness. Additive only.
         view: this.viewProjection(),
+        // Canvas-space projection (docs/canvas-viewport.md §2): C/O/content/blank for the panel.
+        canvas: this.canvasProjection(),
         viewMeta: this.viewMeta(),
         observed: this.observedProjection(),
       },
@@ -3963,6 +4162,10 @@ export class Runtime {
       height: latest.height,
       pageWidth: latest.pageWidth,
       pageHeight: latest.pageHeight,
+      // Capture-time top-level scroll (docs/canvas-viewport.md §5.1): the client needs it to place
+      // the frame at the right canvas position; 0 is a legal value.
+      scrollX: latest.scrollX,
+      scrollY: latest.scrollY,
       capturedAt: latest.capturedAt,
       receivedAt: latest.receivedAt,
       state,
@@ -4211,20 +4414,57 @@ export class Runtime {
     };
   }
 
-  async screenshot(signal) {
-    await this.ensure(signal);
-    const capturedAt = Date.now();
-    const shot = await this.send('Page.captureScreenshot', { format: 'png' }, signal);
-    return { base64: shot.data, viewport: this.viewport, capturedAt };
+  /**
+   * Panel screenshot route (`POST /screenshot`).
+   *
+   * Old call shape (no arguments) is byte-identical to the historical behaviour: one raw
+   * `Page.captureScreenshot` of the live page viewport, no clip, no re-encoding.
+   *
+   * `screenshot({canvas:true})` is the P0-C v2 seed route (docs/canvas-viewport.md §6.1): it goes
+   * through `capture({scale:1})`, so O = 0 still dispatches exactly one raw CDP PNG and O ≠ 0
+   * returns the white-composited canvas viewport. The reply adds a safe `view` projection and the
+   * capture provenance (canvas/composite/contentRect/request/scroll) so a client can bind a seed
+   * frame to the canvas ratchet. No page text or filesystem path is ever included.
+   */
+  async screenshot(options = {}, signal) {
+    const canvas = Boolean(options && typeof options === 'object' && options.canvas === true);
+    if (!canvas) {
+      await this.ensure(signal);
+      const capturedAt = Date.now();
+      const shot = await this.send('Page.captureScreenshot', { format: 'png' }, signal);
+      return { base64: shot.data, viewport: this.viewport, capturedAt };
+    }
+    const shot = await this.capture({ scale: 1, scaleSource: 'explicit' }, signal);
+    const capture = shot.capture;
+    return {
+      base64: shot.base64,
+      // Default canvas capture covers [C,C+W)×[C,C+H); its output is exactly W×H.
+      viewport: { width: capture.region.width, height: capture.region.height },
+      capturedAt: capture.capturedAt,
+      view: this.viewProjection(),
+      capture: {
+        viewRevision: capture.viewRevision,
+        request: capture.request,
+        canvas: capture.canvas,
+        contentRect: capture.contentRect,
+        composite: capture.composite,
+        scroll: capture.scroll,
+        viewport: capture.viewport,
+        region: capture.region,
+        effectiveScale: capture.effectiveScale,
+        deviceScaleFactor: capture.deviceScaleFactor,
+        pageDevicePixelRatio: capture.pageDevicePixelRatio,
+      },
+    };
   }
 
   /**
-   * P0 capture: one `Page.captureScreenshot` with a document-CSS clip.
+   * P0 capture: one `Page.captureScreenshot` clip in canvas CSS space (O=0 equals document).
    *
    * Geometry (`Page.getLayoutMetrics`):
    *   cssLayoutViewport.pageX/pageY  = document CSS offset of the visible viewport (scroll)
    *   cssLayoutViewport.clientWidth/Height = viewport size in CSS px
-   * A `region` is given in the same document CSS space, so a region outside the current scroll
+   * A `region` is given in canvas CSS space (O=0 equals document), so a region outside the current scroll
    * position is still a legal clip (see `capture_beyond_viewport` in the tool layer).
    *
    * Scale: `deviceScaleFactor` stays 1 because `applyViewport()` pins
@@ -4259,6 +4499,7 @@ export class Runtime {
     }
     const layoutViewport = (layout && layout.cssLayoutViewport) || {};
     const visualViewport = (layout && layout.cssVisualViewport) || {};
+    const contentSize = (layout && layout.cssContentSize) || {};
     const pick = (fromLayout, fromVisual, fallback) => {
       if (Number.isFinite(fromLayout)) return fromLayout;
       if (Number.isFinite(fromVisual)) return fromVisual;
@@ -4271,6 +4512,10 @@ export class Runtime {
     const viewport = {
       width: pick(layoutViewport.clientWidth, visualViewport.clientWidth, this.viewport.width),
       height: pick(layoutViewport.clientHeight, visualViewport.clientHeight, this.viewport.height),
+    };
+    const content = {
+      width: Number.isFinite(contentSize.width) ? contentSize.width : viewport.width,
+      height: Number.isFinite(contentSize.height) ? contentSize.height : viewport.height,
     };
 
     let pageDevicePixelRatio = null;
@@ -4285,9 +4530,32 @@ export class Runtime {
       pageDevicePixelRatio = null;
     }
 
+    // Canvas framing (docs/canvas-viewport.md §6.1): O = C - S is derived from the authority view,
+    // S is the live measured scroll. The canvas coordinates equal document coordinates (content is
+    // anchored at (0,0)), so a canvas rect can be intersected with the content box and captured by
+    // CDP clip as long as it is non-negative.
+    const offset = this.canvasOffset();
+    const composite = Math.abs(offset.x) > 1e-6 || Math.abs(offset.y) > 1e-6;
+    const canvasOrigin = { x: scroll.x + offset.x, y: scroll.y + offset.y };
     const rect = region
       ? { x: region.x, y: region.y, width: region.width, height: region.height }
-      : { x: scroll.x, y: scroll.y, width: viewport.width, height: viewport.height };
+      : { x: canvasOrigin.x, y: canvasOrigin.y, width: viewport.width, height: viewport.height };
+    const contentRect = intersectRects(rect, { x: 0, y: 0, width: content.width, height: content.height });
+    const canvasEvidence = {
+      version: 1,
+      space: 'canvas-css-px',
+      x: canvasOrigin.x,
+      y: canvasOrigin.y,
+      scrollX: scroll.x,
+      scrollY: scroll.y,
+      offsetX: offset.x,
+      offsetY: offset.y,
+      contentWidth: content.width,
+      contentHeight: content.height,
+      blank: '#ffffff',
+      composite,
+      source: 'cdp-page-capture-screenshot',
+    };
 
     // Defense in depth: the tool layer checks this before the browser starts, but the effective
     // rectangle is only known here (the visible viewport comes from CDP).
@@ -4309,45 +4577,147 @@ export class Runtime {
       });
     }
 
-    let shot;
-    try {
-      shot = await this.send('Page.captureScreenshot', {
-        format: 'png',
-        fromSurface: true,
-        captureBeyondViewport: true,
-        optimizeForSpeed: false,
-        clip: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, scale: effectiveScale },
-      }, signal);
-    } catch (error) {
-      throw this.#captureError(error, 'captureScreenshot');
+    const baseCapture = {
+      requestedScale: scale,
+      scaleSource: resolvedScaleSource,
+      viewRevision: viewRevisionAtCapture,
+      effectiveScale,
+      deviceScaleFactor,
+      deviceScaleFactorSource: 'runtime-override',
+      pageDevicePixelRatio,
+      scroll,
+      viewport,
+      region: rect,
+      // Additive request provenance (same shape the tool evidence uses): the canvas space is the
+      // default capture space; O = 0 keeps the historical document-css-px coordinate space.
+      request: {
+        scale,
+        scaleSource: resolvedScaleSource,
+        viewRevision: viewRevisionAtCapture,
+        region: region ? { x: region.x, y: region.y, width: region.width, height: region.height } : null,
+        space: 'canvas-css-px',
+        coordinateSpace: composite ? 'canvas-css-px' : 'document-css-px',
+        out: null,
+        persist: false,
+      },
+      canvas: canvasEvidence,
+      composite,
+      contentRect,
+      capturedAt,
+    };
+
+    // O = 0 keeps the historical single-CDP-PNG path byte-for-byte (no re-encoding).
+    if (!composite) {
+      let shot;
+      try {
+        shot = await this.send('Page.captureScreenshot', {
+          format: 'png',
+          fromSurface: true,
+          captureBeyondViewport: true,
+          optimizeForSpeed: false,
+          clip: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, scale: effectiveScale },
+        }, signal);
+      } catch (error) {
+        throw this.#captureError(error, 'captureScreenshot');
+      }
+      if (!shot || typeof shot.data !== 'string' || shot.data.length === 0) {
+        throw new BrowserError('CAPTURE_FAILED', '截图没有返回 PNG 数据', {
+          phase: 'captureScreenshot', reason: 'empty-data',
+        });
+      }
+      const pngBytes = Buffer.from(shot.data, 'base64');
+      if (pngBytes.length === 0) {
+        throw new BrowserError('CAPTURE_FAILED', '截图返回的 base64 数据无法解码', {
+          phase: 'captureScreenshot', reason: 'empty-bytes',
+        });
+      }
+      return {
+        base64: shot.data,
+        pngBytes,
+        capture: { ...baseCapture, pageCapture: null },
+      };
     }
-    if (!shot || typeof shot.data !== 'string' || shot.data.length === 0) {
-      throw new BrowserError('CAPTURE_FAILED', '截图没有返回 PNG 数据', {
-        phase: 'captureScreenshot', reason: 'empty-data',
+
+    // O ≠ 0 must be composited (docs/canvas-viewport.md §6.1 + the 2026-11-02 negative-clip spike):
+    // capture the page pixels of the content intersection, then paste them into a white canvas
+    // viewport at -O and let the output size be the final canvas size (16M budget applies to it).
+    let pageCapture = null;
+    let pageImage = null;
+    if (contentRect.width > 0 && contentRect.height > 0) {
+      let pageShot;
+      try {
+        pageShot = await this.send('Page.captureScreenshot', {
+          format: 'png',
+          fromSurface: true,
+          captureBeyondViewport: true,
+          optimizeForSpeed: false,
+          clip: { x: contentRect.x, y: contentRect.y, width: contentRect.width, height: contentRect.height, scale: effectiveScale },
+        }, signal);
+      } catch (error) {
+        throw this.#captureError(error, 'captureScreenshot');
+      }
+      if (!pageShot || typeof pageShot.data !== 'string' || pageShot.data.length === 0) {
+        throw new BrowserError('CAPTURE_FAILED', '合成截图没有返回页面 PNG 数据', {
+          phase: 'capturePage', reason: 'empty-data', clip: contentRect,
+        });
+      }
+      pageImage = Buffer.from(pageShot.data, 'base64');
+      if (pageImage.length === 0) {
+        throw new BrowserError('CAPTURE_FAILED', '合成截图的 base64 数据无法解码', {
+          phase: 'capturePage', reason: 'empty-bytes', clip: contentRect,
+        });
+      }
+      const pagePng = inspectPng(pageImage, { checkCrc: true });
+      if (!pagePng.ok) {
+        throw new BrowserError('INVALID_PNG', '合成用的页面截图不是结构完整的 PNG（不交付坏图）', {
+          phase: 'capturePage', reason: pagePng.message, clip: contentRect,
+        });
+      }
+      pageCapture = {
+        clip: { ...contentRect },
+        width: pagePng.width,
+        height: pagePng.height,
+        bytes: pageImage.length,
+        format: 'png',
+      };
+    }
+    const decodedPage = pageImage ? decodePng(pageImage) : null;
+    if (pageImage && (!decodedPage || decodedPage.ok !== true)) {
+      throw new BrowserError('CAPTURE_FAILED', '合成用的页面截图无法解码为像素', {
+        phase: 'composePage', reason: decodedPage && decodedPage.message ? decodedPage.message : 'decode-failed',
       });
     }
-    const pngBytes = Buffer.from(shot.data, 'base64');
-    if (pngBytes.length === 0) {
-      throw new BrowserError('CAPTURE_FAILED', '截图返回的 base64 数据无法解码', {
-        phase: 'captureScreenshot', reason: 'empty-bytes',
+    let composed;
+    try {
+      composed = composeCanvasImage({
+        page: decodedPage,
+        pageRect: decodedPage ? contentRect : null,
+        outputRect: rect,
+        scale: effectiveScale,
+      });
+      if (!composed.ok) {
+        throw new BrowserError('CAPTURE_FAILED', '画布合成失败', {
+          phase: 'compose', reason: composed.message, details: composed.details,
+        });
+      }
+    } catch (error) {
+      if (error instanceof BrowserError) throw error;
+      throw new BrowserError('CAPTURE_FAILED', '画布合成失败', {
+        phase: 'compose', reason: redactText(String(error && error.message ? error.message : error)).slice(0, 200),
+      });
+    }
+    let pngBytes;
+    try {
+      pngBytes = encodePngRgba({ width: composed.width, height: composed.height, rgba: composed.rgba });
+    } catch (error) {
+      throw new BrowserError('CAPTURE_FAILED', '合成 PNG 编码失败', {
+        phase: 'encodeComposite', reason: redactText(String(error && error.message ? error.message : error)).slice(0, 200),
       });
     }
     return {
-      base64: shot.data,
+      base64: pngBytes.toString('base64'),
       pngBytes,
-      capture: {
-        requestedScale: scale,
-        scaleSource: resolvedScaleSource,
-        viewRevision: viewRevisionAtCapture,
-        effectiveScale,
-        deviceScaleFactor,
-        deviceScaleFactorSource: 'runtime-override',
-        pageDevicePixelRatio,
-        scroll,
-        viewport,
-        region: rect,
-        capturedAt,
-      },
+      capture: { ...baseCapture, pageCapture, composite: true },
     };
   }
 
@@ -6672,15 +7042,19 @@ export class Runtime {
     this.metadataStartedAt = 0;
     this.navigationError = undefined;
     // A closed page keeps its width/height/scale configuration but loses its page-bound position
-    // (docs/viewport-control.md §3.1): x/y reset to 0, the observation is dropped, and the
-    // revision moves because that *is* a content change (never silently reuse the old position).
+    // (docs/viewport-control.md §3.1, docs/canvas-viewport.md §3): x/y and the canvas origin reset
+    // to 0 (C=S=0, O=0), the observation is dropped, and the revision moves because that *is* a
+    // content change (never silently reuse the old position).
     if (this.viewObserveTimer) { clearTimeout(this.viewObserveTimer); this.viewObserveTimer = 0; }
     this.viewObserveDue = [];
     this.viewObserving = false;
     this.viewObserveAt = 0;
-    const hadViewPosition = this.view.x !== 0 || this.view.y !== 0 || this.observed !== null;
+    const hadViewPosition = this.view.x !== 0 || this.view.y !== 0
+      || this.view.canvasX !== 0 || this.view.canvasY !== 0 || this.observed !== null;
     this.view.x = 0;
     this.view.y = 0;
+    this.view.canvasX = 0;
+    this.view.canvasY = 0;
     this.observed = null;
     this.viewOriginId = null;
     if (hadViewPosition) this.view.revision += 1;
@@ -8006,7 +8380,7 @@ export function apply(ctx) {
             observed: entry.runtime.observedProjection(),
             viewMeta: entry.runtime.viewMeta(),
             requested: { width: Number(body.width), height: Number(body.height) },
-            clamped: { x: false, y: false },
+            clamped: { x: false, y: false, canvasX: false, canvasY: false },
             applied: true,
             settled: true,
             state: projected(entry.runtime),
@@ -8034,6 +8408,11 @@ export function apply(ctx) {
           ok: true,
           viewport: { width: result.view.width, height: result.view.height },
           view: result.view,
+          // Additive canvas-space facts (docs/canvas-viewport.md §3 step 7 / §4).
+          canvasX: result.canvasX,
+          canvasY: result.canvasY,
+          offset: result.offset,
+          content: result.content,
           observed: result.observed,
           viewMeta: result.viewMeta,
           requested: request.requested,
@@ -8069,9 +8448,18 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
-        const shot = await entry.runtime.run(() => entry.runtime.screenshot());
+        // `canvas:true` enables the canvas-space seed provenance (O = 0 keeps the raw single-CDP
+        // PNG path). Empty/legacy bodies keep the historical raw reply shape byte-for-byte.
+        const canvas = body && typeof body === 'object' && body.canvas === true;
+        const shot = await entry.runtime.run(() => entry.runtime.screenshot(canvas ? { canvas: true } : {}));
         registry.markRecent(entry);
-        sendJson(res, 200, { ok: true, image: shot.base64, viewport: shot.viewport, capturedAt: shot.capturedAt });
+        sendJson(res, 200, {
+          ok: true,
+          image: shot.base64,
+          viewport: shot.viewport,
+          capturedAt: shot.capturedAt,
+          ...(canvas ? { view: shot.view, capture: shot.capture } : {}),
+        });
         return;
       }
       if (action === '/close') {
@@ -8283,8 +8671,9 @@ export function apply(ctx) {
 
   register({
     name: 'browser_screenshot',
-    description: '截取内嵌浏览器的画面（PNG）：默认当前可见视口、默认比例 = 当前共享显示比例 view.scale（冷启动 100%）；可选 scale（连续 0.1–4，可用小数；重新光栅化，不是位图放大）、'
-      + 'region（文档 CSS 像素的无损裁剪）、persist（默认 false：写插件暂存目录，不落工作区）、out（工作区相对 .png，提供即视为持久留存）。'
+    description: '截取内嵌浏览器的画面（PNG）：默认 canvas 视口 [C,C+W)×[C,C+H)、默认比例 = 当前共享显示比例 view.scale（冷启动 100%）；可选 scale（连续 0.1–4，可用小数；重新光栅化，不是位图放大）、'
+      + 'region（canvas CSS 像素矩形；O=0 时与文档坐标相同，可为负 → blank 纯白）、persist（默认 false：写插件暂存目录，不落工作区）、out（工作区相对 .png，提供即视为持久留存）。'
+      + 'O≠0 时以真实 S 截页面再白底合成（重编码），证据 capture.canvas.composite=true；O=0 保持单次 CDP PNG 不重编码。'
       + '只有 out / persist:true / DSH_UI_TESTING_CAPTURE_DIR 三者之一才持久落盘（0600、原子写入、绝不覆盖）；'
       + '暂存文件返回绝对路径并在插件卸载时删除。返回 PNG 结构/尺寸校验/空白识别/落盘/附件对比证据与 warnings；尺寸不符或 PNG 损坏时不交付图片。',
     parameters: {
@@ -8292,11 +8681,11 @@ export function apply(ctx) {
       properties: {
         scale: {
           type: 'number',
-          description: '光栅化倍数（重新光栅化，不是位图放大），连续 0.1–4，可用小数（如 0.65/1.25）。省略 = 使用共享显示比例 view.scale（默认 100% = 1），在调用内解析一次；显式值只影响本次截图，不改 view/DPR/滚动/视口。输出像素 = round(文档 CSS 尺寸 × scale)，两轴都须 ≥ 1 像素。高 DPI 只提升 DOM/CSS/文字/矢量，canvas/WebGL 内部位图不会变清晰。',
+          description: '光栅化倍数（重新光栅化，不是位图放大），连续 0.1–4，可用小数（如 0.65/1.25）。省略 = 使用共享显示比例 view.scale（默认 100% = 1），在调用内解析一次；显式值只影响本次截图，不改 view/DPR/滚动/视口。输出像素 = round(canvas CSS 尺寸 × scale；O=0 时与文档相同)，两轴都须 ≥ 1 像素。高 DPI 只提升 DOM/CSS/文字/矢量，canvas/WebGL 内部位图不会变清晰。',
         },
         region: {
           type: 'object',
-          description: '文档 CSS 像素矩形；省略 = 当前可见视口。width/height ≥ 1，期望像素上限 16,000,000。',
+          description: 'canvas CSS 像素矩形（O=0 时与文档相同；x/y 可为负 → 该区域为 blank 纯白）；省略 = 当前 canvas 视口 [C,C+W)×[C,C+H)。width/height ≥ 1，期望像素上限 16,000,000（按最终合成图）。',
           properties: {
             x: { type: 'number' },
             y: { type: 'number' },
@@ -8377,7 +8766,10 @@ export function apply(ctx) {
         region: request.region
           ? { x: request.region.x, y: request.region.y, width: request.region.width, height: request.region.height }
           : null,
-        coordinateSpace: 'document-css-px',
+        // Canvas space is the default capture space (docs/canvas-viewport.md §6.1). O = 0 keeps the
+        // historical document-css-px coordinate space for old consumers; O ≠ 0 is canvas space.
+        space: 'canvas-css-px',
+        coordinateSpace: captured.composite ? 'canvas-css-px' : 'document-css-px',
         out: request.out,
         persist: request.persist,
       };
@@ -8420,6 +8812,13 @@ export function apply(ctx) {
           height: expected.height,
           pixelsPerCssPixel: expected.pixelsPerCssPixel,
         },
+        // Canvas provenance (docs/canvas-viewport.md §6.1): C/S/O/content + explicit `composite`.
+        // `composite:false` is the old single-CDP-PNG path (no re-encoding); `composite:true` means
+        // the delivered PNG was composited on a white canvas and is therefore re-encoded.
+        canvas: captured.canvas,
+        composite: captured.composite,
+        contentRect: captured.contentRect,
+        pageCapture: captured.pageCapture,
       };
       if (!sizeCheck.ok) {
         // Use the module's own verdict verbatim: CAPTURE_UPSCALED only says "larger than expected"
@@ -8439,24 +8838,31 @@ export function apply(ctx) {
         });
       }
 
-      // 6) Document-CSS mapping (projected to pure JSON: no functions in a tool value).
+      // 6) Canvas/document mapping (projected to pure JSON: no functions in a tool value).
       const mapping = projectCaptureMapping(createCaptureMapping({
         region: captured.region,
         scroll: captured.scroll,
         viewport: captured.viewport,
         scale,
         deviceScaleFactor: captured.deviceScaleFactor,
+        coordinateSpace: captured.composite ? 'canvas-css-px' : 'document-css-px',
+        canvas: captured.canvas,
+        contentRect: captured.contentRect,
+        blank: 'outside-content',
       }));
       // Per-axis mapping from the REAL PNG size (docs/viewport-control.md §6.2): the nominal
       // `pixelsPerCssPixel` stays for old consumers, these two fields are the actual sampling.
-      // Coordinates: docX = region.x + imageX * region.width / png.width (same for y).
+      // Coordinates: canvasX = region.x + imageX * region.width / png.width (canvas == document).
       mapping.cssPerPixel = {
         x: captured.region.width / png.width,
         y: captured.region.height / png.height,
       };
       mapping.scrollAtCapture = { x: captured.scroll.x, y: captured.scroll.y };
-      mapping.formulas.continuous = 'docX = region.x + imageX * region.width / imagePixels.width; '
-        + 'viewportX = docX - scrollAtCapture.x';
+      mapping.formulas.continuous = captured.composite
+        ? 'canvasX = region.x + imageX * region.width / imagePixels.width; '
+          + 'viewportX = canvasX - scrollAtCapture.x'
+        : 'docX = region.x + imageX * region.width / imagePixels.width; '
+          + 'viewportX = docX - scrollAtCapture.x';
 
       // 7) Blank check: warns only. A pure-colour page is a legal page.
       let anomaly = {
@@ -8493,14 +8899,24 @@ export function apply(ctx) {
         addCaptureWarning(warnings, 'blank_check_skipped');
       }
 
-      // 8) A region entirely outside the current scroll window is legal but worth flagging.
+      // 8) A region entirely outside the current page viewport is legal but worth flagging. For
+      //    canvas-space captures the 16M/blank geometry is canvas, so compare the page-viewport
+      //    projection (canvas - C) against the live scroll window instead of canvas vs scroll.
       if (request.region && captured.viewport.width > 0 && captured.viewport.height > 0) {
+        const viewportRect = captured.composite
+          ? {
+            x: request.region.x - captured.canvas.x,
+            y: request.region.y - captured.canvas.y,
+            width: request.region.width,
+            height: request.region.height,
+          }
+          : request.region;
         const vx = captured.scroll.x;
         const vy = captured.scroll.y;
-        const outside = request.region.x + request.region.width <= vx
-          || request.region.x >= vx + captured.viewport.width
-          || request.region.y + request.region.height <= vy
-          || request.region.y >= vy + captured.viewport.height;
+        const outside = viewportRect.x + viewportRect.width <= vx
+          || viewportRect.x >= vx + captured.viewport.width
+          || viewportRect.y + viewportRect.height <= vy
+          || viewportRect.y >= vy + captured.viewport.height;
         if (outside) addCaptureWarning(warnings, 'capture_beyond_viewport');
       }
 
@@ -9149,7 +9565,8 @@ export function apply(ctx) {
     preflight: (args) => { normalizeViewportRequest(args); },
     description: '共享视口（T1）：get=只读缓存诊断（不启动浏览器、不发 CDP、不占租约；可读取他人租约下的缓存，stale 明示）；'
       + 'set=页面操作（懒启动 + 串行队列 + single-owner-lease，仅改比例也算页面操作）。坐标是文档 CSS 像素的页面顶层滚动位置（x/y），'
-      + '不是窗口位置；宽高显式修改页面 CSS 视口，仅改比例不改视口/DPR/页面缩放。'
+      + '不是窗口位置；画布坐标 canvasX/canvasY 是视口左上角在文档画布上的位置（可为负/越出内容），与 x/y 不能同 patch 混用。'
+      + '宽高显式修改页面 CSS 视口，仅改比例不改视口/DPR/页面缩放。'
       + 'mode 预设 wide/landscape/tablet/phone；expectedRevision 冲突返回 VIEWPORT_CONFLICT（本次 patch 零应用）。',
     parameters: {
       type: 'object',
@@ -9164,6 +9581,8 @@ export function apply(ctx) {
         },
         x: { type: 'number', description: `页面顶层滚动位置 X（文档 CSS px，${VIEW_LIMITS.scroll[0]}–${VIEW_LIMITS.scroll[1]}）；成功后回读实际值（可能被 clamp）` },
         y: { type: 'number', description: `页面顶层滚动位置 Y（文档 CSS px，${VIEW_LIMITS.scroll[0]}–${VIEW_LIMITS.scroll[1]}）；成功后回读实际值（可能被 clamp）` },
+        canvasX: { type: 'number', description: `画布坐标 X：视口左上角在文档画布上的位置（CSS px，${VIEW_LIMITS.canvas[0]}–${VIEW_LIMITS.canvas[1]}，可为负）；与 x/y 不能同 patch。O = canvasX - x 由 Host 派生。` },
+        canvasY: { type: 'number', description: `画布坐标 Y：视口左上角在文档画布上的位置（CSS px，${VIEW_LIMITS.canvas[0]}–${VIEW_LIMITS.canvas[1]}，可为负）；与 x/y 不能同 patch。` },
         width: { type: 'integer', description: `CSS 视口宽（整数 ${VIEW_LIMITS.width[0]}–${VIEW_LIMITS.width[1]}）；只有宽高变化才发送 Emulation.setDeviceMetricsOverride` },
         height: { type: 'integer', description: `CSS 视口高（整数 ${VIEW_LIMITS.height[0]}–${VIEW_LIMITS.height[1]}）` },
         scale: {
@@ -9193,7 +9612,7 @@ export function apply(ctx) {
 
   register({
     name: 'browser_state',
-    description: '读取内嵌浏览器的当前状态：地址、标题、视口（旧 {width,height} 与安全 view 投影）、控制权归属。'
+    description: '读取内嵌浏览器的当前状态：地址、标题、视口（旧 {width,height}、安全 view 投影与 canvas 画布投影）、控制权归属。'
       + '不保证新鲜：需要确定更新后事实请用 browser_viewport set 的读回，或 browser_viewport get 的缓存诊断。',
     parameters: { type: 'object', properties: {}, required: [] },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
@@ -9308,8 +9727,14 @@ export function apply(ctx) {
   function t3CaptureMapping(captured, width, height) {
     const requestedWidth = Number.isFinite(captured.region.width) && captured.region.width > 0 ? captured.region.width : width;
     const requestedHeight = Number.isFinite(captured.region.height) && captured.region.height > 0 ? captured.region.height : height;
-    return {
-      coordinateSpace: 'document-css-px',
+    // Canvas == document coordinates (content is anchored at (0,0)); what changes is the framing.
+    // O ≠ 0 is a composited canvas capture and its mapping must say canvas-css-px so an old
+    // document baseline is rejected as mapping-incompatible instead of being silently misread
+    // (docs/canvas-viewport.md §6.2).
+    const canvas = captured.canvas && typeof captured.canvas === 'object' ? captured.canvas : null;
+    const canvasSpace = Boolean(canvas && canvas.composite);
+    const mapping = {
+      coordinateSpace: canvasSpace ? 'canvas-css-px' : 'document-css-px',
       originCss: { x: captured.region.x, y: captured.region.y },
       cssPerPixel: { x: requestedWidth / width, y: requestedHeight / height },
       imagePixels: { width, height },
@@ -9322,6 +9747,17 @@ export function apply(ctx) {
       visualViewportScale: Number.isFinite(captured.visualViewportScale) ? captured.visualViewportScale : null,
       geometryTransform: 'axis-aligned',
     };
+    if (canvas) {
+      mapping.canvas = {
+        x: canvas.x, y: canvas.y,
+        scrollX: canvas.scrollX, scrollY: canvas.scrollY,
+        offsetX: canvas.offsetX, offsetY: canvas.offsetY,
+        contentWidth: canvas.contentWidth, contentHeight: canvas.contentHeight,
+      };
+    }
+    if (captured.contentRect) mapping.contentRect = { ...captured.contentRect };
+    mapping.blank = 'outside-content';
+    return mapping;
   }
 
   /** Public Product projection (contract §2.2). Never contains bytes/base64. */
@@ -9425,17 +9861,25 @@ export function apply(ctx) {
     const normalized = t3SourceForResolve(source, 'source');
     if (normalized.kind === 'live') {
       // §3.1: a live CssRect must be inside the live cssContentSize; reject BEFORE the capture.
+      // In canvas space (O ≠ 0) the region is a canvas rect and may be negative / outside content:
+      // the blank part is composed as white and stays visible to find/compare (§6.2).
       const metrics = await runtime.layoutMetrics(exec.signal);
+      const canvasSpace = runtime.canvasSpaceActive();
       if (normalized.region) {
         const r = normalized.region;
-        if (!(r.x >= 0 && r.y >= 0 && r.width >= 1 && r.height >= 1)) {
+        if (!(r.width >= 1 && r.height >= 1)) {
           throw t3Invalid('source.region 非法', { path: 'source.region', reason: 'region-invalid' });
         }
-        if (Number.isFinite(metrics.contentSize.width) && r.x + r.width > metrics.contentSize.width + 1e-9) {
-          throw t3Invalid('source.region 超出文档宽度', { path: 'source.region', reason: 'region-outside-document' });
-        }
-        if (Number.isFinite(metrics.contentSize.height) && r.y + r.height > metrics.contentSize.height + 1e-9) {
-          throw t3Invalid('source.region 超出文档高度', { path: 'source.region', reason: 'region-outside-document' });
+        if (!canvasSpace) {
+          if (!(r.x >= 0 && r.y >= 0)) {
+            throw t3Invalid('source.region 非法', { path: 'source.region', reason: 'region-invalid' });
+          }
+          if (Number.isFinite(metrics.contentSize.width) && r.x + r.width > metrics.contentSize.width + 1e-9) {
+            throw t3Invalid('source.region 超出文档宽度', { path: 'source.region', reason: 'region-outside-document' });
+          }
+          if (Number.isFinite(metrics.contentSize.height) && r.y + r.height > metrics.contentSize.height + 1e-9) {
+            throw t3Invalid('source.region 超出文档高度', { path: 'source.region', reason: 'region-outside-document' });
+          }
         }
       }
       // One frozen default per tool call: an omitted source.scale follows the shared view.scale
@@ -9488,7 +9932,10 @@ export function apply(ctx) {
           scaleSource: shot.capture.scaleSource ?? scaleSource,
           viewRevision: Number.isFinite(shot.capture.viewRevision) ? shot.capture.viewRevision : null,
           region: normalized.region ? { ...normalized.region } : null,
-          coordinateSpace: 'document-css-px',
+          // The live source is a canvas rect once O ≠ 0 (docs/canvas-viewport.md §6.2); O = 0 keeps
+          // the historical document coordinate space.
+          space: 'canvas-css-px',
+          coordinateSpace: mapping.coordinateSpace === 'canvas-css-px' ? 'canvas-css-px' : 'document-css-px',
           out: null,
           persist: false,
         },
@@ -9514,6 +9961,10 @@ export function apply(ctx) {
         },
         sizeTolerance,
         mapping,
+        // Canvas provenance for this live source: composite is explicit, never implied.
+        canvas: shot.capture.canvas ?? null,
+        composite: shot.capture.composite === true,
+        contentRect: shot.capture.contentRect ?? null,
         anomaly: { checked: false, uniform: null, transparent: null, sampledPixels: 0, distinctColors: null, averageColor: null, maxDelta: null, tolerance: 0 },
         file: null,
         delivery: {
@@ -9533,6 +9984,9 @@ export function apply(ctx) {
         capturedAt: shot.capture.capturedAt,
         sha256,
         rgbaSha256: t3RgbaSha256(decoded.rgba),
+        // Frozen at capture: act re-captures the same canvas rect and requires the same framing.
+        canvas: shot.capture.canvas ?? null,
+        contentRect: shot.capture.contentRect ?? null,
       };
       const product = t3AddProduct(runtime, {
         bytes: shot.pngBytes, width: decoded.width, height: decoded.height,
@@ -10148,6 +10602,19 @@ export function apply(ctx) {
     };
   }
 
+  /**
+   * §6.2: a candidate that maps entirely outside the content box sits on blank canvas → its
+   * documentCss is null (the pixel result is still reported). Only canvas-space mappings carry
+   * blank semantics; O = 0 keeps the historical document behaviour unchanged.
+   */
+  function t3CanvasRectBlank(mapping, rect) {
+    if (!mapping || mapping.coordinateSpace !== 'canvas-css-px' || !rect) return false;
+    const width = mapping.canvas && Number.isFinite(mapping.canvas.contentWidth) ? mapping.canvas.contentWidth : null;
+    const height = mapping.canvas && Number.isFinite(mapping.canvas.contentHeight) ? mapping.canvas.contentHeight : null;
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return false;
+    return rect.x + rect.width <= 0 || rect.x >= width || rect.y + rect.height <= 0 || rect.y >= height;
+  }
+
   /** FindResult projection (§2.3): the module already returns full-image coordinates. */
   function t3FindResult(query, found, image, sourceProduct, mapping, searchRegion) {
     const candidates = Array.isArray(found && found.candidates) ? found.candidates : [];
@@ -10155,16 +10622,23 @@ export function apply(ctx) {
       method: query.method,
       sourceProductId: sourceProduct ? sourceProduct.productId : null,
       searchRegion: searchRegion ?? { x: 0, y: 0, width: image.width, height: image.height },
-      candidates: candidates.map((candidate) => ({
-        id: candidate.id,
-        region: candidate.region,
-        documentCss: mapping ? vision.mapImageRectToDocument(mapping, candidate.region) : null,
-        centroid: candidate.centroid,
-        area: candidate.area,
-        score: candidate.score,
-        signal: candidate.signal,
-        semanticName: null,
-      })),
+      candidates: candidates.map((candidate) => {
+        const mapped = mapping ? vision.mapImageRectToDocument(mapping, candidate.region) : null;
+        const blank = t3CanvasRectBlank(mapping, mapped);
+        return {
+          id: candidate.id,
+          region: candidate.region,
+          // Canvas and document coordinates coincide; blank candidates keep the canvas rect but
+          // must not be treated as document points (docs/canvas-viewport.md §6.2).
+          canvas: mapped,
+          documentCss: blank ? null : mapped,
+          centroid: candidate.centroid,
+          area: candidate.area,
+          score: candidate.score,
+          signal: candidate.signal,
+          semanticName: null,
+        };
+      }),
       totalCandidates: Number.isInteger(found && found.totalCandidates) ? found.totalCandidates : candidates.length,
       truncated: Boolean(found && found.truncated),
       metrics: found && found.metrics ? found.metrics : {
@@ -11052,6 +11526,46 @@ export function apply(ctx) {
           }
           viewportTo = toViewport(documentTo);
         }
+        // §6.2: blank canvas has no page content — zero dispatch with an explicit reason. Canvas ==
+        // document, so a point outside the content box is blank; a point outside the captured image
+        // does not exist in this product at all.
+        const imagePixels = mapping.imagePixels && Number.isFinite(mapping.imagePixels.width)
+          ? mapping.imagePixels : null;
+        const contentSize = mapping.canvas && Number.isFinite(mapping.canvas.contentWidth)
+          && Number.isFinite(mapping.canvas.contentHeight)
+          ? { width: mapping.canvas.contentWidth, height: mapping.canvas.contentHeight }
+          : null;
+        const canvasSpace = mapping.coordinateSpace === 'canvas-css-px';
+        const blankReason = (documentCss, imagePoint) => {
+          if (!canvasSpace || !contentSize) return null;
+          if (imagePixels && (imagePoint.x < 0 || imagePoint.y < 0
+            || imagePoint.x > imagePixels.width || imagePoint.y > imagePixels.height)) return 'outside-image';
+          if (documentCss.x < 0 || documentCss.y < 0
+            || documentCss.x >= contentSize.width || documentCss.y >= contentSize.height) return 'blank-area';
+          return null;
+        };
+        const startBlank = blankReason(documentPoint, request.point);
+        if (startBlank) {
+          throw new BrowserError('VISION_HIT_MISMATCH', '画布空白区没有页面内容（零派发）', {
+            reason: startBlank,
+            canvasPoint: { x: documentPoint.x, y: documentPoint.y },
+            imagePoint: request.point,
+            content: contentSize,
+            canvas: mapping.canvas ? {
+              x: mapping.canvas.x, y: mapping.canvas.y,
+              offsetX: mapping.canvas.offsetX, offsetY: mapping.canvas.offsetY,
+            } : null,
+          });
+        }
+        const endBlank = request.action === 'drag' ? blankReason(documentTo, request.to) : null;
+        if (endBlank) {
+          throw new BrowserError('VISION_HIT_MISMATCH', 'drag 终点在画布空白区（零派发）', {
+            reason: endBlank,
+            canvasPoint: { x: documentTo.x, y: documentTo.y },
+            imagePoint: request.to,
+            content: contentSize,
+          });
+        }
         const insideViewport = (p) => p.x >= 0 && p.y >= 0 && p.x <= live.viewport.width && p.y <= live.viewport.height;
         if (!insideViewport(viewportPoint)) {
           throw new BrowserError('NOT_INTERACTABLE', '起点不在当前视口内（零派发，不自动滚动）', { reason: 'outside-viewport' });
@@ -11066,6 +11580,11 @@ export function apply(ctx) {
             const y = viewportPoint.y + (viewportTo.y - viewportPoint.y) * ratio;
             if (!insideViewport({ x, y })) {
               throw new BrowserError('NOT_INTERACTABLE', 'drag 路径离开当前视口（零派发）', { reason: 'outside-viewport' });
+            }
+            // The page-viewport path must also stay on content (blank path → zero dispatch).
+            const pathBlank = blankReason({ x: x + live.scroll.x, y: y + live.scroll.y }, { x: 0, y: 0 });
+            if (pathBlank === 'blank-area') {
+              throw new BrowserError('VISION_HIT_MISMATCH', 'drag 路径穿过画布空白区（零派发）', { reason: 'blank-area' });
             }
           }
         }
@@ -12292,6 +12811,9 @@ export function apply(ctx) {
         'only a width/height change sends Emulation.setDeviceMetricsOverride; scale never changes CSS viewport, DPR or page zoom',
         'expectedRevision gives CAS inside the queue (VIEWPORT_CONFLICT, patch not applied)',
         'x/y are the document scroll position read back from Page.getLayoutMetrics (not cached page values)',
+        'canvasX/canvasY are the viewport origin on the document canvas (canvas-css-px); negative and outside-content values are legal, O = C - S is derived',
+        'canvasX/canvasY and x/y cannot be combined in one patch (INVALID_ARGUMENT); a new document resets C=S=0',
+        'frames carry scrollX/scrollY captured with the frame so the panel can place them in canvas space',
       ];
       const workspaceIsolation = registry.capabilities();
       // P0 capture facts. `observed` only ever comes from a real browser_screenshot of this Runtime
@@ -12447,6 +12969,15 @@ export function apply(ctx) {
           presets: Object.fromEntries(Object.entries(VIEW_PRESETS).map(([mode, size]) => [mode, { ...size }])),
           default: { ...VIEW_LIMITS.default },
           scaleRange: [...VIEW_LIMITS.scale],
+          // Canvas space (docs/canvas-viewport.md §2): C may be negative / outside the content box;
+          // blank is composited by Host/Client and does not exist in the page DOM.
+          canvas: {
+            version: 1,
+            space: 'canvas-css-px',
+            range: [...VIEW_LIMITS.canvas],
+            blankColor: VIEW_LIMITS.canvasBlankColor,
+            compositeProvenance: true,
+          },
           observed: (() => {
             const observed = runtime.observedProjection();
             return observed === null ? null : {
@@ -12510,6 +13041,13 @@ export function apply(ctx) {
             width: [...VIEW_LIMITS.width],
             height: [...VIEW_LIMITS.height],
             scroll: [...VIEW_LIMITS.scroll],
+            canvas: {
+              version: 1,
+              space: 'canvas-css-px',
+              range: [...VIEW_LIMITS.canvas],
+              blankColor: VIEW_LIMITS.canvasBlankColor,
+              compositeProvenance: true,
+            },
             scale: [...VIEW_LIMITS.scale],
             default: { ...VIEW_LIMITS.default },
             presets: Object.fromEntries(Object.entries(VIEW_PRESETS).map(([mode, size]) => [mode, { ...size }])),

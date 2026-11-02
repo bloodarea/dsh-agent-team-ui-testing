@@ -91,7 +91,7 @@ ui: {
 }
 ```
 
-- **坐标与尺寸**：`x/y` 是文档 CSS px 的页面顶层滚动位置，来自 `Page.getLayoutMetrics.cssLayoutViewport.pageX/pageY`（不是窗口位置，也不是缓存页面值）；`width/height` 是 CSS viewport（整数 200–4096）；`mode` 由宽高精确匹配派生（custom 只作返回值）。`Runtime.evaluate` 只用于 instant `scrollTo` 与 DPR 读取。
+- **坐标与尺寸**：`x/y` 是文档 CSS px 的页面顶层滚动位置，来自 `Page.getLayoutMetrics.cssLayoutViewport.pageX/pageY`（不是窗口位置，也不是缓存页面值）；**`canvasX/canvasY` 是画布 v2 的视口原点（±1e7，可为负；面板 X/Y 绑定它）**；`width/height` 是 CSS viewport（整数 200–4096）；`mode` 由宽高精确匹配派生（custom 只作返回值）。`Runtime.evaluate` 只用于 instant `scrollTo` 与 DPR 读取。
 - **比例**：`scale` 0.1–2（10–200%）是面板显示比例与"省略 scale 的截图默认密度"；页面 CSS 视口、DPR（固定 1）、页面 zoom 与布局都不受影响。只有显式改宽高才发 `Emulation.setDeviceMetricsOverride({deviceScaleFactor:1,mobile:false})`。
 - **HTTP 双形状**：legacy `{width,height}` 保持旧的 Number/round/clamp 与 `viewport` 返回（`source` 记 `gui`）；v1 使用与工具相同的严格校验（`version` 只接受 1；`originId` 为**可选诊断字段**、≤64 可打印 ASCII，**本轮面板不发送**，因此 `viewMeta.originId` 恒为 null，不承担鉴权/scope/租约语义），响应对两种形状都带 `view/observed/viewMeta/requested/clamped/applied/settled/state`。冲突映射 `VIEWPORT_CONFLICT → 409`，其余沿用既有 code→status 映射。
 - **谁会被投影**：认证 `/state`、`/frame` 的 state、`ensure`/`navigate`/`reload`/`history` 响应都附 `ui.view/ui.viewMeta/ui.observed`；`browser_state` 工具返回同一份安全 `view`（无页面文本、无路径），但**不保证新鲜**——需要确定更新后事实时用 `browser_viewport set` 的读回。
@@ -137,13 +137,13 @@ T2 与 T1 共用同一 Runtime/队列/租约，`browser_snapshot` 的 ref 表按
 
 M0–M2 的 `single-owner-lease` 保留，但已改为**按 DSH 工作区**：页面操作与 network 先按 exec 身份解析工作区 runtime，再申请该 runtime 的租约；空闲 15s、进行中保持，同工作区其他 session 返回 `BUSY`，不同工作区互不影响。exec 身份缺失走 `legacy:default`；`agent/disposed` 只释放对应 owner。同一工作区的面板与 Agent 使用同一 page/串行队列；不同工作区 page/URL/viewport/网络缓冲独立，但 Cookie/存储共享。state/capabilities 不启动浏览器也不占租约。`browser_http_request` 仍是独立分支：不启动 Chromium、不申请/续租、不进页面队列、不建 page/entry，插件卸载时取消在飞请求。帧管线、`/metrics`、WS 都不是 Agent 工具。scope 身份、请求头/query、recent→binding 与限制见 [workspace-isolation.md](workspace-isolation.md)。
 
-工具失败抛带 `[CODE]` 的 `BrowserError(code/category/retryable/details)`，eval/style 操作失败返回 error 对象。每次调用返回并 render `actionId/sessionId/startedAt/finishedAt/target/args` 摘要；截图保留 base64，带 `capturedAt/sha256/attachmentId`，可选附件服务保存并 render image block，无服务则明确 `base64-fallback` 文本。**工具返回值必须是 lossless JSON**（宿主会校验，含 `undefined` 属性即被判 `INVALID_TOOL_OUTPUT`），统一在 `register()` 边界做投影。已发 CDP 命令后取消会在队列内关闭浏览器再放锁，下一调用可懒启动。完整字段、错误码、实测报告及残余风险见 [现行契约](t1-m0-m2-contract.md) 与 [HTTP 契约](t1-http-request.md)：本轮计数与结论以 `tests/acceptance/runs/` 报告为准；真实宿主内第九工具的注册/调用与 provider 视图仍 NOT_RUN。
+工具失败抛带 `[CODE]` 的 `BrowserError(code/category/retryable/details)`，eval/style 操作失败返回 error 对象。每次调用返回并 render `actionId/sessionId/startedAt/finishedAt/target/args` 摘要；截图保留 base64，带 `capturedAt/sha256/attachmentId`，可选附件服务保存并 render image block，无服务则明确 `base64-fallback` 文本。**工具返回值必须是 lossless JSON**（宿主会校验，含 `undefined` 属性即被判 `INVALID_TOOL_OUTPUT`），统一在 `register()` 边界做投影。已发 CDP 命令后取消会在队列内关闭浏览器再放锁，下一调用可懒启动。完整字段、错误码、实测报告及残余风险见 [现行契约](t1-m0-m2-contract.md) 与 [HTTP 契约](t1-http-request.md)：本轮计数与结论以 `tests/acceptance/runs/` 报告为准；真实宿主内第九工具的真实调用已于 2026-11-02 复验（`browser_http_request GET /health` → 200），provider 视图仍 NOT_RUN。
 
 ### P0 截图采集（`browser_screenshot`）
 
 T1回归有既有随机P21 flake：同一行为实现仅persist描述文案不同，一次22/22、324/324、exit0（[05-49-22](../tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json)），一次21/22、323/324通过/1失败、exit1（[05-59-53](../tests/acceptance/runs/2026-11-01T05-59-53-185Z-105978/run-report.json)）。唯一失败为P21-host-output-contract的loadingFailed条目检查，实际仅3条成功网络记录，与[基线同项](../tests/acceptance/runs/2026-11-01T04-30-43-916Z-53146/run-report.json)相同；Lead判定既有环境flake而非P0回归，失败记录仍为FAIL。验收需串行，串行不能保证flake不出现。
 
-权威契约见 [capture-p0.md](capture-p0.md)；默认暂存修订 C1–C14 **14/14、142/142、exit0**（共享视口轮同一最终代码复跑 [capture-p0-2026-11-01T15-40-32-906Z-519432](../tests/acceptance/runs/capture-p0-2026-11-01T15-40-32-906Z-519432/report.json)；此前 [05-52-05](../tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json) 同结果）。注意：从第 9 轮起显式 `scale` 下界是 **0.1**、默认值不再固定 1（省略时跟随共享 `view.scale`），见 [viewport-control.md](viewport-control.md) §6。下方13/115属修订前历史：进程内真实 Chromium 三次各 **13/13 probes、115/115 必需项、exit 0**（[末次报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），宿主重启后加载与 provider 视觉仍 NOT_RUN。
+权威契约见 [capture-p0.md](capture-p0.md)；默认暂存修订 C1–C15 **15/15、162/162、exit0**（画布轮 [capture-p0-2026-11-01T20-18-32-415Z-768943](../tests/acceptance/runs/capture-p0-2026-11-01T20-18-32-415Z-768943/report.json)；此前 14/14、142/142 保留为历史）。注意：从第 9 轮起显式 `scale` 下界是 **0.1**、默认值不再固定 1（省略时跟随共享 `view.scale`）；2026-11-02 起 `region` 为 canvas CSS（O=0 与文档相同），O≠0 由 Host 白底合成并披露 `capture.canvas.composite=true`。见 [canvas-viewport.md](canvas-viewport.md) §6。下方13/115属修订前历史：进程内真实 Chromium 三次各 **13/13 probes、115/115 必需项、exit 0**（[末次报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），宿主重启后加载已于 2026-11-02 复验（默认/显式比例、region、mapping、networkWindow），provider 视觉仍 NOT_RUN。
 
 | 项 | 现行语义 |
 | --- | --- |
@@ -219,13 +219,13 @@ warnings封闭为 `content_uniform/content_transparent/model_image_downscaled/at
 - **共享比例会改变默认截图尺寸**：`view.scale≠1` 时省略 `scale` 的截图（含 T3 live 源）按该比例输出；需要固定分辨率请显式给 `scale`。比例过低会丢细节，极小 region 会被提前拒绝（`empty-output-dimensions`）。
 - **视口 X/Y 是页面滚动位置**，不是窗口位置；页面自己滚动、smooth scroll 或 scroll snap 会继续改变它，缓存超过 1s 标 stale；`browser_viewport get` 只是缓存诊断，不保证新鲜。
 - **宽高变更后的输入屏障是 best-effort**：帧协议未扩展（`frame-source.js`/`frame-push.js` 本轮未改），只按已解码帧尺寸/元数据暂停输入 ≤250ms。
-- **真实宿主未验证**：3080（pid <pid>）本轮未重启，30 工具与 `ui.view` 只在进程内套件与隔离 DSH GUI 验证过；隔离实例不能冒充主实例。
+- **真实宿主**：3080 已于 2026-11-02 01:28:05 重启（`dsh web` pid <pid>），真实 Agent 会话复验的是**画布前**构建（30 工具、`ui.view`、viewport/截图/T3 默认比例）；**画布 v2 Host 面已于 2026-11-02 11:15 重启后实测**（canvasX/Y、白色 blank、合成截图/T3 canvas、blank act 零派发、导航复位、页面自主滚动保留 O；[证据](../tests/acceptance/evidence/canvas-realhost-2026-11-02.md)）；**面板交互与需 GUI 认证的路由仍 NOT_RUN**。隔离实例不能冒充主实例。
 - 推帧只有服务端合并/背压，没有逐帧客户端 ACK；客户端丢帧通过 `seq` 跳号和 `droppedClient` 观测。
 - WS 升级依赖宿主 `connection` 服务鉴权；该服务不存在时仅 loopback 放行（测试/最小组合）。反向代理若不透传 Upgrade，会自然回退到轮询。
 - 键盘：`browser_input` 已支持 `modifiers`（数组或位掩码）与 `virtualKeyCode`，可派发 Tab/Shift+Tab/Enter/Esc/方向键与组合键（P20 用页面 DOM 事件与 `activeElement` 实测）；`commands`、`unmodifiedText`、`pointerType:pen` 只有 schema 与透传，无页面级行为断言（未验证）。面板里的人类输入走同一个 `/input` 通道。
 - 输入事件会先到达宿主页面，因此宿主里若有模态遮罩会吞掉点击。
 - 没有下载、上传、Cookie 导出、多标签页、跨源隔离。
-- **实测只证明覆盖路径**：标题刷新、导航失败信号、分类错误、返回值 lossless JSON、N2 输入事件、截图附件/render 已由第 4 轮 22 组、303 项主验收（含 P22 独立 HTTP 95 项）覆盖，取代相应历史 F2/F3/F4/F9 结论；3081 终版（pid <pid>）Lead 独立终验 verify-3081 22/22、GUI address-history 276/276 通过（硬化后连续 3 次 276/276 + B1/G1 专项各 12/12）；真实 Agent 会话内 8 工具曾真实调用（第 4 轮第九工具未在真实会话调用）；provider 是否显示图像仍 NOT_RUN。此前“截图无裁剪”属历史；P0 已提供文档 clip/连续 scale/PNG校验/安全落盘，验收见上节与 [状态记录](status.md)，仍无像素差异/VLM/视觉判断。
+- **实测只证明覆盖路径**：标题刷新、导航失败信号、分类错误、返回值 lossless JSON、N2 输入事件、截图附件/render 已由第 4 轮 22 组、303 项主验收（含 P22 独立 HTTP 95 项）覆盖，取代相应历史 F2/F3/F4/F9 结论；3081 终版（pid <pid>）Lead 独立终验 verify-3081 22/22、GUI address-history 276/276 通过（硬化后连续 3 次 276/276 + B1/G1 专项各 12/12）；真实 Agent 会话内 8 工具曾真实调用；第 4 轮第九工具于 2026-11-02 在真实宿主调用成功（`GET /health` → 200）；provider 是否显示图像仍 NOT_RUN。此前“截图无裁剪”属历史；P0 已提供文档 clip/连续 scale/PNG校验/安全落盘，验收见上节与 [状态记录](status.md)，仍无像素差异/VLM/视觉判断。
 - **跨工作区 Cookie/存储不隔离**：同一 Chromium/profile 下 Cookie、localStorage、IndexedDB、cache 共享；page/URL/viewport/网络缓冲/队列/租约按工作区隔离。真实 Agent exec 身份链与两个 GUI 工作区已在 3081 验收，见 [workspace-isolation.md](workspace-isolation.md)。
 - **目标策略不是完整网络沙箱**：允许 loopback；默认阻断 RFC1918（`DSH_UI_TESTING_ALLOW_PRIVATE=1` 开放）、metadata/unspecified/multicast、credentials、已配置 `DSH_WEB_URL` origin；导航、DNS、最终 URL 和 Document 重定向校验仍不能消除子资源与 DNS rebinding 风险。
 - **网络是有限元数据**：URL 脱敏并记录 loadingFailed，Map/记录有界；无请求/响应头或正文，脱敏也不能保证覆盖所有业务敏感字段。

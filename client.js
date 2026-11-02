@@ -133,8 +133,22 @@ window.__ModuleLoader__.load({
       width: [200, 4096],
       height: [200, 4096],
       scroll: [0, 10000000],
+      // P0-C v2 canvas origin C (docs/canvas-viewport.md §2): viewport top-left on the document
+      // canvas, allowed to be negative or beyond the content box.
+      canvas: [-10000000, 10000000],
       scalePercent: [10, 200],
     };
+    /**
+     * Host screenshot/T3 blank colour: evidence semantics, always #ffffff
+     * (docs/canvas-viewport.md §6). The panel must NOT use it for display.
+     */
+    const CANVAS_BLANK_EVIDENCE = '#ffffff';
+    /**
+     * Panel-only blank: a dark checkerboard (user request 2026-11-02) so composited whitespace is
+     * visible against white pages. Fixed host CSS pixels, independent of view.scale. This is a
+     * local display style; the evidence/Host blank stays #ffffff.
+     */
+    const CANVAS_CHECKER = Object.freeze({ dark: '#2b2b2b', light: '#3f3f3f', size: 14 });
     /** 尺寸栏数值滚轮：向上增、向下减；Alt 优先于 Shift。 */
     const WHEEL_STEPS = {
       width: { normal: 10, shift: 100, alt: 1 },
@@ -148,11 +162,20 @@ window.__ModuleLoader__.load({
     const GEOMETRY_WAIT_MS = 250;
     const POINTER_EPSILON = 0.001;
     const FRAME_WHEEL_LINE_CSS_PX = 16;
+    /** 拖拽视口：移动期间写入共享 view 的最小间隔（Host 一次 set 本身要两帧+稳定读回）。 */
+    const PAN_WRITE_THROTTLE_MS = 80;
 
     function clampNumber(value, min, max) {
       const number = Number(value);
       if (!Number.isFinite(number)) return min;
       return Math.max(min, Math.min(max, number));
+    }
+
+    /** Finite number, or null for missing/invalid metadata (never coerces null to 0). */
+    function finiteOrNull(value) {
+      if (value === null || value === undefined || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
     }
 
     /** `ui.view` (v1) from any Host snapshot shape; null for an old Host without shared view. */
@@ -172,6 +195,35 @@ window.__ModuleLoader__.load({
         viewMeta: ui && ui.viewMeta && typeof ui.viewMeta === 'object' ? ui.viewMeta : null,
         observed: ui && ui.observed && typeof ui.observed === 'object' ? ui.observed : null,
       };
+    }
+
+    /**
+     * Shared canvas projection (`ui.canvas`, docs/canvas-viewport.md §2). Its presence is the
+     * capability handshake: a Host without it is an old Host, so the panel keeps the legacy
+     * scroll-only X/Y behaviour and disables canvas editing/drag (fail closed, no guessing).
+     */
+    function canvasOf(payload) {
+      if (!payload || typeof payload !== 'object') return null;
+      const state = payload.state && typeof payload.state === 'object' ? payload.state : payload;
+      const ui = state && state.ui && typeof state.ui === 'object' ? state.ui : null;
+      const canvas = ui && ui.canvas && typeof ui.canvas === 'object' && Number(ui.canvas.version) === 1 ? ui.canvas : null;
+      return canvas;
+    }
+
+    /** Draw-displacement inputs of one displayed frame (canvas compositing, §5.2). */
+    function frameScrollOf(meta, fallback) {
+      const pick = (key) => {
+        if (!meta || meta[key] === undefined || meta[key] === null) return null;
+        const value = Number(meta[key]);
+        if (Number.isFinite(value)) return value;
+        return fallback && Number.isFinite(Number(fallback[key])) ? Number(fallback[key]) : null;
+      };
+      return { x: pick('scrollX'), y: pick('scrollY') };
+    }
+
+    /** Round a canvas coordinate to two decimals (Host accepts CSS floats). */
+    function roundCanvas(value) {
+      return Math.round(Number(value) * 100) / 100;
     }
 
     /**
@@ -254,6 +306,15 @@ window.__ModuleLoader__.load({
 .utb-stage { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; align-items: safe center; justify-content: safe center; background: var(--dsw-alias-bg-layer-2); }
 .utb-box { flex: 0 0 auto; overflow: hidden; background: var(--dsw-alias-bg-base); }
 .utb-box[data-fitted="true"] { box-shadow: 0 0 0 1px var(--dsw-alias-border-l2); }
+/* Canvas blank = dark checkerboard (user request). Fixed host px, not view.scale. The <img>
+   above it covers the box whenever the frame proves the whole viewport (O=0), so old pixels
+   are unchanged; only true composited blank shows through. */
+.utb-box[data-utb-canvas="on"] {
+  background-color: ${CANVAS_CHECKER.dark};
+  background-image: repeating-conic-gradient(${CANVAS_CHECKER.dark} 0% 25%, ${CANVAS_CHECKER.light} 0% 50%);
+  background-size: ${CANVAS_CHECKER.size * 2}px ${CANVAS_CHECKER.size * 2}px;
+  background-position: 0 0;
+}
 .utb-frame { display: block; border: 0; background: #fff; }
 .utb-empty { max-width: 320px; padding: 24px; text-align: center; color: var(--dsw-alias-label-secondary); }
 .utb-empty strong { display: block; margin-bottom: 6px; color: var(--dsw-alias-label-primary); font-weight: 600; }
@@ -337,6 +398,9 @@ window.__ModuleLoader__.load({
     const WS_RETRY_MAX_MS = 15000;
     const WS_OPEN_TIMEOUT_MS = 4000;
     const SEED_DELAY_MS = 700;
+    const SEED_DEBOUNCE_MS = 200;
+    /** How long a canvas barrier must stay mismatched before the client refreshes the PNG seed. */
+    const SEED_STALE_MS = 650;
 
     function frameSocketUrl(scope) {
       const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -386,7 +450,18 @@ window.__ModuleLoader__.load({
       let lastEpoch = -1;
       let lastState;
       let urlSince = 0;
-      let seedFor = '';
+      // PNG seed state (see the seed block below): signature of the last requested shell state and
+      // a bounded diagnostic counter set. `seedStats` is evidence-only and never an assertion.
+      let seedContext = null;
+      let seedKey = '';
+      let seedRequestedKey = '';
+      let seedScheduledKey = '';
+      let seedScheduledForce = false;
+      let seedForceKey = '';
+      let seedWarnedKey = '';
+      let seedPending = false;
+      let seedTimer = 0;
+      const seedStats = { requested: 0, accepted: 0, stale: 0, invalid: 0, failed: 0, forced: 0 };
       const stats = {
         transport: 'poll',
         received: 0,
@@ -432,32 +507,207 @@ window.__ModuleLoader__.load({
         } else {
           lastState = state;
         }
-        maybeSeed();
+        scheduleSeed();
       }
 
-      /** Static pages may not damage-paint after load: fill the first view with a PNG seed. */
-      function maybeSeed() {
+      /* ---- PNG seed for static pages (no screencast damage after load) ------------------------
+       *
+       * A seed is a /screenshot of the current canvas view. On a canvas Host it must be provably
+       * composited at the C/S/revision/scale it was requested for (docs/canvas-viewport.md §5.2);
+       * the React side publishes `updateSeedContext()` on every accepted state and the transport
+       * refreshes the seed when that context moves. Same shell state is requested at most once; an
+       * incomplete response or a stale capture is dropped and leaves canvas input fail-closed.
+       * -------------------------------------------------------------------------------------- */
+
+      function seedKeyOf(context) {
+        if (!context) return '';
+        const url = String(context.url || (lastState && lastState.url) || '');
+        if (context.legacy) return 'legacy|' + url;
+        const round = (value) => (Number.isFinite(Number(value)) ? Math.round(Number(value) * 100) / 100 : null);
+        return [
+          url,
+          round(context.canvasX), round(context.canvasY),
+          round(context.scrollX), round(context.scrollY),
+          Number.isFinite(Number(context.viewRevision)) ? Number(context.viewRevision) : null,
+          round(context.scale),
+          round(context.width), round(context.height),
+        ].join('|');
+      }
+
+      /** Publish the shell canvas/scroll/scale signature; called after every accepted snapshot. */
+      function updateSeedContext(context) {
         if (closed) return;
-        if (!lastState || !lastState.url) return;
-        if (stats.received > 0) return;
-        if (seedFor === lastState.url) return;
-        if (Date.now() - urlSince < SEED_DELAY_MS) return;
+        seedContext = context || null;
+        if (!seedContext) return;
+        seedKey = seedKeyOf(seedContext);
+        if (seedForceKey && seedForceKey !== seedKey) seedForceKey = '';
+        scheduleSeed();
+      }
+
+      /**
+       * React asks for a fresh composed seed after a sustained barrier mismatch (page-size / scroll /
+       * seed-stale). This may run even after live frames were received, unlike the initial seed.
+       */
+      function requestSeedRefresh(context) {
+        if (closed || !context) return;
+        seedContext = context;
+        seedKey = seedKeyOf(context);
+        seedForceKey = seedKey;
+        scheduleSeed();
+      }
+
+      function warnSeed(reason) {
+        if (seedWarnedKey === seedRequestedKey) return;
+        seedWarnedKey = seedRequestedKey;
+        console.warn('ui-testing: seed screenshot rejected (' + reason + '); canvas input stays fail-closed');
+      }
+
+      function scheduleSeed() {
+        if (closed || !seedContext || !seedKey) return;
+        const force = seedForceKey === seedKey;
+        // The historical seed only applies before the first live frame; a React-driven refresh is
+        // allowed after live frames when the displayed frame can no longer prove the canvas.
+        if (!force && stats.received > 0) return;
         if (handlers.canWrite && !handlers.canWrite()) return;
-        seedFor = lastState.url;
-        callHost('screenshot', {}, { scope, signal }).then((payload) => {
-          if (closed || !payload || !payload.image) return;
-          stats.seeded += 1;
+        if (seedRequestedKey === seedKey) { if (force) seedForceKey = ''; return; } // one attempt per shell state
+        if (seedPending) return; // the completion schedules the latest pending signature
+        if (seedTimer && seedScheduledKey === seedKey) return; // do not restart our own debounce
+        if (seedTimer) window.clearTimeout(seedTimer);
+        // A URL change keeps the historical settle delay; later canvas/scroll moves use a short
+        // debounce so a drag does not request a composition per pointer move.
+        const sinceUrl = Date.now() - urlSince;
+        const delay = Math.max(SEED_DEBOUNCE_MS, sinceUrl < SEED_DELAY_MS ? SEED_DELAY_MS - sinceUrl : 0);
+        seedScheduledKey = seedKey;
+        seedScheduledForce = force;
+        seedTimer = window.setTimeout(() => {
+          seedTimer = 0;
+          seedScheduledKey = '';
+          requestSeed(seedScheduledForce);
+          seedScheduledForce = false;
+        }, delay);
+      }
+
+      /** Extract the composited-at-canvas provenance from /screenshot; null when insufficient. */
+      function seedFactsFrom(payload) {
+        if (!payload || !payload.image) return null;
+        const object = (value) => (value && typeof value === 'object' ? value : null);
+        const view = object(payload.view) || object(payload.state && payload.state.ui && payload.state.ui.view);
+        const capture = object(payload.capture);
+        const mapping = object(payload.mapping) || object(capture && capture.mapping);
+        const canvas = object(payload.canvas) || object(capture && capture.canvas) || object(mapping && mapping.canvas);
+        const viewport = object(capture && capture.viewport) || object(payload.viewport);
+        const mappingScroll = object(mapping && mapping.scrollAtCapture);
+        const num = (value) => (value === null || value === undefined || value === '' ? null : (Number.isFinite(Number(value)) ? Number(value) : null));
+        // Capture-time evidence wins over the current view projection (the latter may have advanced
+        // between the request and the capture). Missing evidence is never replaced by an assumption.
+        const canvasX = num(canvas && canvas.x) ?? num(view && view.canvasX);
+        const canvasY = num(canvas && canvas.y) ?? num(view && view.canvasY);
+        const scrollX = num(canvas && canvas.scrollX) ?? num(view && view.x) ?? num(mappingScroll && mappingScroll.x);
+        const scrollY = num(canvas && canvas.scrollY) ?? num(view && view.y) ?? num(mappingScroll && mappingScroll.y);
+        const viewRevision = num(capture && capture.viewRevision) ?? num(view && view.revision) ?? num(payload.viewRevision);
+        const scale = num(capture && capture.requestedScale) ?? num(view && view.scale) ?? num(payload.scale);
+        const width = num(viewport && viewport.width) ?? num(view && view.width) ?? num(payload.width);
+        const height = num(viewport && viewport.height) ?? num(view && view.height) ?? num(payload.height);
+        // Content box is optional for the barrier but needed to clip a composed seed so the panel
+        // can show its checkerboard instead of the Host's evidence-white blank.
+        const contentWidth = num(canvas && canvas.contentWidth) ?? num(mapping && mapping.canvas && mapping.canvas.contentWidth);
+        const contentHeight = num(canvas && canvas.contentHeight) ?? num(mapping && mapping.canvas && mapping.canvas.contentHeight);
+        if ([canvasX, canvasY, scrollX, scrollY, viewRevision, scale, width, height].some((value) => value === null)) return null;
+        return { canvasX, canvasY, scrollX, scrollY, viewRevision, scale, width, height, contentWidth, contentHeight };
+      }
+
+      function seedFactsMatch(facts, context) {
+        if (!facts || !context || context.legacy) return false;
+        const near = (a, b, tolerance) => Number.isFinite(Number(a)) && Number.isFinite(Number(b)) && Math.abs(Number(a) - Number(b)) <= tolerance;
+        return near(facts.canvasX, context.canvasX, 1)
+          && near(facts.canvasY, context.canvasY, 1)
+          && near(facts.scrollX, context.scrollX, 1)
+          && near(facts.scrollY, context.scrollY, 1)
+          && Number(facts.viewRevision) === Number(context.viewRevision)
+          && near(facts.scale, context.scale, 0.001)
+          && near(facts.width, context.width, 1)
+          && near(facts.height, context.height, 1);
+      }
+
+      function requestSeed(force) {
+        if (closed || !seedContext || !seedKey) return;
+        if (!force && stats.received > 0) return;
+        if (seedRequestedKey === seedKey || seedPending) return;
+        if (handlers.canWrite && !handlers.canWrite()) return;
+        if (seedForceKey === seedKey) seedForceKey = '';
+        const requestedKey = seedKey;
+        const requestedContext = seedContext;
+        seedRequestedKey = requestedKey;
+        seedPending = true;
+        seedStats.requested += 1;
+        if (force) seedStats.forced += 1;
+        // A canvas seed must be composed at C (docs/canvas-viewport.md §5.2); an old Host keeps the
+        // historical plain-page screenshot request.
+        callHost('screenshot', requestedContext.legacy ? {} : { canvas: true }, { scope, signal }).then((payload) => {
+          if (closed) return;
+          if (!payload || !payload.image) { seedStats.failed += 1; warnSeed('no-image'); return; }
+          if (requestedContext.legacy) {
+            // Historical plain-page seed (old Host / no canvas): no canvas provenance to claim.
+            const meta = {
+              seed: true,
+              seq: 0,
+              epoch: lastEpoch < 0 ? 0 : lastEpoch,
+              capturedAtMs: payload.capturedAt,
+              width: payload.viewport && payload.viewport.width,
+              height: payload.viewport && payload.viewport.height,
+              pageWidth: payload.viewport && payload.viewport.width,
+              pageHeight: payload.viewport && payload.viewport.height,
+            };
+            stats.seeded += 1;
+            stats.lastMeta = meta;
+            try { handlers.onFrame({ blob: blobFromBase64(payload.image, 'image/png'), meta }); } catch { /* UI must not break transport */ }
+            return;
+          }
+          const facts = seedFactsFrom(payload);
+          if (!facts) { seedStats.invalid += 1; warnSeed('provenance-missing'); return; }
+          // The response is only usable while the shell is still on the exact signature requested,
+          // and the Host must prove it composited at that same C/S/revision/scale.
+          if (!seedContext || requestedKey !== seedKeyOf(seedContext)) { seedStats.stale += 1; return; }
+          if (!seedFactsMatch(facts, requestedContext)) { seedStats.invalid += 1; warnSeed('provenance-mismatch'); return; }
           const meta = {
             seed: true,
+            // The PNG is the canvas view (composited at C or the O=0 single native capture): the
+            // client must not apply the live-frame displacement on top of it.
+            seedComposite: true,
             seq: 0,
             epoch: lastEpoch < 0 ? 0 : lastEpoch,
             capturedAtMs: payload.capturedAt,
-            width: payload.viewport && payload.viewport.width,
-            height: payload.viewport && payload.viewport.height,
+            width: facts.width,
+            height: facts.height,
+            pageWidth: facts.width,
+            pageHeight: facts.height,
+            // The seed image is already composited at C: the preview must not translate it, but the
+            // barrier compares these facts with the live C/S/revision to refuse stale pixels.
+            seedCanvasX: facts.canvasX,
+            seedCanvasY: facts.canvasY,
+            seedScrollX: facts.scrollX,
+            seedScrollY: facts.scrollY,
+            seedViewRevision: facts.viewRevision,
+            seedScale: facts.scale,
+            seedWidth: facts.width,
+            seedHeight: facts.height,
+            seedContentWidth: facts.contentWidth,
+            seedContentHeight: facts.contentHeight,
           };
+          stats.seeded += 1;
+          seedStats.accepted += 1;
           stats.lastMeta = meta;
-          handlers.onFrame({ blob: blobFromBase64(payload.image, 'image/png'), meta });
-        }).catch(() => {});
+          try { handlers.onFrame({ blob: blobFromBase64(payload.image, 'image/png'), meta }); } catch { /* UI must not break transport */ }
+        }).catch((error) => {
+          if (error && error.name === 'AbortError') return;
+          seedStats.failed += 1;
+        }).finally(() => {
+          seedPending = false;
+          if (closed) return;
+          // A context change while the request was in flight gets exactly one follow-up request;
+          // outside the initial seed this only happens when React flagged the new key for refresh.
+          if (seedKey && seedRequestedKey !== seedKey && (stats.received === 0 || seedForceKey === seedKey)) scheduleSeed();
+        });
       }
 
       function stopPolling() {
@@ -493,6 +743,10 @@ window.__ModuleLoader__.load({
                   height: payload.height,
                   pageWidth: payload.pageWidth,
                   pageHeight: payload.pageHeight,
+                  // P0-C v2 frame metadata (docs/canvas-viewport.md §5.1): the capture-time top-level
+                  // scroll, needed to composite the canvas view and to prove input freshness.
+                  scrollX: payload.scrollX,
+                  scrollY: payload.scrollY,
                   format: 'jpeg',
                 }, blobFromBase64(payload.image, 'image/jpeg'));
               }
@@ -501,7 +755,7 @@ window.__ModuleLoader__.load({
         } catch { /* runtime not started or transient network error */ }
         pollBusy = false;
         if (!closed && kind !== 'ws') {
-          maybeSeed();
+          scheduleSeed();
           pollTimer = window.setTimeout(pollOnce, FRAME_POLL_MS);
         }
       }
@@ -594,8 +848,10 @@ window.__ModuleLoader__.load({
           }
           window.clearTimeout(socketTimer);
           window.clearTimeout(retryTimer);
+          if (seedTimer) window.clearTimeout(seedTimer);
           socketTimer = 0;
           retryTimer = 0;
+          seedTimer = 0;
           stopPolling();
           if (socket) {
             try { socket.close(); } catch { /* ignore */ }
@@ -603,6 +859,8 @@ window.__ModuleLoader__.load({
           }
         },
         noteState,
+        updateSeedContext,
+        requestSeedRefresh,
         stats() {
           return {
             transport: kind,
@@ -614,6 +872,7 @@ window.__ModuleLoader__.load({
             lastEpoch,
             lastMeta: stats.lastMeta,
             hostDropped: stats.hostDropped,
+            seed: { ...seedStats },
           };
         },
       };
@@ -775,6 +1034,9 @@ window.__ModuleLoader__.load({
       const [posY, setPosY] = React.useState('0');
       const [fit, setFit] = React.useState(true);
       const [zoom, setZoom] = React.useState('100');
+      /** 用户 2026-11-02 要求：尺寸栏的「拖拽」模式（勾选时画面变抓取手势，拖动平移视口）。 */
+      const [panMode, setPanMode] = React.useState(false);
+      const [panDragging, setPanDragging] = React.useState(false);
       const [room, setRoom] = React.useState({ w: 0, h: 0 });
       const [error, setError] = React.useState('');
       const [menu, setMenu] = React.useState(false);
@@ -812,6 +1074,25 @@ window.__ModuleLoader__.load({
       const viewRef = React.useRef(null);
       const viewMetaRef = React.useRef(null);
       const observedRef = React.useRef(null);
+      // P0-C v2: the Host's canvas projection (`ui.canvas`). `canvasInfo` mirrors it into render so
+      // the box background/transform/input fields react to the capability appearing or vanishing.
+      const canvasRef = React.useRef(null);
+      const [canvasInfo, setCanvasInfo] = React.useState(null);
+      // A sustained canvas-barrier mismatch asks the transport for a fresh composed PNG seed; the
+      // attempt key prevents a screenshot loop for one shell state.
+      const seedRefreshTimerRef = React.useRef(0);
+      const seedCheckKeyRef = React.useRef('');
+      const seedAttemptKeyRef = React.useRef('');
+      // A frame's scroll metadata only lands in the ref on load; this bump re-renders the preview
+      // with the new displacement (the displayed frame itself is state-driven already).
+      const [, setFrameVersion] = React.useState(0);
+      // Shared-view presence drives the enabled/disabled X/Y + drag surfaces; a null→view (or the
+      // reverse) transition must re-render even when every displayed number happens to be equal.
+      const [, setViewVersion] = React.useState(0);
+      // The canvas barrier depends on S/view geometry held in refs: bump a render when they move so
+      // `data-utb-canvas-ready` / the composited blank state cannot go stale (input handlers always
+      // recompute, but the visible surface must agree with them).
+      const [, setBarrierVersion] = React.useState(0);
       // Per-field edit state: `null` = follows the Host, a number = the user's own draft value
       // (NaN for an illegible draft). Storing the value lets adoption clear the flag as soon as the
       // Host has caught up, without ever comparing against a stale render closure.
@@ -828,15 +1109,45 @@ window.__ModuleLoader__.load({
       const viewTimerRef = React.useRef(0);
       const viewInFlightRef = React.useRef(false);
       const viewQueuedRef = React.useRef(null);
+      // Coordinate space captured when a patch is queued (canvas vs legacy scroll). This keeps a
+      // patch authored before a Host capability change from being reinterpreted at send time.
+      const viewQueueSpaceRef = React.useRef(null);
+      const viewQueuedSpaceRef = React.useRef(null);
       // Displayed-frame geometry: the mapping and the post-resize input barrier both read it.
       const frameGeomRef = React.useRef(null);
       const pendingGeomRef = React.useRef(null);
       const dragRef = React.useRef({ active: false, pointerId: -1, x: 0, y: 0 });
+      // P0-C「拖拽」模式：手势状态与共享 canvasX/canvasY 的节流写入（同一时刻最多一个 set 在途）。
+      const panDragRef = React.useRef({
+        active: false, pointerId: -1, startClientX: 0, startClientY: 0,
+        startX: 0, startY: 0, geom: null, viewW: 0, viewH: 0,
+      });
+      const panWriteRef = React.useRef({ timer: 0, latest: null });
+      const panModeRef = React.useRef(false);
+      // Pan-mode wheel zoom accumulator (cursor-anchored). Keeps a short burst continuous while the
+      // Host set is still in flight; a fresh window re-anchors from the accepted view/box.
+      const canvasZoomRef = React.useRef({ scale: null, x: null, y: null, at: 0 });
+      // A zoom patch is incremental: one revision conflict replays the same notch from the latest
+      // view instead of silently dropping it.
+      const zoomRetryRef = React.useRef(0);
+      // The last user zoom intent survives state polls that clear the transient accumulator; it is
+      // the source for burst accumulation and for the bounded CAS replay of the same notch.
+      const zoomIntentRef = React.useRef({ scale: null, x: null, y: null, w: null, h: null, at: 0 });
+      // Strict screen-space anchor bookkeeping: the canvas point under the cursor plus the cursor's
+      // screen position, checked once after layout (one bounded C-only correction at most).
+      const zoomAnchorIdRef = React.useRef(0);
+      const zoomAnchorRef = React.useRef({
+        id: 0, active: false, corrected: false, scheduled: false,
+        d: null, screen: null, scale: null, w: null, h: null,
+      });
+      const [zoomAnchor, setZoomAnchor] = React.useState('screen');
+      const [zoomAnchorState, setZoomAnchorState] = React.useState('idle');
       const hoverAtRef = React.useRef(0);
       const fitRef = React.useRef(true);
       const stageWheelRef = React.useRef(null);
       const sizeWheelRef = React.useRef(null);
       const frameImgRef = React.useRef(null);
+      const frameBoxRef = React.useRef(null);
       const sizeBarRef = React.useRef(null);
 
       // Immutable scope/binding for this generation. A `recent` identity is pinned to the Host
@@ -986,6 +1297,12 @@ window.__ModuleLoader__.load({
         }
         // The shared view (when the Host has one) is adopted through the same accepted snapshot.
         acceptView(next);
+        // Publish the post-adoption canvas signature: the frame transport re-seeds a static page
+        // whenever C/S/scale/revision moved (docs/canvas-viewport.md §5.1–§5.2).
+        const transport = transportRef.current;
+        if (transport && typeof transport.updateSeedContext === 'function') {
+          try { transport.updateSeedContext(seedContext()); } catch { /* transport must not break UI */ }
+        }
         return true;
       }
 
@@ -1060,6 +1377,215 @@ window.__ModuleLoader__.load({
         return String(Math.round(number * 100) / 100);
       }
 
+      /* ---- P0-C v2 canvas state (docs/canvas-viewport.md §5.2–§5.3) --------------------------- */
+
+      /** True when the Host exposes the canvas projection AND a shared view to hold it. */
+      function canvasActive() {
+        return Boolean(viewRef.current && canvasRef.current);
+      }
+
+      /** Accepted canvas origin C plus its content box; null when the Host has no canvas support. */
+      function canvasPosition() {
+        const canvas = canvasRef.current;
+        if (!canvas || !viewRef.current) return null;
+        const x = Number(canvas.x);
+        const y = Number(canvas.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+        return {
+          x,
+          y,
+          contentWidth: Number(canvas.contentWidth),
+          contentHeight: Number(canvas.contentHeight),
+        };
+      }
+
+      /** O = C - S (derived, never persisted); S prefers the latest real observation. */
+      function canvasOffset() {
+        const canvas = canvasPosition();
+        if (!canvas) return null;
+        const scroll = observedScroll();
+        return {
+          canvas,
+          scroll,
+          offsetX: canvas.x - scroll.x,
+          offsetY: canvas.y - scroll.y,
+        };
+      }
+
+      /**
+       * Seed signature published to the frame transport: the shell canvas/scroll/scale state a PNG
+       * seed must be composed at. A Host without a canvas keeps the historical plain-page seed.
+       */
+      function seedContext() {
+        const view = viewRef.current;
+        if (!view || !canvasActive()) return { legacy: true };
+        const canvas = canvasPosition();
+        if (!canvas) return { legacy: true };
+        const scroll = observedScroll();
+        return {
+          canvasX: canvas.x,
+          canvasY: canvas.y,
+          scrollX: scroll.x,
+          scrollY: scroll.y,
+          viewRevision: Number(view.revision),
+          scale: Number(view.scale),
+          width: Number(view.width),
+          height: Number(view.height),
+        };
+      }
+
+      /** Stable signature of one seed context (same rounding as the transport key). */
+      function seedContextSignature(context) {
+        if (!context) return '';
+        if (context.legacy) return 'legacy';
+        const round = (value) => (Number.isFinite(Number(value)) ? Math.round(Number(value) * 100) / 100 : null);
+        return [
+          round(context.canvasX), round(context.canvasY),
+          round(context.scrollX), round(context.scrollY),
+          Number.isFinite(Number(context.viewRevision)) ? Number(context.viewRevision) : null,
+          round(context.scale), round(context.width), round(context.height),
+        ].join('|');
+      }
+
+      /**
+       * Schedule one seed refresh check after a sustained barrier mismatch. A real seed refresh is
+       * requested at most once per shell signature; the transport also dedups/fails closed.
+       */
+      function scheduleSeedRefreshCheck() {
+        if (!canvasActive()) return;
+        const context = seedContext();
+        const key = seedContextSignature(context);
+        if (!key || key === seedAttemptKeyRef.current) return;
+        const barrier = canvasBarrier();
+        if (barrier.ready || !['page-size-mismatch', 'scroll-mismatch', 'seed-stale', 'seed-provenance-missing'].includes(barrier.reason)) return;
+        if (seedRefreshTimerRef.current) {
+          if (seedCheckKeyRef.current === key) return;
+          window.clearTimeout(seedRefreshTimerRef.current);
+          seedRefreshTimerRef.current = 0;
+        }
+        seedCheckKeyRef.current = key;
+        seedRefreshTimerRef.current = window.setTimeout(() => {
+          seedRefreshTimerRef.current = 0;
+          if (!canvasActive()) return;
+          const currentContext = seedContext();
+          const currentKey = seedContextSignature(currentContext);
+          if (!currentContext || currentKey !== key || currentKey === seedAttemptKeyRef.current) return;
+          const currentBarrier = canvasBarrier();
+          if (currentBarrier.ready || !['page-size-mismatch', 'scroll-mismatch', 'seed-stale', 'seed-provenance-missing'].includes(currentBarrier.reason)) return;
+          seedAttemptKeyRef.current = currentKey;
+          const transport = transportRef.current;
+          if (transport && typeof transport.requestSeedRefresh === 'function') {
+            try { transport.requestSeedRefresh(currentContext); } catch { /* transport must not break UI */ }
+          }
+        }, SEED_STALE_MS);
+      }
+
+      /** Adopt `ui.canvas` (or its absence) without re-rendering on every identical poll. */
+      function adoptCanvas(canvas) {
+        const next = canvas && typeof canvas === 'object' ? canvas : null;
+        const previous = canvasRef.current;
+        const changed = Boolean(previous) !== Boolean(next) || (previous && next
+          && ['x', 'y', 'offsetX', 'offsetY', 'contentWidth', 'contentHeight']
+            .some((key) => Number(previous[key]) !== Number(next[key])));
+        canvasRef.current = next;
+        if (changed) setCanvasInfo(next);
+        // An old Host (or a shared view that lost its canvas) must not leave a grab hand behind.
+        if (!next && panModeRef.current) {
+          panModeRef.current = false;
+          setPanMode(false);
+          cancelPanDrag();
+          flushPanWrite();
+        }
+      }
+
+      /**
+       * Fail-closed geometry/scroll barrier for canvas input (docs/canvas-viewport.md §5.3).
+       *
+       * O=0 keeps the old (best-effort, ≤250ms) barrier only. When O≠0 the displayed frame must
+       * prove the current page scroll: `frame.scroll` within ±1 CSS px of S and the capture page
+       * size matching the accepted viewport. Missing metadata is *not* satisfied — and there is
+       * deliberately no timeout that would let a stale frame through.
+       */
+      function canvasBarrier() {
+        const info = canvasOffset();
+        if (!info) return { ready: true, reason: 'no-canvas' };
+        const geom = frameGeomRef.current;
+        const view = viewRef.current;
+        // A PNG seed is already composited at its capture C; it is only usable while the live
+        // C/S/revision/scale still agree (docs/canvas-viewport.md §5.1–§5.2). A stale or
+        // provenance-less seed is fail-closed until the transport refreshes it.
+        if (geom && geom.seed) {
+          const near = (a, b, tolerance) => Number.isFinite(Number(a)) && Number.isFinite(Number(b)) && Math.abs(Number(a) - Number(b)) <= tolerance;
+          const facts = [geom.seedCanvasX, geom.seedCanvasY, geom.seedScrollX, geom.seedScrollY,
+            geom.seedViewRevision, geom.seedScale, geom.seedWidth, geom.seedHeight];
+          if (!view || geom.seedComposite !== true || facts.some((value) => value === null)) {
+            return { ready: false, reason: 'seed-provenance-missing', info };
+          }
+          const aligned = near(geom.seedCanvasX, info.canvas.x, 1)
+            && near(geom.seedCanvasY, info.canvas.y, 1)
+            && near(geom.seedScrollX, info.scroll.x, 1)
+            && near(geom.seedScrollY, info.scroll.y, 1)
+            && Number(geom.seedViewRevision) === Number(view.revision)
+            && near(geom.seedScale, view.scale, 0.001)
+            && near(geom.seedWidth, view.width, 1)
+            && near(geom.seedHeight, view.height, 1);
+          return aligned
+            ? { ready: true, reason: 'seed-aligned', info }
+            : { ready: false, reason: 'seed-stale', info };
+        }
+        const isZero = Math.abs(info.offsetX) < 0.5 && Math.abs(info.offsetY) < 0.5;
+        if (isZero) return { ready: true, reason: 'o-zero', info };
+        if (!geom) return { ready: false, reason: 'no-frame', info };
+        const scrollX = finiteOrNull(geom.scrollX);
+        const scrollY = finiteOrNull(geom.scrollY);
+        if (scrollX === null || scrollY === null) {
+          return { ready: false, reason: 'frame-scroll-missing', info };
+        }
+        const size = acceptedViewSize();
+        const pageWidth = Number(geom.pageWidth);
+        const pageHeight = Number(geom.pageHeight);
+        if (!(pageWidth > 0) || !(pageHeight > 0)
+          || Math.abs(pageWidth - size.w) > 1 || Math.abs(pageHeight - size.h) > 1) {
+          return { ready: false, reason: 'page-size-mismatch', info, pageWidth, pageHeight, size };
+        }
+        if (Math.abs(scrollX - info.scroll.x) > 1 || Math.abs(scrollY - info.scroll.y) > 1) {
+          return { ready: false, reason: 'scroll-mismatch', info, frameScroll: { x: scrollX, y: scrollY } };
+        }
+        return { ready: true, reason: 'aligned', info, frameScroll: { x: scrollX, y: scrollY } };
+      }
+
+      /** Dispatchable page point p = q + O, or `blank` when the canvas point is outside content. */
+      function mapEventPoint(event, geom) {
+        const size = acceptedViewSize();
+        const u = (event.clientX - geom.left) / geom.width;
+        const v = (event.clientY - geom.top) / geom.height;
+        const q = {
+          x: clampNumber(u * size.w, 0, Math.max(0, size.w - POINTER_EPSILON)),
+          y: clampNumber(v * size.h, 0, Math.max(0, size.h - POINTER_EPSILON)),
+        };
+        const inside = u >= 0 && u < 1 && v >= 0 && v < 1;
+        const info = canvasOffset();
+        if (!info) return { inside, blank: false, q, x: q.x, y: q.y };
+        const offsetX = info.offsetX;
+        const offsetY = info.offsetY;
+        // O=0 is the documented old-behaviour regression point (docs/canvas-viewport.md §1.2): the
+        // frame covers the whole box (there is no composited white to protect) and input keeps the
+        // legacy mapping. Only a real residual O creates a blank band that must be zero-dispatched.
+        if (Math.abs(offsetX) < 0.5 && Math.abs(offsetY) < 0.5) {
+          return { inside, blank: false, q, x: q.x, y: q.y };
+        }
+        const d = { x: q.x + info.canvas.x, y: q.y + info.canvas.y };
+        const p = { x: q.x + offsetX, y: q.y + offsetY };
+        const contentWidth = info.canvas.contentWidth;
+        const contentHeight = info.canvas.contentHeight;
+        // No provable content box ⇒ fail closed (never assume "everything is content").
+        const inContent = Number.isFinite(contentWidth) && Number.isFinite(contentHeight)
+          && contentWidth > 0 && contentHeight > 0
+          && d.x >= 0 && d.x < contentWidth && d.y >= 0 && d.y < contentHeight;
+        const inViewport = p.x >= 0 && p.x < size.w && p.y >= 0 && p.y < size.h;
+        return { inside, blank: !(inContent && inViewport), q, d, x: p.x, y: p.y };
+      }
+
       /** Local fit ratio (contract §4.3): fit is display-only and clamped to the manual range. */
       function fitScaleValue() {
         const size = acceptedViewSize();
@@ -1080,10 +1606,11 @@ window.__ModuleLoader__.load({
         if (!view) return;
         const dirty = viewDirtyRef.current;
         const scroll = observedScroll();
+        const canvas = canvasPosition();
         if (dirty.width === null) setWidth(String(Number(view.width) || 200));
         if (dirty.height === null) setHeight(String(Number(view.height) || 200));
-        if (dirty.x === null) setPosX(formatScroll(scroll.x));
-        if (dirty.y === null) setPosY(formatScroll(scroll.y));
+        if (dirty.x === null) setPosX(formatScroll(canvas ? canvas.x : scroll.x));
+        if (dirty.y === null) setPosY(formatScroll(canvas ? canvas.y : scroll.y));
         if (dirty.scale === null && !fitRef.current) {
           setZoom(String(Math.round(clampNumber(Number(view.scale) * 100, VIEW_LIMITS.scalePercent[0], VIEW_LIMITS.scalePercent[1]))));
         }
@@ -1114,9 +1641,36 @@ window.__ModuleLoader__.load({
       function adoptView(view, viewMeta, observed) {
         if (!view || typeof view !== 'object') return;
         const previous = viewRef.current;
+        const previousObserved = observedRef.current;
         viewRef.current = view;
         if (viewMeta !== undefined) viewMetaRef.current = viewMeta || null;
         if (observed !== undefined) observedRef.current = observed || null;
+        // The barrier is computed from refs (S + view geometry); re-render when either moved so the
+        // painted surface state cannot disagree with what the pointer/wheel handlers would enforce.
+        const zoomIntent = zoomIntentRef.current;
+        if (zoomIntent.scale !== null) {
+          const intentSettled = Math.abs(Number(view.scale) - Number(zoomIntent.scale)) <= 0.0011
+            && (zoomIntent.x === null || Math.abs(Number(view.canvasX) - Number(zoomIntent.x)) <= 1)
+            && (zoomIntent.y === null || Math.abs(Number(view.canvasY) - Number(zoomIntent.y)) <= 1)
+            && (zoomIntent.w === null || Math.abs(Number(view.width) - Number(zoomIntent.w)) <= 0.5)
+            && (zoomIntent.h === null || Math.abs(Number(view.height) - Number(zoomIntent.h)) <= 0.5);
+          if (intentSettled) clearZoomIntent();
+        }
+        const zoomPending = canvasZoomRef.current;
+        if (zoomPending.scale !== null) {
+          const zoomMatches = Math.abs(Number(view.scale) - Number(zoomPending.scale)) <= 0.0011
+            && (zoomPending.x === null || Math.abs(Number(view.canvasX) - Number(zoomPending.x)) <= 1)
+            && (zoomPending.y === null || Math.abs(Number(view.canvasY) - Number(zoomPending.y)) <= 1)
+            && (zoomPending.w === null || Math.abs(Number(view.width) - Number(zoomPending.w)) <= 0.5)
+            && (zoomPending.h === null || Math.abs(Number(view.height) - Number(zoomPending.h)) <= 0.5);
+          // Keep the accumulator only for our own zoom ACK/echo; any other view change re-anchors.
+          if (!zoomMatches) canvasZoomRef.current = { scale: null, x: null, y: null, at: 0 };
+        }
+        const refMoved = (a, b, keys) => !a || !b || keys.some((key) => Number(a[key]) !== Number(b[key]));
+        const viewMoved = refMoved(previous, view, ['x', 'y', 'width', 'height']);
+        const observedMoved = observed !== undefined && refMoved(previousObserved, observedRef.current, ['x', 'y', 'width', 'height', 'contentWidth', 'contentHeight']);
+        const revisionMoved = !previous || Number(previous.revision) !== Number(view.revision);
+        if (viewMoved || observedMoved || revisionMoved) setBarrierVersion((value) => value + 1);
         const source = String(view.source || '');
         // Only a *content change* by someone else cancels the local fit; an unchanged poll must not
         // (otherwise a user could never keep 适应窗口 checked while state is polled every 500ms).
@@ -1127,11 +1681,25 @@ window.__ModuleLoader__.load({
           fitRef.current = false;
           setFit(false);
         }
+        if (source === 'agent' && revisionChanged) {
+          clearZoomIntent();
+          resetZoomAnchor();
+        }
+        // A view that moved away from the active screen anchor without an in-flight zoom intent
+        // supersedes that notch (script/size/scroll change): never apply its stale correction.
+        const anchorNow = zoomAnchorRef.current;
+        if (anchorNow.active && !activeZoomIntent() && Number.isFinite(Number(anchorNow.scale))
+          && Math.abs(Number(view.scale) - Number(anchorNow.scale)) > 0.0011) {
+          anchorNow.active = false;
+          setZoomAnchorState('idle');
+        }
         if (previous && (Number(previous.width) !== Number(view.width) || Number(previous.height) !== Number(view.height))) {
           pendingGeomRef.current = { since: Date.now() };
         }
         clearCaughtUpDrafts(view);
         syncViewDrafts();
+        scheduleSeedRefreshCheck();
+        scheduleZoomAnchorCheck();
       }
 
       /** Ingest the view part of one accepted Host snapshot (first binding included). */
@@ -1142,15 +1710,21 @@ window.__ModuleLoader__.load({
         // last accepted view (and the legacy fallback) untouched.
         if (!ui) return;
         const view = viewOf(state);
+        const hadView = Boolean(viewRef.current);
         if (!view) {
-          // Old Host (no shared view): keep the legacy local width/height path untouched.
+          // Old Host (no shared view): keep the legacy local width/height path untouched, and
+          // disable the canvas/drag surfaces (they need a shared view to write back to).
           viewRef.current = null;
           observedRef.current = null;
+          adoptCanvas(null);
+          if (hadView) setViewVersion((value) => value + 1);
           return;
         }
+        adoptCanvas(canvasOf(state));
         maybeInitialViewPush(view);
         const companions = viewCompanionsOf(state);
         adoptView(view, companions.viewMeta, companions.observed);
+        if (!hadView) setViewVersion((value) => value + 1);
       }
 
       /**
@@ -1172,12 +1746,15 @@ window.__ModuleLoader__.load({
         queueViewPatch({ width: 393, height: 852, scale: 1 });
       }
 
-      /** Merge one field patch into the 120ms trailing debounce (at most one request in flight). */
-      function queueViewPatch(patch) {
+      /** Merge one field patch into the trailing debounce (at most one request in flight). */
+      function queueViewPatch(patch, delayMs) {
         if (!patch || typeof patch !== 'object') return;
         viewQueueRef.current = Object.assign({}, viewQueueRef.current || {}, patch);
+        viewQueueSpaceRef.current = canvasActive() ? 'canvas' : 'scroll';
         if (viewTimerRef.current) window.clearTimeout(viewTimerRef.current);
-        viewTimerRef.current = window.setTimeout(() => { flushViewPatch(); }, VIEW_DEBOUNCE_MS);
+        // 输入框编辑沿用 120ms 合并；拖拽写入以 0ms 立即入队（面板已按 PAN_WRITE_THROTTLE_MS 节流）。
+        const wait = Number.isFinite(Number(delayMs)) ? Math.max(0, Number(delayMs)) : VIEW_DEBOUNCE_MS;
+        viewTimerRef.current = window.setTimeout(() => { flushViewPatch(); }, wait);
       }
 
       /**
@@ -1188,9 +1765,15 @@ window.__ModuleLoader__.load({
         viewTimerRef.current = 0;
         const patch = viewQueueRef.current;
         viewQueueRef.current = null;
+        const queuedSpace = viewQueueSpaceRef.current;
+        viewQueueSpaceRef.current = null;
         if (!patch) return;
+        const isZoomPatch = patch.scale !== undefined && (patch.x !== undefined || patch.y !== undefined);
+        if (isZoomPatch) zoomDebug('flush', { patch, inFlight: viewInFlightRef.current });
         if (viewInFlightRef.current) {
           viewQueuedRef.current = Object.assign({}, viewQueuedRef.current || {}, patch);
+          viewQueuedSpaceRef.current = queuedSpace;
+          if (isZoomPatch) zoomDebug('queue-while-inflight', { patch });
           return;
         }
         if (!readyRef.current) return;
@@ -1201,7 +1784,15 @@ window.__ModuleLoader__.load({
         if (accepted) {
           body.version = 1;
           if (Number.isFinite(Number(accepted.revision))) body.expectedRevision = Number(accepted.revision);
-          Object.assign(body, patch);
+          // The draft/queue keeps the historical field names (`x`/`y`) so wheel/drag/commit share
+          // one path; the wire field follows the coordinate space captured when the patch was
+          // queued. A canvas Host gets `canvasX/canvasY`, an old Host keeps document scroll `x/y`.
+          const canvasMode = queuedSpace === 'canvas';
+          for (const [field, value] of Object.entries(patch)) {
+            if (canvasMode && field === 'x') body.canvasX = value;
+            else if (canvasMode && field === 'y') body.canvasY = value;
+            else body[field] = value;
+          }
         } else {
           body.width = Number.isFinite(Number(patch.width)) ? Number(patch.width) : pageSize.w;
           body.height = Number.isFinite(Number(patch.height)) ? Number(patch.height) : pageSize.h;
@@ -1211,6 +1802,9 @@ window.__ModuleLoader__.load({
         viewInFlightRef.current = true;
         try {
           const payload = await callHost('viewport', body, { scope: scopeNow, signal });
+          // The response carries the canvas projection too: adopt it before the view it describes so
+          // the X/Y drafts and the composited displacement never lag a settled canvas set.
+          if (payload && (payload.state || payload.ui)) adoptCanvas(canvasOf(payload));
           if (payload && payload.view) {
             selfViewRevisionRef.current = Number(payload.view.revision);
             adoptView(payload.view, payload.viewMeta, payload.observed);
@@ -1221,14 +1815,25 @@ window.__ModuleLoader__.load({
           }
           clearSettledWheelDrafts(submitted);
           syncViewDrafts();
+          const intent = zoomIntentRef.current;
+          if (isZoomPatch) zoomDebug('success', { patch, viewScale: payload && payload.view ? payload.view.scale : null, intentScale: intent.scale });
+          if (isZoomPatch && intent.scale !== null && Math.abs(Number(intent.scale) - Number(patch.scale)) <= 0.0011) {
+            clearZoomIntent('zoom-success');
+          }
+          zoomRetryRef.current = 0;
         } catch (error) {
           if (error && error.name === 'AbortError') return;
+          const zoomTarget = activeZoomIntent();
           const code = error && error.code ? String(error.code) : '';
           // A revision conflict keeps a *typed* draft (the user must resubmit it explicitly) but a
           // rejected wheel notch is not a draft: showing a value the Host never accepted would lie
           // about the shared view, so that field snaps back to the accepted truth.
-          const details = error && error.payload && error.payload.details ? error.payload.details : null;
-          const conflictView = (details && details.view) || null;
+          const payload = error && error.payload ? error.payload : null;
+          const details = payload && payload.details && typeof payload.details === 'object' ? payload.details : null;
+          const conflictView = (details && details.view)
+            || (payload && payload.view && typeof payload.view === 'object' ? payload.view : null)
+            || (payload && payload.state && payload.state.ui && payload.state.ui.view ? payload.state.ui.view : null)
+            || null;
           if (conflictView) {
             selfViewRevisionRef.current = Number(conflictView.revision);
             adoptView(conflictView, undefined, undefined);
@@ -1236,14 +1841,102 @@ window.__ModuleLoader__.load({
           clearSettledWheelDrafts(submitted);
           if (code) logViewReject(code);
           syncViewDrafts();
+          // Zoom is an incremental interaction: a CAS conflict must replay THIS notch from the
+          // latest accepted view (bounded to one retry) instead of losing it. Absolute x/y/scale
+          // targets are queued again; the retry uses the freshly adopted revision.
+          if (isZoomPatch) zoomDebug('catch', { code, isZoomPatch, targetScale: zoomTarget ? zoomTarget.scale : null, retry: zoomRetryRef.current, patch });
+          if (code === 'VIEWPORT_CONFLICT' && isZoomPatch && zoomTarget && zoomRetryRef.current < 1) {
+            zoomRetryRef.current += 1;
+            zoomDebug('retry', { targetScale: zoomTarget.scale, targetX: zoomTarget.x, targetY: zoomTarget.y });
+            const restored = { scale: zoomTarget.scale, x: zoomTarget.x, y: zoomTarget.y, w: zoomTarget.w, h: zoomTarget.h, at: Date.now() };
+            canvasZoomRef.current = restored;
+            zoomIntentRef.current = restored;
+            const retryPercent = Math.round(Number(zoomTarget.scale) * 100);
+            setZoom(String(retryPercent));
+            noteViewEdit('scale', retryPercent);
+            viewWheelRef.current.scale = viewEditRef.current.scale;
+            queueViewPatch({ scale: zoomTarget.scale, x: zoomTarget.x, y: zoomTarget.y }, 0);
+          } else {
+            const intent = zoomIntentRef.current;
+            if (!isZoomPatch || intent.scale === null || Math.abs(Number(intent.scale) - Number(patch.scale)) <= 0.0011) {
+              clearZoomIntent('zoom-catch');
+            }
+          }
         } finally {
           viewInFlightRef.current = false;
           if (viewQueuedRef.current) {
             viewQueueRef.current = Object.assign({}, viewQueueRef.current || {}, viewQueuedRef.current);
+            viewQueueSpaceRef.current = viewQueuedSpaceRef.current;
             viewQueuedRef.current = null;
+            viewQueuedSpaceRef.current = null;
             flushViewPatch();
           }
         }
+      }
+
+      /**
+       * 拖拽视口（用户 2026-11-02 要求，P0-C v2 语义）：勾选「拖拽」后，按住画面拖动按“内容跟手”
+       * 方向平移**画布原点 C**（向右/下拖 → canvasX/canvasY 减小），可进入负值；最终值仍由 Host
+       * 实测读回决定（允许越出内容区，不再 clamp 到滚动范围）。写入与输入框共用同一条 v1/CAS
+       * 请求路径；本面板额外按 PAN_WRITE_THROTTLE_MS 合并移动事件，同一次 drag 内最多一个 set
+       * 在途，避免洪泛队列。关闭拖拽后不向页面补发任何鼠标事件，用户可继续正常点击/拖拽页面。
+       */
+      function panWriteLatest(latest) {
+        if (!latest || !viewRef.current || !canvasActive()) return;
+        queueViewPatch({ x: roundCanvas(latest.x), y: roundCanvas(latest.y) }, 0);
+      }
+
+      function requestPanWrite(x, y) {
+        const state = panWriteRef.current;
+        state.latest = { x, y };
+        if (state.timer) return;
+        state.timer = window.setTimeout(() => {
+          state.timer = 0;
+          const latest = state.latest;
+          state.latest = null;
+          panWriteLatest(latest);
+        }, PAN_WRITE_THROTTLE_MS);
+      }
+
+      function flushPanWrite() {
+        const state = panWriteRef.current;
+        if (state.timer) {
+          window.clearTimeout(state.timer);
+          state.timer = 0;
+        }
+        const latest = state.latest;
+        state.latest = null;
+        panWriteLatest(latest);
+      }
+
+      function cancelPanDrag() {
+        const pan = panDragRef.current;
+        if (!pan.active) return;
+        panDragRef.current = {
+          active: false, pointerId: -1, startClientX: 0, startClientY: 0,
+          startX: 0, startY: 0, geom: null, viewW: 0, viewH: 0,
+        };
+        setPanDragging(false);
+      }
+
+      function changePanMode(next) {
+        const on = Boolean(next);
+        if (on && !canvasActive()) return; // old Host / no canvas: drag stays disabled
+        panModeRef.current = on;
+        setPanMode(on);
+        if (!on) {
+          cancelPanDrag();
+          flushPanWrite();
+          clearZoomIntent();
+          resetZoomAnchor();
+        }
+      }
+
+      /** Closing the size bar must also leave drag mode, otherwise the pointer stays a grab hand. */
+      function toggleSizing() {
+        const next = !sizing;
+        setSizing(next);
+        if (!next) changePanMode(false);
       }
 
       /**
@@ -1279,9 +1972,9 @@ window.__ModuleLoader__.load({
         if (field === 'scale') return Number(view.scale) * 100;
         if (field === 'width') return Number(view.width);
         if (field === 'height') return Number(view.height);
-        const scroll = observedScroll();
-        if (field === 'x') return scroll.x;
-        if (field === 'y') return scroll.y;
+        const canvas = canvasPosition();
+        if (field === 'x') return canvas ? canvas.x : observedScroll().x;
+        if (field === 'y') return canvas ? canvas.y : observedScroll().y;
         return null;
       }
 
@@ -1297,7 +1990,8 @@ window.__ModuleLoader__.load({
           return number;
         }
         if (field === 'x' || field === 'y') {
-          const range = VIEW_LIMITS.scroll;
+          // Canvas coordinates are signed; the legacy fallback keeps the non-negative scroll range.
+          const range = canvasActive() ? VIEW_LIMITS.canvas : VIEW_LIMITS.scroll;
           if (number < range[0] || number > range[1]) return null;
           return Math.round(number * 100) / 100;
         }
@@ -1320,6 +2014,8 @@ window.__ModuleLoader__.load({
         // An old Host (no shared view) has no scale/x/y field: its ratio stays a local preference,
         // so only width/height are ever written through the legacy `{width,height}` body.
         if (!viewRef.current && field !== 'width' && field !== 'height') return;
+        // A size-bar scale edit supersedes a pan-wheel zoom accumulator.
+        if (field === 'scale') { clearZoomIntent(); resetZoomAnchor(); }
         if (field === 'width' || field === 'height') pendingGeomRef.current = { since: Date.now() };
         queueViewPatch(patchForField(field, numeric));
       }
@@ -1423,7 +2119,7 @@ window.__ModuleLoader__.load({
         const range = field === 'scale' ? VIEW_LIMITS.scalePercent
           : field === 'width' ? VIEW_LIMITS.width
             : field === 'height' ? VIEW_LIMITS.height
-              : VIEW_LIMITS.scroll;
+              : (canvasActive() ? VIEW_LIMITS.canvas : VIEW_LIMITS.scroll);
         const next = clampNumber(base + direction * step, range[0], range[1]);
         const rounded = field === 'scale' ? Math.round(next) : Math.round(next * 100) / 100;
         if (field === 'x') setPosX(String(rounded));
@@ -1460,11 +2156,16 @@ window.__ModuleLoader__.load({
         stepViewField(field, event.deltaY < 0 ? 1 : -1, event);
       }
 
-      /** Current painted rect of the displayed frame (contract §5.1); null disables input. */
+      /**
+       * Current painted rect of the displayed frame (contract §5.1); null disables input.
+       * The measurement uses the *box* (never the transformed <img>): under canvas compositing the
+       * image is translated inside the clipping box, and pointer mapping stays in viewport space.
+       */
       function frameGeometry() {
         const img = frameImgRef.current;
-        if (!img) return null;
-        return paintedRect(img.getBoundingClientRect(), img.naturalWidth, img.naturalHeight);
+        const box = frameBoxRef.current;
+        if (!img || !box) return null;
+        return paintedRect(box.getBoundingClientRect(), img.naturalWidth, img.naturalHeight);
       }
 
       /** Is the displayed frame provably the accepted viewport? */
@@ -1499,28 +2200,56 @@ window.__ModuleLoader__.load({
       }
 
       /** Event → target page CSS point in the accepted viewport (half-open painted rect). */
-      function mapEventPoint(event, geom) {
-        const size = acceptedViewSize();
-        const u = (event.clientX - geom.left) / geom.width;
-        const v = (event.clientY - geom.top) / geom.height;
+      function frameInputReady() {
+        return readyRef.current && !writesPausedRef.current && inputGeomReady() && canvasBarrier().ready;
+      }
+
+      /** 拖拽偏移（宿主 CSS px）→ 画布原点 C：内容跟手（右/下拖 → C 减小，可进入负值）。 */
+      function panViewPoint(event, pan) {
+        const geom = pan.geom;
+        if (!geom || !(geom.width > 0) || !(geom.height > 0)) return { x: pan.startX, y: pan.startY };
+        const dx = event.clientX - pan.startClientX;
+        const dy = event.clientY - pan.startClientY;
         return {
-          inside: u >= 0 && u < 1 && v >= 0 && v < 1,
-          x: clampNumber(u * size.w, 0, Math.max(0, size.w - POINTER_EPSILON)),
-          y: clampNumber(v * size.h, 0, Math.max(0, size.h - POINTER_EPSILON)),
+          x: clampNumber(pan.startX - (dx / geom.width) * pan.viewW, VIEW_LIMITS.canvas[0], VIEW_LIMITS.canvas[1]),
+          y: clampNumber(pan.startY - (dy / geom.height) * pan.viewH, VIEW_LIMITS.canvas[0], VIEW_LIMITS.canvas[1]),
         };
       }
 
-      function frameInputReady() {
-        return readyRef.current && !writesPausedRef.current && inputGeomReady();
-      }
-
       function onFramePointerDown(event) {
-        if (!frameInputReady()) return;
         if (event.button !== 0) return;
+        if (panMode) {
+          // Pan is the recovery path: it must start even when page input is fail-closed (stale
+          // seed/frame), otherwise a viewport panned fully off-content would be a dead end.
+          if (!readyRef.current || writesPausedRef.current || !canvasActive()) return;
+          const geom = frameGeometry();
+          if (!geom) return;
+          const point = mapEventPoint(event, geom);
+          if (!point.inside) return; // letterbox: no pan start there either
+          event.preventDefault();
+          const canvas = canvasPosition();
+          if (!canvas) return; // no canvas Host: drag is disabled, never fall back to scroll panning
+          panDragRef.current = {
+            active: true,
+            pointerId: event.pointerId,
+            startClientX: event.clientX,
+            startClientY: event.clientY,
+            startX: canvas.x,
+            startY: canvas.y,
+            geom,
+            viewW: Number(viewRef.current.width) || pageSize.w,
+            viewH: Number(viewRef.current.height) || pageSize.h,
+          };
+          setPanDragging(true);
+          try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+          return; // 拖拽模式：不向页面派发 mousePressed
+        }
+        if (!frameInputReady()) return;
         const geom = frameGeometry();
         if (!geom) return;
         const point = mapEventPoint(event, geom);
         if (!point.inside) return; // letterbox: zero dispatch
+        if (point.blank) return; // canvas blank / outside content: zero dispatch
         event.preventDefault();
         event.currentTarget.focus();
         dragRef.current = { active: true, pointerId: event.pointerId, x: point.x, y: point.y };
@@ -1530,13 +2259,23 @@ window.__ModuleLoader__.load({
 
       function onFramePointerMove(event) {
         if (!readyRef.current || writesPausedRef.current) return;
+        const pan = panDragRef.current;
+        if (pan.active && pan.pointerId === event.pointerId) {
+          event.preventDefault();
+          const next = panViewPoint(event, pan);
+          requestPanWrite(next.x, next.y);
+          return;
+        }
+        if (panMode) return; // 拖拽模式：不向页面派发 hover/拖拽移动
+        // Fail closed for page input while O≠0 cannot be proven: no stale-coordinate move/release.
+        if (!inputGeomReady() || !canvasBarrier().ready) return;
         const drag = dragRef.current;
         const dragging = drag.active && drag.pointerId === event.pointerId;
-        if (!dragging && !inputGeomReady()) return;
         const geom = frameGeometry();
         if (!geom) return;
         const point = mapEventPoint(event, geom);
-        if (!dragging && !point.inside) return;
+        if (!point.inside) return;
+        if (point.blank) return; // blank never dispatches (a drag into blank keeps its button state)
         const now = Date.now();
         if (now - hoverAtRef.current < 60) return;
         hoverAtRef.current = now;
@@ -1546,29 +2285,288 @@ window.__ModuleLoader__.load({
 
       /** The release is dispatched even when the pointer left the image (no stuck button). */
       function onFramePointerUp(event) {
+        const pan = panDragRef.current;
+        if (pan.active && pan.pointerId === event.pointerId) {
+          const moved = Math.abs(event.clientX - pan.startClientX) > 0.5 || Math.abs(event.clientY - pan.startClientY) > 0.5;
+          if (moved) {
+            const next = panViewPoint(event, pan);
+            requestPanWrite(next.x, next.y);
+          }
+          flushPanWrite();
+          try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
+          cancelPanDrag();
+          return;
+        }
         const drag = dragRef.current;
         if (!drag.active || drag.pointerId !== event.pointerId) return;
         dragRef.current = { active: false, pointerId: -1, x: drag.x, y: drag.y };
         const geom = frameGeometry();
         const point = geom ? mapEventPoint(event, geom) : null;
-        if (point) sendEvents([{ kind: 'mouse', type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 }]);
+        if (point) {
+          const size = acceptedViewSize();
+          sendEvents([{
+            kind: 'mouse',
+            type: 'mouseReleased',
+            x: clampNumber(point.x, 0, Math.max(0, size.w - POINTER_EPSILON)),
+            y: clampNumber(point.y, 0, Math.max(0, size.h - POINTER_EPSILON)),
+            button: 'left',
+            buttons: 0,
+            clickCount: 1,
+          }]);
+        }
         try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
       }
 
       /** Best-effort release for pointercancel / lost capture / blur while dragging. */
       function releaseFrameDrag() {
+        if (panDragRef.current.active) {
+          flushPanWrite();
+          cancelPanDrag();
+        }
         const drag = dragRef.current;
         if (!drag.active) return;
         dragRef.current = { active: false, pointerId: -1, x: drag.x, y: drag.y };
         sendEvents([{ kind: 'mouse', type: 'mouseReleased', x: drag.x, y: drag.y, button: 'left', buttons: 0, clickCount: 1 }]);
       }
 
+      /** Active (recent) pan-wheel zoom intent; null once the notch settled or expired. */
+      function activeZoomIntent() {
+        const intent = zoomIntentRef.current;
+        return intent && intent.scale !== null && Date.now() - intent.at < 5000 ? intent : null;
+      }
+
+      function zoomDebug(event, data) {
+        try {
+          const list = window.__utbZoomDebug || (window.__utbZoomDebug = []);
+          list.push(Object.assign({ event, t: Date.now() }, data || {}));
+          if (list.length > 80) list.shift();
+        } catch { /* diagnostics must never break the panel */ }
+      }
+
+      function clearZoomIntent(reason) {
+        if (zoomIntentRef.current.scale !== null) zoomDebug('clear-intent', { reason: reason || 'unspecified', scale: zoomIntentRef.current.scale });
+        zoomIntentRef.current = { scale: null, x: null, y: null, w: null, h: null, at: 0 };
+        canvasZoomRef.current = { scale: null, x: null, y: null, at: 0 };
+      }
+
+      function resetZoomAnchor() {
+        zoomAnchorRef.current = {
+          id: zoomAnchorRef.current.id, active: false, corrected: false, scheduled: false,
+          d: null, screen: null, scale: null, w: null, h: null,
+        };
+        setZoomAnchor('screen');
+        setZoomAnchorState('idle');
+      }
+
+      /**
+       * One post-layout check of the strict screen anchor: the canvas point under the cursor must
+       * stay at the same screen point. Drift 1–20 px gets one bounded C-only correction (same scale,
+       * latest revision, normal CAS/conflict retry); >20 px or missing geometry degrades to the
+       * box-relative anchor and is marked `data-utb-canvas-zoom-anchor="box"`.
+       */
+      function scheduleZoomAnchorCheck() {
+        const anchor = zoomAnchorRef.current;
+        const view = viewRef.current;
+        if (!anchor || !anchor.active || anchor.scheduled || !anchor.d || !view) return;
+        if (!Number.isFinite(Number(anchor.scale)) || Math.abs(Number(view.scale) - Number(anchor.scale)) > 0.0011) return;
+        anchor.scheduled = true;
+        const anchorId = anchor.id;
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => checkZoomAnchor(anchorId)));
+      }
+
+      function checkZoomAnchor(anchorId) {
+        const anchor = zoomAnchorRef.current;
+        if (!anchor || anchor.id !== anchorId) return;
+        anchor.scheduled = false;
+        if (!anchor.active) return;
+        const view = viewRef.current;
+        const box = frameBoxRef.current;
+        if (!view || !box || !anchor.d || !(Number(anchor.w) > 0)) {
+          anchor.active = false;
+          setZoomAnchor('box');
+          setZoomAnchorState('box');
+          return;
+        }
+        const rect = box.getBoundingClientRect();
+        const scaleActual = rect.width / Number(anchor.w);
+        if (!(rect.width > 0) || !(scaleActual > 0)) {
+          anchor.active = false;
+          setZoomAnchor('box');
+          setZoomAnchorState('box');
+          return;
+        }
+        const onScreen = {
+          x: rect.left + (anchor.d.x - Number(view.canvasX)) * scaleActual,
+          y: rect.top + (anchor.d.y - Number(view.canvasY)) * scaleActual,
+        };
+        const driftX = onScreen.x - anchor.screen.x;
+        const driftY = onScreen.y - anchor.screen.y;
+        const drift = Math.max(Math.abs(driftX), Math.abs(driftY));
+        zoomDebug('anchor-check', { drift, driftX, driftY, corrected: anchor.corrected, rect: { left: rect.left, top: rect.top, width: rect.width } });
+        if (drift <= 1) {
+          anchor.active = false;
+          setZoomAnchorState('settled');
+          return;
+        }
+        if (drift > 20 || anchor.corrected) {
+          anchor.active = false;
+          setZoomAnchor('box');
+          setZoomAnchorState('box');
+          return;
+        }
+        anchor.corrected = true;
+        const cx = clampNumber(anchor.d.x - (anchor.screen.x - rect.left) / scaleActual, VIEW_LIMITS.canvas[0], VIEW_LIMITS.canvas[1]);
+        const cy = clampNumber(anchor.d.y - (anchor.screen.y - rect.top) / scaleActual, VIEW_LIMITS.canvas[0], VIEW_LIMITS.canvas[1]);
+        const target = {
+          scale: Number(anchor.scale), x: roundCanvas(cx), y: roundCanvas(cy),
+          w: anchor.w, h: anchor.h, at: Date.now(),
+        };
+        canvasZoomRef.current = target;
+        zoomIntentRef.current = target;
+        setZoomAnchorState('correcting');
+        zoomDebug('anchor-correct', { drift, targetScale: target.scale, targetX: target.x, targetY: target.y });
+        queueViewPatch({ scale: target.scale, x: target.x, y: target.y }, 0);
+      }
+
+      /**
+       * Pan-mode wheel zoom (user request 2026-11-02): change the shared canvas scale around the
+       * cursor. Steps reuse the size-bar scale wheel (5/10/1 %, Alt > Shift, 0.1–2.0) and publish
+       * `scale + canvasX + canvasY` in one v1/CAS patch (never x/y). If fit is checked it is
+       * unlocked through the manual-scale path. Boundary hits are consumed but send nothing.
+       */
+      function zoomCanvasByWheel(event) {
+        // Scale zoom is not a page-input write: do not let a transient main-view/geometry pause
+        // swallow the notch (that pause gates pointer/scroll dispatch, not the shared view).
+        if (!readyRef.current || !canvasActive()) { zoomDebug('skip', { reason: 'not-ready' }); return; }
+        if (event.ctrlKey || event.metaKey) return; // nothing changes (and the caller consumes it)
+        // Alt+wheel can be delivered as a horizontal wheel on some platforms: direction uses
+        // whichever axis actually moved (deltaY first, then deltaX).
+        const wheelDelta = event.deltaY || event.deltaX;
+        if (!wheelDelta) { zoomDebug('skip', { reason: 'zero-delta' }); return; }
+        const view = viewRef.current;
+        const box = frameBoxRef.current;
+        if (!view || !box) return;
+        const rect = box.getBoundingClientRect();
+        if (!(rect.width > 0) || !(rect.height > 0)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        markHuman();
+        zoomRetryRef.current = 0; // this is a new user notch; it may replay once on CAS conflict
+        const size = acceptedViewSize();
+        if (!(size.w > 0) || !(size.h > 0)) return;
+        const intent = activeZoomIntent();
+        const boxScale = rect.width / size.w;
+        const acceptedScale = Number(view.scale);
+        // User intent (survives state polls) -> accepted view.scale -> box measurement (box is only a
+        // fallback; a mid-layout box rect must not shift the percentage step).
+        const fromScale = intent
+          ? intent.scale
+          : (fitRef.current
+            ? (fitScaleValue() > 0 ? fitScaleValue() : boxScale)
+            : (Number.isFinite(acceptedScale) && acceptedScale > 0 ? acceptedScale : (boxScale > 0 ? boxScale : 1)));
+        if (!(fromScale > 0)) return;
+        const anchorC = canvasPosition();
+        const b = {
+          x: clampNumber(event.clientX - rect.left, 0, rect.width),
+          y: clampNumber(event.clientY - rect.top, 0, rect.height),
+        };
+        const steps = WHEEL_STEPS.scale;
+        const alt = Boolean(event.altKey);
+        const shift = Boolean(event.shiftKey) && !alt;
+        const step = alt ? steps.alt : shift ? steps.shift : steps.normal;
+        const direction = wheelDelta < 0 ? 1 : -1;
+        const basePercent = Math.round(fromScale * 100);
+        const nextPercent = clampNumber(basePercent + direction * step, VIEW_LIMITS.scalePercent[0], VIEW_LIMITS.scalePercent[1]);
+        if (nextPercent === basePercent) { zoomDebug('skip', { reason: 'boundary', basePercent, step, direction }); return; } // boundary: no request and no fit unlock
+        const nextScale = nextPercent / 100;
+        // Manual-scale path: fit unlocks now and the 500ms poll must not re-check it.
+        fitRef.current = false;
+        setFit(false);
+        setZoom(String(nextPercent));
+        noteViewEdit('scale', nextPercent);
+        viewWheelRef.current.scale = viewEditRef.current.scale;
+        const patch = { scale: nextScale };
+        const screenPoint = { x: event.clientX, y: event.clientY };
+        const displayScale = boxScale > 0 ? boxScale : (fromScale > 0 ? fromScale : 1);
+        const stageNode = stage.current;
+        let anchorMode = 'box';
+        let targetX = null;
+        let targetY = null;
+        let anchorD = null;
+        let predictedLeft = rect.left;
+        let predictedTop = rect.top;
+        if (anchorC && displayScale > 0) {
+          if (stageNode) {
+            const sr = stageNode.getBoundingClientRect();
+            const stageW = stageNode.clientWidth;
+            const stageH = stageNode.clientHeight;
+            const centeredX = stageW > 0 && Math.abs((sr.left + stageW / 2) - (rect.left + rect.width / 2)) <= 1;
+            const centeredY = stageH > 0 && Math.abs((sr.top + stageH / 2) - (rect.top + rect.height / 2)) <= 1;
+            // Predict where the centered box lands after the scale change; a non-centered axis keeps
+            // its measured left/top (the stage then scrolls/clips and the post-layout check decides).
+            predictedLeft = centeredX ? sr.left + (stageW - size.w * nextScale) / 2 : rect.left;
+            predictedTop = centeredY ? sr.top + (stageH - size.h * nextScale) / 2 : rect.top;
+            anchorD = {
+              x: anchorC.x + (screenPoint.x - rect.left) / displayScale,
+              y: anchorC.y + (screenPoint.y - rect.top) / displayScale,
+            };
+            targetX = clampNumber(anchorD.x - (screenPoint.x - predictedLeft) / nextScale, VIEW_LIMITS.canvas[0], VIEW_LIMITS.canvas[1]);
+            targetY = clampNumber(anchorD.y - (screenPoint.y - predictedTop) / nextScale, VIEW_LIMITS.canvas[0], VIEW_LIMITS.canvas[1]);
+            anchorMode = 'screen';
+          } else {
+            // No stage geometry: keep the existing box-relative formula (never drop the notch).
+            const zoomFactor = 1 / displayScale - 1 / nextScale;
+            targetX = clampNumber(anchorC.x + (screenPoint.x - rect.left) * zoomFactor, VIEW_LIMITS.canvas[0], VIEW_LIMITS.canvas[1]);
+            targetY = clampNumber(anchorC.y + (screenPoint.y - rect.top) * zoomFactor, VIEW_LIMITS.canvas[0], VIEW_LIMITS.canvas[1]);
+            anchorMode = 'box';
+          }
+          patch.x = roundCanvas(targetX);
+          patch.y = roundCanvas(targetY);
+          const target = { scale: nextScale, x: patch.x, y: patch.y, w: size.w, h: size.h, at: Date.now() };
+          canvasZoomRef.current = target;
+          zoomIntentRef.current = target;
+          if (anchorMode === 'screen') {
+            zoomAnchorRef.current = {
+              id: zoomAnchorIdRef.current + 1,
+              active: true, corrected: false, scheduled: false,
+              d: anchorD, screen: screenPoint, scale: nextScale, w: size.w, h: size.h,
+            };
+            zoomAnchorIdRef.current += 1;
+            setZoomAnchor('screen');
+            setZoomAnchorState('checking');
+          } else {
+            zoomAnchorRef.current = { id: zoomAnchorRef.current.id, active: false, corrected: false, scheduled: false, d: null, screen: null, scale: null, w: null, h: null };
+            setZoomAnchor('box');
+            setZoomAnchorState('box');
+          }
+        } else {
+          // No box/canvas geometry: degrade to a scale-only zoom; the notch is still published.
+          zoomAnchorRef.current = { id: zoomAnchorRef.current.id, active: false, corrected: false, scheduled: false, d: null, screen: null, scale: null, w: null, h: null };
+          setZoomAnchor('box');
+          setZoomAnchorState('box');
+          canvasZoomRef.current = { scale: nextScale, x: null, y: null, w: size.w, h: size.h, at: Date.now() };
+          zoomIntentRef.current = { scale: nextScale, x: null, y: null, w: size.w, h: size.h, at: Date.now() };
+        }
+        zoomDebug('notch', {
+          fromScale, nextScale, anchorMode,
+          fromX: anchorC && anchorC.x, fromY: anchorC && anchorC.y,
+          targetX: patch.x, targetY: patch.y,
+          predictedLeft, predictedTop, w: size.w, h: size.h,
+        });
+        queueViewPatch(patch);
+      }
+
       function onFrameWheel(event) {
+        if (panMode) {
+          zoomCanvasByWheel(event);
+          return;
+        }
         if (!frameInputReady()) return;
         const geom = frameGeometry();
         if (!geom) return;
         const point = mapEventPoint(event, geom);
         if (!point.inside) return; // only inside the painted frame prevents host scrolling
+        if (point.blank) return; // canvas blank: zero dispatch, host scrolling untouched
         event.preventDefault();
         event.stopPropagation();
         markHuman();
@@ -1584,7 +2582,20 @@ window.__ModuleLoader__.load({
 
       function onStageWheel(event) {
         const target = event.target;
-        if (!target || !target.closest || !target.closest('.utb-frame')) return;
+        if (!target || !target.closest) return;
+        if (panMode) {
+          // Drag mode zooms the canvas; this works on the composited blank too (overlay/box target).
+          if (!target.closest('.utb-box')) return;
+          if (event.ctrlKey || event.metaKey) {
+            // Consume so the shell/browser does not zoom while the user is in drag mode.
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+          onFrameWheel(event);
+          return;
+        }
+        if (!target.closest('.utb-frame')) return;
         if (event.ctrlKey || event.metaKey) return; // host/browser zoom stays with the shell
         onFrameWheel(event);
       }
@@ -1639,10 +2650,18 @@ window.__ModuleLoader__.load({
         viewTimerRef.current = 0;
         viewQueueRef.current = null;
         viewQueuedRef.current = null;
+        viewQueueSpaceRef.current = null;
+        viewQueuedSpaceRef.current = null;
         viewInFlightRef.current = false;
         viewRef.current = null;
         viewMetaRef.current = null;
         observedRef.current = null;
+        canvasRef.current = null;
+        setCanvasInfo(null);
+        if (seedRefreshTimerRef.current) window.clearTimeout(seedRefreshTimerRef.current);
+        seedRefreshTimerRef.current = 0;
+        seedCheckKeyRef.current = '';
+        seedAttemptKeyRef.current = '';
         viewDirtyRef.current = { x: null, y: null, width: null, height: null, scale: null };
         viewFocusRef.current = '';
         viewFirstBindRef.current = { epoch: scopeEpoch, done: false };
@@ -1650,6 +2669,19 @@ window.__ModuleLoader__.load({
         frameGeomRef.current = null;
         pendingGeomRef.current = null;
         dragRef.current = { active: false, pointerId: -1, x: 0, y: 0 };
+        panDragRef.current = {
+          active: false, pointerId: -1, startClientX: 0, startClientY: 0,
+          startX: 0, startY: 0, geom: null, viewW: 0, viewH: 0,
+        };
+        panWriteRef.current = { timer: 0, latest: null };
+        clearZoomIntent();
+        resetZoomAnchor();
+        zoomRetryRef.current = 0;
+        panModeRef.current = false;
+        setPanMode(false);
+        setPanDragging(false);
+        setFrameVersion(0);
+        setViewVersion(0);
         displayTimes.current = [];
         displayLatencies.current = [];
         displayedRef.current = 0;
@@ -1785,8 +2817,10 @@ window.__ModuleLoader__.load({
           try {
             const state = await getHost('/state', scopeNow, controller.signal);
             if (!cancelled && generation === requestGenerationRef.current) {
-              ingestHostState(state);
+              // The transport needs the (redacted) url before the adopted seed context is published,
+              // otherwise a URL change would key one seed request under the previous page.
               if (transportRef.current) transportRef.current.noteState({ url: state.url });
+              ingestHostState(state);
             }
           } catch (error) {
             if (cancelled || (error && error.name === 'AbortError')) return;
@@ -1854,16 +2888,43 @@ window.__ModuleLoader__.load({
       function onFrameLoad(event) {
         const image = event.currentTarget;
         const source = image.currentSrc || image.src;
+        // A duplicate load event for the same object URL must not replace the geometry with a
+        // missing-meta sample (the meta entry is consumed by the first load).
+        if (frameGeomRef.current && frameGeomRef.current.src === source) return;
         const meta = frameMetaRef.current.get(source);
-        // The mapping and the post-resize barrier both read the *displayed* frame: decoded
-        // natural* plus the capture-time CSS page size (never the screencast metadata width).
+        // The mapping and the barriers read the *displayed* frame: decoded natural* plus the
+        // capture-time CSS page size and top-level scroll (docs/canvas-viewport.md §5.1).
+        const scroll = frameScrollOf(meta, null);
+        const seed = Boolean(meta && meta.seed === true);
         frameGeomRef.current = {
+          src: source,
           naturalW: Number(image.naturalWidth) || 0,
           naturalH: Number(image.naturalHeight) || 0,
           pageWidth: meta ? Number(meta.pageWidth) : NaN,
           pageHeight: meta ? Number(meta.pageHeight) : NaN,
+          scrollX: scroll.x,
+          scrollY: scroll.y,
+          // A seed PNG is already composited at its capture C (no client translation); these facts
+          // prove it still matches the live canvas before pointer/wheel input is allowed.
+          seed,
+          seedComposite: seed ? meta.seedComposite === true : false,
+          seedCanvasX: seed ? finiteOrNull(meta.seedCanvasX) : null,
+          seedCanvasY: seed ? finiteOrNull(meta.seedCanvasY) : null,
+          seedScrollX: seed ? finiteOrNull(meta.seedScrollX) : null,
+          seedScrollY: seed ? finiteOrNull(meta.seedScrollY) : null,
+          seedViewRevision: seed ? finiteOrNull(meta.seedViewRevision) : null,
+          seedScale: seed ? finiteOrNull(meta.seedScale) : null,
+          seedWidth: seed ? finiteOrNull(meta.seedWidth) : null,
+          seedHeight: seed ? finiteOrNull(meta.seedHeight) : null,
+          seedContentWidth: seed ? finiteOrNull(meta.seedContentWidth) : null,
+          seedContentHeight: seed ? finiteOrNull(meta.seedContentHeight) : null,
           at: Date.now(),
         };
+        // The frame's own displacement is computed from the ref above: re-render once it is known.
+        setFrameVersion((value) => value + 1);
+        // A newly displayed frame may be exactly the mismatching evidence; check whether the canvas
+        // barrier now needs a composed seed (or is satisfied).
+        scheduleSeedRefreshCheck();
         if (!meta) return;
         frameMetaRef.current.delete(source);
         window.requestAnimationFrame(() => {
@@ -2073,10 +3134,61 @@ window.__ModuleLoader__.load({
       const fitScale = fitScaleValue();
       const manualPercent = clampNumber(Number(zoom) || 100, VIEW_LIMITS.scalePercent[0], VIEW_LIMITS.scalePercent[1]);
       const scale = fit ? fitScale : manualPercent / 100;
+      // P0-C v2 preview compositing (docs/canvas-viewport.md §5.2): the W*scale × H*scale box is the
+      // clipping viewport; the current frame is translated by -(C - frame.scroll) * displayScale.
+      // O=0 with frame.scroll=S yields exactly 0, so the old pixels are unchanged.
+      const canvasOn = Boolean(canvasInfo && viewRef.current);
+      const frameGeom = frameGeomRef.current;
+      let frameShiftX = 0;
+      let frameShiftY = 0;
+      if (canvasOn && frameGeom && Number.isFinite(Number(canvasInfo.x)) && Number.isFinite(Number(canvasInfo.y))
+        && frameGeom.naturalW > 0 && frameGeom.naturalH > 0 && w > 0 && ht > 0) {
+        const scrollX = finiteOrNull(frameGeom.scrollX);
+        const scrollY = finiteOrNull(frameGeom.scrollY);
+        if (scrollX !== null && scrollY !== null) {
+          const k = Math.min((w * scale) / frameGeom.naturalW, (ht * scale) / frameGeom.naturalH);
+          const displayScaleX = (frameGeom.naturalW * k) / w;
+          const displayScaleY = (frameGeom.naturalH * k) / ht;
+          frameShiftX = -(Number(canvasInfo.x) - scrollX) * displayScaleX;
+          frameShiftY = -(Number(canvasInfo.y) - scrollY) * displayScaleY;
+        }
+      }
+      const frameShift = Boolean(frameShiftX || frameShiftY);
+      // A composed seed is a full white-blank image: clip it to the content intersection so the
+      // panel checkerboard (not the Host's evidence white) shows where the canvas is empty. O=0
+      // keeps the full image, preserving the old pixels.
+      let seedClip = null;
+      if (canvasOn && frameGeom && frameGeom.seed && frameGeom.seedComposite) {
+        const sw = finiteOrNull(frameGeom.seedWidth);
+        const sh = finiteOrNull(frameGeom.seedHeight);
+        const sx = finiteOrNull(frameGeom.seedScrollX);
+        const sy = finiteOrNull(frameGeom.seedScrollY);
+        const scx = finiteOrNull(frameGeom.seedCanvasX);
+        const scy = finiteOrNull(frameGeom.seedCanvasY);
+        const scw = finiteOrNull(frameGeom.seedContentWidth);
+        const sch = finiteOrNull(frameGeom.seedContentHeight);
+        const offsetAtCapture = sx !== null && sy !== null && scx !== null && scy !== null
+          && (Math.abs(scx - sx) > 0.5 || Math.abs(scy - sy) > 0.5);
+        if (offsetAtCapture && sw > 0 && sh > 0 && scw !== null && sch !== null) {
+          const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+          const left = clamp(-scx, 0, sw);
+          const right = clamp(scx + sw - scw, 0, sw);
+          const top = clamp(-scy, 0, sh);
+          const bottom = clamp(scy + sh - sch, 0, sh);
+          if (left > 0 || right > 0 || top > 0 || bottom > 0) {
+            seedClip = `inset(${(top / sh) * 100}% ${(right / sw) * 100}% ${(bottom / sh) * 100}% ${(left / sw) * 100}%)`;
+          }
+        }
+      }
+      const canvasBarrierState = canvasOn ? canvasBarrier() : null;
+      const canvasInputReady = Boolean(canvasBarrierState && canvasBarrierState.ready);
+      const posRange = canvasOn ? VIEW_LIMITS.canvas : VIEW_LIMITS.scroll;
       /** 手动改比例时关闭自动适配并同步共享比例；重新勾选“适应窗口”只恢复本地自动适配。 */
       function changeFit(checked) {
         fitRef.current = checked;
         setFit(checked);
+        clearZoomIntent();
+        resetZoomAnchor();
         if (checked) {
           viewDirtyRef.current.scale = null;
           syncViewDrafts();
@@ -2129,7 +3241,7 @@ window.__ModuleLoader__.load({
           button('刷新', h(IconReload, null), reload, reloadDisabled),
           h('form', { onSubmit: submit, style: { flex: '1 1 auto', minWidth: 0, display: 'flex' } },
             h('input', { className: 'utb-addr', type: 'text', value: draft, spellCheck: false, 'aria-label': '网址', placeholder: '输入网址，例如 https://example.com', 'aria-invalid': error ? 'true' : undefined, 'data-invalid': error ? 'true' : 'false', title: error || undefined, onChange: changeAddress, onFocus: () => { focusedRef.current = true; dirtyRef.current = false; }, onBlur: blurAddress, onKeyDown: keyAddress })),
-          button('尺寸调整', h(IconSize, null), () => setSizing((v) => !v), false, { 'aria-pressed': sizing }),
+          button('尺寸调整', h(IconSize, null), toggleSizing, false, { 'aria-pressed': sizing }),
           h('span', { className: 'utb-sr', role: 'alert' }, error || ''),
           button('选择元素发送到聊天框（需浏览器运行时）', h(IconInspect, null), null, true),
           h('div', { className: 'utb-more' },
@@ -2158,15 +3270,17 @@ window.__ModuleLoader__.load({
             h('input', {
               className: 'utb-num utb-pos',
               type: 'number',
-              min: VIEW_LIMITS.scroll[0],
-              max: VIEW_LIMITS.scroll[1],
+              min: posRange[0],
+              max: posRange[1],
               step: 10,
               value: posX,
               'data-utb-field': 'x',
               'aria-label': '视口 X 坐标（像素）',
-              title: viewSync
-                ? '页面顶层滚动位置 X（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
-                : '旧 Host 不支持视口坐标同步',
+              title: canvasOn
+                ? '画布坐标 X（画布 CSS px，可为负）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
+                : viewSync
+                  ? '页面顶层滚动位置 X（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
+                  : '旧 Host 不支持视口坐标同步',
               disabled: !viewSync,
               onChange: (e) => changePositionField('x', e.target.value),
               onFocus: () => { viewFocusRef.current = 'x'; },
@@ -2177,15 +3291,17 @@ window.__ModuleLoader__.load({
             h('input', {
               className: 'utb-num utb-pos',
               type: 'number',
-              min: VIEW_LIMITS.scroll[0],
-              max: VIEW_LIMITS.scroll[1],
+              min: posRange[0],
+              max: posRange[1],
               step: 10,
               value: posY,
               'data-utb-field': 'y',
               'aria-label': '视口 Y 坐标（像素）',
-              title: viewSync
-                ? '页面顶层滚动位置 Y（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
-                : '旧 Host 不支持视口坐标同步',
+              title: canvasOn
+                ? '画布坐标 Y（画布 CSS px，可为负）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
+                : viewSync
+                  ? '页面顶层滚动位置 Y（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
+                  : '旧 Host 不支持视口坐标同步',
               disabled: !viewSync,
               onChange: (e) => changePositionField('y', e.target.value),
               onFocus: () => { viewFocusRef.current = 'y'; },
@@ -2225,6 +3341,21 @@ window.__ModuleLoader__.load({
             h('label', { className: 'utb-check', title: '适应窗口仅本地显示，不改变共享比例/Agent 截图比例' },
               h('input', { type: 'checkbox', checked: fit, onChange: (e) => changeFit(e.target.checked) }),
               '适应窗口'),
+            h('label', {
+              className: 'utb-check',
+              title: panMode
+                ? '拖拽视口：按住画面拖动平移页面（内容跟手，X/Y 随之更新）；再点一次关闭并恢复页面交互'
+                : '拖拽视口：勾选后按住画面拖动可平移页面（内容跟手，X/Y 随之更新）；关闭后恢复页面交互',
+            },
+              h('input', {
+                type: 'checkbox',
+                checked: panMode,
+                disabled: !viewSync || !canvasOn,
+                'data-utb-check': 'pan',
+                'aria-label': '拖拽视口',
+                onChange: (e) => changePanMode(e.target.checked),
+              }),
+              '拖拽'),
             h('input', {
               className: 'utb-num utb-zoom',
               type: 'number',
@@ -2246,7 +3377,67 @@ window.__ModuleLoader__.load({
         h('div', { className: 'utb-stage', ref: stage },
           activeUrl
             ? (shot
-              ? h('div', { className: 'utb-box', 'data-fitted': fit && scale < 1 ? 'true' : 'false', style: { width: w * scale, height: ht * scale } },
+              ? h('div', {
+                className: 'utb-box',
+                ref: frameBoxRef,
+                'data-fitted': fit && scale < 1 ? 'true' : 'false',
+                'data-utb-canvas': canvasOn ? 'on' : 'off',
+                'data-utb-canvas-ready': canvasOn ? (canvasInputReady ? 'true' : 'false') : 'off',
+                'data-utb-canvas-blank': canvasOn ? 'checkerboard' : 'off',
+                'data-utb-canvas-zoom': panMode && canvasOn ? 'wheel' : 'off',
+                'data-utb-canvas-zoom-anchor': panMode && canvasOn ? zoomAnchor : 'off',
+                'data-utb-canvas-zoom-anchor-state': panMode && canvasOn ? zoomAnchorState : 'off',
+                'data-utb-view-revision': viewRef.current ? String(Number(viewRef.current.revision)) : '',
+                'data-utb-canvas-checker': canvasOn
+                  ? `${CANVAS_CHECKER.size}px ${CANVAS_CHECKER.dark} ${CANVAS_CHECKER.light}`
+                  : 'off',
+                // Diagnostic reason for the fail-closed barrier (never a page fact).
+                'data-utb-canvas-barrier': canvasOn ? String(canvasBarrierState.reason || '') : 'off',
+                // Bounded diagnostic numbers for acceptance failures (safe, no page content).
+                'data-utb-canvas-detail': canvasOn ? JSON.stringify({
+                  reason: canvasBarrierState.reason,
+                  frameScrollX: frameGeom ? finiteOrNull(frameGeom.scrollX) : null,
+                  frameScrollY: frameGeom ? finiteOrNull(frameGeom.scrollY) : null,
+                  sX: observedScroll().x,
+                  sY: observedScroll().y,
+                  pageW: frameGeom ? frameGeom.pageWidth : null,
+                  pageH: frameGeom ? frameGeom.pageHeight : null,
+                  naturalW: frameGeom ? frameGeom.naturalW : null,
+                  naturalH: frameGeom ? frameGeom.naturalH : null,
+                  frameAgeMs: frameGeom && frameGeom.at ? Date.now() - frameGeom.at : null,
+                  viewW: w,
+                  viewH: ht,
+                  seed: Boolean(frameGeom && frameGeom.seed),
+                  seedRev: frameGeom ? frameGeom.seedViewRevision : null,
+                  viewRev: viewRef.current ? Number(viewRef.current.revision) : null,
+                }) : 'off',
+                style: {
+                  width: w * scale,
+                  height: ht * scale,
+                  position: 'relative',
+                  // Blank paint comes from the CSS checkerboard rule above; with O=0 the frame
+                  // covers the box and the old pixels stay identical.
+                },
+              },
+                // Pan-only transparent layer UNDER the frame: it makes the composited blank
+                // draggable even when the frame is translated entirely out of the clipping box.
+                // Content keeps hitting the <img> (z-index 1) so frame wheel and normal hit-testing
+                // are unchanged; the layer exists only while 拖拽 is checked.
+                panMode && canvasOn ? h('div', {
+                  className: 'utb-pan-layer',
+                  'data-utb-pan-layer': 'true',
+                  'aria-hidden': true,
+                  style: {
+                    position: 'absolute', inset: 0, zIndex: 0,
+                    cursor: panDragging ? 'grabbing' : 'grab',
+                    touchAction: 'none', userSelect: 'none',
+                  },
+                  onPointerDown: onFramePointerDown,
+                  onPointerMove: onFramePointerMove,
+                  onPointerUp: onFramePointerUp,
+                  onPointerCancel: releaseFrameDrag,
+                  onLostPointerCapture: releaseFrameDrag,
+                }) : null,
                 h('img', {
                   className: 'utb-frame',
                   ref: frameImgRef,
@@ -2255,7 +3446,17 @@ window.__ModuleLoader__.load({
                   onLoad: onFrameLoad,
                   tabIndex: 0,
                   draggable: false,
-                  style: { display: 'block', width: '100%', height: '100%', objectFit: 'contain', objectPosition: '50% 50%', userSelect: 'none', touchAction: 'none' },
+                  'data-utb-pan': panMode ? 'on' : 'off',
+                  'data-utb-pan-drag': panDragging ? 'true' : 'false',
+                  'data-utb-canvas-seed-clip': seedClip || 'off',
+                  style: {
+                    display: 'block', width: '100%', height: '100%', objectFit: 'contain', objectPosition: '50% 50%',
+                    userSelect: 'none', touchAction: 'none',
+                    position: 'relative', zIndex: 1,
+                    cursor: panMode ? (panDragging ? 'grabbing' : 'grab') : 'auto',
+                    transform: frameShift ? `translate(${frameShiftX}px, ${frameShiftY}px)` : 'none',
+                    clipPath: seedClip || undefined,
+                  },
                   onPointerDown: onFramePointerDown,
                   onPointerUp: onFramePointerUp,
                   onPointerMove: onFramePointerMove,

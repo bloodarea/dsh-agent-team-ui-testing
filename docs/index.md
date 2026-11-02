@@ -13,7 +13,8 @@
 | [t1-infrastructure-audit.md](t1-infrastructure-audit.md) | M0–M2 前历史审计（结论、证据、缺口；不代表现行状态） | 追溯缺陷与历史证据时 |
 | [t1-issues-and-solutions.md](t1-issues-and-solutions.md) | 缺陷解决状态总表：已解决/部分解决，以及「不属于 T1」的分类依据（含 §3.2/§3.3） | 查某个问题是已修、待做还是不该在 T1 做时 |
 | [runtime-t1.md](runtime-t1.md) | T1/T2 运行时：无头 Chromium、HTTP 接口（含 `/viewport` 双形状与 `ui.view`）、30 个 Agent 工具面与限制 | 改运行时/接工具时 |
-| [viewport-control.md](viewport-control.md) | **P0-C 共享视口语义契约（已实现）**：`view` 数据模型/观测节流、get/set 分类、CAS、HTTP 与 UI 投影、面板坐标映射与滚轮、截图默认比例、`browser_viewport` schema/错误/limits 与 H1–H10/GUI 验收 | 改视口、截图默认比例、面板尺寸栏或排查桌面/移动端布局回归时 |
+| [viewport-control.md](viewport-control.md) | **P0-C 共享视口语义契约（已实现；含 2026-11-02 面板拖拽模式）**：`view` 数据模型/观测节流、get/set 分类、CAS、HTTP 与 UI 投影、面板坐标映射与滚轮、截图默认比例、`browser_viewport` schema/错误/limits 与 H1–H10/GUI 验收 | 改视口、截图默认比例、面板尺寸栏或排查桌面/移动端布局回归时 |
+| [canvas-viewport.md](canvas-viewport.md) | **P0-D 混合画布（hybrid canvas，2026-11-02 用户要求，已实现；与 P0-C 独立验收，真实 3080 Host 面已实测）**：X/Y=视口左上角在文档画布上的坐标（可负/可越界）、`canvasX/canvasY` 增量字段、S/O 不变量、blank 合成、截图/T3 canvas mapping、输入与 fail-closed、验收与限制 | 改画布语义、负坐标、blank、拖拽平移或合成截图/T3 时 |
 | [capture-p0.md](capture-p0.md) | **P0-A 图片输入流/截图采集**：截图参数/高 DPI/无损裁剪/尺寸校验/空白识别/安全写入/错误与能力探测 | 改 browser_screenshot、判断截图证据可信度时 |
 | [network-p0.md](network-p0.md) | **P0-B 网络抓包权威契约**（P0 三项之一：P0-A capture-p0.md、P0-C viewport-control.md）：7 个 `browser_network_*` 工具 schema、事件模型/配额/完整性、分析、业务链路、控制、证据与脱敏、靶机路由、验收 C1–C52 与 §13 R1 裁决 | 改网络工具、判定网络能力边界（G1.5 partial、HTTPS/`responseModification` NOT_RUN）或复跑网络验收时 |
 | [t2-structured-gui.md](t2-structured-gui.md) | **Web T2** 结构化 GUI 权威契约：七工具、Ref 协议、证据/错误、非目标与 38 条验收条件 | 改 T2 工具/证据/验收，或判断 T2 能力边界时 |

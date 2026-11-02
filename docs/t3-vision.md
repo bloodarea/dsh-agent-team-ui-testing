@@ -4,6 +4,8 @@
 >
 > 关联现行契约：[采集 P0](capture-p0.md)、[T2](t2-structured-gui.md)、[工作区隔离](workspace-isolation.md)、[分层标准](capability-tiers.md)。本文不改变上述既有 16 工具的参数、成功形状、输入语义或错误语义。新增工具实现后总数为 **22**。索引、README、Skill、能力台账与测试工具计数由实施者/Lead 同步，本文作者仅写本文件。
 
+> **2026-11-02 画布 v2（P0-C，权威见 [canvas-viewport.md](canvas-viewport.md)）**：T3 的 live/source 截图使用 canvas 空间；`mapping` 增 `canvas`/`contentRect`/`blank`，`O=0` 时与旧 document mapping 一致；`find.documentCss` 仍是文档坐标（可为负），blank 候选 `documentCss=null`；`act` 在 blank/内容外零派发（`VISION_HIT_MISMATCH reason=blank-area`，不新增错误码）；跨 canvas/document mapping 的 compare/baseline 视为 `mapping-incompatible`。验收：criteria 56/56、requiredChecks **415/415**、exit 0（C57 24 项挂在 §9.C56 后；[画布轮报告](../tests/acceptance/runs/2026-11-01T20-18-56-169Z-770336/run-report.json)）。
+
 ## 1. 范围、边界与裁决
 
 T3 是**静态视觉调试**：对有限张静态 PNG 做处理、确定性识别、坐标输入及结果比较。新增且只新增六个工具：`browser_vision_image`、`browser_vision_find`、`browser_vision_compare`、`browser_vision_act`、`browser_vision_baseline`、`browser_vision_check`。不新增第七工具，不修改客户端 UI。
@@ -26,7 +28,7 @@ Source = {kind:"live", scale?:number, region?:CssRect}   # 省略 scale = 本次
        | {kind:"baseline", name:Name, revision?:integer}
 ```
 
-`live` 沿用 P0 单次原始 PNG 截图路径、显式 `scale∈[0.1,4]`（省略时跟随共享 `view.scale`，见 [viewport-control.md](viewport-control.md) §6.1）、文档 CSS region 和固定 runtime DSF=1；未给 region 时为现场 layout viewport。不使用预览 JPEG，不改变 viewport、滚动或 DPR，不重复截图择优。源图作为内部 P0 采集可以直接进入内存 store，不因截图本身创建文件；其采集证据标记 `file:null`，不是变更已有 `browser_screenshot` 的暂存行为。
+`live` 使用 P0 截图路径：O=0 为单次原始 PNG，O≠0 为 canvas 合成（`capture.canvas.composite=true`）；显式 `scale∈[0.1,4]`（省略时跟随共享 `view.scale`）、**canvas CSS region（O=0 与文档相同，可为负）** 和固定 runtime DSF=1；未给 region 时为现场 layout viewport。不使用预览 JPEG，不改变 viewport、滚动或 DPR，不重复截图择优。源图作为内部 P0 采集可以直接进入内存 store，不因截图本身创建文件；其采集证据标记 `file:null`，不是变更已有 `browser_screenshot` 的暂存行为。
 
 product store 按可信工作区 scope 隔离，属于插件实例；与当前 page 生命周期分离。每 scope 最多 **16 张、合计 128 MiB 编码 PNG、单张 32 MiB 编码 PNG、单图 16,000,000 像素**；RGBA 临时工作集另限 256 MiB（估算所有同时存活缓冲，包括比较双图、输出、标签图，分配前检查），单操作模板候选像素比较次数上限 50,000,000。不得通过压缩比绕过像素与解码预算，解压前限制 inflate 输出长度为预期扫描行字节数，避免压缩炸弹。同步循环每最多 65,536 像素/比较迭代检查取消，并让出事件循环；每工具调用的累计CPU算法墙钟预算5,000ms（从首次解码开始，跨check的所有case共享；不含队列、启动、CDP或磁盘等待），超限抛VISION_TIMEOUT，不交付半成品；已完成case通过错误details保留。现有30000ms工具wrapper保留，check不设置无界批次或绕开wrapper。
 

@@ -19,8 +19,9 @@
  *            "scopeId":"…","runtimeId":"…"}
  *   binary: [uint32BE headerLength][JSON header][JPEG bytes]
  *           header = {v:1, seq, epoch, capturedAtMs, receivedAtMs, width, height,
- *                     pageWidth, pageHeight, format:"jpeg", scopeId, runtimeId,
+ *                     pageWidth, pageHeight, scrollX, scrollY, format:"jpeg", scopeId, runtimeId,
  *                     dropped:{coalesced,blocked,stale,rejected}}
+ *           (scrollX/scrollY are the capture-time top-level scroll, docs/canvas-viewport.md §5.1.)
  * Client -> server messages are ignored except close/ping control frames.
  */
 
@@ -123,6 +124,9 @@ export function createFramePusher(source, options = {}) {
       height: frame.height,
       pageWidth: frame.pageWidth,
       pageHeight: frame.pageHeight,
+      // Capture-time top-level scroll: 0 is legal, missing values were normalized by FrameSource.
+      scrollX: frame.scrollX,
+      scrollY: frame.scrollY,
       format: frame.format,
       scopeId: scope.scopeId === undefined ? null : scope.scopeId,
       runtimeId: scope.runtimeId === undefined ? null : scope.runtimeId,

@@ -27,7 +27,12 @@
  *                  BUSY, get readable under another owner), H6 (legacy POST compat + v1 strict +
  *                  ui.view), H7 (default/explicit capture sizes + mapping + low-scale refusal +
  *                  16M budget), H8 (T3 live default scale + frozen act recapture),
- *                  H10 (lossless JSON, close resets observed/x/y).
+ *                  H10 (lossless JSON, close resets observed/x/y),
+ *                  H11/canvas (docs/canvas-viewport.md: C/S/O invariants, canvasX/canvasY set,
+ *                       x/y keeps O, page scroll keeps O, navigation/close reset,
+ *                       HTTP/state/capabilities ui.canvas projection),
+ *                  H12/frame-metadata (frame scrollX/scrollY through FrameSource, the WS binary
+ *                       header and /frame).
  *   NOT covered  : H9 (screencast ACK/帧递增 timing), T2/P0/T3 全套回归、真实宿主 30 工具（需重启）,
  *                  provider 视觉可见性、GUI 侧 fit/滚轮/映射（属 client.js 切片）。
  */
@@ -365,6 +370,10 @@ async function main() {
   } = harnessModule;
   const { startFixtureServer } = await import(pathToFileURL(join(REPO_ROOT, 'tests/ui_test_fixture/server.mjs')).href);
   const { decodePng, inspectPng } = await import(pathToFileURL(join(REPO_ROOT, 'capture-p0.js')).href);
+  // Frame metadata is unit-tested directly (docs/canvas-viewport.md §5.1): the WS push and the frame
+  // store must both carry the capture-time top-level scroll.
+  const { FrameSource } = await import(pathToFileURL(join(REPO_ROOT, 'frame-source.js')).href);
+  const { createFramePusher } = await import(pathToFileURL(join(REPO_ROOT, 'frame-push.js')).href);
 
   state.profilesBefore = await snapshotProfileDirs();
   state.fixture = await startFixtureServer();
@@ -407,6 +416,32 @@ async function main() {
   log(`[env] workspaces=${dirA} | ${dirB}`);
 
   const view = (result) => result?.value ?? {};
+  // The scoped runtime of workspace A (the suite's main scope): `runtimeFor` returns the first entry,
+  // which stops being unambiguous once the legacy scope exists too.
+  const runtimeByWorkspace = (workspaceId) => {
+    const registry = harness.ctx.__internal.plugin?.registry;
+    if (!registry) return undefined;
+    for (const entry of registry.entries.values()) {
+      if (entry.scope?.workspaceId === workspaceId) return entry.runtime;
+    }
+    return undefined;
+  };
+  const scopedHeadersA = { 'x-ui-testing-scope-version': '1', 'x-ui-testing-session-id': 'vp-a' };
+  const ownerConnection = () => harnessModule.createFakeConnectionService({
+    rejection: undefined,
+    admit: () => ({ peer: { id: 'peer-owner' } }),
+    browserPeer: { id: 'peer-owner' },
+  });
+  /** Decode one server->client WS binary frame header (see frame-push.js wire format). */
+  function decodeWsFrameHeader(buffer) {
+    let offset = 2;
+    let length = buffer[1] & 0x7f;
+    if (length === 126) { length = buffer.readUInt16BE(2); offset = 4; }
+    else if (length === 127) { length = buffer.readUInt32BE(6); offset = 10; }
+    const payload = buffer.subarray(offset, offset + length);
+    const headerLength = payload.readUInt32BE(0);
+    return JSON.parse(payload.subarray(4, 4 + headerLength).toString('utf8'));
+  }
   // A /state read schedules a coalesced metrics read (≥200ms throttled). `readStateQuiet` takes the
   // snapshot and then drains that scheduled read, so the next step starts from a settled cache
   // instead of racing the readback this very request just armed.
@@ -443,6 +478,11 @@ async function main() {
         height: parameters.properties?.height?.type,
         scale: parameters.properties?.scale?.type,
       }, { action: ['get', 'set'], mode: ['wide', 'landscape', 'tablet', 'phone'] });
+      check('schema: canvasX/canvasY 以 number 声明（画布增量字段；范围仍在执行期校验）',
+        parameters.properties?.canvasX?.type === 'number' && parameters.properties?.canvasY?.type === 'number'
+          && typeof parameters.properties?.canvasX?.description === 'string'
+          && /画布|canvas/i.test(parameters.properties.canvasX.description),
+      { canvasX: parameters.properties?.canvasX, canvasY: parameters.properties?.canvasY }, { canvasX: 'number', canvasY: 'number' });
       check('description 非空且明确区分 get/set 语义',
         typeof definition?.description === 'string' && /get=只读缓存诊断/.test(definition.description)
           && /set=页面操作/.test(definition.description), { description: String(definition?.description).slice(0, 120) }, 'get/set 描述');
@@ -1125,6 +1165,18 @@ async function main() {
     'observed 超过 1000ms 未刷新 → viewMeta.stale=true；close 后 x/y 复位 0、observed=null、revision 递增、width/height/scale 保留；set/get/state 投影全部 lossless JSON', async () => {
       await harness.invoke('browser_navigate', { url: pageUrl }, execA);
       await setView({ width: 800, height: 600, scale: 0.65, x: 0, y: 60 }, execA);
+      // Drain the readback that the preceding page operations legitimately scheduled (the coalesced
+      // observer is throttled to ≥200ms and this suite dispatches one per page operation). The H10
+      // assertion below is "an idle second without refresh reports stale", not "an action-induced
+      // sample must never land"; draining first keeps that assertion exact instead of relying on a
+      // pending timer that would otherwise refresh observedAt mid-window.
+      let drainedAt = null;
+      for (let i = 0; i < 8; i += 1) {
+        const observedAt = (await getView(execA)).value?.viewMeta?.observedAt ?? null;
+        if (observedAt !== null && observedAt === drainedAt) break;
+        drainedAt = observedAt;
+        await sleep(150);
+      }
       const fresh = (await getView(execA)).value;
       check('刚 set 后 viewMeta.stale=false 且 observedAt 为数字',
         fresh?.viewMeta?.stale === false && Number.isFinite(fresh?.viewMeta?.observedAt),
@@ -1176,6 +1228,541 @@ async function main() {
       check('close 后再操作会懒启动新页面（running 恢复、view 配置沿用）',
         contextAfterClose !== null && (await getView(execA)).value?.running === true,
       { running: (await getView(execA)).value?.running }, { running: true });
+    });
+
+  /* ---------------------------------------------------------------- V11: canvas coordinates */
+  await runProbe('V11-canvas', '画布坐标 C/S/O：canvas 增量字段、x/y 保留 O、自主滚动保留 O、导航/关闭复位、HTTP/state/capabilities 投影',
+    '默认 C=0/O=0；canvasX=-100,canvasY=-50 → x=y=0、offset=-100/-50、页面 scroll=0；canvas 在内容内 → scroll 对齐 O=0；超过 max → offset>0；CAS/范围/类型/与 x/y 同传拒绝且零 CDP；页面自主滚动保留 O（C=S+O、source=page）；显式 x/y 保留 O；resize 保留 O；导航与关闭 C=S=0 且宽高/比例保留；capabilities.canvas、limits.viewport.canvas、ui.canvas 与 state.canvas 同源；旧字段不变', async () => {
+      const runtimeA = runtimeByWorkspace('ws-a');
+      check('scope A 的 runtime 可定位（供 CDP 计数与帧元数据断言）',
+        Boolean(runtimeA && typeof runtimeA.send === 'function'), { found: Boolean(runtimeA) }, true);
+      const counter = instrumentRuntime(runtimeA);
+      const maxScrollY = (truth) => Math.max(0, (truth?.docHeight ?? 0) - (truth?.innerHeight ?? 0));
+
+      const nav = await harness.invoke('browser_navigate', { url: pageUrl }, execA);
+      check('V11 重新打开 fixture', nav.ok === true, errorInfo(nav), { ok: true });
+      await waitFor(async () => (await pageTruth(harness, execA))?.title === 'P0 Capture Fixture', { label: 'fixture title' });
+
+      const base = await setView({ width: 800, height: 600, scale: 1, x: 0, y: 0 }, execA);
+      const baseView = (await getView(execA)).value;
+      check('基准：默认 C=0/O=0，x/y=0，页面 scroll=0',
+        base.ok === true
+          && baseView?.view?.canvasX === 0 && baseView.view.canvasY === 0
+          && baseView.view.x === 0 && baseView.view.y === 0
+          && baseView.canvas?.offsetX === 0 && baseView.canvas?.offsetY === 0
+          && (await pageTruth(harness, execA))?.scrollX === 0,
+      { view: baseView?.view, canvas: baseView?.canvas }, { canvas: 0, offset: 0 });
+
+      // --- negative canvas: C may leave the content box; S stays 0 ----------------------
+      const revisionBeforeNegative = baseView?.view?.revision;
+      const negative = await setView({ canvasX: -100, canvasY: -50 }, execA);
+      const negativeView = negative.value || {};
+      const truthNegative = await pageTruth(harness, execA);
+      check('canvasX=-100,canvasY=-50：C 生效、x=y=0、页面真值 scrollX/Y 仍 0',
+        negative.ok === true
+          && negativeView.view?.canvasX === -100 && negativeView.view?.canvasY === -50
+          && negativeView.view?.x === 0 && negativeView.view?.y === 0
+          && truthNegative?.scrollX === 0 && truthNegative?.scrollY === 0
+          && negativeView.clamped?.canvasX === false && negativeView.clamped?.canvasY === false,
+      { view: negativeView.view, clamped: negativeView.clamped, truth: { x: truthNegative?.scrollX, y: truthNegative?.scrollY } },
+      { canvasX: -100, canvasY: -50, x: 0, y: 0 });
+      check('返回 offset={-100,-50}、content 为实测内容尺寸、revision 递增',
+        negativeView.offset?.x === -100 && negativeView.offset?.y === -50
+          && Number.isFinite(negativeView.content?.width) && Number.isFinite(negativeView.content?.height)
+          && negativeView.content.width > 0 && negativeView.content.height > 0
+          && negativeView.view?.revision === revisionBeforeNegative + 1,
+      { offset: negativeView.offset, content: negativeView.content, revision: negativeView.view?.revision, before: revisionBeforeNegative },
+      { offset: { x: -100, y: -50 }, revision: 'before+1' });
+
+      const negativeSnapshot = (await getView(execA)).value;
+      check('get 的 canvas/content 投影与 view 同源（x/y/offset/contentWidth/contentHeight/blank）',
+        negativeSnapshot?.canvas?.version === 1 && negativeSnapshot.canvas.space === 'canvas-css-px'
+          && negativeSnapshot.canvas.x === -100 && negativeSnapshot.canvas.y === -50
+          && negativeSnapshot.canvas.offsetX === -100 && negativeSnapshot.canvas.offsetY === -50
+          && negativeSnapshot.canvas.blank === 'white'
+          && negativeSnapshot.canvas.contentWidth === negativeSnapshot.content?.width
+          && negativeSnapshot.canvas.contentHeight === negativeSnapshot.content?.height,
+      { canvas: negativeSnapshot?.canvas, content: negativeSnapshot?.content }, 'canvas projection');
+      const stateTool = await harness.invoke('browser_state', {}, execA);
+      check('browser_state：view 带 canvasX/canvasY，新增安全 canvas 投影',
+        stateTool.value?.view?.canvasX === -100 && stateTool.value.view.canvasY === -50
+          && stateTool.value?.canvas?.x === -100 && stateTool.value.canvas.offsetX === -100
+          && stateTool.value?.viewport?.width === 800,
+      { view: stateTool.value?.view, canvas: stateTool.value?.canvas, viewport: stateTool.value?.viewport }, 'state canvas');
+
+      // --- capabilities: canvas segment + limits.viewport.canvas -----------------------
+      const capabilities = await harness.invoke('browser_capabilities');
+      const capsViewport = capabilities.value?.viewport || {};
+      const capsLimits = capabilities.value?.limits?.viewport || {};
+      const expectedCanvas = {
+        version: 1, space: 'canvas-css-px', range: [-10000000, 10000000],
+        blankColor: '#ffffff', compositeProvenance: true,
+      };
+      check('capabilities.viewport.canvas = {version,space,range,blankColor,compositeProvenance}',
+        JSON.stringify(capsViewport.canvas) === JSON.stringify(expectedCanvas),
+      { canvas: capsViewport.canvas }, expectedCanvas);
+      check('limits.viewport.canvas 同上，且旧的 width/height/scroll/scale 范围不变',
+        JSON.stringify(capsLimits.canvas) === JSON.stringify(expectedCanvas)
+          && JSON.stringify(capsLimits.width) === JSON.stringify([200, 4096])
+          && JSON.stringify(capsLimits.height) === JSON.stringify([200, 4096])
+          && JSON.stringify(capsLimits.scroll) === JSON.stringify([0, 10000000])
+          && JSON.stringify(capsLimits.scale) === JSON.stringify([0.1, 2]),
+      { canvas: capsLimits.canvas, width: capsLimits.width, height: capsLimits.height, scroll: capsLimits.scroll, scale: capsLimits.scale },
+      { canvas: expectedCanvas, width: [200, 4096], height: [200, 4096], scroll: [0, 10000000], scale: [0.1, 2] });
+
+      // --- authenticated ui.canvas on /state and /frame --------------------------------
+      harness.setConnection(ownerConnection());
+      try {
+        const stateResponse = await harness.request({ method: 'GET', path: '/plugins/ui-testing/state', headers: scopedHeadersA });
+        check('已认证 /state 的 ui.canvas 与 view 同源（version/space/x/y/offset/content/blank）',
+          stateResponse.statusCode === 200
+            && stateResponse.json?.ui?.canvas?.x === -100 && stateResponse.json.ui.canvas.y === -50
+            && stateResponse.json.ui.canvas.offsetX === -100 && stateResponse.json.ui.canvas.offsetY === -50
+            && stateResponse.json.ui.canvas.space === 'canvas-css-px' && stateResponse.json.ui.canvas.blank === 'white'
+            && stateResponse.json.ui.canvas.contentWidth === negativeSnapshot?.canvas?.contentWidth
+            && Number.isFinite(stateResponse.json.ui.canvas.contentWidth)
+            && stateResponse.json.ui.view?.canvasX === -100,
+        { status: stateResponse.statusCode, ui: stateResponse.json?.ui }, 'ui.canvas');
+        const frameResponse = await harness.request({ method: 'GET', path: '/plugins/ui-testing/frame', headers: scopedHeadersA });
+        check('/frame 的 state 带 ui.canvas（pending 与有帧两种分支同形）',
+          (frameResponse.json?.pending === true || typeof frameResponse.json?.image === 'string')
+            && frameResponse.json?.state?.ui?.canvas?.x === -100
+            && frameResponse.json?.state?.ui?.canvas?.offsetY === -50
+            && frameResponse.json?.state?.ui?.version === 1,
+        { pending: frameResponse.json?.pending ?? null, hasImage: typeof frameResponse.json?.image === 'string', ui: frameResponse.json?.state?.ui }, 'pending|image + ui.canvas');
+      } finally {
+        harness.setConnection(undefined);
+      }
+
+      // --- CAS: canvas patches share the same expectedRevision rejection ----------------
+      const revisionNow = (await getView(execA)).value?.view?.revision;
+      const conflict = await setView({ canvasX: 10, expectedRevision: revisionNow - 1 }, execA);
+      const afterConflict = (await getView(execA)).value?.view;
+      check('canvas + 过期 expectedRevision → VIEWPORT_CONFLICT（state/retryable）且零应用',
+        hasErrorCode(conflict, 'VIEWPORT_CONFLICT') && conflict.error?.category === 'state'
+          && conflict.error?.retryable === true
+          && afterConflict?.canvasX === -100 && afterConflict?.canvasY === -50,
+      { error: errorInfo(conflict), view: afterConflict }, { code: 'VIEWPORT_CONFLICT', canvasX: -100, canvasY: -50 });
+
+      // --- invalid canvas patches: pre-flight only, zero CDP ---------------------------
+      await sleep(350);
+      counter.reset();
+      const revisionBeforeInvalid = (await getView(execA)).value?.view?.revision;
+      const invalidCanvasCases = [
+        ['canvasX 超上界', { canvasX: 10000001 }],
+        ['canvasY 超下界', { canvasY: -10000001 }],
+        ['canvasX 字符串', { canvasX: '10' }],
+        ['canvasY NaN', { canvasY: Number.NaN }],
+        ['canvasX 与 x 同传', { canvasX: -10, x: 10 }],
+        ['canvasY 与 y 同传', { canvasY: 10, y: 10 }],
+      ];
+      const invalidCanvasResults = [];
+      for (const [label, patch] of invalidCanvasCases) {
+        const result = await setView(patch, execA);
+        invalidCanvasResults.push({ label, ok: result.ok, code: result.error?.code, category: result.error?.category });
+      }
+      check('canvas 越界/非数/与 x/y 同传 → INVALID_ARGUMENT/input ×6',
+        invalidCanvasResults.every((item) => item.code === 'INVALID_ARGUMENT' && item.category === 'input'),
+      invalidCanvasResults.filter((item) => item.code !== 'INVALID_ARGUMENT'), 'INVALID_ARGUMENT ×6');
+      check('canvas 非法预检零 CDP（runtime.send 调用数 = 0）', counter.total() === 0, { sends: counter.counts.calls }, { sends: {} });
+      const afterInvalid = (await getView(execA)).value?.view;
+      check('canvas 非法预检不改 view/revision',
+        afterInvalid?.canvasX === -100 && afterInvalid?.canvasY === -50
+          && afterInvalid?.revision === revisionBeforeInvalid,
+      { view: afterInvalid, before: revisionBeforeInvalid }, 'unchanged');
+
+      // --- canvas inside the content box → scroll aligns, O=0 --------------------------
+      const truthTall = await pageTruth(harness, execA);
+      check('fixture 文档足够高（maxScrollY ≥ 400，供 canvas 内容内/越界断言）',
+        maxScrollY(truthTall) >= 400, { maxScrollY: maxScrollY(truthTall) }, '>=400');
+      const within = await setView({ canvasY: 200 }, execA);
+      const truthWithin = await pageTruth(harness, execA);
+      check('canvasY=200（内容内）：页面 scroll 到 200，O=0，canvasY=200',
+        within.ok === true && within.value?.view?.y === 200 && within.value.view.canvasY === 200
+          && within.value.offset?.y === 0 && Math.abs((within.value.offset?.y ?? 1)) < 0.01
+          && truthWithin?.scrollY === 200,
+      { view: within.value?.view, offset: within.value?.offset, scrollY: truthWithin?.scrollY }, { y: 200, canvasY: 200, offsetY: 0 });
+      check('只给 canvasY：canvasX 的 O 保留（canvasX=-100，x=0）',
+        within.value?.view?.canvasX === -100 && within.value.view.x === 0
+          && Math.abs((within.value.offset?.x ?? 1) + 100) < 0.01,
+      { view: within.value?.view, offset: within.value?.offset }, { canvasX: -100, x: 0, offsetX: -100 });
+
+      // --- canvas beyond the content → residual offset > 0 (blank) --------------------
+      const truthBeyond = await pageTruth(harness, execA);
+      const maxY = maxScrollY(truthBeyond);
+      const beyondRequest = { canvasX: 0, canvasY: maxY + 57 };
+      const beyond = await setView(beyondRequest, execA);
+      const truthAfterBeyond = await pageTruth(harness, execA);
+      check('canvasY=maxY+57（越界）：scroll 停在 maxY，C=maxY+57，offset=57 → 露 blank',
+        beyond.ok === true
+          && Math.abs((beyond.value?.view?.y ?? -1) - truthAfterBeyond?.scrollY) <= 1
+          && Math.abs((beyond.value?.view?.y ?? -1) - maxY) <= 1
+          && Math.abs((beyond.value?.view?.canvasY ?? -1) - (maxY + 57)) <= 1
+          && Math.abs((beyond.value?.offset?.y ?? 0) - 57) <= 0.01
+          && truthAfterBeyond?.scrollY === maxY,
+      { view: beyond.value?.view, offset: beyond.value?.offset, truth: truthAfterBeyond, maxY }, { y: maxY, canvasY: maxY + 57, offsetY: 57 });
+      check('越界不是浏览器 clamp：clamped.canvasY=false（Host 主动把 S 停在 max，O=57）',
+        beyond.value?.clamped?.canvasY === false && beyond.value?.clamped?.canvasX === false && beyond.value?.clamped?.x === false,
+      beyond.value?.clamped, { canvasX: false, canvasY: false, x: false });
+
+      // --- reset to 0 ---------------------------------------------------------------
+      const reset = await setView({ canvasX: 0, canvasY: 0 }, execA);
+      const truthReset = await pageTruth(harness, execA);
+      check('canvas 归零：S=0、C=0、O=0、页面 scroll=0',
+        reset.ok === true && reset.value?.view?.x === 0 && reset.value.view.y === 0
+          && reset.value.view.canvasX === 0 && reset.value.view.canvasY === 0
+          && reset.value.offset?.x === 0 && reset.value.offset?.y === 0
+          && truthReset?.scrollX === 0 && truthReset?.scrollY === 0,
+      { view: reset.value?.view, offset: reset.value?.offset, truth: { x: truthReset?.scrollX, y: truthReset?.scrollY } }, { C: 0, S: 0, O: 0 });
+
+      // --- page-initiated scroll keeps O (C = S + O, source=page) ---------------------
+      const framing = await setView({ canvasY: -50 }, execA);
+      check('建立 O=-50（canvasY=-50、S=0）', framing.ok === true
+        && framing.value?.view?.canvasY === -50 && framing.value?.view?.y === 0
+        && framing.value?.offset?.y === -50,
+      { view: framing.value?.view, offset: framing.value?.offset }, { canvasY: -50, y: 0 });
+      const revisionBeforePageScroll = framing.value?.view?.revision;
+      await harness.invoke('browser_eval', { expression: 'window.scrollTo(0, 100); "ok"' }, execA);
+      // Polling page truth through browser_eval also arms the coalesced view readback (the wrapper
+      // schedules it after every page operation), so the cached view converges without a GUI poll.
+      const scrollDeadline = Date.now() + 3000;
+      let scrolledView = null;
+      let scrollDiagnostic = null;
+      while (Date.now() < scrollDeadline) {
+        const truth = await pageTruth(harness, execA);
+        const snapshot = (await getView(execA)).value;
+        const current = snapshot?.view;
+        scrollDiagnostic = {
+          page: { x: truth?.scrollX, y: truth?.scrollY },
+          view: current,
+          observed: snapshot?.observed,
+        };
+        if (current && Math.abs(current.y - 100) <= 1 && Math.abs(current.canvasY - 50) <= 1) {
+          scrolledView = current;
+          break;
+        }
+        await sleep(80);
+      }
+      check('页面真值已滚动到 scrollY=100', Math.abs((scrollDiagnostic?.page?.y ?? -1) - 100) <= 1,
+        scrollDiagnostic?.page, { scrollY: 100 });
+      check('页面自主滚动到 100：保留 O，C=50，source=page，revision 递增',
+        Math.abs((scrolledView?.y ?? -1) - 100) <= 1
+          && Math.abs((scrolledView?.canvasY ?? -1) - 50) <= 1
+          && scrolledView?.source === 'page'
+          && scrolledView?.revision === revisionBeforePageScroll + 1,
+      { view: scrolledView, before: revisionBeforePageScroll, last: scrollDiagnostic }, { y: 100, canvasY: 50, source: 'page', revision: 'before+1' });
+
+      // --- explicit x/y keeps O too (C = S_target + O) -------------------------------
+      const xyset = await setView({ y: 200 }, execA);
+      const truthXy = await pageTruth(harness, execA);
+      check('只给 y=200：保留 O=-50 → C=150，offset=-50，页面 scrollY=200',
+        xyset.ok === true && xyset.value?.view?.y === 200 && xyset.value.view.canvasY === 150
+          && xyset.value.offset?.y === -50 && truthXy?.scrollY === 200,
+      { view: xyset.value?.view, offset: xyset.value?.offset, scrollY: truthXy?.scrollY }, { y: 200, canvasY: 150, offsetY: -50 });
+
+      // --- resize keeps O (S is clamped by the browser, C follows) -------------------
+      const truthResizeBase = await pageTruth(harness, execA);
+      const resizeMaxY = maxScrollY(truthResizeBase);
+      const framed = await setView({ canvasY: resizeMaxY + 57 }, execA);
+      check('resize 前建立越界 O=57', framed.ok === true
+        && Math.abs((framed.value?.offset?.y ?? 0) - 57) <= 0.01,
+      { view: framed.value?.view, offset: framed.value?.offset }, { offsetY: 57 });
+      const resized = await setView({ height: 900 }, execA);
+      const truthResized = await pageTruth(harness, execA);
+      check('resize 到 900 高：S 由浏览器约束、O=57 保留 → C=S+57',
+        resized.ok === true
+          && Math.abs((resized.value?.view?.y ?? -1) - truthResized?.scrollY) <= 1
+          && Math.abs((resized.value?.offset?.y ?? 0) - 57) <= 0.01
+          && Math.abs((resized.value?.view?.canvasY ?? -1) - ((resized.value?.view?.y ?? 0) + 57)) <= 0.01,
+      { view: resized.value?.view, offset: resized.value?.offset, scrollY: truthResized?.scrollY }, { offsetY: 57, canvasY: 'y+57' });
+
+      // --- navigation resets C=S=0, keeps width/height/scale ------------------------
+      const beforeNavigation = (await getView(execA)).value?.view;
+      const nav2 = await harness.invoke('browser_navigate', { url: pageUrl }, execA);
+      check('导航成功', nav2.ok === true, errorInfo(nav2), { ok: true });
+      const navDeadline = Date.now() + 4000;
+      let afterNavigation = null;
+      let navigationDiagnostic = null;
+      while (Date.now() < navDeadline) {
+        const truth = await pageTruth(harness, execA);
+        const snapshot = (await getView(execA)).value;
+        navigationDiagnostic = {
+          page: { x: truth?.scrollX, y: truth?.scrollY },
+          view: snapshot?.view,
+          viewMeta: snapshot?.viewMeta,
+        };
+        const current = snapshot?.view;
+        if (current && current.x === 0 && current.y === 0 && current.canvasX === 0 && current.canvasY === 0) {
+          afterNavigation = current;
+          break;
+        }
+        await sleep(80);
+      }
+      check('导航：C=S=0、O=0，width/height/scale 保留',
+        afterNavigation?.canvasX === 0 && afterNavigation?.canvasY === 0
+          && afterNavigation?.x === 0 && afterNavigation?.y === 0
+          && afterNavigation?.width === beforeNavigation?.width
+          && afterNavigation?.height === beforeNavigation?.height
+          && afterNavigation?.scale === beforeNavigation?.scale,
+      { before: beforeNavigation, after: afterNavigation, last: navigationDiagnostic }, { C: 0, S: 0, config: 'preserved' });
+
+      // --- close resets C/S, keeps width/height/scale -------------------------------
+      const framedAgain = await setView({ canvasX: -100, canvasY: -50 }, execA);
+      check('关闭前建立 C=-100/-50', framedAgain.ok === true
+        && framedAgain.value?.view?.canvasX === -100 && framedAgain.value?.view?.canvasY === -50,
+      { view: framedAgain.value?.view }, { canvasX: -100, canvasY: -50 });
+      const beforeClose = (await getView(execA)).value?.view;
+      harness.setConnection(ownerConnection());
+      let closeResponse;
+      try {
+        closeResponse = await harness.request({
+          method: 'POST', path: '/plugins/ui-testing/close', headers: scopedHeadersA, body: {},
+        });
+      } finally {
+        harness.setConnection(undefined);
+      }
+      check('scope A close 返回 200', closeResponse.statusCode === 200,
+        { status: closeResponse.statusCode, body: closeResponse.json }, { status: 200 });
+      const afterClose = (await getView(execA)).value;
+      check('关闭：C=S=0/O=0、observed=null，width/height/scale 保留，revision+1',
+        afterClose?.view?.x === 0 && afterClose.view.y === 0
+          && afterClose.view.canvasX === 0 && afterClose.view.canvasY === 0
+          && afterClose.canvas?.offsetX === 0 && afterClose.canvas?.offsetY === 0
+          && afterClose.observed === null
+          && afterClose.view.width === beforeClose?.width && afterClose.view.height === beforeClose?.height
+          && afterClose.view.scale === beforeClose?.scale
+          && afterClose.view.revision === beforeClose?.revision + 1,
+      { before: beforeClose, after: afterClose?.view, canvas: afterClose?.canvas, observed: afterClose?.observed }, 'reset C/S, keep config');
+
+      const losslessCanvas = [
+        ['get', (await getView(execA)).value],
+        ['state', (await harness.invoke('browser_state', {}, execA)).value],
+        ['capabilities', (await harness.invoke('browser_capabilities')).value],
+      ].map(([name, value]) => ({ name, problem: losslessProblem(value) }));
+      check('canvas 投影（get/state/capabilities）均为 lossless JSON',
+        losslessCanvas.every((item) => item.problem === null), losslessCanvas.filter((item) => item.problem), 'no undefined');
+    });
+
+  /* ---------------------------------------------------------------- V12: frame scroll metadata */
+  await runProbe('V12-frame-metadata', '帧 scrollX/scrollY：FrameSource、WS 推送头、/frame 与运行时缓存同源',
+    'FrameSource.accept 保存 scrollX/scrollY（0 合法、小数保留、缺失/非法归一为 0）；WS 二进制帧头含 scrollX/scrollY；/frame 有帧时带有限非负 scrollX/scrollY，滚动后新帧 scrollY=40 且与页面真值和 runtime.frames.latest() 一致', async () => {
+      // --- pure frame store ---------------------------------------------------------
+      const source = new FrameSource();
+      const stored = source.accept({ data: '', width: 10, height: 10, pageWidth: 10, pageHeight: 10, scrollX: 0, scrollY: 12.5 });
+      check('FrameSource.accept 保存 scrollX=0（0 合法）与小数 scrollY=12.5',
+        stored.scrollX === 0 && stored.scrollY === 12.5, { scrollX: stored.scrollX, scrollY: stored.scrollY }, { scrollX: 0, scrollY: 12.5 });
+      const missing = source.accept({ data: '', width: 10, height: 10 });
+      check('缺失 scroll 元数据归一为 0（不是 NaN/undefined）',
+        missing.scrollX === 0 && missing.scrollY === 0, { scrollX: missing.scrollX, scrollY: missing.scrollY }, { scrollX: 0, scrollY: 0 });
+      const invalid = source.accept({ data: '', width: 10, height: 10, scrollX: -5, scrollY: Number.NaN });
+      check('负数/NaN scroll 归一为 0', invalid.scrollX === 0 && invalid.scrollY === 0,
+        { scrollX: invalid.scrollX, scrollY: invalid.scrollY }, { scrollX: 0, scrollY: 0 });
+
+      // --- WS push header -----------------------------------------------------------
+      source.accept({ data: '', width: 10, height: 10, pageWidth: 10, pageHeight: 10, scrollX: 3, scrollY: 42 });
+      const writes = [];
+      const fakeSocket = {
+        destroyed: false,
+        write(chunk) { writes.push(Buffer.from(chunk)); return true; },
+        setNoDelay() {}, on() {}, once() {}, end() {}, destroy() {},
+      };
+      const pusher = createFramePusher(source, { intervalMs: 0, scopeInfo: () => ({ scopeId: 'unit-scope', runtimeId: 'unit-runtime' }) });
+      let pushHeader = null;
+      try {
+        pusher.handleUpgrade({
+          headers: {
+            upgrade: 'websocket', connection: 'Upgrade',
+            'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13',
+          },
+        }, fakeSocket, Buffer.alloc(0));
+        const binary = writes.find((buffer) => (buffer[0] & 0x0f) === 0x2);
+        if (binary) pushHeader = decodeWsFrameHeader(binary);
+      } finally {
+        pusher.dispose();
+      }
+      check('WS 二进制帧头带 scrollX=3/scrollY=42（frame-push metadata 同源）',
+        pushHeader?.scrollX === 3 && pushHeader?.scrollY === 42 && pushHeader?.pageWidth === 10,
+      pushHeader ? { scrollX: pushHeader.scrollX, scrollY: pushHeader.scrollY, pageWidth: pushHeader.pageWidth } : null,
+      { scrollX: 3, scrollY: 42 });
+
+      // --- real runtime /frame ------------------------------------------------------
+      const runtimeA = runtimeByWorkspace('ws-a');
+      const nav = await harness.invoke('browser_navigate', { url: pageUrl }, execA);
+      check('V12 重新打开 fixture（close 后懒启动）', nav.ok === true, errorInfo(nav), { ok: true });
+      await waitFor(async () => (await pageTruth(harness, execA))?.title === 'P0 Capture Fixture', { label: 'fixture title' });
+      const base = await setView({ width: 800, height: 600, scale: 1, x: 0, y: 0 }, execA);
+      check('V12 基准 800×600', base.ok === true && base.value?.view?.width === 800, errorInfo(base), { width: 800 });
+
+      const paint = async () => harness.invoke('browser_eval', {
+        expression: "(function () { const el = document.getElementById('cap-red'); if (el) el.style.outline = el.style.outline ? '' : '1px solid #fff'; return true; })()",
+      }, execA);
+
+      harness.setConnection(ownerConnection());
+      try {
+        await paint();
+        const firstFrame = await waitFor(async () => {
+          const response = await harness.request({ method: 'GET', path: '/plugins/ui-testing/frame?since=0', headers: scopedHeadersA });
+          return typeof response.json?.image === 'string' ? response.json : null;
+        }, { timeoutMs: 5000, intervalMs: 100, label: '首帧 image' });
+        check('/frame 有帧时带有限非负 scrollX/scrollY，且 state.ui.canvas 同形',
+          Number.isFinite(firstFrame?.scrollX) && firstFrame.scrollX >= 0
+            && Number.isFinite(firstFrame?.scrollY) && firstFrame.scrollY >= 0
+            && Number.isFinite(firstFrame?.state?.ui?.canvas?.x)
+            && firstFrame.state.ui.canvas.space === 'canvas-css-px',
+        { scrollX: firstFrame?.scrollX, scrollY: firstFrame?.scrollY, uiCanvas: firstFrame?.state?.ui?.canvas }, 'finite scroll + ui.canvas');
+
+        const seqBefore = runtimeA.frames.seq;
+        const scrolled = await setView({ y: 40 }, execA);
+        check('滚动到 y=40 成功', scrolled.ok === true && scrolled.value?.view?.y === 40,
+          { view: scrolled.value?.view, error: scrolled.ok ? null : errorInfo(scrolled) }, { y: 40 });
+        await paint();
+        const scrolledFrame = await waitFor(async () => {
+          const response = await harness.request({
+            method: 'GET', path: `/plugins/ui-testing/frame?since=${seqBefore}`, headers: scopedHeadersA,
+          });
+          const json = response.json;
+          return typeof json?.image === 'string' && Math.abs((json.scrollY ?? -1) - 40) <= 1 ? json : null;
+        }, { timeoutMs: 5000, intervalMs: 100, label: '滚动后帧 scrollY=40' });
+        const truth = await pageTruth(harness, execA);
+        check('滚动后新帧 scrollY=40 与页面真值 scrollY 一致',
+          Math.abs((scrolledFrame?.scrollY ?? -1) - 40) <= 1
+            && Math.abs((scrolledFrame?.scrollY ?? -1) - (truth?.scrollY ?? -2)) <= 1,
+        { frameScrollY: scrolledFrame?.scrollY, truthScrollY: truth?.scrollY, seq: scrolledFrame?.seq }, { scrollY: 40 });
+        const latest = runtimeA.frames.latest();
+        check('/frame 与 runtime.frames.latest() 是同一份 scroll 元数据',
+          latest?.scrollY === scrolledFrame?.scrollY && latest?.scrollX === scrolledFrame?.scrollX,
+        { latest: latest ? { scrollX: latest.scrollX, scrollY: latest.scrollY } : null, frame: { scrollX: scrolledFrame?.scrollX, scrollY: scrolledFrame?.scrollY } }, 'same frame');
+      } finally {
+        harness.setConnection(undefined);
+      }
+    });
+
+  /* ---------------------------------------------------------------- V13: /screenshot canvas seed route */
+  await runProbe('V13-screenshot-route', '/screenshot 画布 provenance：raw 旧路径 + canvas:true（O=0/O≠0）+ 认证',
+    'raw POST 保持旧响应形状与 live viewport PNG；canvas:true + O=0 单次原生 PNG（composite:false）；canvas:true + O≠0 返回 W×H 白底合成 PNG + view/capture.canvas（C/S/O/content/blank/composite:true）+ request/contentRect/scroll/viewRevision；证据不泄露页面文本或路径；scoped 未认证仍 401', async () => {
+      const setLegacy = (patch) => harness.invoke('browser_viewport', { action: 'set', ...patch });
+      const pixelAt = (decoded, x, y) => {
+        const base = (y * decoded.width + x) * decoded.channels;
+        if (decoded.channels === 4) return { r: decoded.data[base], g: decoded.data[base + 1], b: decoded.data[base + 2], a: decoded.data[base + 3] };
+        if (decoded.channels === 3) return { r: decoded.data[base], g: decoded.data[base + 1], b: decoded.data[base + 2], a: 255 };
+        if (decoded.channels === 2) return { r: decoded.data[base], g: decoded.data[base], b: decoded.data[base], a: decoded.data[base + 1] };
+        return { r: decoded.data[base], g: decoded.data[base], b: decoded.data[base], a: 255 };
+      };
+
+      const nav = await harness.invoke('browser_navigate', { url: pageUrl });
+      check('V13 legacy scope 打开 fixture', nav.ok === true, errorInfo(nav), { ok: true });
+      await waitFor(async () => (await pageTruth(harness))?.title === 'P0 Capture Fixture', { label: 'fixture title' });
+      const base = await setLegacy({ width: 800, height: 600, scale: 1, x: 0, y: 0 });
+      check('V13 基准 800×600/C=0/O=0', base.ok === true && base.value?.view?.canvasX === 0
+        && base.value?.view?.canvasY === 0 && base.value?.offset?.x === 0 && base.value?.offset?.y === 0,
+      { view: base.value?.view, offset: base.value?.offset }, { width: 800, height: 600, offset: 0 });
+
+      // ---- raw legacy path: exact old shape, no composition metadata ------------------------
+      const raw = await harness.request({ method: 'POST', path: '/plugins/ui-testing/screenshot', body: {} });
+      const rawJson = raw.json || {};
+      check('V13 raw POST /screenshot 保持旧响应形状（ok/image/viewport/capturedAt，无 view/capture）',
+        raw.statusCode === 200 && rawJson.ok === true && typeof rawJson.image === 'string'
+          && JSON.stringify(Object.keys(rawJson).sort()) === JSON.stringify(['capturedAt', 'image', 'ok', 'viewport'])
+          && rawJson.view === undefined && rawJson.capture === undefined,
+        { status: raw.statusCode, keys: Object.keys(rawJson), view: rawJson.view, capture: rawJson.capture }, 'legacy shape');
+      const rawPng = inspectPng(Buffer.from(String(rawJson.image || ''), 'base64'), { checkCrc: true });
+      check('V13 raw 截图 = 页面 live viewport 800×600（原始 CDP PNG）',
+        rawPng.ok === true && rawPng.width === 800 && rawPng.height === 600,
+        rawPng.ok ? { width: rawPng.width, height: rawPng.height } : rawPng, { width: 800, height: 600 });
+
+      // ---- canvas:true + O=0: still the raw single-CDP PNG, provenance additive -------------
+      const o0 = await harness.request({ method: 'POST', path: '/plugins/ui-testing/screenshot', body: { canvas: true } });
+      const o0Json = o0.json || {};
+      check('V13 canvas:true + O=0：composite=false、request=canvas-css-px/document-css-px、带 view/viewRevision',
+        o0.statusCode === 200 && typeof o0Json.image === 'string'
+          && o0Json.view?.canvasX === 0 && o0Json.view?.x === 0
+          && o0Json.capture?.composite === false
+          && o0Json.capture?.request?.space === 'canvas-css-px'
+          && o0Json.capture?.request?.coordinateSpace === 'document-css-px'
+          && o0Json.capture?.canvas?.composite === false
+          && Number.isFinite(o0Json.capture?.viewRevision),
+        { status: o0.statusCode, view: o0Json.view, capture: o0Json.capture }, 'O=0 raw path');
+      const o0Png = inspectPng(Buffer.from(String(o0Json.image || ''), 'base64'), { checkCrc: true });
+      check('V13 canvas:true + O=0 PNG 仍 800×600（未走合成/重编码）',
+        o0Png.ok === true && o0Png.width === 800 && o0Png.height === 600,
+        o0Png.ok ? { width: o0Png.width, height: o0Png.height } : o0Png, { width: 800, height: 600 });
+
+      // ---- canvas:true + O≠0: white-composited canvas viewport ------------------------------
+      const moved = await setLegacy({ canvasX: -100, canvasY: -50 });
+      check('V13 legacy scope 建立 C=(-100,-50)/S=0', moved.ok === true
+        && moved.value?.view?.canvasX === -100 && moved.value?.view?.canvasY === -50
+        && moved.value?.view?.x === 0 && moved.value?.view?.y === 0,
+      { view: moved.value?.view, offset: moved.value?.offset }, { canvas: [-100, -50], scroll: [0, 0] });
+      const c1 = await harness.request({ method: 'POST', path: '/plugins/ui-testing/screenshot', body: { canvas: true } });
+      const c1Json = c1.json || {};
+      const c1Bytes = Buffer.from(String(c1Json.image || ''), 'base64');
+      const c1Png = inspectPng(c1Bytes, { checkCrc: true });
+      const c1Decoded = decodePng(c1Bytes);
+      check('V13 canvas:true + O≠0 返回 800×600 PNG + viewport=W×H',
+        c1.statusCode === 200 && c1Png.ok === true && c1Png.width === 800 && c1Png.height === 600
+          && c1Json.viewport?.width === 800 && c1Json.viewport?.height === 600,
+        { status: c1.statusCode, png: c1Png.ok ? { width: c1Png.width, height: c1Png.height } : c1Png, viewport: c1Json.viewport }, { size: [800, 600] });
+      check('V13 capture.canvas：C/S/O、content、blank=#ffffff、composite=true、source',
+        c1Json.capture?.canvas?.x === -100 && c1Json.capture.canvas.y === -50
+          && c1Json.capture.canvas.scrollX === 0 && c1Json.capture.canvas.scrollY === 0
+          && c1Json.capture.canvas.offsetX === -100 && c1Json.capture.canvas.offsetY === -50
+          && c1Json.capture.canvas.contentWidth === 800 && c1Json.capture.canvas.contentHeight === 2600
+          && c1Json.capture.canvas.blank === '#ffffff'
+          && c1Json.capture.canvas.composite === true
+          && c1Json.capture.canvas.source === 'cdp-page-capture-screenshot'
+          && c1Json.capture.composite === true
+          && c1Json.capture.request?.coordinateSpace === 'canvas-css-px',
+        { canvas: c1Json.capture?.canvas, composite: c1Json.capture?.composite, request: c1Json.capture?.request }, 'canvas provenance');
+      check('V13 capture.contentRect={0,0,700,550}、scroll={0,0}、viewport={800,600}',
+        JSON.stringify(c1Json.capture?.contentRect) === JSON.stringify({ x: 0, y: 0, width: 700, height: 550 })
+          && JSON.stringify(c1Json.capture?.scroll) === JSON.stringify({ x: 0, y: 0 })
+          && c1Json.capture?.viewport?.width === 800 && c1Json.capture?.viewport?.height === 600,
+        { contentRect: c1Json.capture?.contentRect, scroll: c1Json.capture?.scroll, viewport: c1Json.capture?.viewport },
+        { contentRect: { x: 0, y: 0, width: 700, height: 550 }, scroll: { x: 0, y: 0 } });
+      check('V13 view 是安全投影（canvasX/Y + revision，无页面文本/路径）', c1Json.view?.canvasX === -100
+        && c1Json.view?.canvasY === -50 && Number.isSafeInteger(c1Json.view?.revision),
+      { view: c1Json.view }, { canvas: [-100, -50], revision: 'integer' });
+      const serializedCapture = JSON.stringify({ view: c1Json.view, capture: c1Json.capture });
+      check('V13 canvas 证据不泄露页面文本/URL/文件路径',
+        !serializedCapture.includes('"url"') && !serializedCapture.includes('"title"')
+          && !serializedCapture.includes('"file"') && !serializedCapture.includes('http://')
+          && !serializedCapture.includes('/tmp/') && !serializedCapture.includes('/home/'),
+        { leaked: serializedCapture.match(/"(url|title|file)"|https?:\/\/|\/tmp\/|\/home\//g) || null }, 'no page text/path');
+      const whiteAt = (x, y) => {
+        const p = pixelAt(c1Decoded, x, y);
+        return p.r === 255 && p.g === 255 && p.b === 255;
+      };
+      check('V13 O≠0 合成像素：左/上 blank 纯白、#cap-red 落在 (120,70)+',
+        c1Decoded.ok === true && whiteAt(10, 300) && whiteAt(400, 10)
+          && pixelAt(c1Decoded, 130, 80).r === 255 && pixelAt(c1Decoded, 130, 80).g === 0
+          && pixelAt(c1Decoded, 130, 80).b === 0,
+        c1Decoded.ok ? { left: pixelAt(c1Decoded, 10, 300), top: pixelAt(c1Decoded, 400, 10), red: pixelAt(c1Decoded, 130, 80) } : c1Decoded,
+        { left: 'white', top: 'white', red: [255, 0, 0] });
+
+      // ---- scoped auth failure path stays 401 (no image, no page change) -------------------
+      const revisionBeforeAuth = (await getView(harness)).value?.view?.revision;
+      harness.setConnection(harnessModule.createFakeConnectionService({ rejection: 401 }));
+      let authResponse;
+      try {
+        authResponse = await harness.request({
+          method: 'POST', path: '/plugins/ui-testing/screenshot',
+          headers: scopedHeadersA, body: { canvas: true },
+        });
+      } finally {
+        harness.setConnection(undefined);
+      }
+      check('V13 scoped /screenshot 未通过认证 → 401，无 image/capture 且不改页面 view',
+        authResponse.statusCode === 401 && authResponse.json?.image === undefined
+          && authResponse.json?.capture === undefined
+          && (await getView(harness)).value?.view?.revision === revisionBeforeAuth,
+        { status: authResponse.statusCode, body: authResponse.json, revision: revisionBeforeAuth }, { status: 401 });
+
+      // ---- restore legacy view for later probes -------------------------------------------
+      await setLegacy({ canvasX: 0, canvasY: 0 });
+      const restored = (await getView(harness)).value?.view;
+      check('V13 复位 legacy view C=0/O=0（供后续探针）',
+        restored?.canvasX === 0 && restored?.canvasY === 0 && restored?.x === 0 && restored?.y === 0,
+        restored, { canvas: 0, offset: 0 });
     });
 
   log('\n[cleanup] closing browsers and fixture');

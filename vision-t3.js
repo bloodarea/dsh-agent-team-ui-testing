@@ -331,6 +331,21 @@ export function validateCssRect(value, label = 'rect') {
   return { x, y, width, height };
 }
 
+/**
+ * `Source.live.region` 的 canvas 空间校验：允许负 x/y（视口外/内容外即 blank，docs/
+ * canvas-viewport.md §6.2）。有限性与 width/height ≥ 1 与文档矩形一致；O=0 时 Host 仍会拒绝
+ * 负坐标（旧语义不变），这里只负责语法层。
+ */
+function validateSourceRegion(value, label = 'region') {
+  const rect = assertObject(value, label);
+  assertAllowedKeys(rect, ['x', 'y', 'width', 'height'], label);
+  const x = readNumber(rect, 'x', label, { required: true });
+  const y = readNumber(rect, 'y', label, { required: true });
+  const width = readNumber(rect, 'width', label, { min: 1, required: true });
+  const height = readNumber(rect, 'height', label, { min: 1, required: true });
+  return { x, y, width, height };
+}
+
 export function validatePoint(value, label = 'point') {
   const point = assertObject(value, label);
   assertAllowedKeys(point, ['x', 'y'], label);
@@ -359,7 +374,7 @@ export function validateSource(value, label = 'source') {
     const scale = readNumber(source, 'scale', label, { min: 0.1, max: 4 });
     const normalized = { kind: 'live' };
     if (scale !== undefined) normalized.scale = scale;
-    if (hasOwn(source, 'region')) normalized.region = validateCssRect(source.region, `${label}.region`);
+    if (hasOwn(source, 'region')) normalized.region = validateSourceRegion(source.region, `${label}.region`);
     return normalized;
   }
   if (kind === 'product') {
@@ -2359,6 +2374,15 @@ export function mappingCompatible(left, right) {
     && near(leftRect.height, rightRect.height);
 }
 
+/** 两个 CSS 矩形的交集（右下开区间；无交集为 0 尺寸）。 */
+function intersectCssRect(a, b) {
+  const left = Math.max(a.x, b.x);
+  const top = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+}
+
 /** 裁剪后的派生 mapping：原点加 crop 偏移，cssPerPixel 不变。 */
 export function mappingAfterCrop(mapping, rect) {
   if (!isMapping(mapping) || !isPlainObject(rect)) return null;
@@ -2376,12 +2400,28 @@ export function mappingAfterCrop(mapping, rect) {
       height: height * mapping.cssPerPixel.y,
     }
     : null;
-  return {
+  const derived = {
     ...mapping,
     originCss,
     imagePixels: { width, height },
     capturedCssRect,
   };
+  // Canvas-space mappings (docs/canvas-viewport.md §6.2): a crop moves the canvas origin; the
+  // content box stays anchored at (0,0), so the derived content intersection must be recomputed.
+  if (isPlainObject(mapping.canvas) && capturedCssRect
+    && Number.isFinite(mapping.canvas.contentWidth) && Number.isFinite(mapping.canvas.contentHeight)) {
+    derived.canvas = {
+      ...mapping.canvas,
+      x: originCss.x,
+      y: originCss.y,
+      offsetX: originCss.x - mapping.canvas.scrollX,
+      offsetY: originCss.y - mapping.canvas.scrollY,
+    };
+    derived.contentRect = intersectCssRect(capturedCssRect, {
+      x: 0, y: 0, width: mapping.canvas.contentWidth, height: mapping.canvas.contentHeight,
+    });
+  }
+  return derived;
 }
 
 /** 缩放后的派生 mapping：cssPerPixel 按实际 sx=Wout/Win、sy=Hout/Hin 缩小。 */

@@ -5,7 +5,7 @@
 ```text
 package.json          DSH bundle 清单：dsh.bundle.patch + dsh.client（platform: web）；files 含 index.js/client.js/frame-*/browser-safety.js/capture-p0.js/**network-p0.js**/vision-t3.js/vision-baseline.js/cordis.patch.yml/locale/icon/skills
 cordis.patch.yml      插入一行 plugin：id = ui-testing-browser
-index.js              Host 半边：BrowserHost（单 Chromium/profile、多 page）、按 DSH 工作区的 RuntimeRegistry、租约/串行队列、scoped HTTP 路由、独立 HTTP 客户端、30 工具（10 T1 + 7 T2 + 6 T3 + 7 network）、每 Runtime 的权威共享 view（宽高/x/y/比例/来源/版本 + 实时观测）与内置 Skill；并承担网络全事件采集（Runtime 级 Network/Fetch 订阅、按需 body、子目标 setAutoAttach）与 browser_capabilities.network 报告
+index.js              Host 半边：BrowserHost（单 Chromium/profile、多 page）、按 DSH 工作区的 RuntimeRegistry、租约/串行队列、scoped HTTP 路由、独立 HTTP 客户端、30 工具（10 T1 + 7 T2 + 6 T3 + 7 network）、每 Runtime 的权威共享 view（宽高/x/y/canvasX/Y/比例/来源/版本 + 实时观测）与内置 Skill；并承担网络全事件采集（Runtime 级 Network/Fetch 订阅、按需 body、子目标 setAutoAttach）与 browser_capabilities.network 报告
 browser-safety.js     BrowserError/CDP、错误分类（含 REF_STALE/TARGET_NOT_UNIQUE/NOT_INTERACTABLE/WAIT_TIMEOUT、T3 的 VISION_* 码与网络 P0 的 NET_* 码）、取消/定时器清理、URL 脱敏与目标/DNS 校验
 network-p0.js         P0 网络纯 JS 核心：事件/会话存储、标准化与有界配额、分析与统计、业务链路窗口、拦截/限速/重放规则、JSONL/HAR 导入导出与证据索引、订阅游标（零 npm 依赖，不直接持有 CDP）
 capture-p0.js         P0 采集基础设施：PNG 结构/CRC/解码、全量均匀/透明统计、尺寸校验、纯 JSON 映射投影、安全路径与原子 no-clobber 写入
@@ -44,7 +44,7 @@ docs/                 项目记忆（本目录）；按工作区隔离的契约�
 
 ## P0 采集职责
 
-权威契约见 [capture-p0.md](capture-p0.md)。Runtime 只做单次 CDP 文档 clip 截图与环境读回，工具层编排 PNG 校验、尺寸拒绝、`capture.version=1`、文件发布和附件元数据比较；算法与同步文件操作委托 `capture-p0.js`。公开 mapping 经纯 JSON 投影，不返回函数。`browser_capabilities.capture/limits.capture` 不启动浏览器，observed 仅来自所属 Runtime 上次真实截图；PNG证据与JPEG预览分离。默认文件写插件实例级暂存，dispose清理；out/persist:true/非空env才持久到env或cwd根。file用pathKind/persistence/root/ephemeral区分；仅staging返回绝对路径，observed只保留persistence与relativePath（暂存为null）。当前C1–C14共14/14、142/142（[最终报告](../tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json)）；下方115项为修订前历史。P0 三次进程内真实 Chromium 验收各 13/13、115/115（[报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），宿主重载/provider 仍 NOT_RUN。
+权威契约见 [capture-p0.md](capture-p0.md)/[canvas-viewport.md](canvas-viewport.md)。Runtime 做单次 CDP 截图与环境读回；O=0 时是旧文档 clip 单次 PNG（不重编码），O≠0 时先截 canvas∩content 页面帧、再白底合成（重编码，`capture.canvas.composite=true`），工具层编排 PNG 校验、尺寸拒绝、`capture.version=1`、文件发布和附件元数据比较；算法与同步文件操作委托 `capture-p0.js`。公开 mapping 经纯 JSON 投影，不返回函数。`browser_capabilities.capture/limits.capture` 不启动浏览器，observed 仅来自所属 Runtime 上次真实截图；PNG证据与JPEG预览分离。默认文件写插件实例级暂存，dispose清理；out/persist:true/非空env才持久到env或cwd根。file用pathKind/persistence/root/ephemeral区分；仅staging返回绝对路径，observed只保留persistence与relativePath（暂存为null）。当前 C1–C15 共 **15/15、162/162**（画布轮 [报告](../tests/acceptance/runs/capture-p0-2026-11-01T20-18-32-415Z-768943/report.json)）；此前 14/14、142/142 与下方 115 项为历史。P0 三次进程内真实 Chromium 验收各 13/13、115/115（[报告](../tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json)），宿主重载/provider 仍 NOT_RUN。
 
 ## P0 网络职责
 
@@ -54,18 +54,18 @@ docs/                 项目记忆（本目录）；按工作区隔离的契约�
 - **事件与证据**：`NET_PROTOCOL_VERSION=1` 标准化事件入环形缓冲（`maxEvents/maxBodyBytes/maxTotalBytes/maxWsFrames`），淘汰/丢弃/截断一律计数并可查 `integrity`；JSONL 为保真格式、HAR 只保证 1.2 子集（未知数值用 `-1`）。默认脱敏（URL 敏感 query、敏感头、JSON/form 敏感字段 → `***`），原值不进事件/证据/错误。
 - **控制**：`Fetch.enable` 只有一份配置，Document 导航守卫与用户规则共用单一 dispatcher，每个 paused 请求恰好一次终结；`session.stop/reset` 逐条终结 held 请求但**不 `Fetch.disable`**。
 - **能力报告**：`browser_capabilities.network` 报 `version/tools/session/limits/observed` 与 `web.network.*` 三态；`limits.network` 里 **`https = "mechanism-identical"` 与 `responseModification` 并列**（前者固定口径、后者按 Chrome 实测支持与否报 `true|false`）；诊断调用不启动浏览器、不建目录、不生成证据文件。
-- **未验证**：真实宿主重启后的网络采集冒烟与 provider/长连接稳定性未验；HTTPS 子项与 `modify-response` 子项按 [network-p0.md](network-p0.md) §10 记 NOT_RUN。
+- **未验证**：网络 P0 的 `control`/`replay`/证据/订阅真宿主行为与 provider/长连接稳定性未验（2026-11-02 真实宿主已冒烟 `session`/`events`/`detail`，[证据](../tests/acceptance/evidence/viewport-real-host-2026-11-02.md)）；HTTPS 子项与 `modify-response` 子项按 [network-p0.md](network-p0.md) §10 记 NOT_RUN。
 
 ## 共享视口职责
 
-权威契约见 [viewport-control.md](viewport-control.md)。
+权威契约见 [viewport-control.md](viewport-control.md)（P0-C 共享视口）与 [canvas-viewport.md](canvas-viewport.md)（P0-D 混合画布，独立验收）。
 
-- **Host（`index.js`）**：`VIEW_PRESETS`/`VIEW_LIMITS` 常量；`Runtime.view` 与 `get viewport()` 别名、`observed`、`viewMeta` 与 `viewOriginId`；`viewProjection/observedProjection/viewMeta/viewSnapshot` 纯 JSON 投影；`#readViewMetrics`（`Page.getLayoutMetrics` css* 字段 + DPR 读回）、`#scrollViewTo`（instant scrollTo）、`#waitTwoFrames`、`#settleViewObservation`（两帧 + 有界稳定采样）；`refreshViewObservation(Soon)` 的合并/节流/single-flight 后台观测与 `#commitObservedPosition`（只回显 x/y，`source:'page'`）；`applyView`（队列内 CAS → ensure → 条件 override → 条件 scroll → 提交）；legacy `applyViewport` 保持旧 round/clamp；`/viewport` 双形状路由与 `ui.view/viewMeta/observed` 投影；`browser_viewport` 注册（`readOnly(args)`/`preflight(args)` 让 get 走缓存诊断、预检零 CDP）；`browser_capabilities.viewport` 与 `limits.viewport`；截图与 T3 live 的默认比例解析。
-- **`capture-p0.js`**：`scaleMin=0.1`、`minOutputPixels=1`、`hasPositiveOutputSize()`；mapping 仍是纯 JSON（逐轴比例由 Host 用真实 PNG 尺寸补上）。
-- **`vision-t3.js`**：`validateSource` 保留"省略 scale"，范围下界 0.1；由 Host 在调用内用冻结的 `view.scale` 解析。
+- **Host（`index.js`）**：`VIEW_PRESETS`/`VIEW_LIMITS` 常量；`Runtime.view` 与 `get viewport()` 别名、`observed`、`viewMeta` 与 `viewOriginId`；`viewProjection/observedProjection/viewMeta/viewSnapshot` 纯 JSON 投影；`#readViewMetrics`（`Page.getLayoutMetrics` css* 字段 + DPR 读回）、`#scrollViewTo`（instant scrollTo）、`#waitTwoFrames`、`#settleViewObservation`（两帧 + 有界稳定采样）；`refreshViewObservation(Soon)` 的合并/节流/single-flight 后台观测与 `#commitObservedPosition`（只回显 x/y，`source:'page'`）；`applyView`（队列内 CAS → ensure → 条件 override → 条件 scroll → 提交；`canvasX/canvasY` 的 S_target/clamp/O、保留旧 O、返回 offset/content）；legacy `applyViewport` 保持旧 round/clamp；`/viewport` 双形状路由与 `ui.view/viewMeta/observed` 投影；`browser_viewport` 注册（`readOnly(args)`/`preflight(args)` 让 get 走缓存诊断、预检零 CDP）；`browser_capabilities.viewport`/`limits.viewport`（含 canvas）；`ui.canvas` 投影；截图与 T3 live 的默认比例解析；`Runtime.screenshot({canvas:true})` 合成 seed。
+- **`capture-p0.js`**：`scaleMin=0.1`、`minOutputPixels=1`、`hasPositiveOutputSize()`、`encodePngRgba/intersectRects/composeCanvasImage`；mapping 仍是纯 JSON（canvas/contentRect/blank 透传，逐轴比例由 Host 用真实 PNG 尺寸补上）。
+- **`vision-t3.js`**：`validateSource` 保留"省略 scale"，范围下界 0.1；由 Host 在调用内用冻结的 `view.scale` 解析；canvas mappingAfterCrop、负 region 语法、blank act 零派发。
 - **`browser-safety.js`**：`VIEWPORT_CONFLICT`（state / retryable）。
 - **Client（`client.js`）**：`ViewLimits`/`WHEEL_STEPS`（10/100/1 与 5/10/1，Alt 优先）、`paintedRect()` 与 `frameWheelDelta()` 纯几何、`viewOf()/viewCompanionsOf()` 解析 `ui.view`、`acceptView/adoptView/syncViewDrafts/clearCaughtUpDrafts`（草稿保护、外部变更取消 fit）、`queueViewPatch/flushViewPatch`（120ms 合并、按字段 patch、v1 带 `expectedRevision`、旧 Host 走 legacy 体）、`frameGeometry/geometryMatches/inputGeomReady`（≤250ms best-effort 屏障）、指针/滚轮/拖拽映射与释放，以及尺寸栏 X/Y 输入与 flex-wrap。
-- **未改**：`frame-source.js`/`frame-push.js` 本轮未动（Lead 裁决不扩帧协议），因此宽高变更后的几何关联只是 best-effort。
+- **帧（画布 v2 起改）**：`frame-source.js`/`frame-push.js` 新增 `scrollX/scrollY`（metadata 优先，缺失用采集时实测 S）；O=0 仍沿用旧 250ms best-effort 屏障，O≠0 改用 fail-closed 并可用 `/screenshot {canvas:true}` seed 恢复。
 
 ## client.js 内部结构
 
@@ -78,4 +78,4 @@ docs/                 项目记忆（本目录）；按工作区隔离的契约�
 
 **第 8 轮（网络 P0）`client.js` 未动**：网络能力只走 Agent 工具与 HTTP 路由，面板样式/文案/布局保持冻结；因此该轮不需要前端热更新，只有 Host 侧变更需要重启 DSH。
 
-**第 9 轮（共享视口）`client.js` 有改动**：尺寸栏新增 X/Y、五个数值框滚轮、fit 改为本地显示偏好、painted rect 坐标映射与帧几何屏障、导航链不再隐式 POST 本地尺寸、窄面板 flex-wrap。这些是用户明确要求的界面变更；其余视觉/文案/布局仍按冻结约定处理。
+**第 9 轮（共享视口）+ 画布 v2 `client.js` 有改动**：尺寸栏新增 X/Y、五个数值框滚轮、fit 本地显示偏好、painted rect 坐标映射与帧几何屏障、导航链不再隐式 POST 本地尺寸、窄面板 flex-wrap；画布 v2 让 X/Y 绑定 canvasX/Y、裁剪盒+白底合成、输入 `q→p=q+O`、blank 零派发、拖拽写 canvas（空白 overlay）、seed 刷新与 fail-closed。用户明确要求的界面变更；其余视觉/文案/布局仍按冻结约定处理。

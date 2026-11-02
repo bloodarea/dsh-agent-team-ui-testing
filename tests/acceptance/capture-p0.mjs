@@ -836,6 +836,172 @@ async function main() {
     };
   });
 
+  // ---- C15: canvas-space composite (P0-C v2, docs/canvas-viewport.md §6.1) --------------------
+  await runProbe('C15-canvas-composite', 'Canvas 空间截图：O=0 原路径 / O≠0 白底合成（mapping/blank/16M）',
+    'O=0 保持单次 CDP PNG 不合成；O≠0 默认与负 region 都按 canvas CSS 合成：四边 blank 纯白、内容按 -O 平移、capture.canvas/mapping.canvas/contentRect/blank/composite:true 齐全；全 blank region 全白且 pageCapture=null；16M 按最终合成图拒绝；截图后复位', async () => {
+      const setView = (patch) => harness.invoke('browser_viewport', { action: 'set', ...patch });
+
+      await openPage(pageUrl, 'P0 Capture Fixture');
+      const baseline = await setView({ width: 800, height: 600, scale: 1, x: 0, y: 0 });
+      check('C15 基准 800×600/C=0/O=0',
+        baseline.ok === true && baseline.value?.view?.canvasX === 0 && baseline.value?.view?.canvasY === 0
+          && baseline.value?.offset?.x === 0 && baseline.value?.offset?.y === 0,
+        { view: baseline.value?.view, offset: baseline.value?.offset }, { width: 800, height: 600, offset: 0 });
+
+      // ---- O = 0: old single-CDP-PNG path, explicitly not composited ------------------------
+      const plain = await capture({}, 'c15-o0.png');
+      const plainCap = plain.value.capture || {};
+      check('C15 O=0：composite=false、pageCapture=null，request/mapping 仍是 document-css-px',
+        plain.result.ok === true && plainCap.composite === false && plainCap.pageCapture === null
+          && plainCap.request?.space === 'canvas-css-px' && plainCap.request?.coordinateSpace === 'document-css-px'
+          && plainCap.mapping?.coordinateSpace === 'document-css-px'
+          && plainCap.mapping?.canvas?.composite === false
+          && plainCap.mapping?.canvas?.offsetX === 0 && plainCap.mapping?.canvas?.offsetY === 0,
+        { composite: plainCap.composite, pageCapture: plainCap.pageCapture, request: plainCap.request, mapping: plainCap.mapping },
+        { composite: false, coordinateSpace: 'document-css-px' });
+      check('C15 O=0 PNG 800×600 且 canvas.offset=0、content 来自实测',
+        plainCap.png?.width === 800 && plainCap.png?.height === 600
+          && plainCap.canvas?.x === 0 && plainCap.canvas?.y === 0
+          && Number.isFinite(plainCap.canvas?.contentWidth) && Number.isFinite(plainCap.canvas?.contentHeight),
+        { png: plainCap.png, canvas: plainCap.canvas }, { width: 800, height: 600, offset: 0 });
+
+      // ---- O ≠ 0: composite ---------------------------------------------------------------
+      const negative = await setView({ canvasX: -100, canvasY: -50 });
+      check('C15 canvasX=-100/canvasY=-50 生效（C 权威、S 仍 0）',
+        negative.ok === true && negative.value?.view?.canvasX === -100 && negative.value?.view?.canvasY === -50
+          && negative.value?.view?.x === 0 && negative.value?.view?.y === 0,
+        { view: negative.value?.view, offset: negative.value?.offset }, { canvas: { x: -100, y: -50 }, scroll: { x: 0, y: 0 } });
+
+      const composed = await capture({}, 'c15-canvas.png');
+      const cap = composed.value.capture || {};
+      const decoded = decodePng(composed.bytes);
+      check('C15 O≠0 默认 800×600、composite:true（重编码已披露）、canvas-css-px',
+        composed.result.ok === true && cap.png?.width === 800 && cap.png?.height === 600
+          && cap.composite === true && cap.canvas?.composite === true
+          && cap.canvas?.source === 'cdp-page-capture-screenshot'
+          && cap.request?.coordinateSpace === 'canvas-css-px'
+          && cap.mapping?.coordinateSpace === 'canvas-css-px',
+        { png: cap.png, composite: cap.composite, canvas: cap.canvas, request: cap.request, mapping: cap.mapping?.coordinateSpace },
+        { composite: true, coordinateSpace: 'canvas-css-px' });
+      check('C15 capture.canvas：C/S/O、content、blank=#ffffff',
+        cap.canvas?.x === -100 && cap.canvas?.y === -50
+          && cap.canvas?.scrollX === 0 && cap.canvas?.scrollY === 0
+          && cap.canvas?.offsetX === -100 && cap.canvas?.offsetY === -50
+          && cap.canvas?.contentWidth === 800 && cap.canvas?.contentHeight === 2600
+          && cap.canvas?.blank === '#ffffff',
+        cap.canvas, 'C/S/O + content');
+      check('C15 mapping.canvas / contentRect / blank / cssPerPixel 齐全',
+        cap.mapping?.canvas?.offsetX === -100 && cap.mapping?.canvas?.offsetY === -50
+          && JSON.stringify(cap.mapping?.contentRect) === JSON.stringify({ x: 0, y: 0, width: 700, height: 550 })
+          && cap.mapping?.blank === 'outside-content'
+          && cap.mapping?.cssPerPixel?.x === 1 && cap.mapping?.cssPerPixel?.y === 1,
+        { canvas: cap.mapping?.canvas, contentRect: cap.mapping?.contentRect, blank: cap.mapping?.blank, cssPerPixel: cap.mapping?.cssPerPixel },
+        'mapping canvas fields');
+      check('C15 pageCapture 记录真实页面 clip = canvas∩content',
+        JSON.stringify(cap.pageCapture?.clip) === JSON.stringify({ x: 0, y: 0, width: 700, height: 550 })
+          && cap.pageCapture?.width === 700 && cap.pageCapture?.height === 550,
+        cap.pageCapture, { clip: { x: 0, y: 0, width: 700, height: 550 } });
+      check('C15 合成 PNG 可独立解码为 800×600 RGBA', decoded.ok === true && decoded.width === 800 && decoded.height === 600,
+        decoded.ok ? { width: decoded.width, height: decoded.height, channels: decoded.channels } : decoded, { width: 800, height: 600 });
+      const safePixel = (x, y) => (decoded.ok ? pixelAt(decoded, x, y) : null);
+      const isWhite = (p) => Boolean(p) && p.r === 255 && p.g === 255 && p.b === 255;
+      check('C15 四边 blank 纯白（左 100 / 上 50 / 右 100 / 下 50）',
+        isWhite(safePixel(10, 300)) && isWhite(safePixel(400, 10)) && isWhite(safePixel(790, 300)) && isWhite(safePixel(400, 590)),
+        { left: safePixel(10, 300), top: safePixel(400, 10), right: safePixel(790, 300), bottom: safePixel(400, 590) }, 'white blank');
+      check('C15 内容按 -O 平移：#cap-red → 图像 (120,70)+、#cap-blue → (220,70)+',
+        JSON.stringify(safePixel(130, 80)) === JSON.stringify({ r: 255, g: 0, b: 0, a: 255 })
+          && safePixel(230, 80)?.r === 0 && safePixel(230, 80)?.g === 128 && safePixel(230, 80)?.b === 255,
+        { red: safePixel(130, 80), blue: safePixel(230, 80) }, { red: [255, 0, 0], blue: [0, 128, 255] });
+      // scale 2 on the same composite geometry: output=round(800×2)×round(600×2), content/blank
+      // scaled by the same factor (docs/canvas-viewport.md §6.1 step 2).
+      const scaled = await capture({ scale: 2 }, 'c15-canvas-scale2.png');
+      const scaledCap = scaled.value.capture || {};
+      const scaledDecoded = decodePng(scaled.bytes);
+      const scaledAt = (x, y) => (scaledDecoded.ok ? pixelAt(scaledDecoded, x, y) : null);
+      check('C15 合成 + scale=2：1600×1200、左 200/上 100 blank、#cap-red 落在 (240,140)',
+        scaled.result.ok === true && scaledDecoded.ok === true
+          && scaledDecoded.width === 1600 && scaledDecoded.height === 1200
+          && isWhite(scaledAt(10, 600)) && isWhite(scaledAt(800, 10))
+          && scaledAt(250, 150)?.r === 255 && scaledAt(250, 150)?.g === 0 && scaledAt(250, 150)?.b === 0
+          && scaledCap.mapping?.cssPerPixel?.x === 0.5,
+        scaledDecoded.ok
+          ? { size: [scaledDecoded.width, scaledDecoded.height], left: scaledAt(10, 600), top: scaledAt(800, 10), red: scaledAt(250, 150), cssPerPixel: scaledCap.mapping?.cssPerPixel }
+          : scaledDecoded,
+        { size: [1600, 1200], red: [255, 0, 0], cssPerPixel: 0.5 });
+
+      const composedDisk = cap.file?.path ? join(state.captureRoot, cap.file.path) : '';
+      check('C15 合成字节与落盘文件一致（sha256 同一份）',
+        Boolean(composedDisk) && existsSync(composedDisk)
+          && sha256(composed.bytes) === cap.file?.sha256
+          && sha256(await readFile(composedDisk)) === cap.file?.sha256,
+        { file: cap.file?.sha256, base64: sha256(composed.bytes), disk: existsSync(composedDisk) ? sha256(await readFile(composedDisk)) : null }, 'same bytes');
+
+      // ---- negative explicit region -------------------------------------------------------
+      const negativeRegion = await capture({ region: { x: -200, y: -100, width: 300, height: 200 } }, 'c15-region-negative.png');
+      const nrCap = negativeRegion.value.capture || {};
+      const nrDecoded = decodePng(negativeRegion.bytes);
+      const nrAt = (x, y) => (nrDecoded.ok ? pixelAt(nrDecoded, x, y) : null);
+      check('C15 负 region 按 canvas 合成：300×200、contentRect={0,0,100,100}、pageCapture.clip 同值',
+        negativeRegion.result.ok === true && nrCap.png?.width === 300 && nrCap.png?.height === 200
+          && JSON.stringify(nrCap.contentRect) === JSON.stringify({ x: 0, y: 0, width: 100, height: 100 })
+          && JSON.stringify(nrCap.pageCapture?.clip) === JSON.stringify({ x: 0, y: 0, width: 100, height: 100 })
+          && nrCap.mapping?.coordinateSpace === 'canvas-css-px',
+        { png: nrCap.png, contentRect: nrCap.contentRect, pageCapture: nrCap.pageCapture }, 'negative region');
+      check('C15 负 region 像素：blank 纯白、#cap-red 落在 (230,130)',
+        isWhite(nrAt(10, 10)) && nrAt(230, 130)?.r === 255 && nrAt(230, 130)?.g === 0 && nrAt(230, 130)?.b === 0,
+        { blank: nrAt(10, 10), red: nrAt(230, 130) }, { blank: 'white', red: [255, 0, 0] });
+
+      // ---- fully blank region -------------------------------------------------------------
+      const blankRegion = await capture({ region: { x: -500, y: -100, width: 100, height: 100 } }, 'c15-region-blank.png');
+      const brCap = blankRegion.value.capture || {};
+      const brDecoded = decodePng(blankRegion.bytes);
+      const blankAll = brDecoded.ok ? everyPixelIs(brDecoded, { r: 255, g: 255, b: 255 }) : { ok: false };
+      check('C15 全 blank region：100×100 全白、pageCapture=null、contentRect 0×0、composite=true',
+        blankRegion.result.ok === true && brCap.png?.width === 100 && brCap.png?.height === 100
+          && blankAll.ok === true && brCap.pageCapture === null
+          && brCap.contentRect?.width === 0 && brCap.contentRect?.height === 0
+          && brCap.composite === true,
+        { png: brCap.png, pageCapture: brCap.pageCapture, contentRect: brCap.contentRect, every: blankAll }, 'all blank');
+
+      // ---- positive O beyond the scroll max ----------------------------------------------
+      const viewportFacts = await harness.invoke('browser_eval', {
+        expression: '({ maxY: document.documentElement.scrollHeight - window.innerHeight })',
+      });
+      const maxY = viewportFacts.value?.value?.maxY;
+      const beyond = await setView({ canvasX: 0, canvasY: maxY + 57 });
+      check('C15 建立正向 O=57（canvasY=maxY+57 → S 停在 maxY）',
+        beyond.ok === true && beyond.value?.offset?.y === 57 && beyond.value?.view?.y === maxY,
+        { view: beyond.value?.view, offset: beyond.value?.offset, maxY }, { offsetY: 57 });
+      const beyondShot = await capture({}, 'c15-beyond.png');
+      const beyondCap = beyondShot.value.capture || {};
+      // pageCapture.clip 是 canvas/document 坐标（clip.y = C = maxY + 57）；内容在输出里贴到 y=0，
+      // 底部 57px 是 blank。这是“正向 O 露 blank”的几何真值。
+      check('C15 正向 O：pageCapture.clip.y=C=maxY+57、高 543、offsetY=57（底部 57px blank）',
+        beyondShot.result.ok === true
+          && beyondCap.pageCapture?.clip?.y === maxY + 57 && beyondCap.pageCapture?.clip?.height === 543
+          && beyondCap.contentRect?.y === maxY + 57 && beyondCap.contentRect?.height === 543
+          && beyondCap.canvas?.offsetY === 57 && beyondCap.canvas?.y === maxY + 57,
+        { clip: beyondCap.pageCapture?.clip, contentRect: beyondCap.contentRect, canvas: beyondCap.canvas, maxY },
+        { clipY: maxY + 57, clipHeight: 543, offsetY: 57 });
+
+      // ---- 16M budget on the final composited image --------------------------------------
+      const filesBefore = (await listFilesRecursive(state.captureRoot)).length;
+      await setView({ width: 4096, height: 4096 });
+      const tooLarge = await capture({}, 'c15-too-large.png');
+      check('C15 16M 预算按最终合成图：4096×4096 + O≠0 → CAPTURE_TOO_LARGE 且不写文件',
+        hasErrorCode(tooLarge.result, 'CAPTURE_TOO_LARGE')
+          && (await listFilesRecursive(state.captureRoot)).length === filesBefore,
+        { error: errorInfo(tooLarge.result), filesBefore, filesAfter: (await listFilesRecursive(state.captureRoot)).length }, 'CAPTURE_TOO_LARGE');
+
+      // ---- restore ------------------------------------------------------------------------
+      await setView({ width: 800, height: 600, canvasX: 0, canvasY: 0 });
+      const restored = (await harness.invoke('browser_viewport', { action: 'get' })).value?.view;
+      check('C15 复位 view 800×600/C=0/O=0（供后续探针）',
+        restored?.width === 800 && restored?.height === 600
+          && restored?.canvasX === 0 && restored?.canvasY === 0 && restored?.x === 0 && restored?.y === 0,
+        restored, { width: 800, height: 600, canvas: 0 });
+    });
+
   // ---- C12: cleanup / repeatability ----------------------------------------------------------
   await runProbe('C12-cleanup-repeatable', '清理与可重复性（无状态残留）', '关闭全部浏览器、本进程 Chromium 子进程退出、profile 与临时 capture 根删除；两次连续运行都 exit 0', async () => {
     const result = await cleanupResources('suite-complete');

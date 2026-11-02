@@ -30,7 +30,7 @@ import {
   unlinkSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { inflateSync } from 'node:zlib';
+import { deflateSync, inflateSync } from 'node:zlib';
 
 /** 8 字节 PNG 文件签名。 */
 export const PNG_SIGNATURE = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -262,6 +262,161 @@ export function decodePng(bytes) {
 }
 
 /**
+ * 编码一张 8-bit RGBA、非交错、filter 0 的 PNG（合成截图用；纯逻辑、无第三方依赖）。
+ *
+ * 只接受逐像素 RGBA（channels=4）缓冲。输出是可被 inspectPng / decodePng 重新读回的合法 PNG；
+ * 合成路径必然重编码，调用方必须在证据里披露 `composite:true`（docs/canvas-viewport.md §6.1）。
+ *
+ * @param {{width:number,height:number,rgba:Uint8Array|Buffer}} image
+ * @param {{level?:number}} [options]
+ * @returns {Buffer}
+ */
+export function encodePngRgba({ width, height, rgba } = {}, { level = 6 } = {}) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new TypeError('encodePngRgba: width/height must be positive integers');
+  }
+  if (width * height > CAPTURE_LIMITS.maxPngPixels) {
+    throw new TypeError(`encodePngRgba: ${width}x${height} exceeds the PNG pixel budget`);
+  }
+  const pixels = asBuffer(rgba);
+  const stride = width * 4;
+  if (!pixels || pixels.length !== stride * height) {
+    throw new TypeError('encodePngRgba: rgba buffer length does not match width*height*4');
+  }
+  const raw = Buffer.alloc((stride + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    raw[y * (stride + 1)] = 0; // filter type 0 (None) keeps composition deterministic
+    pixels.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
+  }
+  const idat = deflateSync(raw, { level: Number.isInteger(level) && level >= 0 && level <= 9 ? level : 6 });
+
+  const chunk = (type, data) => {
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(data.length, 0);
+    header.write(type, 4, 'latin1');
+    const crcInput = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(crcInput), 0);
+    return Buffer.concat([header, data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;  // bit depth
+  ihdr[9] = 6;  // colour type RGBA
+  ihdr[10] = 0; // compression
+  ihdr[11] = 0; // filter
+  ihdr[12] = 0; // interlace
+  return Buffer.concat([
+    Buffer.from(PNG_SIGNATURE),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', idat),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+/**
+ * 两个 CSS 矩形的交集（右下开区间）；无交集时 width/height 为 0，绝不返回负尺寸。
+ *
+ * @param {{x:number,y:number,width:number,height:number}} left
+ * @param {{x:number,y:number,width:number,height:number}} right
+ * @returns {{x:number,y:number,width:number,height:number}}
+ */
+export function intersectRects(left, right) {
+  const a = left || { x: 0, y: 0, width: 0, height: 0 };
+  const b = right || { x: 0, y: 0, width: 0, height: 0 };
+  const x = Math.max(Number(a.x) || 0, Number(b.x) || 0);
+  const y = Math.max(Number(a.y) || 0, Number(b.y) || 0);
+  const rightEdge = Math.min((Number(a.x) || 0) + Math.max(0, Number(a.width) || 0), (Number(b.x) || 0) + Math.max(0, Number(b.width) || 0));
+  const bottomEdge = Math.min((Number(a.y) || 0) + Math.max(0, Number(a.height) || 0), (Number(b.y) || 0) + Math.max(0, Number(b.height) || 0));
+  return { x, y, width: Math.max(0, rightEdge - x), height: Math.max(0, bottomEdge - y) };
+}
+
+/**
+ * Canvas 合成（docs/canvas-viewport.md §6.1）：白底 RGBA 输出矩形，把页面截图按 canvas CSS 位置贴入。
+ *
+ * 坐标空间是 **canvas CSS px**（canvas 坐标 == document 坐标：content 在 (0,0)）。`pageRect` 是
+ * 实际截取的页面区域（canvas 与内容的交集），`outputRect` 是要交付的 canvas 取景框；二者都用
+ * CSS px，`scale` 是重新光栅化倍数。输出尺寸严格为 round(outputRect × scale)（与 P0 尺寸公式一致）。
+ *
+ * 采样用目标像素中心反推 canvas 坐标（最近邻）。整数几何时是逐像素拷贝；页面截图的真实像素
+ * 尺寸即使与名义尺寸相差 1px（Chromium 会对小数 clip 取整）也能正确落位，不产生拉伸空白。
+ *
+ * @param {{page?:{ok:true,width:number,height:number,channels:number,data:Buffer}|null,
+ *          pageRect?:{x:number,y:number,width:number,height:number}|null,
+ *          outputRect:{x:number,y:number,width:number,height:number},
+ *          scale:number,
+ *          blankColor?:[number,number,number,number]}} input
+ * @returns {{ok:true,width:number,height:number,rgba:Buffer}
+ *          |{ok:false,code:'CAPTURE_FAILED',message:string,details:object}}
+ */
+export function composeCanvasImage({ page = null, pageRect = null, outputRect, scale, blankColor = [255, 255, 255, 255] } = {}) {
+  const rect = outputRect || {};
+  const renderScale = Number(scale);
+  if (![rect.x, rect.y, rect.width, rect.height].every((value) => typeof value === 'number' && Number.isFinite(value))
+    || rect.width <= 0 || rect.height <= 0) {
+    return { ok: false, code: 'CAPTURE_FAILED', message: 'composeCanvasImage: outputRect must be a finite positive rectangle', details: { reason: 'output-rect-invalid' } };
+  }
+  if (!Number.isFinite(renderScale) || renderScale <= 0) {
+    return { ok: false, code: 'CAPTURE_FAILED', message: 'composeCanvasImage: scale must be a positive finite number', details: { reason: 'scale-invalid' } };
+  }
+  const width = Math.round(rect.width * renderScale);
+  const height = Math.round(rect.height * renderScale);
+  if (!hasPositiveOutputSize({ width, height })) {
+    return { ok: false, code: 'CAPTURE_FAILED', message: 'composeCanvasImage: output rounds to 0 pixels', details: { reason: 'empty-output-dimensions', width, height } };
+  }
+  if (width * height > CAPTURE_LIMITS.maxOutputPixels) {
+    return { ok: false, code: 'CAPTURE_FAILED', message: 'composeCanvasImage: output exceeds the pixel budget', details: { reason: 'too-large', width, height } };
+  }
+  const rgba = Buffer.alloc(width * height * 4);
+  const blank = Array.isArray(blankColor) && blankColor.length === 4 ? blankColor : [255, 255, 255, 255];
+  for (let i = 0; i < rgba.length; i += 4) {
+    rgba[i] = blank[0]; rgba[i + 1] = blank[1]; rgba[i + 2] = blank[2]; rgba[i + 3] = blank[3];
+  }
+  if (!page || page.ok !== true || !pageRect) return { ok: true, width, height, rgba };
+  const pageWidth = Number(page.width);
+  const pageHeight = Number(page.height);
+  if (!Number.isInteger(pageWidth) || !Number.isInteger(pageHeight) || pageWidth <= 0 || pageHeight <= 0
+    || !Buffer.isBuffer(page.data) || !(pageRect.width > 0) || !(pageRect.height > 0)) {
+    return { ok: true, width, height, rgba };
+  }
+  const channels = Number(page.channels);
+  if (![1, 2, 3, 4].includes(channels)) {
+    return { ok: false, code: 'CAPTURE_FAILED', message: 'composeCanvasImage: unsupported page channel count', details: { reason: 'page-channels', channels } };
+  }
+  // Destination paste rectangle in output pixels (right/bottom are exclusive).
+  const left = Math.max(0, Math.min(width, Math.round((pageRect.x - rect.x) * renderScale)));
+  const top = Math.max(0, Math.min(height, Math.round((pageRect.y - rect.y) * renderScale)));
+  const right = Math.max(left, Math.min(width, Math.round((pageRect.x + pageRect.width - rect.x) * renderScale)));
+  const bottom = Math.max(top, Math.min(height, Math.round((pageRect.y + pageRect.height - rect.y) * renderScale)));
+  const sourcePerDestX = pageRect.width / pageWidth;
+  const sourcePerDestY = pageRect.height / pageHeight;
+  for (let dy = top; dy < bottom; dy += 1) {
+    // canvas CSS centre of this destination pixel → source pixel (nearest neighbour)
+    const canvasY = rect.y + (dy + 0.5) / renderScale;
+    let sy = Math.floor((canvasY - pageRect.y) / sourcePerDestY);
+    if (sy < 0) sy = 0; else if (sy >= pageHeight) sy = pageHeight - 1;
+    for (let dx = left; dx < right; dx += 1) {
+      const canvasX = rect.x + (dx + 0.5) / renderScale;
+      let sx = Math.floor((canvasX - pageRect.x) / sourcePerDestX);
+      if (sx < 0) sx = 0; else if (sx >= pageWidth) sx = pageWidth - 1;
+      const source = (sy * pageWidth + sx) * channels;
+      const target = (dy * width + dx) * 4;
+      if (channels === 1) {
+        rgba[target] = page.data[source]; rgba[target + 1] = page.data[source]; rgba[target + 2] = page.data[source]; rgba[target + 3] = 255;
+      } else if (channels === 2) {
+        rgba[target] = page.data[source]; rgba[target + 1] = page.data[source]; rgba[target + 2] = page.data[source]; rgba[target + 3] = page.data[source + 1];
+      } else if (channels === 3) {
+        rgba[target] = page.data[source]; rgba[target + 1] = page.data[source + 1]; rgba[target + 2] = page.data[source + 2]; rgba[target + 3] = 255;
+      } else {
+        rgba[target] = page.data[source]; rgba[target + 1] = page.data[source + 1]; rgba[target + 2] = page.data[source + 2]; rgba[target + 3] = page.data[source + 3];
+      }
+    }
+  }
+  return { ok: true, width, height, rgba };
+}
+
+/**
  * 异常空白图识别。
  *
  * uniform = 所有被扫描的像素，各通道相对“首个像素”的差都 <= tolerance。
@@ -423,13 +578,21 @@ export function checkPixelSize(actual, expected, { tolerance = 0 } = {}) {
 }
 
 /**
- * 文档 CSS 坐标 -> 图像像素的映射（含可逆函数；进工具结果前必须用 projectCaptureMapping 投影）。
+ * Canvas / 文档 CSS 坐标 -> 图像像素的映射（含可逆函数；进工具结果前必须用 projectCaptureMapping 投影）。
+ *
+ * `coordinateSpace` 默认 `document-css-px`（旧行为）；画布合成截图传 `canvas-css-px`
+ * （docs/canvas-viewport.md §6）。`canvas`/`contentRect`/`blank` 是画布证据的可选附加字段，
+ * 不影响旧调用方。
  *
  * @param {{region:{x:number,y:number,width:number,height:number},
  *          scroll?:{x:number,y:number}, viewport?:{width:number,height:number},
- *          scale?:number, deviceScaleFactor?:number}} input
+ *          scale?:number, deviceScaleFactor?:number, coordinateSpace?:string,
+ *          canvas?:object|null, contentRect?:object|null, blank?:string|null}} input
  */
-export function createCaptureMapping({ region, scroll = { x: 0, y: 0 }, viewport, scale = 1, deviceScaleFactor = 1 } = {}) {
+export function createCaptureMapping({
+  region, scroll = { x: 0, y: 0 }, viewport, scale = 1, deviceScaleFactor = 1,
+  coordinateSpace = 'document-css-px', canvas = null, contentRect = null, blank = null,
+} = {}) {
   if (!region || !Number.isFinite(region.width) || !Number.isFinite(region.height)) {
     throw new TypeError('createCaptureMapping: region with finite width/height is required');
   }
@@ -447,8 +610,8 @@ export function createCaptureMapping({ region, scroll = { x: 0, y: 0 }, viewport
   });
   const originCss = { x: cssRect.x, y: cssRect.y };
   const ppcp = imagePixels.pixelsPerCssPixel;
-  return {
-    coordinateSpace: 'document-css-px',
+  const mapping = {
+    coordinateSpace: coordinateSpace === 'canvas-css-px' ? 'canvas-css-px' : 'document-css-px',
     originCss,
     imagePixels: { width: imagePixels.width, height: imagePixels.height },
     pixelsPerCssPixel: ppcp,
@@ -470,6 +633,34 @@ export function createCaptureMapping({ region, scroll = { x: 0, y: 0 }, viewport
       };
     },
   };
+  if (canvas && typeof canvas === 'object') mapping.canvas = { ...canvas };
+  if (contentRect && typeof contentRect === 'object') mapping.contentRect = { ...contentRect };
+  if (typeof blank === 'string') mapping.blank = blank;
+  return mapping;
+}
+
+/** Pure JSON copy of a finite-number rectangle (used by the canvas evidence fields). */
+function finiteRect(rect) {
+  if (!rect || typeof rect !== 'object') return null;
+  const out = {};
+  for (const key of ['x', 'y', 'width', 'height']) {
+    if (Number.isFinite(rect[key])) out[key] = rect[key];
+  }
+  return out;
+}
+
+/** Pure JSON copy of the canvas evidence block (numbers/strings only). */
+function finiteCanvas(canvas) {
+  if (!canvas || typeof canvas !== 'object') return null;
+  const out = {};
+  for (const key of ['version', 'x', 'y', 'scrollX', 'scrollY', 'offsetX', 'offsetY', 'contentWidth', 'contentHeight']) {
+    if (Number.isFinite(canvas[key])) out[key] = canvas[key];
+  }
+  if (typeof canvas.space === 'string') out.space = canvas.space;
+  if (typeof canvas.blank === 'string') out.blank = canvas.blank;
+  if (typeof canvas.source === 'string') out.source = canvas.source;
+  if (typeof canvas.composite === 'boolean') out.composite = canvas.composite;
+  return out;
 }
 
 /**
@@ -477,15 +668,16 @@ export function createCaptureMapping({ region, scroll = { x: 0, y: 0 }, viewport
  *
  * @param {ReturnType<typeof createCaptureMapping>} mapping
  * @returns {{coordinateSpace:string,originCss:object,imagePixels:object,pixelsPerCssPixel:number,
- *            cssRect:object,formulas:{cssToPixel:string,pixelToCss:string}}}
+ *            cssRect:object,canvas?:object,contentRect?:object,blank?:string,
+ *            formulas:{cssToPixel:string,pixelToCss:string}}}
  */
 export function projectCaptureMapping(mapping) {
   const source = mapping || {};
   const origin = source.originCss || { x: 0, y: 0 };
   const pixels = source.imagePixels || { width: 0, height: 0 };
   const rect = source.cssRect || { x: 0, y: 0, width: 0, height: 0 };
-  return {
-    coordinateSpace: source.coordinateSpace === 'document-css-px' ? 'document-css-px' : 'document-css-px',
+  const out = {
+    coordinateSpace: source.coordinateSpace === 'canvas-css-px' ? 'canvas-css-px' : 'document-css-px',
     originCss: { x: Number(origin.x) || 0, y: Number(origin.y) || 0 },
     imagePixels: { width: Number(pixels.width) || 0, height: Number(pixels.height) || 0 },
     pixelsPerCssPixel: Number(source.pixelsPerCssPixel) || 0,
@@ -500,6 +692,12 @@ export function projectCaptureMapping(mapping) {
       pixelToCss: 'css = origin + px / pixelsPerCssPixel',
     },
   };
+  const canvas = finiteCanvas(source.canvas);
+  if (canvas) out.canvas = canvas;
+  const contentRect = finiteRect(source.contentRect);
+  if (contentRect) out.contentRect = contentRect;
+  if (typeof source.blank === 'string') out.blank = source.blank;
+  return out;
 }
 
 function pathInvalid(message, details) {

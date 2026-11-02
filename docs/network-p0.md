@@ -693,7 +693,7 @@ log.entries[{pageref,startedDateTime,time,
 - 安全：不装 CA/不做 MITM；不读任意文件；不导出 Cookie 原值；不把敏感值写日志/错误/证据；路径越界拒绝；跨 scope 拒绝；订阅 owner-only。
 - 运行环境：真实 headless Chromium；无 Chromium → 采集工具 `CDP_*`/`NET_CONTROL_UNAVAILABLE`，只读工具仍可用（空/已存证据）。
 - 未验证/不承诺：popup 采集、跨 scope 聚合、T4 动态视觉、真实网络限速精度、HAR 全字段、`modify-response` 在 CDP 不支持时的行为（如实报 unsupported/NOT_RUN）。
-- 生效方式：新增 `network-p0.js` 与 `index.js`/`browser-safety.js`/`package.json` 变更需**重启 DSH**；`client.js` 未动，无需前端热更新。真实宿主复验属 Lead 最终验收，进程内套件通过不等于真实宿主已验。
+- 生效方式：新增 `network-p0.js` 与 `index.js`/`browser-safety.js`/`package.json` 变更需**重启 DSH**；`client.js` 未动，无需前端热更新。真实宿主复验属 Lead 最终验收，进程内套件通过不等于真实宿主已验。**2026-11-02 01:28 重启后的 3080** 已冒烟 `session`/`events`/`detail`（会话 `net-ccff0d8f`，21 事件，detail 含 headers/timing；[证据](../tests/acceptance/evidence/viewport-real-host-2026-11-02.md)）；`control`/`replay`/证据/订阅与长连接稳定性仍 NOT_RUN。
 ## 13. 顾问 review 裁决（R1，2026-11-01，Lead）
 
 本节是 §1–§12 的**补充裁决**，与正文同等权威；冲突处以本节为准，实现/验收必须按此对齐。未列入的 review 项视为记录性建议，不强制。

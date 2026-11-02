@@ -25,7 +25,7 @@ Lead串行最终 **14/14、142/142、0失败、exit0**：`tests/acceptance/runs/
 
 P0真实宿主重载/新会话及provider视觉/最终图像尺寸仍NOT_RUN；canvas/WebGL内部源位图限制、瞬时LBI与本地TOCTOU边界不因报告消失。附件compare='attachment-metadata'缺字段不能推断相同；原始PNG落盘不等于完整证据包。
 
-## 共享视口验收（2026-11-01，第 10 个 T1 工具）
+## 共享视口（P0-C）与混合画布（P0-D）验收（2026-11-01，第 10 个 T1 工具）
 
 **已实现并通过进程内 Lead/执行者验收（verified，覆盖路径）**：新增工具 `browser_viewport`（能力 `web.t1.viewport`，工具面 29 → 30 = 10 T1 + 7 T2 + 6 T3 + 7 network），契约见仓库 `docs/viewport-control.md`（2026-11-01 Lead 冻结）。每个工作区 Runtime 一份权威 `view={version,mode,x,y,width,height,scale,source,revision}`（文档 CSS px）；面板与 Agent 读写同一对象，顶层 `viewport={width,height}` 只是别名。
 
@@ -37,11 +37,12 @@ P0真实宿主重载/新会话及provider视觉/最终图像尺寸仍NOT_RUN；c
 
 **验收（同一最终代码；计数以 Lead 终验报告为准）**：
 
-- Host：`node tests/acceptance/viewport.mjs` → **probes 11/11、requiredChecks 107/107、failedChecks 0、findings 1（info）、exit 0**（连跑两次同结果），报告 `tests/acceptance/runs/viewport-2026-11-01T16-13-39-758Z-559039/report.json`、`tests/acceptance/runs/viewport-2026-11-01T16-13-53-771Z-559488/report.json`。覆盖 V1 注册面、V2 冷启动诊断零启动、V3 预设/部分 patch/同值不增 revision/两 scope/非法参数零 CDP、V4 scale-only 布局不变与 override 计数、V5 x/y 实测与 clamp/单轴、H4b 页面滚动回显、V6 CAS+BUSY、V7 legacy/v1 HTTP、V8 默认与显式截图比例、V9 T3 live 缺省比例、V10 lossless JSON 与关闭清理。
-- GUI（隔离 DSH + 无头 Chrome，连跑两次同结果）：`node tests/acceptance/viewport-gui.mjs` → **73/73 PASS、0 FAIL、5 NOT_RUN、exit 0**，报告 `tests/acceptance/runs/viewport-gui-2026-11-01T16-09-04-966Z-554236/run-report.json`、`tests/acceptance/runs/viewport-gui-2026-11-01T16-10-07-443Z-555424/run-report.json`；证据 `tests/acceptance/evidence/viewport-gui-2026-11-01T16-09-04-966Z/`（4 PNG + SUMMARY）。
+- Host（画布 v2）：`node tests/acceptance/viewport.mjs` → **probes 14/14、requiredChecks 166/166、failedChecks 0、findings 1（info）、exit 0**，报告 `tests/acceptance/runs/viewport-2026-11-01T20-18-41-148Z-769923/report.json`。此前 11/11、107/107 报告保留为历史。覆盖 V1 注册面、V2 冷启动诊断零启动、V3 预设/部分 patch/同值不增 revision/两 scope/非法参数零 CDP、V4 scale-only 布局不变与 override 计数、V5 x/y 实测与 clamp/单轴、H4b 页面滚动回显、V6 CAS+BUSY、V7 legacy/v1 HTTP、V8 默认与显式截图比例、V9 T3 live 缺省比例、V10 lossless JSON 与关闭清理。
+- GUI（隔离 DSH + 无头 Chrome，画布轮）：`node tests/acceptance/viewport-gui.mjs` → **142/142 PASS、0 FAIL、5 NOT_RUN、exit 0**（Lead `tests/acceptance/runs/viewport-gui-2026-11-01T20-07-15-023Z-753710/run-report.json`；执行者两次 `...20-01-59-679Z-748916`、`...20-04-13-804Z-751323`）；证据 `tests/acceptance/evidence/viewport-gui-2026-11-01T20-07-15-023Z/`（9 PNG + SUMMARY）。此前 73/73、85/85 轮保留为历史。
+- **2026-11-02 画布 v2**：`view` 增 `canvasX/canvasY`（±1e7，可为负）、`ui.canvas`/capabilities/state/frame `scrollX/Y`；截图/T3 使用 canvas 空间（O=0 不重编码；O≠0 白底合成并披露 `capture.canvas.composite=true`）；client X/Y 绑定 canvas、空白合成（面板深色棋盘格）、拖拽写 canvas、拖拽模式滚轮缩放（严格锁屏幕光标点、fit 自动取消）、fail-closed + `/screenshot {canvas:true}` seed。验收：viewport 14/14+166/166、GUI 142/142+5 NOT_RUN、capture 15/15+162/162、t3 56/56+415/415，均 exit 0；真实宿主 Host 画布面已实测（2026-11-02 11:15 重启后），面板交互仍 NOT_RUN。
 - 回归同一时点：T1 `run.mjs` **23/23、349/349、exit 0**（`tests/acceptance/runs/2026-11-01T16-00-44-334Z-546478/run-report.json`）；`capture-p0.mjs` **14/14、142/142、exit 0**（`tests/acceptance/runs/capture-p0-2026-11-01T15-40-32-906Z-519432/report.json`）；`runtime-faults` **16/16**（交接）。**全量回归已由 Lead 独立终验跑完（终版代码，2026-11-01 16:19–16:45，串行单驱动者，全部 exit 0）**：viewport 11/11 probes + 107/107 required；GUI 73/73 PASS + 0 FAIL + 5 NOT_RUN；run.mjs 23/23 + 349/349（P21 flake 未复现）；capture-p0 14/14 + 142/142；t2-structured 37/38 + 1 NOT_RUN（C38 套件边界）+ 261/261；t3-vision 56/56 + 391/391 + notApplicable 3；network-p0 52/52 + 266/266 + 8 NOT_RUN；network-chain 12/12 + 49 + 1 NOT_RUN；workspace-isolation 77/77；runtime-faults 16/16；check-skill 30/30；check-skill-registry 19/19。
 - **5 条 GUI NOT_RUN（原样保留，不算通过）**：V7.10 agent 归因（GUI 只能走 HTTP v1，Host 记为 source=gui；归因由 Host H2 覆盖）、V8.5 letterbox 零派发（实测帧无 band）、V10.4 旧 Host 降级（套件只起新 Host）、V10.5 expectedRevision 冲突（Host H5 覆盖）、V10.6 宽高变更几何屏障只到 best-effort（≤250ms，帧协议未扩展，记 partial）。
-- **仍未验证**：**真实宿主 3080（pid <pid>）未重启**，30 工具与 `ui.view`、`browser_viewport` 的真实 Agent 会话调用均 **NOT_RUN**；隔离 DSH GUI 是验收证据，不能冒充 3080。H9 screencast ACK/帧递增时序未单独实测。`expandViewPatch` 带 `mode` 时丢弃同传 `x/y/scale` 的偏差已由 task-7 修复（只改透传 + viewport.mjs V3 增 6 项断言，不改 UI/API 语义），修复后 Host 套件为 11/11、107/107。
+- **仍未验证**：真实宿主 3080 于 2026-11-02 11:15 重启后，**画布 v2 Host 面已实测**（canvasX/Y、blank、合成截图、T3 canvas、blank act 零派发、导航复位、自主滚动保留 O，[证据](../../../../tests/acceptance/evidence/canvas-realhost-2026-11-02.md)）；**面板画布交互（X/Y 负值/滚轮/拖拽/seed）与需 GUI 认证的路由仍 NOT_RUN**；隔离 DSH GUI 不能冒充真实面板。H9 screencast ACK/帧递增时序未单独实测。`expandViewPatch` 带 `mode` 时丢弃同传 `x/y/scale` 的偏差已由 task-7 修复（只改透传 + viewport.mjs V3 增 6 项断言，不改 UI/API 语义），修复后 Host 套件为 11/11、107/107。
 
 ## 现行能力
 
@@ -56,7 +57,7 @@ P0真实宿主重载/新会话及provider视觉/最终图像尺寸仍NOT_RUN；c
 | web.t1.runtime-state | browser_state | verified（报告覆盖路径） | P1/P2/P15：诊断不夺 owner、document.title/SPA 刷新、连接与关闭状态；本轮新增 `errorAt/errorActionId/errorTarget`（成功的页面/网络操作清空错误，诊断与 HTTP 不清），读到错误先看 `errorAt` 判新旧 |
 | web.t1.capability-discovery | browser_capabilities | partial | P1/P14/P15：能力发现工具（第 8 个；本轮工具面 10 个 T1 / 总 30）、不启动/不占租约、三态枚举与 unsupported；web.t1.http-request 报 available + limits.httpRequest，web.t1.viewport 报 available（get 只读 / set 页面操作，其他 owner 持租约时 set BUSY、get 仍可读）；P0 C11通过capture/limits.capture、observed首次null/仅真实截图、不启动；本轮新增 viewport 段与 limits.viewport（比例 0.1–2、预设、stale/settle、dsf=1），capture 报 defaultScaleSource=view.scale、scaleRange 0.1–4 |
 | web.t1.http-request | browser_http_request | verified（P22 覆盖路径；真实 Agent 会话 NOT_RUN） | 契约 docs/t1-http-request.md；P22 95/95、P21 23/23：Host 独立 HTTP(S)，不启动 Chromium/不占租约/不进页面队列；默认 GET、5s 总超时（上限 20s）、64 KiB 保留上限（上限 1 MiB）、默认不跟随重定向（上限 5 跳）；每跳复用 validateTarget（HTTPS→HTTP 降级拒绝）；禁 Host/content-length/transfer-encoding/connection/cookie/accept-encoding 等头、无 cookie jar；响应 headers 小写→string[]、utf8/base64、bodyBytes/bodyTruncated、脱敏；新错误码 HTTP_TIMEOUT/HTTP_FAILED/HTTP_REDIRECT_LIMIT；P22 通过前不标 verified |
-| web.t1.viewport | browser_viewport | verified（覆盖路径；5 条 GUI 子项与真实宿主 NOT_RUN） | 共享视口 get/set：get 只读缓存诊断（不启动/不占租约/stale 明示），set 页面操作（宽高才发 metrics override，scale-only 不改页面几何）；x/y 为文档 CSS 滚动位置实测回读，scale 0.1–2 且是省略 scale 的截图默认密度；expectedRevision → VIEWPORT_CONFLICT(409) 零应用。验收：viewport.mjs 11/11 probes、107/107 requiredChecks、exit 0；viewport-gui.mjs 73/73 PASS、5 NOT_RUN、exit 0。详见上方「共享视口验收」 |
+| web.t1.viewport | browser_viewport | verified（覆盖路径；5 条 GUI 子项与真实宿主 NOT_RUN） | 共享视口 get/set：get 只读缓存诊断（不启动/不占租约/stale 明示），set 页面操作（宽高才发 metrics override，scale-only 不改页面几何）；x/y 为文档 CSS 滚动位置实测回读；canvasX/Y 为视口画布原点（±1e7，可为负，面板 X/Y 绑定它），O=C-S 时预览合成深色棋盘格、截图/T3 合成纯白 blank（O=0 与旧一致）；scale 0.1–2 且是省略 scale 的截图默认密度；expectedRevision → VIEWPORT_CONFLICT(409) 零应用。验收：viewport.mjs 14/14 probes、166/166 requiredChecks、exit 0；viewport-gui.mjs 142/142 PASS、5 NOT_RUN、exit 0（V12 拖拽 + V13 画布）；capture 15/15+162/162、t3 56/56+415/415；真实宿主画布 v2 Host 面已实测（2026-11-02 11:15 重启后），面板交互与 GUI 认证路由仍 NOT_RUN。详见上方「共享视口验收」 |
 | web.t1.browser-extras | 无 | unsupported | 无下载/上传/Cookie 导出/多标签/frame 选择 |
 
 ## 所有权、错误与证据
@@ -81,7 +82,9 @@ T2已实现（验收与构建范围见T2台账）；T3 已实现并验收；网�
 
 ## 变更日志
 
-- 2026-11-01（共享视口）：工具面 29→30，新增第 10 个 T1 工具 `browser_viewport`（`web.t1.viewport`）；scale 0.1–2 为 Host 权威显示比例与默认截图密度、显式截图 0.1–4、fit 仅本地、get 只读 / set 页面操作、expectedRevision CAS → VIEWPORT_CONFLICT(409)、帧协议未扩展；验收 viewport.mjs 11/11、107/107、exit 0 与 viewport-gui.mjs 73/73 PASS / 5 NOT_RUN / exit 0；真实宿主 30 工具与 ui.view 仍 NOT_RUN。
+- 2026-11-01（共享视口）：工具面 29→30，新增第 10 个 T1 工具 `browser_viewport`（`web.t1.viewport`）；scale 0.1–2 为 Host 权威显示比例与默认截图密度、显式截图 0.1–4、fit 仅本地、get 只读 / set 页面操作、expectedRevision CAS → VIEWPORT_CONFLICT(409)、帧协议未扩展；验收 viewport.mjs 11/11、107/107、exit 0 与 viewport-gui.mjs 73/73 PASS / 5 NOT_RUN / exit 0。
+- 2026-11-02（画布 v2）：`canvasX/canvasY`（±1e7，可负）、`ui.canvas`、blank 合成、截图/T3 canvas 空间、帧 scrollX/Y；验收 viewport 14/14+166/166、GUI 142/142+5 NOT_RUN、capture 15/15+162/162、t3 56/56+415/415；真实 3080（11:15 重启）Host 画布面已实测，面板交互与 GUI 认证路由仍 NOT_RUN。
+- 2026-11-02（面板拖拽）：尺寸栏新增 `☑拖拽`（用户要求），勾选后抓取光标、内容跟手拖动写 x/y、80ms 合并、抑制页面鼠标输入；只改 client.js。隔离 GUI `viewport-gui.mjs` 85/85 PASS、5 NOT_RUN、exit 0（V12 12 项）；真实面板拖拽仍 NOT_RUN。
 
 - 2026-11-01（P0）：按上方三份真实报告同步连续scale/region/out、capture/observed、八错误/八warnings与安全落盘；保留partial的provider/真实宿主/瞬时布局/TOCTOU边界，不把采集升级为T3。
 

@@ -33,6 +33,8 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+// Independent pixel decode for canvas-space assertions (same pure module the plugin uses).
+import { decodePng } from '../../capture-p0.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(dirname(HERE));
@@ -92,6 +94,16 @@ function truncate(value, max = 420) {
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** One decoded pixel (8-bit PNG); only used by the canvas-space pixel truth checks below. */
+function pixelAt(decoded, x, y) {
+  const { channels, width, data } = decoded;
+  const base = (y * width + x) * channels;
+  if (channels === 4) return { r: data[base], g: data[base + 1], b: data[base + 2], a: data[base + 3] };
+  if (channels === 3) return { r: data[base], g: data[base + 1], b: data[base + 2], a: 255 };
+  if (channels === 2) return { r: data[base], g: data[base], b: data[base], a: data[base + 1] };
+  return { r: data[base], g: data[base], b: data[base], a: 255 };
 }
 
 /** Minimal PNG header read: dimensions + byte hash (no pixel decode; that is a U-class job). */
@@ -2586,6 +2598,163 @@ async function probeC56({ harness, check, finding }) {
   });
 }
 
+
+/* ------------------------------------------------------------------------------------------------
+ * C57 — canvas-space live/find/compare/act (P0-C v2, docs/canvas-viewport.md §6.2)
+ *
+ * Added as an extra probe under §9.C56 (the closed-loop criterion already covers canvas mapping);
+ * docs/t3-vision.md §9 still has exactly 56 criteria. Every check is either a decoded-PNG pixel
+ * truth, a mapping field, or the real page event truth from window.__t3.
+ * ---------------------------------------------------------------------------------------------- */
+
+async function probeC57({ harness, check, finding }) {
+  await freshPage(harness);
+  const setView = (patch) => call(harness, 'browser_viewport', { action: 'set', ...patch });
+
+  const base = await setView({ width: 800, height: 600, scale: 1, x: 0, y: 0 });
+  check('画布基线：view 800×600/C=0/O=0', base.ok === true && base.value?.view?.canvasX === 0
+    && base.value?.view?.canvasY === 0 && base.value?.offset?.x === 0 && base.value?.offset?.y === 0, {
+    expected: { width: 800, height: 600, offset: 0 },
+    actual: { view: base.value?.view, offset: base.value?.offset },
+  });
+  const moved = await setView({ canvasX: -100, canvasY: -50 });
+  const truth = await pageValue(harness, '({ scrollX: window.scrollX, scrollY: window.scrollY, contentHeight: document.documentElement.scrollHeight })');
+  check('canvasX=-100/canvasY=-50 生效，页面真值 scroll 仍 0（S 不改）', moved.ok === true
+    && moved.value?.view?.canvasX === -100 && moved.value?.view?.canvasY === -50
+    && truth?.scrollX === 0 && truth?.scrollY === 0, {
+    expected: { canvas: { x: -100, y: -50 }, scroll: { x: 0, y: 0 } },
+    actual: { view: moved.value?.view, truth },
+  });
+
+  // ---- live default capture: canvas viewport with white blank -------------------------------
+  const live = await call(harness, 'browser_vision_image', { source: { kind: 'live' } });
+  const liveValue = checkVisionValue(check, 'O≠0 的 live 默认采集成功（800×600 canvas 视口）', live, { requireImage: true });
+  const mapping = liveValue.product?.mapping || {};
+  check('live mapping = canvas-css-px：origin(-100,-50)、offset、contentRect、blank', mapping.coordinateSpace === 'canvas-css-px'
+    && mapping.originCss?.x === -100 && mapping.originCss?.y === -50
+    && mapping.canvas?.offsetX === -100 && mapping.canvas?.offsetY === -50
+    && mapping.canvas?.contentHeight === truth?.contentHeight
+    && JSON.stringify(mapping.contentRect) === JSON.stringify({ x: 0, y: 0, width: 700, height: 550 })
+    && mapping.blank === 'outside-content', {
+    expected: { coordinateSpace: 'canvas-css-px', origin: { x: -100, y: -50 }, contentRect: { x: 0, y: 0, width: 700, height: 550 }, blank: 'outside-content' },
+    actual: mapping,
+  });
+  const sourceCapture = liveValue.evidence?.vision?.source?.[0]?.capture;
+  check('证据披露 composite:true / capture.canvas / request.space=canvas-css-px', sourceCapture?.composite === true
+    && sourceCapture?.canvas?.composite === true && sourceCapture?.canvas?.offsetX === -100
+    && sourceCapture?.request?.space === 'canvas-css-px' && sourceCapture?.request?.coordinateSpace === 'canvas-css-px', {
+    expected: { composite: true, space: 'canvas-css-px' },
+    actual: { composite: sourceCapture?.composite, canvas: sourceCapture?.canvas, request: sourceCapture?.request },
+  });
+  const decoded = decodePng(Buffer.from(liveValue.image, 'base64'));
+  const at = (x, y) => (decoded.ok ? pixelAt(decoded, x, y) : null);
+  const isWhite = (p) => Boolean(p) && p.r === 255 && p.g === 255 && p.b === 255;
+  // C=-100/-50 and a 920×1600 content box: only the left 100 and top 50 of the canvas viewport are
+  // blank (right/bottom are still page content), so the blank truth is left/top white.
+  check('合成 PNG 800×600，左 100 / 上 50 blank 纯白（内容从 (100,50) 开始）', decoded.ok === true
+    && decoded.width === 800 && decoded.height === 600
+    && isWhite(at(10, 300)) && isWhite(at(99, 300)) && isWhite(at(400, 10)) && isWhite(at(400, 49)), {
+    expected: { size: [800, 600], blank: 'white left/top edges' },
+    actual: decoded.ok ? { size: [decoded.width, decoded.height], left: at(10, 300), leftEdge: at(99, 300), top: at(400, 10), topEdge: at(400, 49) } : decoded,
+  });
+  check('内容按 -O 平移：#t3-red 图像 (140,90)、#t3-blue 图像 (260,90)', at(150, 100)?.r === 255
+    && at(150, 100)?.g === 0 && at(150, 100)?.b === 0
+    && at(270, 100)?.r === 0 && at(270, 100)?.g === 0 && at(270, 100)?.b === 255, {
+    expected: { red: [255, 0, 0], blue: [0, 0, 255] },
+    actual: { red: at(150, 100), blue: at(270, 100) },
+  });
+
+  // ---- find: document coords stay document coords and carry canvas ---------------------------
+  const find = await call(harness, 'browser_vision_find', { source: { kind: 'live' }, query: { method: 'color', color: [255, 0, 0], tolerance: 0, minArea: 100 } });
+  const findValue = checkVisionValue(check, 'canvas find 成功', find);
+  const red = (findValue.result?.candidates || []).find((candidate) => candidate.documentCss
+    && Math.abs(candidate.documentCss.x - 40) < 1 && Math.abs(candidate.documentCss.y - 40) < 1);
+  check('find.documentCss 是文档坐标(40,40,80,60)，并带相同 canvas 矩形', Boolean(red)
+    && red.canvas?.x === 40 && red.canvas?.y === 40 && red.canvas?.width === 80 && red.canvas?.height === 60, {
+    expected: { documentCss: { x: 40, y: 40, width: 80, height: 60 }, canvas: { x: 40, y: 40, width: 80, height: 60 } },
+    actual: (findValue.result?.candidates || []).slice(0, 4).map((candidate) => ({ documentCss: candidate.documentCss, canvas: candidate.canvas })),
+  });
+
+  // ---- negative region entirely in blank ----------------------------------------------------
+  const blankSource = { kind: 'live', region: { x: -90, y: -40, width: 80, height: 30 } };
+  const blankImage = await call(harness, 'browser_vision_image', { source: blankSource });
+  const blankValue = checkVisionValue(check, '负 region（全 blank，canvas 坐标）采集成功', blankImage, { requireImage: true });
+  check('负 region mapping：origin(-90,-40)、contentRect 0×0、仍为 canvas-css-px', blankValue.product?.mapping?.coordinateSpace === 'canvas-css-px'
+    && blankValue.product?.mapping?.originCss?.x === -90 && blankValue.product?.mapping?.originCss?.y === -40
+    && blankValue.product?.mapping?.contentRect?.width === 0 && blankValue.product?.mapping?.contentRect?.height === 0, {
+    expected: { origin: { x: -90, y: -40 }, contentRect: { width: 0, height: 0 } },
+    actual: blankValue.product?.mapping,
+  });
+  const blankFind = await call(harness, 'browser_vision_find', { source: blankSource, query: { method: 'color', color: [255, 255, 255], tolerance: 0, minArea: 1 } });
+  const blankFindValue = checkVisionValue(check, 'blank region find 成功', blankFind);
+  const blankCandidates = blankFindValue.result?.candidates || [];
+  check('blank 候选保留像素结果，documentCss=null 且 canvas=(-90,-40)', blankCandidates.length >= 1
+    && blankCandidates.every((candidate) => candidate.documentCss === null)
+    && blankCandidates.every((candidate) => candidate.canvas?.x === -90 && candidate.canvas?.y === -40), {
+    expected: { candidates: '>=1', documentCss: null, canvasX: -90 },
+    actual: blankCandidates.slice(0, 2).map((candidate) => ({ region: candidate.region, documentCss: candidate.documentCss, canvas: candidate.canvas })),
+  });
+
+  // ---- act: blank zero dispatch, content p = q + O ------------------------------------------
+  await resetEvents(harness);
+  const actBlank = await call(harness, 'browser_vision_act', { productId: liveValue.product?.productId, action: 'click', point: { x: 10, y: 10 } });
+  checkVisionError(check, 'blank 点击零派发（VISION_HIT_MISMATCH）', actBlank, { code: 'VISION_HIT_MISMATCH', category: 'action', retryable: false });
+  check('blank 拒绝理由 blank-area 且带 canvas/content 证据', actBlank.error?.details?.reason === 'blank-area'
+    && actBlank.error?.details?.canvasPoint?.x === -90 && actBlank.error?.details?.content?.height === truth?.contentHeight, {
+    expected: { reason: 'blank-area' },
+    actual: { details: actBlank.error?.details },
+  });
+  const afterBlank = await pageValue(harness, '({ seq: window.__t3.seq, clicks: window.__t3.counters.clicks })');
+  check('blank 点击后真实页面零事件（seq=0、clicks=0）', afterBlank?.seq === 0 && afterBlank?.clicks === 0, {
+    expected: { seq: 0, clicks: 0 },
+    actual: afterBlank,
+  });
+  const actContent = await call(harness, 'browser_vision_act', { productId: liveValue.product?.productId, action: 'click', point: { x: 440, y: 120 } });
+  const actValue = checkVisionValue(check, '内容区点击派发成功', actContent);
+  const clickTruth = await pageValue(harness, '({ clicks: window.__t3.counters.clicks, last: window.__t3.last.click || null })');
+  check('内容点击 p=q+O：图像(440,120) → 页面 clientX/Y=340/70，命中 #t3-click 计数 1', actValue.dispatched === true
+    && clickTruth?.clicks === 1 && clickTruth?.last?.clientX === 340 && clickTruth?.last?.clientY === 70
+    && clickTruth?.last?.target === 't3-click', {
+    expected: { dispatched: true, clientX: 340, clientY: 70, target: 't3-click', clicks: 1 },
+    actual: { dispatched: actValue.dispatched, point: actValue.point, truth: clickTruth },
+  });
+
+  // ---- compare: same canvas mapping compatible; cross-space incompatible --------------------
+  const compare = await call(harness, 'browser_vision_compare', { before: { kind: 'live' }, after: { kind: 'live' } });
+  const compareValue = checkVisionValue(check, 'canvas 同空间 compare 成功', compare);
+  check('两次 canvas live 采集 mappingCompatible=true', compareValue.comparison?.mappingCompatible === true
+    && compareValue.before?.mapping?.coordinateSpace === 'canvas-css-px'
+    && compareValue.after?.mapping?.coordinateSpace === 'canvas-css-px', {
+    expected: { mappingCompatible: true, coordinateSpace: 'canvas-css-px' },
+    actual: { mappingCompatible: compareValue.comparison?.mappingCompatible, before: compareValue.before?.mapping?.coordinateSpace, after: compareValue.after?.mapping?.coordinateSpace },
+  });
+  await setView({ canvasX: 0, canvasY: 0 });
+  const docLive = await call(harness, 'browser_vision_image', { source: { kind: 'live', region: { x: 0, y: 0, width: 800, height: 600 } } });
+  const docValue = checkVisionValue(check, 'O=0 文档 live 采集成功（旧语义）', docLive, { requireImage: true });
+  check('O=0 回到 document-css-px', docValue.product?.mapping?.coordinateSpace === 'document-css-px', {
+    expected: 'document-css-px',
+    actual: docValue.product?.mapping?.coordinateSpace,
+  });
+  const cross = await call(harness, 'browser_vision_compare', {
+    before: { kind: 'product', productId: liveValue.product?.productId },
+    after: { kind: 'live', region: { x: 0, y: 0, width: 800, height: 600 } },
+  });
+  const crossValue = checkVisionValue(check, 'canvas product 与 document live 可比较（同尺寸）', cross);
+  const crossWarnings = visionEvidence(cross)?.metrics?.warnings || [];
+  check('跨坐标空间 mapping 不兼容：mappingCompatible=false + mapping-incompatible 警告', crossValue.comparison?.mappingCompatible === false
+    && crossWarnings.includes('mapping-incompatible'), {
+    expected: { mappingCompatible: false, warning: 'mapping-incompatible' },
+    actual: { mappingCompatible: crossValue.comparison?.mappingCompatible, warnings: crossWarnings },
+  });
+
+  await setView({ width: 800, height: 600, canvasX: 0, canvasY: 0 });
+  finding({
+    id: 'C57-canvas-space',
+    summary: 'canvas 空间 live 截图/映射/find/act/compare 全部走 canvas mapping：blank 纯白、documentCss=null（blank 候选）、act blank 零派发、内容 p=q+O 命中真实事件；跨 document/canvas mapping 由既有 mapping-incompatible 处理。',
+    evidence: { coordinateSpace: 'canvas-css-px', blankZeroDispatch: afterBlank },
+  });
+}
+
 /* ------------------------------------------------------------------------------------------------
  * U-class runners (pure algorithm / baseline FS unit checks, merged by criterion)
  * ---------------------------------------------------------------------------------------------- */
@@ -3098,6 +3267,7 @@ const B_PROBES = [
   { id: 'C54-canvas', criteria: '§9.C54', title: 'canvas 识别/点选与文字图像', expected: '两色块候选、点选真值、文字 semanticName=null、resize 警告', body: probeC54 },
   { id: 'C55-lease', criteria: '§9.C55', title: 'BUSY/队列/scope 隔离', expected: '其他 owner 全 BUSY、state 可读、dispose 释放、两 scope 独立', body: probeC55 },
   { id: 'C56-closed-loop', criteria: '§9.C56', title: '闭环 + 能力映射 + T4', expected: 'capture→find→act→compare→baseline→check、22 映射、T4 unsupported、闪烁只静态', body: probeC56 },
+  { id: 'C57-canvas-space', criteria: '§9.C56', title: 'canvas 空间 live/find/act/compare（P0-C v2 增量）', expected: 'canvas mapping/blank 纯白/find.documentCss(blank=null)/act blank 零派发/内容 p=q+O 真值/跨空间 mapping-incompatible', body: probeC57 },
 ];
 
 async function main() {
