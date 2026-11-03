@@ -178,16 +178,27 @@ GUI 实测：200% 时页面位移约是 100% 时的一半（V9.1–V9.3）。Ctr
 
 ### 5.5 拖拽视口（面板「拖拽」模式，用户 2026-11-02 要求，已实现）
 
-尺寸栏在 `适应窗口` 与缩放 `%` 之间新增 `☑拖拽` 复选框（`aria-label="拖拽视口"`，无共享 `ui.view` 的旧 Host 时禁用）。语义：
+尺寸栏在宽/高输入与缩放 `%` 之间是 **`拖拽 | 适应窗口 | 默认` 三选一分页选择器**（2026-11-03 用户要求；`div.utb-seg[data-utb-panfit][data-utb-panfit-state=pan|fit|default]`，三项 `aria-label` 分别为 `拖拽视口`/`适应窗口`/`默认`，无共享 `ui.view` 或画布能力的旧 Host 上「拖拽」禁用）。**任何时刻恰好一项 `aria-pressed=true`**，选中态由实际模式推导：`pan ? 'pan' : fit ? 'fit' : 'default'`。「默认」= 既不是拖拽也不是适应窗口（`pan=false, fit=false`，`%` 回到共享 `view.scale`，**切换本身零 `/viewport`**）；手动改 `%` 输入或尺寸栏属滚轮只把 fit 置 false（pan 原为 on 时仍保持「拖拽」）；拖拽模式内的画面滚轮缩放**保持「拖拽」选中**（不降级为默认）。语义：
 
-- **光标**：勾选后预览画面的 `cursor` 为 `grab`，按住拖动期间为 `grabbing`；不勾选时为 `auto`。
+- **光标**：选「拖拽」后预览画面的 `cursor` 为 `grab`，按住拖动期间为 `grabbing`；「适应窗口」/「默认」为 `auto`。
 - **方向与换算（2026-11-02 canvas v2 起）**：按住画面拖动按**内容跟手**方向平移**画布原点 C**——向右/下拖 → `canvasX/canvasY` 减小，向左/上拖 → 增大；可进入负值/露白，范围 ±10,000,000。位移按同一 painted rect 换算：`Δcanvas = ΔhostPx × W / Pw`（y 同理，`Pw` 为实际绘制宽度；缩放比例抵消）。空白区也可起手（拖拽模式 overlay）。
 - **写入路径**：与输入框相同的 `/viewport` v1/CAS 请求；面板按 80ms 合并移动事件，同一时刻最多一个 set 在途（Host 每次 set 含两帧 + ≤1000ms 稳定读回，不能被洪泛）。冲突/失败沿用 `VIEWPORT_CONFLICT` 处理，不自动重放；拖拽模式不改变 `source` 归因规则（HTTP v1 记为 `gui`）。
-- **输入抑制**：勾选期间不向目标页面派发 pointerdown/move/up（点击、拖拽、悬停都零派发）。
-- **滚轮 = 缩放画布（2026-11-02 用户要求，已实现）**：拖拽模式下画面滚轮不再滚动目标页，而是改共享 `view.scale`（步进 5%/Shift 10%/Alt 1%，Alt 优先；范围 0.1–2，越界 no-op；Ctrl/Meta+滚轮不缩放）。以**屏幕光标**为锚点（含盒子居中补偿）：`d = C + (S−R.left)/s`、`C' = d − (S−left')/s'`（`S` 光标屏幕点、`R` 盒实测矩形，两轴独立；不居中轴退回 `R.left`），`canvasX/canvasY` 与 `scale` 同 patch 且不与 `x/y` 混传；拿不到几何则只改 scale。若「适应窗口」勾选则**自动取消**（走手动改比例的同一路径）。拖拽模式外的滚轮仍是 §5.3 的滚页面语义。取消勾选、关闭尺寸栏、切换工作区（scope/binding generation 变化）都会结束拖拽并恢复默认光标与页面交互。`O≠0` 时输入使用 §5.3 的 fail-closed 屏障；空白区零派发。
+- **输入抑制**：选中「拖拽」期间不向目标页面派发 pointerdown/move/up（点击、拖拽、悬停都零派发）。
+- **滚轮 = 缩放画布（2026-11-02 用户要求，已实现）**：拖拽模式下画面滚轮不再滚动目标页，而是改共享 `view.scale`（步进 5%/Shift 10%/Alt 1%，Alt 优先；范围 0.1–2，越界 no-op；Ctrl/Meta+滚轮不缩放）。以**屏幕光标**为锚点（含盒子居中补偿）：`d = C + (S−R.left)/s`、`C' = d − (S−left')/s'`（`S` 光标屏幕点、`R` 盒实测矩形，两轴独立；不居中轴退回 `R.left`），`canvasX/canvasY` 与 `scale` 同 patch 且不与 `x/y` 混传；拿不到几何则只改 scale。选「适应窗口」会先退出拖拽（互斥），拖拽模式内的滚轮缩放**不会**把选中态改成「默认」。拖拽模式外的滚轮仍是 §5.3 的滚页面语义。切到「默认」/「适应窗口」、关闭尺寸栏、切换工作区（scope/binding generation 变化）都会结束拖拽并恢复默认光标与页面交互。`O≠0` 时输入使用 §5.3 的 fail-closed 屏障；空白区零派发。
 - **边界**：拖拽期间显示帧若更新（screencast 尺寸变化），换算沿用按下时的绘制矩形（一次拖拽内一致）；`x/y` 只在文档滚动范围内移动，RTL/scroll snap 等边界与 §3.1 相同，不做额外承诺。
 
-GUI 验收见 §8.2 的 V12（复选框/光标/方向/抑制页面事件/clamp/恢复交互）。
+GUI 验收见 §8.2 的 V12（分页选择器/光标/方向/抑制页面事件/clamp/恢复交互）与 `viewport-gui.mjs` 的 V18.10/V18.11/V18.11b/V18.13（三选一互斥与默认语义）。
+
+### 5.6 分辨率预设按钮（2026-11-03 用户报 bug 后修正，已实现）
+
+左侧四个预设按钮（宽屏/横屏/平板/手机）原本只写宽高；引入 X/Y 与 `拖拽|适应窗口|默认` 三选一后必须同时成为「固定分辨率视图」：
+
+- **分页选择器与拖拽互斥（2026-11-03 第 2 轮用户要求）**：四项是 `div.utb-seg.utb-presets[data-utb-preset][role=group][aria-label=分辨率预设]` + 四个 `button.utb-seg-btn.utb-preset[data-utb-preset-opt=wide|landscape|tablet|phone][aria-pressed]`，选中项左侧 `segDot(selected,'preset')`（8×8 `#22c55e`、未选中 `visibility:hidden` 保留占位）。选中态**派生**为 `!panMode && width/height 精确匹配`（零或一项）；**拖拽模式选中时四项全部 `aria-pressed=false`、小球隐藏**（互斥）；在拖拽中点预设会先退出拖拽再选中该项。旧 `.utb-preset` CSS 已移除，类名仅保留为测试钩子。
+- **行为**：点任一预设**只退出拖拽**（`if (panModeRef.current) changePanMode(false)`；不调用 `pressPanFitDefault`、**不动 fit**）：从「拖拽」点预设后回到「默认」（`pan=false`、`fit=false`），原本是「适应窗口」则**保持适应窗口**（本地 fit，不发布比例），原本是「默认」则保持默认；模式切换本身零 `/viewport`。随后把宽高设为预设、**X/Y 归零**（面板草稿立即显示 0，不等 Host 回显）。**不改 `scale`/`%`**：共享 `view.scale` 不变；fit 开启时 `%` 仍显示本地适应比例。
+- **一次合并 patch**：宽高与坐标进入同一个 120ms trailing debounce 的 v1 patch（带 `expectedRevision`，`source=gui`），**一次 `/viewport`**；画布 Host 写 `canvasX:0/canvasY:0`（Host 按 `S=clamp(C)` 把页面滚动也归零），无画布但有共享 view 的旧 Host 写 `x:0/y:0`，无共享 view 的 legacy Host 只写 `width/height`。不发送 `scale`，不把 `canvasX/canvasY` 与 `x/y` 混在同一 patch。
+- **输入屏障**：宽高变化仍设置 §5.4 的 `pendingGeom` 屏障；注解模式下预设按钮沿用现有 `disabled: annotOn`，`applySizePreset` 首行同一道闸。
+
+GUI 验收：`viewport-gui.mjs` V18.16（四预设逐一从 `C=(100,80)` 点击，断言 Host 宽高/派生 mode、`canvasX/canvasY=0`、`view.x/y=0`、真实页面 `innerWidth/Height` 与 `scrollX/Y=0`、面板 X/Y=0、scale 保留 0.65/65%、panfit `default`、恰好一条合并 patch 且无 `scale`）、V18.17（fit-on 点预设保持「适应窗口」、pan-on 点预设落「默认」，模式切换零额外写入）、V18.18（分页选择器 DOM/顺序/inline-flex 声明、横屏按尺寸选中、真实点平板移动选中态与绿点、自定义 400×300 零选中、窄屏不溢出）与 V18.19（拖拽选中时四项全部取消选中/绿点隐藏；真实点手机后拖拽关闭、仅手机选中、X/Y 与页面滚动归零、一条合并 patch）。未在隔离 GUI 覆盖的分支（无画布但有共享 view 的 `x/y` 归零、真实 legacy Host 只写宽高）按 §8.1/V10.4 记 NOT_RUN。
 
 ## 6. Agent 截图比例与映射
 

@@ -386,6 +386,18 @@ browser_http_request {
 - 原始截图及可见附件仍不等于 T3 分析；T3 也只支持指定区域/分辨率/时间/阈值下的像素结论，不证明业务、交互、可访问性或整页正确。`/metrics` 只证明预览管线指标。T3 的进程内验收为 `tests/acceptance/runs/2026-11-01T08-38-27-595Z-194712/run-report.json`（criteria 56/56、requiredChecks 389/389、notApplicable 3、exit 0；此前 `07-34-49-952Z-174834` 同结果）；真实宿主冒烟见 `tests/acceptance/evidence/t3-real-host-2026-11-01.md`，provider 图像可见性仍写 `NOT_RUN`。
 - 报告包含目标、期望/实际、工具参数、action 证据、失败/回退原因、`PASS/FAIL/BLOCKED/INCONCLUSIVE/NOT_RUN` 和未验证部分；不得伪造路径、附件或已通过状态。T2 未跑的条件写 `NOT_RUN`，不写“已通过”。
 
+## 读取面板标注（P0-D annotations）
+
+用户在调试面板里画的标注是**问题线索**，Agent 用结构化文档读，不用截图：
+
+- **入口**：`browser_state()` 顶层 `annotations`（每工作区一份，与已认证 `/state` 的 `ui.annotations` 同源）；`browser_capabilities().annotations` 给读取方式/`space`/`limits`。工具面仍是 30，没有标注工具；**标注不进 `browser_screenshot` 也不进 T3**（`capture.composite:true` 只是画布空白合成，与标注无关）。
+- **坐标**：shapes 是画布 CSS px `d`，页面坐标 `p = d − S`（`S` 用**当前** `view.x/y`，不能用发布时的 `annotations.view`）；`scale`/DPR 不参与。
+- **图形**：`rect/line/arrow`（箭头尖为 `(x2,y2)`）、`circle`（PS 包围盒椭圆 `cx/cy/rx/ry`）、`brush`（只有 `points`）、`text`（唯一带原文）。
+- **读不到手写字**：`brush` 只有点集；"用户写的字"只有 `text.text` 才有。要逐字复述就让用户用文字工具。
+- **指代解析**：端点按 `p=d−S` 换页点 → `document.elementFromPoint` + 可见元素矩形距离排序；手绘尖端常偏 10–20 px，给**候选+距离**而不是单点断言。
+- **语义**：`source.trusted` 恒 false —— 不证明缺陷、不授权自动点击；`stale` 只表示来源面板心跳过期、形状仍可读；导航/刷新清空、同工作区跨页签/跨会话保留（v3）、不同工作区隔离。
+- 完整规则、常见坑与真宿主实测链接见 `references/scenarios/annotations.md`。
+
 ## 按需参考
 
 - 工作流：`references/core/workflow.md`
@@ -396,7 +408,7 @@ browser_http_request {
 - 网络 P0：权威契约 `docs/network-p0.md`；台账 `knowledge/web/network-p0-capability-ledger.md`（逐项 G1.1–G6.9 + 7 工具状态）；能力三态与限额见 `references/contracts/capability.md` 的 network 段
 - 平台：`references/platforms/index.md`、`references/platforms/web.md`
 - 契约：`references/contracts/capability.md`、`references/contracts/operation.md`、`references/contracts/evidence.md`
-- 场景：`references/scenarios/functional.md`、`references/scenarios/visual-motion.md`
+- 场景：`references/scenarios/functional.md`、`references/scenarios/visual-motion.md`、`references/scenarios/annotations.md`（面板标注的读取与指代解析）
 - 示例：`examples/selection-and-escalation.md`、`examples/web-t2-snapshot-and-action.md`、`examples/web-t1-runtime-and-cssom.md`、`examples/web-t1-input-and-screenshot.md`、`examples/web-t1-http-request.md`
 - 台账：`knowledge/web/t1-capability-ledger.md`、`knowledge/web/t2-capability-ledger.md`、`knowledge/web/network-p0-capability-ledger.md`；静态清单：`manifests/declared-capabilities.json`
 

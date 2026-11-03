@@ -53,7 +53,8 @@ Host (index.js + frame-source.js + frame-push.js)     Client (client.js)
 | POST | `/plugins/ui-testing/screenshot` | → `{image: base64 PNG}` |
 | POST | `/plugins/ui-testing/close` | 关闭浏览器并清理临时 profile、WS 客户端、帧缓存 |
 | GET | `/plugins/ui-testing/frame?since=N` | 轮询回退：无新帧 `{pending:true}`，否则 `{seq,epoch,transport:"poll",image,capturedAt,receivedAt,width,height,…,state}`；`pending` 与有图两个分支的 `state` 同形 |
-| GET | `/plugins/ui-testing/state` | 保留 `mode/activity/url/title/viewport/seq/running/error` 与 owner 诊断字段，新增安全 `view`；已认证 GUI 额外带 `ui`（含 `ui.view/ui.viewMeta/ui.observed`，见下） |
+| GET | `/plugins/ui-testing/state` | 保留 `mode/activity/url/title/viewport/seq/running/error` 与 owner 诊断字段，新增安全 `view`、`canvas` 与**标注文档 `annotations`**（P0-D v2：Agent 可见的面板标注，`browser_state.annotations` 同源）；已认证 GUI 额外带 `ui`（含 `ui.view/ui.viewMeta/ui.observed`、`ui.annotations` 与 `ui.annotationContext`，见下） |
+| POST | `/plugins/ui-testing/annotations` | P0-D v2 面板标注上报（唯一写面）：仅认证 scoped；body ≤262144 bytes；严格白名单/校验；旧 `documentKey` → 409 `annotation-context-stale` 零写入；ACK `{ok,accepted,ignored,clientRevision,annotations}`；不新增工具（见 [annotation-p0d.md](annotation-p0d.md) §11） |
 | GET | `/plugins/ui-testing/metrics` | host 采集/推送/丢帧/ackFailures/captureFps + 最近一次 client 实测指标 |
 | POST | `/plugins/ui-testing/metrics` | 客户端上报 `{transport,displayFps,endToEndMs,transportMs,droppedClient,received,displayed,seq,epoch,measuredAt}` |
 | GET（Upgrade） | `/plugins/ui-testing/frames` | WebSocket 推帧；升级前经 `ctx.get('connection').requestRejection(req)` 鉴权，无 connection 服务时只允许 loopback |
@@ -168,7 +169,7 @@ warnings封闭为 `content_uniform/content_transparent/model_image_downscaled/at
 
 ## 内置 Skill 与能力发现
 
-`index.js` 在 `apply()` 里用 `ctx.inject(['skills'], …)` 注册 bundled skill `ui-testing`：正文取自 `skills/ui-testing/SKILL.md`，`resourceBase` 指向该目录，`modelInvocable`/`userInvocable` 均为 true；宿主没有 `skills` 服务或资源缺失时只记日志，不阻断浏览器工具。`package.json` 的 `files` 含 `skills/**`，`npm pack --dry-run` 可见 27 个 Skill 文件随包发布。
+`index.js` 在 `apply()` 里用 `ctx.inject(['skills'], …)` 注册 bundled skill `ui-testing`：正文取自 `skills/ui-testing/SKILL.md`，`resourceBase` 指向该目录，`modelInvocable`/`userInvocable` 均为 true；宿主没有 `skills` 服务或资源缺失时只记日志，不阻断浏览器工具。`package.json` 的 `files` 含 `skills/**`，`npm pack --dry-run` 可见 31 个 Skill 文件随包发布。正文含「读取面板标注（P0-D annotations）」小节，细则在 `skills/ui-testing/references/scenarios/annotations.md`（`browser_state.annotations` 读取、`p=d−S`、箭头尖 `(x2,y2)`、手写无原文、指代用 `elementFromPoint` 复核）；该文件被 `check-skill-registry.mjs` 的“正文引用可读”检查覆盖。
 
 - 运行时通过新增 `browser_capabilities` 根据真实状态报告 `available/unavailable/unsupported`、限制及 `single-owner-lease`。当前注册表决定工具是否可调用；`browser_state` 仍专注运行态、标题从 `document.title` 刷新。state/capabilities 不懒启动。台账与 manifest 是开发事实，不是运行时证据。
 - 服务级验证（真实 `SkillRegistry`）见 `tests/acceptance/check-skill-registry.mjs`；宿主重启后 Agent 会话内是否可见，以新会话工具列表为准。

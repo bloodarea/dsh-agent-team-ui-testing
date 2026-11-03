@@ -451,6 +451,76 @@ async function main() {
   const setView = (patch, exec) => harness.invoke('browser_viewport', { action: 'set', ...patch }, exec);
   const getView = (exec) => harness.invoke('browser_viewport', { action: 'get' }, exec);
 
+  /* ---------------------------------------------------------------------------------------------
+   * P0-D annotations (docs/annotation-p0d.md §11) — Host helpers.
+   *
+   * The panel's annotation document has exactly ONE write surface: the scoped, peer-authenticated
+   * `POST /plugins/ui-testing/annotations`. There is no 31st tool, so every helper below talks to
+   * that HTTP route with the real scope headers and the real owner gate.
+   * ------------------------------------------------------------------------------------------- */
+  const ANNOT_HEADERS_A = { 'x-ui-testing-scope-version': '1', 'x-ui-testing-session-id': 'vp-a' };
+  const ANNOT_HEADERS_B = { 'x-ui-testing-scope-version': '1', 'x-ui-testing-session-id': 'vp-b' };
+  const ANNOT_HEADERS_UNASSIGNED = { 'x-ui-testing-scope-version': '1', 'x-ui-testing-scope': 'unassigned' };
+  const annotOwner = () => harnessModule.createFakeConnectionService({
+    rejection: undefined, admit: () => ({ peer: { id: 'peer-owner' } }), browserPeer: { id: 'peer-owner' },
+  });
+  /** A deterministic, contract-valid panel id (`^uuid$`, lower-case hex). */
+  const panelIdFor = (n) => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
+  const zeroTruncation = () => ({ droppedShapes: 0, droppedPoints: 0, shortenedTextCodeUnits: 0 });
+  /** Scoped `/state` read: the only place `ui.annotationContext`/`ui.annotations` exist. */
+  const readScopedState = async (headers = ANNOT_HEADERS_A) => {
+    harness.setConnection(annotOwner());
+    try {
+      const response = await harness.request({ method: 'GET', path: '/plugins/ui-testing/state', headers });
+      return response.json;
+    } finally { harness.setConnection(undefined); }
+  };
+  /**
+   * The publish body the panel is contracted to send, built from its own accepted snapshot.
+   * `state` may be either the whole `/state` value or just its `ui` projection.
+   */
+  const annotationPublishBody = (state, {
+    panelId = panelIdFor(1), clientRevision = 1, shapes = [], release = false, surface = 'main',
+    truncation = zeroTruncation(), context, view: viewOverride,
+  } = {}) => {
+    const ui = state?.ui || state || {};
+    const view = ui.view || state?.view || {};
+    const canvas = ui.canvas || state?.canvas || {};
+    return {
+      version: 1,
+      panelId,
+      surface,
+      clientRevision,
+      context: context ? { ...context } : { ...(ui.annotationContext || {}) },
+      view: viewOverride || {
+        canvasX: view.canvasX, canvasY: view.canvasY, x: view.x, y: view.y,
+        width: view.width, height: view.height, scale: view.scale,
+        contentWidth: canvas.contentWidth, contentHeight: canvas.contentHeight,
+        viewRevision: view.revision, frameEpoch: null,
+      },
+      shapes,
+      truncation,
+      release,
+    };
+  };
+  const publishAnnotations = async (body, { headers = ANNOT_HEADERS_A, authenticated = true, rawBody } = {}) => {
+    harness.setConnection(authenticated ? annotOwner() : harnessModule.createFakeConnectionService({ rejection: 401 }));
+    try {
+      return await harness.request({
+        method: 'POST', path: '/plugins/ui-testing/annotations', headers, body, rawBody,
+      });
+    } finally { harness.setConnection(undefined); }
+  };
+  /** One instance of every shape type, with an evidence-grade text payload. */
+  const annotationShapes = () => ([
+    { id: 'a1', type: 'rect', color: '#ff3b30', strokeWidth: 3, fill: false, stroke: true, x: 10, y: 20, width: 100, height: 50 },
+    { id: 'a2', type: 'circle', color: '#0a84ff', strokeWidth: 2, fill: true, stroke: false, cx: 200, cy: 120, rx: 40, ry: 25 },
+    { id: 'a3', type: 'line', color: '#34c759', strokeWidth: 4, fill: false, stroke: true, x1: 0, y1: 0, x2: 100, y2: 100 },
+    { id: 'a4', type: 'arrow', color: '#ff9500', strokeWidth: 5, fill: false, stroke: true, x1: 10, y1: 10, x2: 60, y2: 70, head: { length: 9999, width: 9999 } },
+    { id: 'a5', type: 'brush', color: '#af52de', strokeWidth: 1, fill: false, stroke: true, points: [[0, 0], [5, 5], [10, 12]] },
+    { id: 'a6', type: 'text', color: '#000000', strokeWidth: 1, fill: true, stroke: false, x: 30, y: 40, fontSize: 20, text: '问题在这里 <> & "quoted"' },
+  ]);
+
   /* ---------------------------------------------------------------- V1: tool surface */
   await runProbe('V1-tool-surface', '工具注册与 schema（30 工具，browser_viewport required=[action]）',
     '注册表恰好 30 个 browser_* 工具；browser_viewport schema required=[action]、additionalProperties=false、action enum get/set、mode enum 四预设；description 非空；render 可用', async () => {
@@ -1763,6 +1833,653 @@ async function main() {
       check('V13 复位 legacy view C=0/O=0（供后续探针）',
         restored?.canvasX === 0 && restored?.canvasY === 0 && restored?.x === 0 && restored?.y === 0,
         restored, { canvas: 0, offset: 0 });
+    });
+
+  /* ---------------------------------------------------------------- A1: annotation surface */
+  await runProbe('A1-annotation-surface', '标注 Agent 可见面：工具面仍 30、capabilities/limits、冷态投影、拒绝与零副作用',
+    '注册表仍 30 工具且无标注工具；capabilities.annotations 声明 readTool/writeSurface/source/trusted/screenshotOverlay/坐标/复位，limits.annotations 八项一致；冷态 state.annotations 为空形状且 stale=not-running；冷态发布 400 annotation-runtime-not-running 零写入；未 scoped 403；未认证 401；读 state/capabilities 不建页面、零 CDP', async () => {
+      const names = harness.toolNames();
+      check('工具面仍 30 个 browser_* 工具，且没有新增标注工具（不是第 31 个工具）',
+        names.length === EXPECTED_TOOLS.length && names.length === 30
+          && !names.some((name) => /annot/u.test(name))
+          && names.includes('browser_state') && names.includes('browser_capabilities'),
+      { count: names.length, annotTools: names.filter((name) => /annot/u.test(name)) }, { count: 30, annotTools: [] });
+
+      const capabilities = await harness.invoke('browser_capabilities');
+      const annotations = capabilities.value?.annotations || {};
+      check('capabilities.annotations：只读工具=browser_state、写入面=authenticated-scoped-http、source=human-panel、trusted=false、screenshotOverlay=false、带坐标与复位说明',
+        capabilities.ok === true
+          && annotations.version === 1 && annotations.space === 'canvas-css-px'
+          && annotations.readTool === 'browser_state' && annotations.readPath === 'annotations'
+          && annotations.writeSurface === 'authenticated-scoped-http'
+          && annotations.source === 'human-panel' && annotations.trusted === false
+          && annotations.screenshotOverlay === false
+          && typeof annotations.coordinateHint === 'string' && /p=q\+O=d-S/u.test(annotations.coordinateHint)
+          && typeof annotations.reset === 'string' && /documentKey/u.test(annotations.reset),
+      { annotations }, 'annotations capability segment');
+
+      const expectedLimits = {
+        maxShapes: 128, maxPointsPerShape: 512, maxPointsPerDocument: 8192, maxTextCodeUnits: 200,
+        maxDocumentBytes: 65536, maxBodyBytes: 262144, maxPanels: 16, staleAfterMs: 30000,
+      };
+      const limits = capabilities.value?.limits?.annotations || {};
+      check('limits.annotations 与契约软限额逐项一致（128/512/8192/200/64KiB/256KiB/16/30s）',
+        JSON.stringify(limits) === JSON.stringify(expectedLimits), { limits }, expectedLimits);
+
+      const coldState = await readScopedState(ANNOT_HEADERS_UNASSIGNED);
+      const coldAnnotations = coldState?.annotations || {};
+      const coldContext = coldState?.ui?.annotationContext || {};
+      check('冷态 state.annotations 为空形状：revision 0、updatedAt/source/context/view null、shapes []、truncation 归零、stale=not-running；ui.annotationContext 仍给出 runtimeId/documentKey',
+        coldAnnotations.version === 1 && coldAnnotations.space === 'canvas-css-px'
+          && coldAnnotations.revision === 0 && coldAnnotations.updatedAt === null
+          && coldAnnotations.source === null && coldAnnotations.context === null && coldAnnotations.view === null
+          && Array.isArray(coldAnnotations.shapes) && coldAnnotations.shapes.length === 0
+          && coldAnnotations.truncated === false
+          && JSON.stringify(coldAnnotations.truncation) === JSON.stringify(zeroTruncation())
+          && coldAnnotations.stale === true && coldAnnotations.staleReason === 'not-running'
+          && typeof coldContext.runtimeId === 'string' && typeof coldContext.documentKey === 'string'
+          && coldContext.pageGeneration === null && coldContext.documentEpoch === 0
+          && JSON.stringify(coldState?.ui?.annotations) === JSON.stringify(coldAnnotations),
+      { annotations: coldAnnotations, context: coldContext }, 'cold empty document');
+
+        const coldPublish = await publishAnnotations(
+        annotationPublishBody(coldState, { clientRevision: 1, shapes: annotationShapes() }),
+        { headers: ANNOT_HEADERS_UNASSIGNED },
+      );
+      const coldAfter = await readScopedState(ANNOT_HEADERS_UNASSIGNED);
+      check('冷态（未启动页面）发布被拒绝：400 annotation-runtime-not-running，且零写入（revision 0、shapes 空、source null）',
+        coldPublish.statusCode === 400 && coldPublish.json?.code === 'INVALID_ARGUMENT'
+          && coldPublish.json?.details?.reason === 'annotation-runtime-not-running'
+          && coldAfter?.annotations?.revision === 0 && coldAfter.annotations.shapes.length === 0
+          && coldAfter.annotations.source === null,
+      { status: coldPublish.statusCode, body: coldPublish.json, after: coldAfter?.annotations },
+      { status: 400, reason: 'annotation-runtime-not-running' });
+
+      const legacyPublish = await publishAnnotations(
+        annotationPublishBody(coldState, { clientRevision: 1, shapes: [] }),
+        { headers: {} },
+      );
+      const legacyAfter = await readScopedState(ANNOT_HEADERS_UNASSIGNED);
+      check('未带 scope 的 legacy 发布被拒绝（403 SCOPE_FORBIDDEN，不猜 workspace）且零写入',
+        legacyPublish.statusCode === 403 && legacyPublish.json?.code === 'SCOPE_FORBIDDEN'
+          && legacyAfter?.annotations?.revision === 0,
+      { status: legacyPublish.statusCode, body: legacyPublish.json }, { status: 403, code: 'SCOPE_FORBIDDEN' });
+
+      const unauthPublish = await publishAnnotations(
+        annotationPublishBody(coldState, { clientRevision: 1, shapes: [] }),
+        { authenticated: false },
+      );
+      const unauthAfter = await readScopedState(ANNOT_HEADERS_UNASSIGNED);
+      check('scoped 但未通过 owner-only 鉴权的发布 → 401，且零写入',
+        unauthPublish.statusCode === 401 && unauthAfter?.annotations?.revision === 0,
+      { status: unauthPublish.statusCode, body: unauthPublish.json }, { status: 401 });
+
+      // Zero side effects of *reading* the annotation surface on a cold scope: no page, no profile,
+      // and not a single CDP command.
+      const coldRuntime = (() => {
+        const registry = harness.ctx.__internal.plugin?.registry;
+        if (!registry) return undefined;
+        for (const entry of registry.entries.values()) if (entry.scope?.id === 'unassigned:owner') return entry.runtime;
+        return undefined;
+      })();
+      const coldCounter = instrumentRuntime(coldRuntime);
+      coldCounter.reset();
+      const coldStateAgain = await readScopedState(ANNOT_HEADERS_UNASSIGNED);
+      const coldAfterRead = await readScopedState(ANNOT_HEADERS_UNASSIGNED);
+      check('读取 annotations/capabilities 不启动页面、零 CDP（runtime.send 调用数 0，page 仍空）',
+        coldCounter.total() === 0 && coldRuntime.page === undefined && coldRuntime.cdp === undefined
+          && coldStateAgain?.annotations?.revision === 0 && coldAfterRead?.annotations?.revision === 0,
+      { sends: coldCounter.counts.calls, page: coldRuntime.page ?? null }, { sends: {}, page: null });
+    });
+
+  /* ---------------------------------------------------------------- A2: six shapes + snapshot */
+  await runProbe('A2-annotation-shapes', '六种图形、负 C 快照与文字读回：Host 规范化而不改页面',
+    '六图形按叠放顺序与几何读回；箭头头部由端点+线宽重算（不信客户端 9999）；文字原文（中文/<>&/引号）与 fontSize=20 保持；view 存客户端接受快照（canvasX=-100、y=60、canvasY=10、contentSize、viewRevision）；context 五项与 ui.annotationContext 同源且 addressDigest 64 hex 不泄露地址；browser_state 顶层同源；p=d−S=q+O 自洽；第二次发布 revision+1；发布零 CDP、页面 DOM/滚动不变', async () => {
+      const nav = await harness.invoke('browser_navigate', { url: pageUrl }, execA);
+      await waitFor(async () => (await pageTruth(harness, execA))?.title === 'P0 Capture Fixture', { label: 'fixture title' });
+      await setView({ width: 800, height: 600, scale: 1, x: 0, y: 0 }, execA);
+      await setView({ canvasX: -100, canvasY: -50 }, execA);
+      const moved = await setView({ x: 0, y: 60 }, execA);
+      const stateA = await readScopedState(ANNOT_HEADERS_A);
+      check('基准快照：canvasX=-100、x=0、y=60、canvasY=10（O=-100/-50 在改 S 时保留），页面 scrollY=60',
+        nav.ok === true && moved.ok === true && stateA?.view?.canvasX === -100 && stateA.view.x === 0
+          && stateA.view.y === 60 && stateA.view.canvasY === 10
+          && (await pageTruth(harness, execA))?.scrollY === 60,
+      { nav: nav.ok, view: stateA?.view, canvas: stateA?.canvas }, { canvasX: -100, x: 0, y: 60, canvasY: 10 });
+
+      const runtimeA = runtimeByWorkspace('ws-a');
+      const counter = instrumentRuntime(runtimeA);
+      const domBefore = (await harness.invoke('browser_eval', {
+        expression: '({ annotNodes: document.querySelectorAll("[data-utb-annot], [data-utb-annot-layer]").length, scrollX: window.scrollX, scrollY: window.scrollY, innerWidth: window.innerWidth, dpr: window.devicePixelRatio })',
+      }, execA)).value?.value;
+      // Let any metadata/observation read armed by the /state above land before the zero-CDP window.
+      await sleep(500);
+      counter.reset();
+
+      const panelId = panelIdFor(1);
+      const shapes = annotationShapes();
+      const first = await publishAnnotations(annotationPublishBody(stateA, { panelId, clientRevision: 1, shapes }));
+      const doc = first.json?.annotations || {};
+      check('六图形发布 200 且 accepted=true/ignored=false：顺序与 id/type 保持、truncated=false、revision 1',
+        first.statusCode === 200 && first.json?.ok === true && first.json?.accepted === true && first.json?.ignored === false
+          && doc.revision === 1 && doc.truncated === false
+          && JSON.stringify(doc.shapes.map((shape) => [shape.id, shape.type])) === JSON.stringify(shapes.map((shape) => [shape.id, shape.type]))
+          && doc.source?.kind === 'human-panel' && doc.source.panelId === panelId
+          && doc.source.surface === 'main' && doc.source.clientRevision === 1 && doc.source.trusted === false,
+      { status: first.statusCode, revision: doc.revision, source: doc.source, ids: doc.shapes?.map((shape) => shape.id) }, 'accepted 6 shapes');
+
+      const geometry = Object.fromEntries(doc.shapes.map((shape) => [shape.id, shape]));
+      check('矩形/椭圆/线段/画笔几何逐项读回（rect x/y/w/h、ellipse cx/cy/rx/ry、line 端点、brush 点数组）',
+        JSON.stringify([geometry.a1?.x, geometry.a1?.y, geometry.a1?.width, geometry.a1?.height]) === JSON.stringify([10, 20, 100, 50])
+          && JSON.stringify([geometry.a2?.cx, geometry.a2?.cy, geometry.a2?.rx, geometry.a2?.ry]) === JSON.stringify([200, 120, 40, 25])
+          && JSON.stringify([geometry.a3?.x1, geometry.a3?.y1, geometry.a3?.x2, geometry.a3?.y2]) === JSON.stringify([0, 0, 100, 100])
+          && JSON.stringify(geometry.a5?.points) === JSON.stringify([[0, 0], [5, 5], [10, 12]])
+          && geometry.a2.fill === true && geometry.a2.stroke === false
+          && geometry.a5.fill === false && geometry.a5.stroke === true,
+      { a1: geometry.a1, a2: geometry.a2, a3: geometry.a3, a5: geometry.a5 }, 'per-type geometry');
+
+      check('箭头头部由 Host 重算（L=√(50²+60²)≈78.1、t=5 → length=15/width=10，客户端 9999 不被信任）；文字保持原文（中文/<>&/引号）且 fontSize=20、fill=true/stroke=false',
+        geometry.a4?.head?.length === 15 && geometry.a4?.head?.width === 10
+          && JSON.stringify([geometry.a4.x1, geometry.a4.y1, geometry.a4.x2, geometry.a4.y2]) === JSON.stringify([10, 10, 60, 70])
+          && geometry.a6?.text === '问题在这里 <> & "quoted"' && geometry.a6?.fontSize === 20
+          && geometry.a6.fill === true && geometry.a6.stroke === false
+          && JSON.stringify([geometry.a6.x, geometry.a6.y]) === JSON.stringify([30, 40]),
+      { head: geometry.a4?.head, text: geometry.a6?.text, fontSize: geometry.a6?.fontSize }, 'arrow head recomputed + verbatim text');
+
+      const storedView = doc.view || {};
+      const publishedContext = doc.context || {};
+      check('view 存客户端已接受的快照（canvasX/canvasY/x/y/w/h/scale/contentSize/viewRevision，frameEpoch=null）且 context 五项与 ui.annotationContext 同源、addressDigest 为 64 hex 不含地址',
+        storedView.canvasX === -100 && storedView.canvasY === 10 && storedView.x === 0 && storedView.y === 60
+          && storedView.width === 800 && storedView.height === 600 && storedView.scale === 1
+          && Number.isFinite(storedView.contentWidth) && Number.isFinite(storedView.contentHeight)
+          && Number.isSafeInteger(storedView.viewRevision) && storedView.frameEpoch === null
+          && publishedContext.runtimeId === stateA.ui.annotationContext.runtimeId
+          && publishedContext.documentKey === stateA.ui.annotationContext.documentKey
+          && publishedContext.pageGeneration === stateA.ui.annotationContext.pageGeneration
+          && publishedContext.documentEpoch === stateA.ui.annotationContext.documentEpoch
+          && publishedContext.addressDigest === stateA.ui.annotationContext.addressDigest
+          && /^[0-9a-f]{64}$/u.test(publishedContext.addressDigest)
+          && !JSON.stringify(publishedContext).includes('http') && !JSON.stringify(publishedContext).includes('127.0.0.1'),
+      { view: storedView, context: publishedContext }, 'accepted snapshot + context');
+
+      const stateTool = await harness.invoke('browser_state', {}, execA);
+      check('browser_state 顶层 annotations 与发布结果同源（同一 revision/shapes/source），且不泄露 sessionId/cwd/地址',
+        stateTool.ok === true && stateTool.value?.annotations?.revision === doc.revision
+          && stateTool.value.annotations.shapes.length === 6
+          && stateTool.value.annotations.source?.panelId === panelId
+          && stateTool.value.annotations.context?.documentKey === stateA.ui.annotationContext.documentKey
+          && !JSON.stringify(stateTool.value.annotations).includes('127.0.0.1')
+          && !JSON.stringify(stateTool.value.annotations).includes('cwd'),
+      { annotations: stateTool.value?.annotations }, 'browser_state projection');
+
+      const offsetX = storedView.canvasX - storedView.x;
+      const offsetY = storedView.canvasY - storedView.y;
+      const point = { x: geometry.a1.x, y: geometry.a1.y };
+      const pagePoint = { x: point.x - storedView.x, y: point.y - storedView.y };
+      const q = { x: point.x - storedView.canvasX, y: point.y - storedView.canvasY };
+      const p = { x: q.x + offsetX, y: q.y + offsetY };
+      check('负 C 快照下坐标换算自洽：p=d−S=q+O（d=(10,20) → q=(110,10) → O=(-100,-50) → p=(10,-40)，p 在视口外即不可派发）',
+        q.x === 110 && q.y === 10 && offsetX === -100 && offsetY === -50
+          && p.x === pagePoint.x && p.y === pagePoint.y && p.x === 10 && p.y === -40,
+      { d: point, q, offset: { x: offsetX, y: offsetY }, p, pagePoint }, { q: [110, 10], p: [10, -40] });
+
+      counter.reset();
+      const second = await publishAnnotations(annotationPublishBody(stateA, {
+        panelId, clientRevision: 2, shapes: [{ ...annotationShapes()[0], id: 'a7' }],
+      }));
+      const publishSends = counter.total();
+      const domAfter = (await harness.invoke('browser_eval', {
+        expression: '({ annotNodes: document.querySelectorAll("[data-utb-annot], [data-utb-annot-layer]").length, scrollX: window.scrollX, scrollY: window.scrollY, innerWidth: window.innerWidth, dpr: window.devicePixelRatio })',
+      }, execA)).value?.value;
+      check('第二次发布（新 clientRevision）→ revision 2 且 updatedAt 为 epoch ms，shapes=1；发布零 CDP，页面 DOM/滚动/视口/DPR 不变',
+        second.statusCode === 200 && second.json?.annotations?.revision === 2
+          && Number.isSafeInteger(second.json.annotations.updatedAt)
+          && second.json.annotations.shapes.length === 1
+          && publishSends === 0
+          && JSON.stringify(domAfter) === JSON.stringify(domBefore) && domAfter?.annotNodes === 0,
+      { revision: second.json?.annotations?.revision, updatedAt: second.json?.annotations?.updatedAt, publishSends, domBefore, domAfter },
+      { revision: 2, publishSends: 0, dom: 'unchanged' });
+    });
+
+  /* ---------------------------------------------------------------- A3: limits + refusals */
+  await runProbe('A3-annotation-limits', '软限额裁剪、非法结构硬拒绝与 lossless 投影',
+    '130 形状保留最新 128（droppedShapes=2）；画笔 600 点降采样到 512 保首末（droppedPoints=88）；16×512 点按最旧整形状裁剪到 ≤8192；整文档 ≤65536 字节且不留半个形状；客户端 truncation 与 Host 新增合并不重复累计；300 码元文字裁到 200 不拆代理对；11 条非法结构全部 400（field/reason，不回显原文）且零写入；ACK 与 browser_state 过真实 snapshotJsonValue/isJsonValue', async () => {
+      const ui = await readScopedState(ANNOT_HEADERS_A);
+      const panelId = panelIdFor(2);
+      const baselineRevision = ui?.annotations?.revision ?? 0;
+      let revision = 1;
+      const publish = async (shapes, extra = {}) => {
+        const result = await publishAnnotations(annotationPublishBody(ui, {
+          panelId, clientRevision: revision, shapes, ...extra,
+        }));
+        revision += 1;
+        return result;
+      };
+
+      const many = Array.from({ length: 130 }, (_, index) => ({
+        id: 'a' + (index + 1), type: 'rect', color: '#ff3b30', strokeWidth: 3, fill: false, stroke: true,
+        x: index, y: index, width: 10, height: 10,
+      }));
+      const capped = await publish(many);
+      const cappedDoc = capped.json?.annotations || {};
+      check('130 形状 → 保留最新 128（a3…a130）：droppedShapes=2、truncated=true、revision+1',
+        capped.statusCode === 200 && cappedDoc.shapes?.length === 128
+          && cappedDoc.shapes[0]?.id === 'a3' && cappedDoc.shapes[127]?.id === 'a130'
+          && cappedDoc.truncation?.droppedShapes === 2 && cappedDoc.truncated === true
+          && cappedDoc.revision === baselineRevision + 1,
+      { length: cappedDoc.shapes?.length, first: cappedDoc.shapes?.[0]?.id, last: cappedDoc.shapes?.[127]?.id, truncation: cappedDoc.truncation, revision: cappedDoc.revision },
+      { length: 128, first: 'a3', last: 'a130', droppedShapes: 2 });
+
+      const longBrush = {
+        id: 'a1', type: 'brush', color: '#af52de', strokeWidth: 2, fill: false, stroke: true,
+        points: Array.from({ length: 600 }, (_, index) => [index, index * 2]),
+      };
+      const downsampled = await publish([longBrush]);
+      const brush = downsampled.json?.annotations?.shapes?.[0];
+      check('画笔 600 点 → 均匀降采样到 512 点，保留首点与末点，droppedPoints=88',
+        downsampled.statusCode === 200 && brush?.points?.length === 512
+          && JSON.stringify(brush.points[0]) === JSON.stringify([0, 0])
+          && JSON.stringify(brush.points[511]) === JSON.stringify([599, 1198])
+          && downsampled.json.annotations.truncation?.droppedPoints === 88
+          && downsampled.json.annotations.truncated === true,
+      { length: brush?.points?.length, first: brush?.points?.[0], last: brush?.points?.[511], truncation: downsampled.json?.annotations?.truncation },
+      { length: 512, first: [0, 0], last: [599, 1198], droppedPoints: 88 });
+
+      const heavy = Array.from({ length: 17 }, (_, index) => ({
+        id: 'a' + (index + 1), type: 'brush', color: '#0a84ff', strokeWidth: 1, fill: false, stroke: true,
+        points: Array.from({ length: 512 }, (_, point) => [point, point + index]),
+      }));
+      const budgeted = await publish(heavy);
+      const budgetDoc = budgeted.json?.annotations || {};
+      const totalPoints = (budgetDoc.shapes || []).reduce((sum, shape) => sum + (shape.type === 'brush' ? shape.points.length : 0), 0);
+      check('点/字节预算：17×512 点文档按最旧整形状逐个移除，保留集 ≤8192 点且每笔仍是 512 点（droppedPoints 不重复计）',
+        budgeted.statusCode === 200 && budgetDoc.shapes.length < 17 && budgetDoc.shapes.length >= 1
+          && totalPoints <= 8192 && totalPoints === budgetDoc.shapes.length * 512
+          && budgetDoc.truncation?.droppedShapes === 17 - budgetDoc.shapes.length
+          && budgetDoc.truncation?.droppedPoints === 0
+          && budgetDoc.truncated === true,
+      { kept: budgetDoc.shapes?.length, totalPoints, truncation: budgetDoc.truncation },
+      { kept: '<17', totalPoints: '<=8192', droppedPoints: 0 });
+
+      const serialized = Buffer.byteLength(JSON.stringify(budgetDoc), 'utf8');
+      const shapesAreWhole = (budgetDoc.shapes || []).every((shape) => shape.type !== 'brush'
+        || (Array.isArray(shape.points) && shape.points.length >= 2
+          && shape.points.every((pair) => Array.isArray(pair) && pair.length === 2 && Number.isFinite(pair[0]) && Number.isFinite(pair[1]))));
+      check('整份 annotations 文档 ≤65536 字节，且每个保留下来的画笔都是完整点数组（不截半个 JSON/坐标对象）',
+        serialized <= 65536 && shapesAreWhole, { bytes: serialized, kept: budgetDoc.shapes?.length, shapesAreWhole },
+        { maxBytes: 65536, shapesAreWhole: true });
+
+      const merged = await publish(many, { truncation: { droppedShapes: 5, droppedPoints: 7, shortenedTextCodeUnits: 3 } });
+      const mergedTruncation = merged.json?.annotations?.truncation || {};
+      check('客户端 truncation(5/7/3) 与 Host 新增(2) 合并且不重复累计 → 7/7/3',
+        merged.statusCode === 200 && mergedTruncation.droppedShapes === 7
+          && mergedTruncation.droppedPoints === 7 && mergedTruncation.shortenedTextCodeUnits === 3
+          && merged.json.annotations.shapes.length === 128,
+      { truncation: mergedTruncation }, { droppedShapes: 7, droppedPoints: 7, shortenedTextCodeUnits: 3 });
+
+      const ascii = await publish([{
+        id: 'a1', type: 'text', color: '#000000', strokeWidth: 1, fill: true, stroke: false,
+        x: 0, y: 0, fontSize: 20, text: 'x'.repeat(300),
+      }]);
+      const emoji = await publish([{
+        id: 'a1', type: 'text', color: '#000000', strokeWidth: 1, fill: true, stroke: false,
+        x: 0, y: 0, fontSize: 20, text: '😀'.repeat(150),
+      }]);
+      const asciiText = ascii.json?.annotations?.shapes?.[0]?.text || '';
+      const emojiText = emoji.json?.annotations?.shapes?.[0]?.text || '';
+      const loneSurrogate = /[\uD800-\uDBFF]$|^[\uDC00-\uDFFF]/u.test(emojiText);
+      check('文字 300 UTF-16 码元 → 截到 200（shortenedTextCodeUnits=100），代理对不被拆开（150 emoji → 100 emoji，无孤立代理）',
+        ascii.statusCode === 200 && asciiText.length === 200
+          && ascii.json.annotations.truncation?.shortenedTextCodeUnits === 100
+          && emojiText.length === 200 && [...emojiText].length === 100 && loneSurrogate === false
+          && emoji.json.annotations.truncation?.shortenedTextCodeUnits === 100,
+      { asciiLength: asciiText.length, emojiUnits: emojiText.length, emojiCodePoints: [...emojiText].length, loneSurrogate, truncations: [ascii.json?.annotations?.truncation, emoji.json?.annotations?.truncation] },
+      { asciiLength: 200, emojiUnits: 200, emojiCodePoints: 100, shortenedTextCodeUnits: 100 });
+
+      const before = (await readScopedState(ANNOT_HEADERS_A)).annotations;
+      const goodShape = annotationShapes()[0];
+      const body = (mutate) => {
+        const base = annotationPublishBody(ui, { panelId, clientRevision: revision, shapes: [goodShape] });
+        mutate(base);
+        return base;
+      };
+      const rawProto = JSON.stringify(annotationPublishBody(ui, {
+        panelId, clientRevision: revision, shapes: [{ ...goodShape, evilMarker: 'SECRET-ECHO-MUST-NOT-APPEAR' }],
+      })).replace('"evilMarker"', '"__proto__"');
+      const invalidCases = [
+        ['unknown-field', { body: body((input) => { input.extra = 1; }) }],
+        ['invalid-enum(type)', { body: body((input) => { input.shapes[0].type = 'sticker'; }) }],
+        ['duplicate-id', { body: body((input) => { input.shapes.push({ ...goodShape }); }) }],
+        ['not-finite(strokeWidth)', { body: body((input) => { input.shapes[0].strokeWidth = '3'; }) }],
+        ['out-of-range(strokeWidth 21)', { body: body((input) => { input.shapes[0].strokeWidth = 21; }) }],
+        ['invalid-enum(surface)', { body: body((input) => { input.surface = 'popup'; }) }],
+        ['release-requires-empty-shapes', { body: body((input) => { input.release = true; }) }],
+        ['unsupported-version', { body: body((input) => { input.version = 2; }) }],
+        ['prototype-pollution', { rawBody: rawProto }],
+        ['not-json', { rawBody: '{not json' }],
+        ['body-too-large', { rawBody: JSON.stringify(annotationPublishBody(ui, { panelId, clientRevision: revision, shapes: [goodShape] })) + ' '.repeat(262144) }],
+      ];
+      const invalidResults = [];
+      for (const [label, options] of invalidCases) {
+        const result = await publishAnnotations(options.body, options);
+        invalidResults.push({
+          label,
+          status: result.statusCode,
+          code: result.json?.code,
+          reason: result.json?.details?.reason,
+          detailKeys: Object.keys(result.json?.details || {}).sort(),
+          echo: JSON.stringify(result.json).includes('SECRET-ECHO-MUST-NOT-APPEAR'),
+        });
+      }
+      const after = (await readScopedState(ANNOT_HEADERS_A)).annotations;
+      check('11 条非法结构全部 400 INVALID_ARGUMENT，details 只有 field/reason/limits 且不回显原文，Host 文档零写入',
+        invalidResults.every((item) => item.status === 400 && item.code === 'INVALID_ARGUMENT'
+          && typeof item.reason === 'string' && item.reason.length > 0
+          && JSON.stringify(item.detailKeys) === JSON.stringify(['field', 'limits', 'reason'])
+          && item.echo === false)
+          && after.revision === before.revision && after.updatedAt === before.updatedAt,
+      { invalidResults, revisionBefore: before.revision, revisionAfter: after.revision }, '400 × 11, zero writes');
+
+      const { loadValidator } = await import(pathToFileURL(join(HERE, 'host-contract.mjs')).href);
+      const validator = await loadValidator();
+      const ackSnapshot = validator.snapshotJsonValue(capped.json);
+      const stateValue = (await harness.invoke('browser_state', {}, execA)).value;
+      const stateSnapshot = validator.snapshotJsonValue(stateValue);
+      check('ACK 与 browser_state 的 annotations 投影通过真实 snapshotJsonValue/isJsonValue（无 undefined/非有限数/类实例）',
+        validator.real === true && ackSnapshot !== undefined && stateSnapshot !== undefined
+          && validator.isJsonValue(capped.json) === true && validator.isJsonValue(stateValue) === true
+          && losslessProblem(stateValue?.annotations ?? {}) === null,
+      { validatorReal: validator.real, version: validator.version, ackOk: ackSnapshot !== undefined, stateOk: stateSnapshot !== undefined },
+      { validatorReal: true, ackOk: true, stateOk: true });
+    });
+
+  /* ---------------------------------------------------------------- A4: lifecycle / rotation */
+  await runProbe('A4-annotation-lifecycle', 'documentKey 轮换与清空：导航/同文档 URL/hash/reload/关闭/跨 scope',
+    '哈希变化旋转 key 并清空文档；旧 key 重放 → 409 annotation-context-stale 零写入；跨文档导航与 reload 再旋转清空；跨 scope 互不影响；close 后清空+stale=not-running+发布 400；重开后可再发布且 key 变化', async () => {
+      const nav = await harness.invoke('browser_navigate', { url: pageUrl }, execA);
+      await waitFor(async () => (await pageTruth(harness, execA))?.title === 'P0 Capture Fixture', { label: 'fixture title' });
+      const base = await readScopedState(ANNOT_HEADERS_A);
+      const baseRevision = base.annotations.revision;
+      const firstPublish = await publishAnnotations(annotationPublishBody(base, {
+        panelId: panelIdFor(3), clientRevision: 1, shapes: annotationShapes().slice(0, 2),
+      }));
+      const firstDoc = firstPublish.json?.annotations || {};
+      check('基准发布：文档 context.documentKey 等于 ui.annotationContext，含 2 个形状，revision=基线+1、stale=false',
+        nav.ok === true && firstPublish.statusCode === 200 && firstDoc.shapes?.length === 2
+          && firstDoc.context?.documentKey === base.ui.annotationContext.documentKey
+          && firstDoc.revision === baseRevision + 1 && firstDoc.stale === false,
+      { documentKey: firstDoc.context?.documentKey, revision: firstDoc.revision, baseRevision, stale: firstDoc.stale }, 'published baseline');
+
+      await harness.invoke('browser_eval', { expression: 'location.hash = "#annot-hash"; 1' }, execA);
+      const hashState = await waitFor(async () => {
+        const snapshot = await readScopedState(ANNOT_HEADERS_A);
+        return snapshot?.ui?.annotationContext?.documentKey !== base.ui.annotationContext.documentKey ? snapshot : null;
+      }, { timeoutMs: 4000, intervalMs: 100, label: 'hash change rotates documentKey' });
+      check('同文档 hash 变化：documentKey 轮换、标注清空、revision 递增（内容变更可见）',
+        hashState?.annotations?.shapes?.length === 0 && hashState?.annotations?.source === null
+          && hashState?.annotations?.revision === firstDoc.revision + 1
+          && hashState?.annotations?.stale === false,
+      { annotations: hashState?.annotations, key: hashState?.ui?.annotationContext?.documentKey },
+      { shapes: 0, source: null, revision: 'R+1' });
+
+      const replay = await publishAnnotations(annotationPublishBody(base, {
+        panelId: panelIdFor(3), clientRevision: 2, shapes: annotationShapes().slice(0, 2),
+      }));
+      const afterReplay = await readScopedState(ANNOT_HEADERS_A);
+      check('用已轮换掉的旧 context 重放 → 409 annotation-context-stale，且零写入（revision 与 shapes 不变）',
+        replay.statusCode === 409 && replay.json?.code === 'INVALID_ARGUMENT'
+          && replay.json?.details?.reason === 'annotation-context-stale'
+          && afterReplay?.annotations?.revision === hashState?.annotations?.revision
+          && afterReplay?.annotations?.shapes?.length === 0,
+      { status: replay.statusCode, body: replay.json, revision: afterReplay?.annotations?.revision },
+      { status: 409, reason: 'annotation-context-stale' });
+
+      const hashKey = afterReplay.ui.annotationContext.documentKey;
+      const secondPublish = await publishAnnotations(annotationPublishBody(afterReplay, {
+        panelId: panelIdFor(3), clientRevision: 1, shapes: annotationShapes().slice(0, 3),
+      }));
+      const nav2 = await harness.invoke('browser_navigate', { url: pageUrl }, execA);
+      const navigatedState = await waitFor(async () => {
+        const snapshot = await readScopedState(ANNOT_HEADERS_A);
+        return snapshot?.ui?.annotationContext?.documentKey !== hashKey ? snapshot : null;
+      }, { timeoutMs: 5000, intervalMs: 100, label: 'cross-document navigation rotates documentKey' });
+      check('新 key 下可继续发布（3 个形状）；随后跨文档导航：documentKey 再轮换、标注清空、revision 继续递增',
+        secondPublish.statusCode === 200 && secondPublish.json?.annotations?.shapes?.length === 3
+          && secondPublish.json.annotations.context.documentKey === hashKey
+          && nav2.ok === true && navigatedState?.annotations?.shapes?.length === 0
+          && navigatedState?.annotations?.source === null
+          && navigatedState?.annotations?.revision > secondPublish.json?.annotations?.revision,
+      { publishShapes: secondPublish.json?.annotations?.shapes?.length, annotations: navigatedState?.annotations, key: navigatedState?.ui?.annotationContext?.documentKey },
+      { publish: 3, shapes: 0, source: null });
+
+      const navKey = navigatedState.ui.annotationContext.documentKey;
+      await publishAnnotations(annotationPublishBody(navigatedState, {
+        panelId: panelIdFor(4), clientRevision: 1, shapes: annotationShapes().slice(0, 1),
+      }));
+      harness.setConnection(annotOwner());
+      let reloadResponse;
+      try {
+        reloadResponse = await harness.request({ method: 'POST', path: '/plugins/ui-testing/reload', headers: ANNOT_HEADERS_A, body: {} });
+      } finally { harness.setConnection(undefined); }
+      const reloadedState = await waitFor(async () => {
+        const snapshot = await readScopedState(ANNOT_HEADERS_A);
+        return snapshot?.ui?.annotationContext?.documentKey !== navKey ? snapshot : null;
+      }, { timeoutMs: 8000, intervalMs: 120, label: 'reload rotates documentKey' });
+      const staleAfterReload = await publishAnnotations(annotationPublishBody(navigatedState, {
+        panelId: panelIdFor(4), clientRevision: 2, shapes: annotationShapes().slice(0, 1),
+      }));
+      check('同地址 reload（新文档代次）：200 且 documentKey 轮换、标注清空；旧 key/旧代次重放 → 409 annotation-context-stale 零写入',
+        reloadResponse.statusCode === 200 && reloadedState?.annotations?.shapes?.length === 0
+          && reloadedState?.annotations?.source === null
+          && staleAfterReload.statusCode === 409
+          && staleAfterReload.json?.details?.reason === 'annotation-context-stale'
+          && (await readScopedState(ANNOT_HEADERS_A))?.annotations?.shapes?.length === 0,
+      { reload: reloadResponse.statusCode, annotations: reloadedState?.annotations, stale: staleAfterReload.json?.details?.reason },
+      { shapes: 0, source: null, stale: 409 });
+
+      const navB = await harness.invoke('browser_navigate', { url: pageUrl }, execB);
+      const stateB = await readScopedState(ANNOT_HEADERS_B);
+      const publishB = await publishAnnotations(annotationPublishBody(stateB, {
+        panelId: panelIdFor(5), clientRevision: 1, shapes: annotationShapes().slice(0, 4),
+      }), { headers: ANNOT_HEADERS_B });
+      const stateAAfterB = await readScopedState(ANNOT_HEADERS_A);
+      const stateBTool = await harness.invoke('browser_state', {}, execB);
+      check('跨 scope 隔离：B 的发布不影响 A（A 仍空、key 不同、runtimeId 不同），B 自己读回 4 个形状',
+        navB.ok === true && publishB.statusCode === 200
+          && publishB.json?.annotations?.shapes?.length === 4
+          && stateBTool.value?.annotations?.shapes?.length === 4
+          && stateAAfterB?.annotations?.shapes?.length === 0
+          && stateB.ui.annotationContext.documentKey !== stateAAfterB.ui.annotationContext.documentKey
+          && stateB.ui.annotationContext.runtimeId !== stateAAfterB.ui.annotationContext.runtimeId,
+      { A: stateAAfterB?.annotations?.revision, B: publishB.json?.annotations?.revision, keys: [stateB.ui.annotationContext.documentKey, stateAAfterB.ui.annotationContext.documentKey] },
+      { A: 'untouched', B: '4 shapes' });
+
+      const beforeCloseKey = stateAAfterB.ui.annotationContext.documentKey;
+      const publishedBeforeClose = await publishAnnotations(annotationPublishBody(stateAAfterB, {
+        panelId: panelIdFor(6), clientRevision: 1, shapes: annotationShapes().slice(0, 2),
+      }));
+      // Abrupt CDP disconnect (not the graceful /close below): the very first read must already
+      // report the document as gone and stale, and a publish must be refused with zero writes.
+      const runtimeForClose = runtimeByWorkspace('ws-a');
+      runtimeForClose.cdp.close();
+      const disconnectedState = await readScopedState(ANNOT_HEADERS_A);
+      const disconnectedPublish = await publishAnnotations(annotationPublishBody(stateAAfterB, {
+        panelId: panelIdFor(6), clientRevision: 2, shapes: annotationShapes().slice(0, 1),
+      }));
+      harness.setConnection(annotOwner());
+      let closeResponse;
+      try {
+        closeResponse = await harness.request({ method: 'POST', path: '/plugins/ui-testing/close', headers: ANNOT_HEADERS_A, body: {} });
+      } finally { harness.setConnection(undefined); }
+      const closedState = await readScopedState(ANNOT_HEADERS_A);
+      const closedPublish = await publishAnnotations(annotationPublishBody(closedState, {
+        panelId: panelIdFor(6), clientRevision: 2, shapes: annotationShapes().slice(0, 2),
+      }));
+      check('CDP 断连与 /close 都清空标注并拒绝发布：stale=true/not-running、400 annotation-runtime-not-running 零写入',
+        publishedBeforeClose.json?.annotations?.shapes?.length === 2
+          && disconnectedState?.annotations?.shapes?.length === 0
+          && disconnectedState?.annotations?.source === null
+          && disconnectedState?.annotations?.stale === true
+          && disconnectedState.annotations.staleReason === 'not-running'
+          && disconnectedState.annotations.revision === publishedBeforeClose.json?.annotations?.revision + 1
+          && disconnectedPublish.statusCode === 400
+          && disconnectedPublish.json?.details?.reason === 'annotation-runtime-not-running'
+          && closeResponse.statusCode === 200 && closedState?.annotations?.shapes?.length === 0
+          && closedState?.annotations?.stale === true && closedState.annotations.staleReason === 'not-running'
+          && closedState?.annotations?.source === null
+          && closedPublish.statusCode === 400
+          && closedPublish.json?.details?.reason === 'annotation-runtime-not-running'
+          && (await readScopedState(ANNOT_HEADERS_A))?.annotations?.revision === closedState.annotations.revision,
+      { disconnected: disconnectedState?.annotations, disconnectedPublish: disconnectedPublish.json?.details?.reason,
+        close: closeResponse.statusCode, closed: closedState?.annotations, publish: closedPublish.json?.details?.reason },
+      { stale: true, staleReason: 'not-running', publish: 400 });
+
+      const reopened = await harness.invoke('browser_navigate', { url: pageUrl }, execA);
+      await waitFor(async () => (await pageTruth(harness, execA))?.title === 'P0 Capture Fixture', { label: 'fixture title after reopen' });
+      const reopenedState = await readScopedState(ANNOT_HEADERS_A);
+      const reopenedPublish = await publishAnnotations(annotationPublishBody(reopenedState, {
+        panelId: panelIdFor(7), clientRevision: 1, shapes: annotationShapes().slice(0, 5),
+      }));
+      check('重开后 key 变化、pageGeneration 前进，且可再次发布（5 个形状，stale=false）',
+        reopened.ok === true
+          && reopenedState.ui.annotationContext.documentKey !== beforeCloseKey
+          && reopenedState.ui.annotationContext.pageGeneration > 0
+          && reopenedPublish.statusCode === 200 && reopenedPublish.json?.annotations?.shapes?.length === 5
+          && reopenedPublish.json.annotations.stale === false,
+      { key: reopenedState.ui.annotationContext.documentKey, beforeCloseKey, generation: reopenedState.ui.annotationContext.pageGeneration, status: reopenedPublish.statusCode },
+      { shapes: 5, stale: false });
+    });
+
+  /* ---------------------------------------------------------------- A5: revisions / panels / stale */
+  await runProbe('A5-annotation-revisions', 'clientRevision 幂等/迟到、多 panel 水位、release、失败不污染 lastError、心跳与 stale',
+    '同号同内容幂等 ACK；同号异内容 400；低号 200 ignored 不覆盖；新号 accepted 且 revision+1；另一 panel 可成为最近版本；第 17 个 panel 400 annotation-source-limit；release 只清自己 panel 的文档；匹配心跳刷新 lastSeenAt、30s 无匹配心跳 → stale=panel-unseen；全过程 lastError 保持空', async () => {
+      const ui = await readScopedState(ANNOT_HEADERS_A);
+      const runtimeA = runtimeByWorkspace('ws-a');
+      const p1 = panelIdFor(11);
+      const p2 = panelIdFor(12);
+      const shapesTwo = annotationShapes().slice(0, 2);
+      const shapesOne = annotationShapes().slice(0, 1);
+
+      const accepted1 = await publishAnnotations(annotationPublishBody(ui, { panelId: p1, clientRevision: 1, shapes: shapesTwo }));
+      const idempotent = await publishAnnotations(annotationPublishBody(ui, { panelId: p1, clientRevision: 1, shapes: shapesTwo }));
+      const conflict = await publishAnnotations(annotationPublishBody(ui, { panelId: p1, clientRevision: 1, shapes: shapesOne }));
+      check('panel P1 rev1 首次接受；同号同内容幂等 ACK（accepted=true/ignored=true，revision 不变）；同号异内容 400 annotation-client-revision-conflict 零写入',
+        accepted1.statusCode === 200 && accepted1.json?.accepted === true && accepted1.json?.ignored === false
+          && idempotent.statusCode === 200 && idempotent.json?.accepted === true && idempotent.json?.ignored === true
+          && idempotent.json?.annotations?.revision === accepted1.json?.annotations?.revision
+          && conflict.statusCode === 400 && conflict.json?.details?.reason === 'annotation-client-revision-conflict'
+          && JSON.stringify(conflict.json?.details ? Object.keys(conflict.json.details).sort() : []) === JSON.stringify(['field', 'limits', 'reason']),
+      { accepted: accepted1.json?.annotations?.revision, idempotent: idempotent.json?.annotations?.revision, conflict: conflict.json?.details },
+      { idempotentIgnored: true, conflict: 400 });
+
+      const accepted3 = await publishAnnotations(annotationPublishBody(ui, { panelId: p1, clientRevision: 3, shapes: shapesOne }));
+      const late = await publishAnnotations(annotationPublishBody(ui, { panelId: p1, clientRevision: 2, shapes: shapesTwo }));
+      check('P1 rev3 接受后 rev2 迟到 → 200 accepted=false/ignored=true，不覆盖（revision/shapes 保持 rev3 的内容）',
+        accepted3.statusCode === 200 && late.statusCode === 200
+          && late.json?.accepted === false && late.json?.ignored === true
+          && late.json?.clientRevision === 3
+          && late.json?.annotations?.revision === accepted3.json?.annotations?.revision
+          && late.json?.annotations?.shapes?.length === 1
+          && late.json?.annotations?.source?.clientRevision === 3,
+      { late: { accepted: late.json?.accepted, ignored: late.json?.ignored, clientRevision: late.json?.clientRevision }, revision: late.json?.annotations?.revision },
+      { accepted: false, ignored: true });
+
+      const p2Publish = await publishAnnotations(annotationPublishBody(ui, { panelId: p2, clientRevision: 1, shapes: shapesTwo }));
+      check('另一 panel P2 发布成功并成为最近版本（shapes 2、source.panelId=P2、revision+1）',
+        p2Publish.statusCode === 200 && p2Publish.json?.annotations?.shapes?.length === 2
+          && p2Publish.json.annotations.source.panelId === p2
+          && p2Publish.json.annotations.revision === accepted3.json.annotations.revision + 1,
+      { source: p2Publish.json?.annotations?.source, revision: p2Publish.json?.annotations?.revision },
+      { panelId: p2, revision: 'prev+1' });
+
+      const panelResults = [];
+      for (let index = 13; index <= 26; index += 1) {
+        const result = await publishAnnotations(annotationPublishBody(ui, { panelId: panelIdFor(index), clientRevision: 1, shapes: shapesOne }));
+        panelResults.push({ panel: index, status: result.statusCode, reason: result.json?.details?.reason ?? null });
+      }
+      const acceptedPanels = panelResults.filter((item) => item.status === 200).length;
+      const rejectedPanels = panelResults.filter((item) => item.status === 400 && item.reason === 'annotation-source-limit').length;
+      check('panel 水位 16：本轮接受的 panel 恰好把水位补满到 16，其余全部 400 annotation-source-limit（满额拒新来源）',
+        // P1 + P2 were registered before this loop, hence "3 + accepted" counts the fresh panel too.
+        acceptedPanels >= 1 && 3 + acceptedPanels === 16
+          && rejectedPanels === panelResults.length - acceptedPanels
+          && panelResults.slice(acceptedPanels).every((item) => item.reason === 'annotation-source-limit'),
+      { acceptedPanels, rejectedPanels, first: panelResults[0], last: panelResults[panelResults.length - 1] },
+      { watermark: 16, rejectedReason: 'annotation-source-limit' });
+
+      const lastAcceptedPanel = panelResults[acceptedPanels - 1].panel;
+      const releaseOthers = await publishAnnotations(annotationPublishBody(ui, { panelId: p2, clientRevision: 2, shapes: [], release: true }));
+      check('release 只清自己 panel 的文档：当前文档属于水位内最后一个 panel 时，P2 的 release 被 ignore（shapes 不变）',
+        releaseOthers.statusCode === 200 && releaseOthers.json?.accepted === false
+          && releaseOthers.json?.ignored === true
+          && releaseOthers.json?.annotations?.shapes?.length === 1,
+      { body: { accepted: releaseOthers.json?.accepted, ignored: releaseOthers.json?.ignored }, shapes: releaseOthers.json?.annotations?.shapes?.length },
+      { accepted: false, ignored: true, shapes: 1 });
+
+      const owner = panelIdFor(lastAcceptedPanel);
+      const releaseOwn = await publishAnnotations(annotationPublishBody(ui, { panelId: owner, clientRevision: 2, shapes: [], release: true }));
+      check('文档所属 panel 的 release:true 立即成为最近版本（shapes=[]、release 后仍是有效文档、source 保留）',
+        releaseOwn.statusCode === 200 && releaseOwn.json?.accepted === true
+          && releaseOwn.json?.annotations?.shapes?.length === 0
+          && releaseOwn.json?.annotations?.truncated === false
+          && releaseOwn.json?.annotations?.source?.panelId === owner,
+      { annotations: releaseOwn.json?.annotations }, { shapes: 0, accepted: true });
+
+      const republish = await publishAnnotations(annotationPublishBody(ui, { panelId: p1, clientRevision: 4, shapes: shapesOne }));
+      const documentKey = republish.json?.annotations?.context?.documentKey;
+      harness.setConnection(annotOwner());
+      let matched;
+      let unmatched;
+      try {
+        matched = await harness.request({
+          method: 'POST', path: '/plugins/ui-testing/metrics',
+          headers: ANNOT_HEADERS_A,
+          body: { transport: 'ws', annotationPanelId: p1, annotationClientRevision: 4, documentKey },
+        });
+        unmatched = await harness.request({
+          method: 'POST', path: '/plugins/ui-testing/metrics',
+          headers: ANNOT_HEADERS_A,
+          body: { transport: 'ws', annotationPanelId: p2, annotationClientRevision: 4, documentKey },
+        });
+      } finally { harness.setConnection(undefined); }
+      const afterMatched = (await readScopedState(ANNOT_HEADERS_A)).annotations;
+      runtimeA.annot.lastSeenAt = Date.now() - 31000;
+      runtimeA.annot.document.updatedAt = Date.now() - 31000;
+      const staleState = (await readScopedState(ANNOT_HEADERS_A)).annotations;
+      harness.setConnection(annotOwner());
+      try {
+        await harness.request({
+          method: 'POST', path: '/plugins/ui-testing/metrics',
+          headers: ANNOT_HEADERS_A,
+          body: { transport: 'ws', annotationPanelId: p1, annotationClientRevision: 4, documentKey },
+        });
+      } finally { harness.setConnection(undefined); }
+      const revived = (await readScopedState(ANNOT_HEADERS_A)).annotations;
+      check('心跳：匹配 source+已 ACK revision 的 /metrics 心跳让文档保持新鲜；30s 无匹配心跳 → stale=panel-unseen；再来一次匹配心跳恢复 fresh',
+        matched.statusCode === 200 && unmatched.statusCode === 200
+          && afterMatched.stale === false
+          && staleState.stale === true && staleState.staleReason === 'panel-unseen'
+          && revived.stale === false && revived.revision === staleState.revision
+          && JSON.stringify(revived.shapes) === JSON.stringify(staleState.shapes),
+      { afterMatched: afterMatched.stale, stale: staleState.stale, staleReason: staleState.staleReason, revived: revived.stale },
+      { stale: true, staleReason: 'panel-unseen', revived: false });
+
+      // A plain empty publish (no `release`) is the panel's "clear the canvas" / "exit the mode"
+      // flush path (§11.4): it must become the newest document, not a no-op.
+      const revisionBeforeClear = (await readScopedState(ANNOT_HEADERS_A)).annotations.revision;
+      const cleared = await publishAnnotations(annotationPublishBody(ui, { panelId: p1, clientRevision: 5, shapes: [] }));
+      const finalState = await readScopedState(ANNOT_HEADERS_A);
+      const stateTool = await harness.invoke('browser_state', {}, execA);
+      check('清空（release=false 的空 shapes 发布）成为最新文档且 lastError 全程为空：browser_state.annotations 与 /state 同源',
+        cleared.statusCode === 200 && cleared.json?.accepted === true
+          && cleared.json?.annotations?.shapes?.length === 0 && cleared.json?.annotations?.truncated === false
+          && cleared.json?.annotations?.revision === revisionBeforeClear + 1
+          && stateTool.ok === true && stateTool.value?.error === ''
+          && stateTool.value?.annotations?.revision === finalState?.annotations?.revision
+          && stateTool.value?.annotations?.shapes?.length === finalState?.annotations?.shapes?.length
+          && finalState?.annotations?.shapes?.length === 0,
+      { cleared: cleared.json?.annotations, error: stateTool.value?.error, state: finalState?.annotations },
+      { shapes: 0, error: '', consistent: true });
     });
 
   log('\n[cleanup] closing browsers and fixture');

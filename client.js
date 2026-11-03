@@ -122,6 +122,26 @@ window.__ModuleLoader__.load({
       { id: 'tablet', label: '平板', w: 768, h: 1024 },
       { id: 'phone', label: '手机', w: 393, h: 852 },
     ];
+    /**
+     * 用户 2026-11-03 第 3 条：默认分辨率按运行环境确定。只引用现有 PRESETS，不引入新尺寸；
+     * 非 ready 环境只占位（选项 disabled，handler 仍判 ready）。
+     */
+    const ENV_DEFAULTS = Object.freeze({
+      web: { preset: 'landscape', fit: true },
+      windows: { preset: 'landscape', fit: true },
+      linux: { preset: 'landscape', fit: true },
+      macos: { preset: 'landscape', fit: true },
+      tui: { preset: 'landscape', fit: true },
+      android: { preset: 'phone', fit: true },
+      harmonyos: { preset: 'phone', fit: true },
+      game: { preset: 'wide', fit: true },
+      'three-d': { preset: 'wide', fit: true },
+    });
+    function envDefaultSize(id) {
+      const def = ENV_DEFAULTS[id] || ENV_DEFAULTS.web;
+      const preset = PRESETS.find((item) => item.id === def.preset) || PRESETS[1];
+      return { width: preset.w, height: preset.h, fit: def.fit !== false };
+    }
     /** 左下角控制权状态：空闲 / 人类接管 / Agent 操作中。 */
     const MODE_LABEL = { idle: '空闲', human: '人类接管', agent: 'Agent 操作中' };
 
@@ -162,6 +182,269 @@ window.__ModuleLoader__.load({
     const GEOMETRY_WAIT_MS = 250;
     const POINTER_EPSILON = 0.001;
     const FRAME_WHEEL_LINE_CSS_PX = 16;
+    /** P0-D annotation layer: SVG namespace for the imperative draft node. */
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    /** P0-D annotation defaults (docs/annotation-p0d.md §2). */
+    const ANNOT_DEFAULT = Object.freeze({ tool: 'rect', color: '#ff3b30', width: 3, fill: false, stroke: true });
+    /**
+     * 用户 2026-11-03 第 1 条：填充/外框是互斥选择（单一真源 mode）。非闭合工具与文字按工具
+     * 冻结样式，只有圆形/矩形跟随 mode；橡皮擦不产出图形。Host 契约不变（仍是 fill/stroke 布尔）。
+     */
+    function annotStyleFor(tool, mode) {
+      if (tool === 'text') return { fill: true, stroke: false };
+      if (tool === 'line' || tool === 'arrow' || tool === 'brush') return { fill: false, stroke: true };
+      return mode === 'fill' ? { fill: true, stroke: false } : { fill: false, stroke: true };
+    }
+    const ANNOT_TOOLS = Object.freeze([
+      Object.freeze({ id: 'circle', label: '圆形' }),
+      Object.freeze({ id: 'rect', label: '矩形' }),
+      Object.freeze({ id: 'line', label: '线段' }),
+      Object.freeze({ id: 'arrow', label: '箭头' }),
+      Object.freeze({ id: 'brush', label: '画笔' }),
+      Object.freeze({ id: 'text', label: '文字' }),
+      // 第七个工具（v2，docs/annotation-p0d.md §11.4）：单选、与其他六个互斥、不产生图形。
+      Object.freeze({ id: 'eraser', label: '橡皮擦' }),
+    ]);
+    /** P0-D v2 上报（docs/annotation-p0d.md §11.3）：150ms trailing 合并、500ms 单次重试。 */
+    const ANNOT_PUBLISH_DEBOUNCE_MS = 150;
+    const ANNOT_PUBLISH_RETRY_MS = 500;
+    /** 橡皮擦命中半径 r=max(strokeWidth/2,6) 画布 CSS px；长拖插值步长 ≤3 画布 px（§11.4）。 */
+    const ANNOT_ERASE_MIN_RADIUS = 6;
+    const ANNOT_ERASE_STEP_PX = 3;
+    /** 软限额（§11.2）：客户端与 Host 同一确定性规则；客户端先裁剪并如实上报 truncation。 */
+    const ANNOT_LIMITS = Object.freeze({
+      shapes: 128,
+      brushPoints: 512,
+      documentPoints: 8192,
+      textChars: 200,
+      bytes: 65536,
+    });
+
+    /* ------------------------------------------------------------------------------------------
+     * P0-D v3 标注工作区保留（docs/annotation-p0d.md §12）。
+     *
+     * The Host already stores one annotation document per workspace Runtime and already isolates
+     * workspaces. The client's remaining jobs are:
+     *   1. hydrate `ui.annotations` into the panel (after the runtime/revision/view acceptance);
+     *   2. never turn "this panel unmounted / this tab hid / the scope changed" into an empty
+     *      `release` document (that used to erase the workspace document on the Host);
+     *   3. keep unacknowledged content + the publisher identity in module-level state so a remount
+     *      can continue where the previous mount stopped, without depending on React state.
+     *
+     * `annotPublishers` is keyed by the authenticated opaque scope id + runtimeId + surface, i.e.
+     * one logical publisher per workspace/runtime/panel-seat. `sessionStorage` persists only the
+     * panel UUID and the last allocated clientRevision (never paths, session ids or shapes).
+     * ---------------------------------------------------------------------------------------- */
+    const ANNOT_STORAGE_PREFIX = 'dsh.ui-testing.annotations.v3';
+    const ANNOT_ID_PATTERN = /^a[1-9][0-9]{0,15}$/;
+    const ANNOT_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const annotPublishers = new Map();
+    let annotMountSerial = 0;
+
+    function annotNewUuid() {
+      let id = '';
+      try {
+        if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') id = String(crypto.randomUUID());
+      } catch { id = ''; }
+      if (ANNOT_UUID_PATTERN.test(id)) return id;
+      const hex = (count) => {
+        let text = '';
+        for (let index = 0; index < count; index += 1) text += Math.floor(Math.random() * 16).toString(16);
+        return text;
+      };
+      return hex(8) + '-' + hex(4) + '-4' + hex(3) + '-a' + hex(3) + '-' + hex(12);
+    }
+
+    function annotStorageKey(scopeId, runtimeId, surface) {
+      return [ANNOT_STORAGE_PREFIX, String(scopeId || ''), String(runtimeId || ''), String(surface || 'main')].join('|');
+    }
+
+    /** sessionStorage is optional: a blocked/absent store degrades to the module registry (§12.4). */
+    function annotStorageRead(key) {
+      try {
+        const raw = window.sessionStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+      } catch { return null; }
+    }
+
+    function annotStorageWrite(key, value) {
+      try { window.sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* degrade */ }
+    }
+
+    function annotPublisherGet(scopeId, runtimeId, surface) {
+      const key = annotStorageKey(scopeId, runtimeId, surface);
+      let entry = annotPublishers.get(key);
+      if (entry) return entry;
+      const stored = annotStorageRead(key) || {};
+      const storedRevision = Number.isSafeInteger(stored.lastAllocatedClientRevision)
+        ? Math.max(0, stored.lastAllocatedClientRevision) : 0;
+      const panelId = typeof stored.panelId === 'string' && ANNOT_UUID_PATTERN.test(stored.panelId)
+        ? stored.panelId : annotNewUuid();
+      entry = {
+        key, panelId, surface: String(surface || 'main'),
+        clientRevision: storedRevision,
+        // Visible/queue bookkeeping (module-owned so an unmount cannot lose it).
+        queued: null, inflight: null, retryTimer: 0, retried: false,
+        dirty: false, pendingShapes: null, pendingTruncation: null, pendingContentSeq: 0, pendingDKey: '',
+        lastError: false,
+        hostRevision: 0, ackedClientRevision: 0,
+        activeDKey: '', activeGeneration: 0, activeEpoch: -1,
+        subscribers: new Set(),
+      };
+      annotPublishers.set(key, entry);
+      if (stored.panelId !== panelId || storedRevision !== entry.clientRevision) {
+        annotStorageWrite(key, { panelId, lastAllocatedClientRevision: entry.clientRevision });
+      }
+      return entry;
+    }
+
+    /** Persist *before* the request: a reload must never reuse an already-sent revision (§12.4). */
+    function annotPublisherPersist(entry) {
+      annotStorageWrite(entry.key, { panelId: entry.panelId, lastAllocatedClientRevision: entry.clientRevision });
+    }
+
+    function annotPublisherAllocate(entry) {
+      entry.clientRevision = Math.max(0, Math.floor(entry.clientRevision)) + 1;
+      annotPublisherPersist(entry);
+      return entry.clientRevision;
+    }
+
+    function annotPublisherSubscribe(entry, listener) {
+      entry.subscribers.add(listener);
+      return () => entry.subscribers.delete(listener);
+    }
+
+    function annotPublisherEmit(entry, event) {
+      for (const listener of [...entry.subscribers]) {
+        try { listener(event); } catch { /* a subscriber must not break the queue */ }
+      }
+    }
+
+    /** Remember the newest unconfirmed local content without queueing a request. */
+    function annotPublisherRemember(entry, facts) {
+      entry.dirty = true;
+      entry.pendingShapes = facts.shapes;
+      entry.pendingTruncation = facts.truncation || { droppedShapes: 0, droppedPoints: 0, shortenedTextCodeUnits: 0 };
+      entry.pendingContentSeq = facts.contentSeq;
+      entry.pendingDKey = facts.dKey || entry.pendingDKey;
+    }
+
+    /** Enqueue the newest snapshot (at most one waiting) and drain. */
+    function annotPublisherQueue(entry, snapshot) {
+      annotPublisherRemember(entry, {
+        shapes: snapshot.shapes,
+        truncation: snapshot.truncation,
+        contentSeq: snapshot.contentSeq,
+        dKey: snapshot.dKey,
+      });
+      entry.queued = snapshot;
+      entry.lastError = false;
+      annotPublisherDrain(entry);
+    }
+
+    function annotPublisherBody(snapshot) {
+      return {
+        version: 1,
+        panelId: snapshot.panelId,
+        surface: snapshot.surface,
+        clientRevision: snapshot.clientRevision,
+        context: snapshot.context,
+        view: snapshot.view,
+        shapes: snapshot.release ? [] : snapshot.shapes,
+        truncation: snapshot.truncation,
+        release: Boolean(snapshot.release),
+      };
+    }
+
+    function annotPublisherDrain(entry) {
+      if (!entry || entry.inflight || !entry.queued) return;
+      const snapshot = entry.queued;
+      entry.queued = null;
+      entry.inflight = snapshot;
+      annotPublisherSend(entry, snapshot, false);
+    }
+
+    async function annotPublisherSend(entry, snapshot, isRetry) {
+      let status = 0;
+      let payload = null;
+      let failure = null;
+      try {
+        const response = await fetch(HOST_BASE + '/annotations', {
+          method: 'POST',
+          headers: Object.assign({ 'content-type': 'application/json' }, scopeHeaders(snapshot.scope)),
+          credentials: 'same-origin',
+          body: JSON.stringify(annotPublisherBody(snapshot)),
+        });
+        status = Number(response.status) || 0;
+        payload = await response.json().catch(() => ({}));
+      } catch (error) {
+        failure = error;
+      }
+      if (entry.inflight === snapshot) entry.inflight = null;
+      const current = () => snapshot.dKey === entry.activeDKey
+        || (entry.activeDKey === '' && snapshot.clientRevision === entry.clientRevision);
+      if (!failure && status === 200 && payload && payload.ok !== false) {
+        const accepted = payload.annotations && typeof payload.annotations === 'object' ? payload.annotations : null;
+        if (accepted && Number.isSafeInteger(Number(accepted.revision))) {
+          entry.hostRevision = Math.max(entry.hostRevision, Math.max(0, Number(accepted.revision)));
+        }
+        const ackedRevision = Number.isFinite(Number(payload.clientRevision))
+          ? Number(payload.clientRevision) : Number(snapshot.clientRevision);
+        if (Number.isSafeInteger(ackedRevision) && ackedRevision > 0) {
+          entry.ackedClientRevision = Math.max(entry.ackedClientRevision, ackedRevision);
+        }
+        entry.lastError = false;
+        if (snapshot.contentSeq === entry.pendingContentSeq) {
+          entry.dirty = false;
+          entry.pendingShapes = null;
+          entry.pendingTruncation = null;
+        }
+        annotPublisherEmit(entry, { type: 'ack', snapshot, annotations: accepted, ignored: payload.ignored === true, current: current() });
+        annotPublisherDrain(entry);
+        return;
+      }
+      const reason = payload && typeof payload === 'object'
+        ? (payload.reason || (payload.details && payload.details.reason))
+        : '';
+      if (status === 409 && reason === 'annotation-context-stale') {
+        // Only the stale document's queue is discarded; another workspace keeps its content.
+        if (snapshot.dKey === entry.activeDKey || entry.activeDKey === '') {
+          if (entry.queued && entry.queued.dKey === snapshot.dKey) entry.queued = null;
+          if (snapshot.contentSeq >= entry.pendingContentSeq) {
+            entry.dirty = false;
+            entry.pendingShapes = null;
+            entry.pendingTruncation = null;
+          }
+        }
+        entry.lastError = false;
+        annotPublisherEmit(entry, { type: 'stale', snapshot, current: current() });
+        annotPublisherDrain(entry);
+        return;
+      }
+      const retryable = Boolean(failure) || status >= 500 || status === 0;
+      if (retryable && !isRetry) {
+        if (entry.retryTimer) window.clearTimeout(entry.retryTimer);
+        entry.retryTimer = window.setTimeout(() => {
+          entry.retryTimer = 0;
+          // Still the newest content for this publisher, and the identity is unchanged: one retry
+          // with the exact same revision/body. A newer snapshot replaced it → drop the retry.
+          if (entry.inflight || entry.queued) return;
+          if (snapshot.clientRevision !== entry.clientRevision) return;
+          if (snapshot.dKey !== entry.activeDKey && entry.activeDKey !== '') return;
+          entry.inflight = snapshot;
+          annotPublisherEmit(entry, { type: 'error', snapshot, final: false, current: current() });
+          annotPublisherSend(entry, snapshot, true);
+        }, ANNOT_PUBLISH_RETRY_MS);
+        // A newer snapshot may already be waiting; it must not be blocked by the old retry timer.
+        annotPublisherDrain(entry);
+        return;
+      }
+      entry.lastError = true;
+      annotPublisherEmit(entry, { type: 'error', snapshot, final: true, current: current() });
+      annotPublisherDrain(entry);
+    }
     /** 拖拽视口：移动期间写入共享 view 的最小间隔（Host 一次 set 本身要两帧+稳定读回）。 */
     const PAN_WRITE_THROTTLE_MS = 80;
 
@@ -290,17 +573,37 @@ window.__ModuleLoader__.load({
 .utb-menu-item:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
 .utb-menu-item:disabled { color: var(--dsw-alias-label-secondary); opacity: .6; cursor: not-allowed; }
 .utb-size { display: flex; align-items: center; gap: 8px; padding: 6px 8px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
+/* P0-D 标注栏（用户 2026-11-02 要求）：独立横栏，正常单行 41px，窄面板换行不覆盖预览区。 */
+.utb-annot-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; min-height: 41px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.utb-annot-group { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; }
+.utb-annot-tool { width: 28px; height: 28px; }
+.utb-annot-check { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; white-space: nowrap; cursor: pointer; }
+.utb-annot-check input:disabled { cursor: not-allowed; }
+.utb-annot-color { width: 30px; height: 24px; padding: 0; flex: 0 0 auto; background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; cursor: pointer; }
+.utb-annot-color:disabled { opacity: .55; cursor: not-allowed; }
+.utb-annot-width { width: 54px; }
+/* v2：横栏右侧的可见文案按钮「清除画布」（§11.4）与状态栏同步提示（§11.3）。 */
+.utb-annot-clear { width: auto; min-width: 0; height: 28px; padding: 0 10px; margin-left: auto; font-size: 12px; line-height: 1; white-space: nowrap; border-color: var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
+.utb-annot-sync { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-state-warn-primary); }
+.utb-annot-layer { display: block; overflow: hidden; }
+.utb-annot-layer:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.utb-annot-text-input { position: absolute; margin: 0; padding: 0 2px; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-weight: 400; line-height: 1.2; background: var(--dsw-alias-bg-base); border: 1px dashed currentColor; border-radius: 2px; outline: none; z-index: 3; }
 .utb-num { width: 62px; height: 26px; padding: 0 6px; font: inherit; font-size: 12px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; }
 .utb-num:disabled { opacity: .55; cursor: not-allowed; }
 .utb-size-left { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; }
 .utb-size-right { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; flex-wrap: wrap; row-gap: 4px; justify-content: flex-end; min-width: 0; }
 .utb-pos { width: 58px; }
 .utb-pos-label { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
-.utb-preset { height: 24px; padding: 0 10px; font: inherit; font-size: 12px; line-height: 22px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; cursor: pointer; white-space: nowrap; }
-.utb-preset:hover { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l2); }
-.utb-preset[aria-pressed="true"] { color: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); }
-.utb-preset:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .utb-check { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+/* 用户 2026-11-03 第 1/4 条：分页选择器（填充/外框、拖拽/适应窗口）。 */
+.utb-seg { display: inline-flex; align-items: stretch; height: 24px; flex: 0 0 auto; border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; overflow: hidden; background: var(--dsw-alias-bg-base); }
+.utb-seg-btn { display: inline-flex; align-items: center; justify-content: center; gap: 2px; height: 100%; padding: 0 5px; font: inherit; font-size: 12px; line-height: 22px; color: var(--dsw-alias-label-secondary); background: transparent; border: 0; border-right: 1px solid var(--dsw-alias-border-l1); cursor: pointer; white-space: nowrap; }
+.utb-seg-dot { width: 8px; height: 8px; flex: 0 0 8px; display: block; }
+.utb-seg-btn:last-child { border-right: 0; }
+.utb-seg-btn:hover:not(:disabled) { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-2); }
+.utb-seg-btn[aria-pressed="true"] { color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); }
+.utb-seg-btn:disabled { opacity: .38; cursor: not-allowed; }
+.utb-seg-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
 .utb-dim { font-variant-numeric: tabular-nums; }
 .utb-num.utb-zoom { width: 54px; text-align: right; }
 .utb-stage { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; align-items: safe center; justify-content: safe center; background: var(--dsw-alias-bg-layer-2); }
@@ -361,7 +664,28 @@ window.__ModuleLoader__.load({
         h('path', { d: 'M8.6 19.8H5.4a1.2 1.2 0 0 1-1.2-1.2v-3.2' }),
         h('rect', { x: 8.6, y: 8.6, width: 6.8, height: 6.8, rx: 1.4 }));
     }
-    /** 选择元素：DevTools 的“检查元素”光标（虚线元素框 + 指针）。 */
+    /** 标注：画笔（用户 2026-11-02 要求，入口图标）。 */
+    function IconAnnot() {
+      return h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+        h('path', { d: 'M15.6 4.4a1.9 1.9 0 0 1 2.7 2.7L8.9 16.5l-4.2 1.5 1.5-4.2Z' }),
+        h('path', { d: 'm13.8 6.2 3.2 3.2' }));
+    }
+    /** 标注子工具的小图标（16×16、currentColor、stroke 1.7）。 */
+    function IconAnnotTool({ tool }) {
+      const svg = (children) => h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, children);
+      if (tool === 'circle') return svg(h('circle', { cx: 12, cy: 12, r: 7 }));
+      if (tool === 'rect') return svg(h('rect', { x: 4.5, y: 5.5, width: 15, height: 13, rx: 1.2 }));
+      if (tool === 'line') return svg(h('path', { d: 'M5.5 18.5 18.5 5.5' }));
+      if (tool === 'arrow') return svg([h('path', { key: 'shaft', d: 'M5.5 18.5 17.4 6.6' }), h('path', { key: 'head', d: 'M11.6 6.2h6.6v6.6' })]);
+      if (tool === 'brush') return svg([h('path', { key: 'body', d: 'M15.6 4.4a1.9 1.9 0 0 1 2.7 2.7L8.9 16.5l-4.2 1.5 1.5-4.2Z' }), h('path', { key: 'tip', d: 'm13.8 6.2 3.2 3.2' })]);
+      // 橡皮擦（v2，§11.4）：16×16、currentColor、1.7 描边。
+      if (tool === 'eraser') return svg([
+        h('path', { key: 'body', d: 'M10.4 19.8 4.6 14a1.7 1.7 0 0 1 0-2.4l7.2-7.2a1.7 1.7 0 0 1 2.4 0l4.3 4.3a1.7 1.7 0 0 1 0 2.4l-9.1 9.1Z' }),
+        h('path', { key: 'seam', d: 'm9.4 8.7 6.7 6.7' }),
+        h('path', { key: 'tray', d: 'M9.2 19.8H19.4' }),
+      ]);
+      return svg([h('path', { key: 'top', d: 'M5 6.5h14' }), h('path', { key: 'stem', d: 'M12 6.5v11' }), h('path', { key: 'base', d: 'M9 17.5h6' })]);
+    }
     function IconInspect() {
       return h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
         h('path', { d: 'M4 9V6.6C4 5.2 5.2 4 6.6 4H9M15 4h2.4C18.8 4 20 5.2 20 6.6V9M4 15v2.4C4 18.8 5.2 20 6.6 20H9', strokeDasharray: '2.6 2.2' }),
@@ -1028,8 +1352,8 @@ window.__ModuleLoader__.load({
       // `draft` is only the address-bar edit buffer: the navigation truth lives in `remote.ui`.
       const [draft, setDraft] = React.useState('');
       const [sizing, setSizing] = React.useState(false);
-      const [width, setWidth] = React.useState('393');
-      const [height, setHeight] = React.useState('852');
+      const [width, setWidth] = React.useState(String(envDefaultSize('web').width));
+      const [height, setHeight] = React.useState(String(envDefaultSize('web').height));
       const [posX, setPosX] = React.useState('0');
       const [posY, setPosY] = React.useState('0');
       const [fit, setFit] = React.useState(true);
@@ -1149,6 +1473,77 @@ window.__ModuleLoader__.load({
       const frameImgRef = React.useRef(null);
       const frameBoxRef = React.useRef(null);
       const sizeBarRef = React.useRef(null);
+      const annotBarRef = React.useRef(null);
+      const sizingRef = React.useRef(false);
+      const annotWidthWheelRef = React.useRef(null);
+      // ---- P0-D 标注模式（docs/annotation-p0d.md）------------------------------------------
+      // The synchronous truth lives in `annotRef` (mode + current style/tool); React state only
+      // mirrors it for rendering. Committed geometry is stored in canvas CSS px, so a C/scale change
+      // moves the drawing with the content instead of re-basing it.
+      const [annotOn, setAnnotOn] = React.useState(false);
+      const [annotTool, setAnnotTool] = React.useState(ANNOT_DEFAULT.tool);
+      const [annotColor, setAnnotColor] = React.useState(ANNOT_DEFAULT.color);
+      const [annotWidth, setAnnotWidth] = React.useState(ANNOT_DEFAULT.width);
+      const [annotStyleMode, setAnnotStyleMode] = React.useState('stroke');
+      // Bumped on every commit/clear: committed shapes are only copied into React on commit, never
+      // per pointer move (the live draft is an imperative SVG node updated by rAF).
+      const [annotVersion, setAnnotVersion] = React.useState(0);
+      const [annotText, setAnnotText] = React.useState(null);
+      const annotRef = React.useRef({
+        on: false,
+        tool: ANNOT_DEFAULT.tool,
+        color: ANNOT_DEFAULT.color,
+        width: ANNOT_DEFAULT.width,
+        mode: 'stroke',
+        fill: ANNOT_DEFAULT.fill,
+        stroke: ANNOT_DEFAULT.stroke,
+      });
+      const annotShapesRef = React.useRef([]);
+      const annotNextIdRef = React.useRef(0);
+      const annotGestureRef = React.useRef({
+        active: false, pointerId: -1, map: null, tool: '', style: null,
+        start: null, end: null, points: [], trace: [], pathLen: 0,
+        lastScreen: null, lastSampleScreen: null, lastPoint: null, nodes: null,
+      });
+      const annotDraftRef = React.useRef(null);
+      const annotSvgRef = React.useRef(null);
+      const annotInputRef = React.useRef(null);
+      const annotEditRef = React.useRef({ active: false, cancel: false, x: 0, y: 0, style: null });
+      const annotEditSeqRef = React.useRef(0);
+      const annotComposingRef = React.useRef(false);
+      const annotRafRef = React.useRef(0);
+      const annotEpochRef = React.useRef(null);
+      const annotButtonRef = React.useRef(null);
+      const annotPanelIdRef = React.useRef('');
+      const annotMapSigRef = React.useRef('');
+      // ---- P0-D v3 标注工作区文档（docs/annotation-p0d.md §12）--------------------------------
+      // `annotSync` is only the render mirror; the synchronous truth (queue, in-flight snapshot,
+      // identity, revisions) lives in module-level publishers keyed by scope/runtime/surface so an
+      // unmount cannot lose unacknowledged content.
+      const [annotSync, setAnnotSync] = React.useState({ state: 'idle', revision: 0 });
+      const [annotStaleState, setAnnotStaleState] = React.useState({ stale: false, staleReason: null });
+      // A live gesture/erase exists (drives the 清除画布 disabled state without per-move renders).
+      const [annotBusy, setAnnotBusy] = React.useState(false);
+      const annotSyncRef = React.useRef({ state: 'idle', timer: 0 });
+      // Identity gate: no old shape is rendered or published before the new scope's first trusted
+      // state. `epoch` is the scope generation the gate belongs to; `key` is the D key.
+      const annotGateRef = React.useRef({ epoch: -1, open: false, key: '', revision: -1, context: null, d: null, scope: null, view: null });
+      const annotContentSeqRef = React.useRef(0);
+      const annotDirtyRef = React.useRef(false);
+      const annotCandidateRef = React.useRef(null);
+      const annotStaleRef = React.useRef({ stale: false, staleReason: null });
+      const annotShownRevisionRef = React.useRef(0);
+      const annotPublisherRef = React.useRef(null);
+      const annotUnsubRef = React.useRef(null);
+      const annotMountGenerationRef = React.useRef(0);
+      if (!annotMountGenerationRef.current) {
+        annotMountSerial += 1;
+        annotMountGenerationRef.current = annotMountSerial;
+      }
+      // Mirrors the capability fact for callbacks that must not read render closures.
+      const annotChannelRef = React.useRef(false);
+      const annotEraseRef = React.useRef({ active: false, pointerId: -1, map: null, last: null, changed: 0 });
+      const annotHitCtxRef = React.useRef(null);
 
       // Immutable scope/binding for this generation. A `recent` identity is pinned to the Host
       // runtime id returned by the first /state (or /ensure); `binding` is empty until then.
@@ -1256,9 +1651,9 @@ window.__ModuleLoader__.load({
       let host = '';
       try { host = activeUrl ? new URL(activeUrl).host : ''; } catch (e) { host = ''; }
       const busy = pending || navBusy;
-      const backDisabled = busy || !running || !ui || !uiHistory?.available || !uiHistory?.canGoBack;
-      const forwardDisabled = busy || !running || !ui || !uiHistory?.available || !uiHistory?.canGoForward;
-      const reloadDisabled = busy || !running || !trueAddress;
+      const backDisabled = annotOn || busy || !running || !ui || !uiHistory?.available || !uiHistory?.canGoBack;
+      const forwardDisabled = annotOn || busy || !running || !ui || !uiHistory?.available || !uiHistory?.canGoForward;
+      const reloadDisabled = annotOn || busy || !running || !trueAddress;
       const openUrl = (() => {
         if (!trueAddress) return '';
         try {
@@ -1281,13 +1676,41 @@ window.__ModuleLoader__.load({
         if (nextUi) {
           const runtimeId = String(nextUi.runtimeId || '');
           if (retiredRuntimeRef.current && runtimeId === retiredRuntimeRef.current) return false;
-          if (previousUi && String(previousUi.runtimeId) === runtimeId && Number(nextUi.revision) <= Number(previousUi.revision)) return false;
+          if (previousUi && String(previousUi.runtimeId) === runtimeId) {
+            const nextRevision = Number(nextUi.revision);
+            const previousRevision = Number(previousUi.revision);
+            if (nextRevision < previousRevision) return false;
+            if (nextRevision === previousRevision) {
+              // The address/snapshot is unchanged, but `annotations.stale`/`staleReason` are
+              // computed at read time: refresh that metadata without moving the version gate.
+              annotHydrate(nextUi);
+              return false;
+            }
+          }
           if (previousUi && String(previousUi.runtimeId) !== runtimeId) {
-            // A new runtime: drop the old address source and ignore its late replies.
+            // A new runtime/workspace: flush the old workspace's unconfirmed content under its own
+            // frozen identity, then retract this panel's view. Never send an empty release (§12.1).
+            annotRetainDirty(true);
+            annotDropLocalView({ exit: false, discard: true });
+            // Drop the old address source and ignore its late replies.
             retiredRuntimeRef.current = String(previousUi.runtimeId || '');
             dirtyRef.current = false;
             editVersionRef.current += 1;
             setError('');
+          }
+          // A document/address change invalidates the drawing (docs/annotation-p0d.md §5). The mode
+          // itself is not exited here: an external navigation keeps the annotation mode on. A rotated
+          // Host documentKey is the same fact without an address change (v2 §11.2).
+          const previousToken = previousUi && previousUi.annotationContext
+            ? String(previousUi.annotationContext.documentKey || '') : '';
+          const nextToken = nextUi.annotationContext ? String(nextUi.annotationContext.documentKey || '') : '';
+          const addressChanged = Boolean(previousUi && previousUi.address && nextUi.address
+            && String(previousUi.address) !== String(nextUi.address));
+          const tokenChanged = Boolean(previousToken && nextToken && previousToken !== nextToken);
+          if (addressChanged || tokenChanged) {
+            // Navigation = a new document. Retract locally only; the Host rotation clears the
+            // document and a fresh empty document is NOT replayed into the new key (§12.1).
+            annotDropLocalView({ exit: false, discard: true });
           }
         }
         remoteRef.current = next;
@@ -1297,6 +1720,8 @@ window.__ModuleLoader__.load({
         }
         // The shared view (when the Host has one) is adopted through the same accepted snapshot.
         acceptView(next);
+        // Hydration runs *after* runtime/revision acceptance and view adoption (§12.2).
+        if (nextUi) annotHydrate(nextUi);
         // Publish the post-adoption canvas signature: the frame transport re-seeds a static page
         // whenever C/S/scale/revision moved (docs/canvas-viewport.md §5.1–§5.2).
         const transport = transportRef.current;
@@ -1677,7 +2102,9 @@ window.__ModuleLoader__.load({
         const revisionChanged = !previous || Number(previous.revision) !== Number(view.revision);
         const external = source === 'agent'
           || (source === 'gui' && Number(view.revision) !== Number(selfViewRevisionRef.current));
-        if (external && revisionChanged) {
+        // 用户 2026-11-03 第 3 条：回访（accepted 非 default view）时 fit 保持 mount 默认 true；
+        // 只有本次 mount 已经采纳过一份 view 之后的外部 revision 变化才取消本地 fit。
+        if (previous && external && revisionChanged) {
           fitRef.current = false;
           setFit(false);
         }
@@ -1737,13 +2164,17 @@ window.__ModuleLoader__.load({
         if (first.epoch !== scopeEpoch || first.done) return;
         first.done = true;
         if (String(view.source || '') !== 'default') return;
+        const target = envDefaultSize(env);
         const dirty = viewDirtyRef.current;
-        dirty.width = 393;
-        dirty.height = 852;
+        dirty.width = target.width;
+        dirty.height = target.height;
         dirty.scale = 100;
-        setWidth('393');
-        setHeight('852');
-        queueViewPatch({ width: 393, height: 852, scale: 1 });
+        setWidth(String(target.width));
+        setHeight(String(target.height));
+        // 与 Host 现值完全相等时不发（不碰 revision）；否则照旧只发布一次。
+        if (Number(view.width) === target.width && Number(view.height) === target.height
+          && Number(view.scale) === 1) return;
+        queueViewPatch({ width: target.width, height: target.height, scale: 1 });
       }
 
       /** Merge one field patch into the trailing debounce (at most one request in flight). */
@@ -1921,6 +2352,7 @@ window.__ModuleLoader__.load({
 
       function changePanMode(next) {
         const on = Boolean(next);
+        if (on && annotRef.current.on) return; // annotation mode forbids drag mode
         if (on && !canvasActive()) return; // old Host / no canvas: drag stays disabled
         panModeRef.current = on;
         setPanMode(on);
@@ -1934,9 +2366,1518 @@ window.__ModuleLoader__.load({
 
       /** Closing the size bar must also leave drag mode, otherwise the pointer stays a grab hand. */
       function toggleSizing() {
+        if (annotRef.current.on) return;
         const next = !sizing;
+        sizingRef.current = next; // same tick: enterAnnotMode must never observe a stale false
         setSizing(next);
         if (!next) changePanMode(false);
+      }
+
+      /* ----------------------------------------------------------------------------------------
+       * P0-D 标注模式（docs/annotation-p0d.md）
+       *
+       * The layer is a panel-local SVG view over the accepted canvas space:
+       *   P  = paintedRect(box, naturalW/H)      // never the translated <img>
+       *   d  = (C + (clientX-P.left)/sx, ...)    // canvas CSS px
+       *   screen(d) = (P.left + (d.x-C)*sx, ...)
+       * It never mutates the target page, never enters Host screenshots/T3 and never persists.
+       * The active gesture keeps its frozen mapping in a ref and paints one imperative draft node
+       * per animation frame; only a committed shape is copied into React state.
+       * -------------------------------------------------------------------------------------- */
+
+      /** Immutable snapshot of the current annotation tool/style (style is frozen at stroke start). */
+      function annotSnapshot() {
+        const current = annotRef.current;
+        return { tool: current.tool, color: current.color, width: current.width, fill: current.fill, stroke: current.stroke };
+      }
+
+      function annotIsClosedTool(tool) {
+        return tool === 'circle' || tool === 'rect';
+      }
+
+      /**
+       * Current painted mapping of the annotation layer. The SVG must cover the *untranslated*
+       * painted rect (the <img> itself may be translated by canvas compositing), so this never reads
+       * `frameShift`/`seedClip`.
+       */
+      function annotMap() {
+        const img = frameImgRef.current;
+        const box = frameBoxRef.current;
+        if (!img || !box) return null;
+        const boxRect = box.getBoundingClientRect();
+        const painted = paintedRect(boxRect, img.naturalWidth, img.naturalHeight);
+        if (!painted) return null;
+        const canvas = canvasPosition();
+        const size = acceptedViewSize();
+        if (!canvas || !(size.w > 0) || !(size.h > 0)) return null;
+        const sx = painted.width / size.w;
+        const sy = painted.height / size.h;
+        if (!(sx > 0) || !(sy > 0)) return null;
+        return { painted, boxRect, cx: canvas.x, cy: canvas.y, w: size.w, h: size.h, sx, sy };
+      }
+
+      function annotMapSignature(map) {
+        if (!map) return '';
+        const round = (value) => Math.round(Number(value) * 100) / 100;
+        return [map.painted.left, map.painted.top, map.painted.width, map.painted.height, map.cx, map.cy, map.w, map.h]
+          .map(round).join('|');
+      }
+
+      /** Pointer → canvas CSS px through one frozen mapping, clamped to the captured view rect. */
+      function annotToCanvas(map, clientX, clientY) {
+        return {
+          x: clampNumber(map.cx + (clientX - map.painted.left) / map.sx, map.cx, map.cx + map.w),
+          y: clampNumber(map.cy + (clientY - map.painted.top) / map.sy, map.cy, map.cy + map.h),
+        };
+      }
+
+      /** Half-open painted rect: the letterbox is not a drawable surface. */
+      function annotInside(map, clientX, clientY) {
+        return clientX >= map.painted.left && clientX < map.painted.left + map.painted.width
+          && clientY >= map.painted.top && clientY < map.painted.top + map.painted.height;
+      }
+
+      function annotScreenPoint(map, point) {
+        return {
+          x: map.painted.left + (point.x - map.cx) * map.sx,
+          y: map.painted.top + (point.y - map.cy) * map.sy,
+        };
+      }
+
+      /* ---- v3 工作区文档：水合 / 保留队列 / 发布者身份（docs/annotation-p0d.md §12）------------ */
+
+      function annotSurfaceName() {
+        return props && typeof props.useTabInfo === 'function' ? 'sidebar' : 'main';
+      }
+
+      function annotUiNow() {
+        const accepted = remoteRef.current;
+        return accepted && accepted.ui && accepted.ui.version === 1 ? accepted.ui : null;
+      }
+
+      /** Accepted Host annotation context (`ui.annotationContext`); null on an old Host. */
+      function annotContextNow() {
+        const ui = annotUiNow();
+        const context = ui && ui.annotationContext;
+        return context && typeof context === 'object' ? context : null;
+      }
+
+      /** D = (authenticated scope.id, runtimeId, documentKey, pageGeneration, documentEpoch). */
+      function annotDOf(ui) {
+        const context = ui && ui.annotationContext;
+        const scopeId = ui && ui.scope && ui.scope.id ? String(ui.scope.id) : '';
+        if (!context || typeof context !== 'object' || !scopeId) return null;
+        if (!context.runtimeId || !context.documentKey) return null;
+        return {
+          scopeId,
+          runtimeId: String(context.runtimeId),
+          documentKey: String(context.documentKey),
+          pageGeneration: context.pageGeneration === undefined ? null : context.pageGeneration,
+          documentEpoch: context.documentEpoch === undefined ? null : context.documentEpoch,
+        };
+      }
+
+      function annotDKey(d) {
+        return d ? [d.scopeId, d.runtimeId, d.documentKey, d.pageGeneration, d.documentEpoch].join('|') : '';
+      }
+
+      function annotContextMatches(a, b) {
+        if (!a || !b) return false;
+        return ['runtimeId', 'documentKey', 'pageGeneration', 'documentEpoch', 'addressDigest']
+          .every((name) => String(a[name] === undefined ? '' : a[name]) === String(b[name] === undefined ? '' : b[name]));
+      }
+
+      /** The accepted view as the panel currently sees it (a snapshot, not the live truth). */
+      function annotViewSnapshot() {
+        const view = viewRef.current;
+        const canvas = canvasPosition();
+        const size = acceptedViewSize();
+        const scroll = observedScroll();
+        const number = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
+        const round2 = (value) => Math.round(value * 100) / 100;
+        const canvasX = canvas ? number(canvas.x, 0) : (view ? number(view.canvasX, 0) : 0);
+        const canvasY = canvas ? number(canvas.y, 0) : (view ? number(view.canvasY, 0) : 0);
+        const scale = Math.min(2, Math.max(0.1, view ? number(view.scale, 1) : 1));
+        const epoch = annotEpochRef.current;
+        return {
+          canvasX,
+          canvasY,
+          x: round2(scroll.x),
+          y: round2(scroll.y),
+          width: Math.round(Math.min(4096, Math.max(200, size.w))),
+          height: Math.round(Math.min(4096, Math.max(200, size.h))),
+          scale,
+          contentWidth: canvas && Number.isFinite(Number(canvas.contentWidth)) ? Number(canvas.contentWidth) : null,
+          contentHeight: canvas && Number.isFinite(Number(canvas.contentHeight)) ? Number(canvas.contentHeight) : null,
+          viewRevision: view ? Math.max(0, Math.round(number(view.revision, 0))) : 0,
+          frameEpoch: epoch === null || epoch === undefined || !Number.isFinite(Number(epoch))
+            ? null : Math.max(0, Math.round(Number(epoch))),
+        };
+      }
+
+      function annotHexColor(value) {
+        const text = String(value === undefined || value === null ? '' : value).trim().toLowerCase();
+        return /^#[0-9a-f]{6}$/.test(text) ? text : ANNOT_DEFAULT.color;
+      }
+
+      /** Local shape → Host wire shape (§11.2): exactly the whitelisted fields, no extras. */
+      function annotWireShape(shape) {
+        const color = annotHexColor(shape.color);
+        const strokeWidth = Math.max(1, Math.min(20, Math.round(Number(shape.strokeWidth) || 1)));
+        const common = {
+          id: shape.id,
+          type: shape.type,
+          color,
+          strokeWidth,
+          fill: Boolean(shape.fill),
+          stroke: Boolean(shape.stroke),
+        };
+        if (shape.type === 'rect') {
+          return Object.assign(common, { x: shape.x, y: shape.y, width: shape.w, height: shape.h });
+        }
+        if (shape.type === 'circle') {
+          return Object.assign(common, { cx: shape.cx, cy: shape.cy, rx: shape.rx, ry: shape.ry });
+        }
+        if (shape.type === 'line') {
+          return Object.assign(common, { x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 });
+        }
+        if (shape.type === 'arrow') {
+          // The Host recomputes the head; sending the same deterministic values keeps both ends equal.
+          const length = Math.hypot(shape.x2 - shape.x1, shape.y2 - shape.y1);
+          return Object.assign(common, {
+            x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2,
+            head: { length: Math.min(3 * strokeWidth, length), width: Math.min(2 * strokeWidth, length) },
+          });
+        }
+        if (shape.type === 'brush') {
+          return Object.assign(common, { points: (shape.points || []).map((point) => [point.x, point.y]) });
+        }
+        if (shape.type === 'text') {
+          return Object.assign(common, { x: shape.x, y: shape.y, fontSize: 20, text: String(shape.text || '') });
+        }
+        return null;
+      }
+
+      /**
+       * Host wire shape → local shape (§12.2): deep copy, keep order/id/style, rect `width/height`
+       * become local `w/h`, brush `[[x,y]]` becomes `{x,y}`; geometry is already canvas CSS px and
+       * is never re-scaled. Invalid/foreign entries are dropped instead of guessed.
+       */
+      function annotWireToLocal(wire) {
+        if (!wire || typeof wire !== 'object') return null;
+        const type = wire.type;
+        if (!['circle', 'rect', 'line', 'arrow', 'brush', 'text'].includes(type)) return null;
+        if (typeof wire.id !== 'string' || !ANNOT_ID_PATTERN.test(wire.id)) return null;
+        const rawWidth = Number(wire.strokeWidth);
+        if (!Number.isFinite(rawWidth)) return null;
+        const common = {
+          id: wire.id,
+          type,
+          color: annotHexColor(wire.color),
+          strokeWidth: Math.max(1, Math.min(20, Math.round(rawWidth))),
+          fill: wire.fill === true,
+          stroke: wire.stroke === true,
+        };
+        const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : null);
+        if (type === 'rect') {
+          const x = num(wire.x);
+          const y = num(wire.y);
+          const w = num(wire.width);
+          const h = num(wire.height);
+          if (x === null || y === null || !(w > 0) || !(h > 0)) return null;
+          return Object.assign(common, { x, y, w, h });
+        }
+        if (type === 'circle') {
+          const cx = num(wire.cx);
+          const cy = num(wire.cy);
+          const rx = num(wire.rx);
+          const ry = num(wire.ry);
+          if (cx === null || cy === null || !(rx > 0) || !(ry > 0)) return null;
+          return Object.assign(common, { cx, cy, rx, ry });
+        }
+        if (type === 'line' || type === 'arrow') {
+          const x1 = num(wire.x1);
+          const y1 = num(wire.y1);
+          const x2 = num(wire.x2);
+          const y2 = num(wire.y2);
+          if (x1 === null || y1 === null || x2 === null || y2 === null) return null;
+          return Object.assign(common, { x1, y1, x2, y2, fill: false, stroke: true });
+        }
+        if (type === 'brush') {
+          const points = Array.isArray(wire.points)
+            ? wire.points
+              .filter((pair) => Array.isArray(pair) && pair.length === 2
+                && Number.isFinite(Number(pair[0])) && Number.isFinite(Number(pair[1])))
+              .map((pair) => ({ x: Number(pair[0]), y: Number(pair[1]) }))
+            : [];
+          if (points.length < 2) return null;
+          return Object.assign(common, { points, fill: false, stroke: true });
+        }
+        const x = num(wire.x);
+        const y = num(wire.y);
+        if (x === null || y === null || typeof wire.text !== 'string') return null;
+        return Object.assign(common, { x, y, text: wire.text, fill: true, stroke: false });
+      }
+
+      /** Replace the visible committed set with an imported Host/retained set (ids stay unique). */
+      function annotApplyImported(wireShapes) {
+        const imported = [];
+        let maxId = 0;
+        const previousWatermark = annotNextIdRef.current;
+        for (const wire of Array.isArray(wireShapes) ? wireShapes : []) {
+          const local = annotWireToLocal(wire);
+          if (!local) continue;
+          imported.push(local);
+          const match = ANNOT_ID_PATTERN.exec(local.id);
+          if (match) maxId = Math.max(maxId, Number(match[1]));
+        }
+        annotShapesRef.current = imported;
+        const safeWatermark = Number.isSafeInteger(previousWatermark) && previousWatermark >= 0 ? previousWatermark : 0;
+        const safeMaxId = Number.isSafeInteger(maxId) && maxId >= 0 ? maxId : 0;
+        annotNextIdRef.current = Math.max(safeWatermark, safeMaxId);
+        setAnnotVersion((value) => value + 1);
+      }
+
+      /**
+       * Local committed shapes → the normalized document plus the client-side truncation, using the
+       * same deterministic rules as the Host (§11.2): keep the newest 128 shapes, downsample brushes
+       * to 512 points preserving first/last, drop the oldest whole shapes for the point/byte budget.
+       */
+      function annotNormalize() {
+        const truncation = { droppedShapes: 0, droppedPoints: 0, shortenedTextCodeUnits: 0 };
+        let shapes = [];
+        for (const local of annotShapesRef.current) {
+          let working = local;
+          if (local.type === 'text') {
+            const text = String(local.text === undefined || local.text === null ? '' : local.text);
+            let clipped = text.length > ANNOT_LIMITS.textChars ? text.slice(0, ANNOT_LIMITS.textChars) : text;
+            // Never split a surrogate pair at the cap.
+            if (/[\uD800-\uDBFF]$/.test(clipped)) clipped = clipped.slice(0, -1);
+            if (clipped !== text) {
+              truncation.shortenedTextCodeUnits += text.length - clipped.length;
+              working = Object.assign({}, local, { text: clipped });
+            }
+          }
+          const wire = annotWireShape(working);
+          if (wire) shapes.push(wire);
+        }
+        if (shapes.length > ANNOT_LIMITS.shapes) {
+          truncation.droppedShapes += shapes.length - ANNOT_LIMITS.shapes;
+          shapes = shapes.slice(shapes.length - ANNOT_LIMITS.shapes);
+        }
+        shapes = shapes.map((shape) => {
+          if (shape.type !== 'brush' || shape.points.length <= ANNOT_LIMITS.brushPoints) return shape;
+          const count = shape.points.length;
+          const points = [];
+          for (let index = 0; index < ANNOT_LIMITS.brushPoints; index += 1) {
+            points.push(shape.points[Math.round((index * (count - 1)) / (ANNOT_LIMITS.brushPoints - 1))]);
+          }
+          truncation.droppedPoints += count - points.length;
+          return Object.assign({}, shape, { points });
+        });
+        const pointsOf = (list) => list.reduce((total, shape) => total + (shape.type === 'brush' ? shape.points.length : 0), 0);
+        const encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+        const bytesOf = (list) => {
+          try {
+            const text = JSON.stringify({ version: 1, shapes: list, truncation });
+            return encoder ? encoder.encode(text).length : text.length;
+          } catch { return 0; }
+        };
+        let guard = 0;
+        while (shapes.length > 0 && (pointsOf(shapes) > ANNOT_LIMITS.documentPoints || bytesOf(shapes) > ANNOT_LIMITS.bytes)) {
+          shapes.shift();
+          truncation.droppedShapes += 1;
+          guard += 1;
+          if (guard > 200) break;
+        }
+        return { shapes, truncation };
+      }
+
+      function annotSetSyncState(state) {
+        annotSyncRef.current.state = state;
+        const revision = annotShownRevisionRef.current;
+        setAnnotSync((current) => (current.state === state && current.revision === revision
+          ? current : { state, revision }));
+      }
+
+      /** Stale metadata is read-time only: a change must re-render the hint but never move revisions. */
+      function annotSetStale(stale, reason) {
+        const next = { stale: stale === true, staleReason: reason || null };
+        const previous = annotStaleRef.current;
+        if (previous.stale === next.stale && previous.staleReason === next.staleReason) return;
+        annotStaleRef.current = next;
+        setAnnotStaleState(next);
+      }
+
+      /** ACK / 409 / failure events from the module queue, guarded by mount generation + scope + D. */
+      function annotPublisherEvent(event) {
+        const snapshot = event && event.snapshot;
+        if (!snapshot) return;
+        if (snapshot.mountGeneration !== annotMountGenerationRef.current) return;
+        if (snapshot.scopeEpoch !== scopeEpochRef.current) return;
+        const gate = annotGateRef.current;
+        if (!gate.open || snapshot.dKey !== gate.key) return;
+        if (event.type === 'ack') {
+          const accepted = event.annotations;
+          const revision = accepted && Number.isSafeInteger(Number(accepted.revision))
+            ? Math.max(0, Number(accepted.revision)) : null;
+          if (accepted && revision !== null) {
+            gate.revision = Math.max(gate.revision, revision);
+            annotSetStale(accepted.stale, accepted.staleReason);
+          }
+          if (snapshot.contentSeq === annotContentSeqRef.current) {
+            // The final ACK's normalized document (including Host truncation) is the visible truth.
+            if (accepted && Array.isArray(accepted.shapes)) {
+              annotApplyImported(accepted.shapes);
+              annotDirtyRef.current = false;
+            }
+            if (revision !== null) annotShownRevisionRef.current = Math.max(annotShownRevisionRef.current, revision);
+            annotSetSyncState('synced');
+            annotMaybeAdoptCandidate();
+          } else {
+            annotSetSyncState('pending');
+          }
+          return;
+        }
+        if (event.type === 'error') {
+          annotSetSyncState(event.final ? 'error' : 'pending');
+          return;
+        }
+        if (event.type === 'stale') {
+          // 409: this document's local content is stale; drop it and let the next accepted state
+          // hydrate the rotated key. Another workspace's publisher/document is never touched.
+          annotDropLocalView({ exit: false, discard: true });
+        }
+      }
+
+      function annotSubscribePublisher(entry, key) {
+        if (annotPublisherRef.current === entry && annotUnsubRef.current && annotGateRef.current.key === key) return;
+        annotUnsubscribePublisher();
+        annotPublisherRef.current = entry;
+        annotUnsubRef.current = annotPublisherSubscribe(entry, annotPublisherEvent);
+      }
+
+      function annotUnsubscribePublisher() {
+        if (annotUnsubRef.current) annotUnsubRef.current();
+        annotUnsubRef.current = null;
+      }
+
+      /** The current publishing identity; null until the new scope's first trusted state opens the gate. */
+      function annotIdentityNow(options) {
+        const anyEpoch = Boolean(options && options.anyEpoch);
+        const gate = annotGateRef.current;
+        if (!gate.open || !gate.key) return null;
+        if (!anyEpoch && gate.epoch !== scopeEpochRef.current) return null;
+        // The currently accepted snapshot must still prove the same document/context (a vanished
+        // `ui.annotationContext` or a rotated token must stop publishing immediately).
+        const currentD = annotDOf(annotUiNow());
+        if (!currentD || annotDKey(currentD) !== gate.key) return null;
+        const entry = annotPublisherRef.current;
+        if (!entry) return null;
+        return {
+          entry,
+          dKey: gate.key,
+          d: gate.d,
+          context: Object.assign({}, gate.context),
+          scope: gate.scope,
+          // Cross-generation retains (scope change/unmount) must not read the new scope's view.
+          view: anyEpoch ? (gate.view || annotViewSnapshot()) : annotViewSnapshot(),
+        };
+      }
+
+      function annotBuildSnapshot(identity, normalized) {
+        const entry = identity.entry;
+        return {
+          entryKey: entry.key,
+          panelId: entry.panelId,
+          surface: entry.surface,
+          clientRevision: annotPublisherAllocate(entry),
+          context: Object.assign({}, identity.context),
+          scope: identity.scope,
+          view: identity.view || annotViewSnapshot(),
+          shapes: normalized.shapes,
+          truncation: normalized.truncation,
+          release: false,
+          dKey: identity.dKey,
+          contentSeq: annotContentSeqRef.current,
+          mountGeneration: annotMountGenerationRef.current,
+          scopeEpoch: scopeEpochRef.current,
+        };
+      }
+
+      /** 150ms trailing merge for commit/文字提交/每次擦除（§11.3）. */
+      function annotPublishSchedule() {
+        if (!readyRef.current || !annotDirtyRef.current) return;
+        const identity = annotIdentityNow();
+        if (!identity) return;
+        const store = annotSyncRef.current;
+        if (store.timer) window.clearTimeout(store.timer);
+        store.timer = window.setTimeout(() => {
+          store.timer = 0;
+          annotPublishNow();
+        }, ANNOT_PUBLISH_DEBOUNCE_MS);
+        annotSetSyncState('pending');
+      }
+
+      /** Freeze identity + normalized shapes and enqueue as the newest snapshot (at most 1 waiting). */
+      function annotPublishNow() {
+        const identity = annotIdentityNow();
+        if (!identity) return null;
+        const normalized = annotNormalize();
+        const snapshot = annotBuildSnapshot(identity, normalized);
+        annotPublisherQueue(identity.entry, snapshot);
+        annotSetSyncState('pending');
+        return snapshot;
+      }
+
+      /** Exit/flush: only genuinely dirty content is sent; a clean panel performs zero POSTs (§12.1). */
+      function annotFlushPending() {
+        const store = annotSyncRef.current;
+        if (store.timer) {
+          window.clearTimeout(store.timer);
+          store.timer = 0;
+        }
+        if (annotDirtyRef.current) {
+          annotPublishNow();
+          return;
+        }
+        const entry = annotPublisherRef.current;
+        if (entry) annotPublisherDrain(entry);
+      }
+
+      /**
+       * Hand unconfirmed committed content to the module queue under the *old* frozen identity.
+       * `flush` publishes it now (scope change / unmount); without `flush` it is only remembered
+       * (capability temporarily unavailable). It is never converted into an empty document.
+       */
+      function annotRetainDirty(flush) {
+        if (!annotDirtyRef.current) return;
+        const normalized = annotNormalize();
+        const identity = annotIdentityNow({ anyEpoch: true });
+        if (!identity) {
+          const entry = annotPublisherRef.current;
+          if (entry) {
+            annotPublisherRemember(entry, {
+              shapes: normalized.shapes,
+              truncation: normalized.truncation,
+              contentSeq: annotContentSeqRef.current,
+              dKey: annotGateRef.current.key,
+            });
+          }
+          annotDirtyRef.current = false;
+          return;
+        }
+        if (flush) annotPublisherQueue(identity.entry, annotBuildSnapshot(identity, normalized));
+        else {
+          annotPublisherRemember(identity.entry, {
+            shapes: normalized.shapes,
+            truncation: normalized.truncation,
+            contentSeq: annotContentSeqRef.current,
+            dKey: identity.dKey,
+          });
+        }
+        annotDirtyRef.current = false;
+      }
+
+      /**
+       * Retract this panel's local view only: no release, no empty document, no POST. The gate is
+       * closed so old shapes are neither rendered nor published until a trusted state re-opens it.
+       */
+      function annotDropLocalView(options) {
+        const exit = Boolean(options && options.exit);
+        const discard = Boolean(options && options.discard);
+        annotCancelTransient();
+        setAnnotText(null);
+        resetAnnotErase();
+        setAnnotBusy(false);
+        annotShapesRef.current = [];
+        annotCandidateRef.current = null;
+        setAnnotVersion((value) => value + 1);
+        annotDirtyRef.current = false;
+        annotContentSeqRef.current += 1;
+        const gate = annotGateRef.current;
+        if (discard) {
+          // A navigation/rotated token intentionally ends this document: its unconfirmed queue is
+          // dropped too (never replayed into the new key).
+          const entry = annotPublisherRef.current;
+          if (entry) {
+            if (entry.queued && entry.queued.dKey === gate.key) entry.queued = null;
+            if (entry.pendingDKey === gate.key) {
+              entry.dirty = false;
+              entry.pendingShapes = null;
+              entry.pendingTruncation = null;
+            }
+          }
+        }
+        if (annotSyncRef.current.timer) {
+          window.clearTimeout(annotSyncRef.current.timer);
+          annotSyncRef.current.timer = 0;
+        }
+        gate.open = false;
+        gate.key = '';
+        gate.revision = -1;
+        gate.context = null;
+        gate.d = null;
+        gate.scope = null;
+        if (exit) {
+          annotRef.current.on = false;
+          setAnnotOn(false);
+        }
+        annotSetSyncState('idle');
+      }
+
+      /**
+       * Local navigation (§12.1): clear locally *and* submit a normal empty document under the old
+       * frozen identity; the old content queue is dropped (nothing is replayed into the new key).
+       */
+      function annotNavigationClear() {
+        const identity = annotIdentityNow({ anyEpoch: true });
+        annotCancelTransient();
+        setAnnotText(null);
+        resetAnnotErase();
+        setAnnotBusy(false);
+        annotShapesRef.current = [];
+        annotCandidateRef.current = null;
+        setAnnotVersion((value) => value + 1);
+        annotDirtyRef.current = false;
+        annotContentSeqRef.current += 1;
+        if (identity) {
+          const snapshot = annotBuildSnapshot(identity, {
+            shapes: [], truncation: { droppedShapes: 0, droppedPoints: 0, shortenedTextCodeUnits: 0 },
+          });
+          identity.entry.queued = null;
+          annotPublisherQueue(identity.entry, snapshot);
+        }
+        const gate = annotGateRef.current;
+        gate.open = false;
+        gate.key = '';
+        gate.revision = -1;
+        gate.context = null;
+        gate.d = null;
+        gate.scope = null;
+        annotSetSyncState('idle');
+      }
+
+      /** Clean + no gesture/edit/in-flight/error → a newer Host revision may replace the view. */
+      function annotCanAdopt() {
+        if (annotDirtyRef.current) return false;
+        if (annotGestureRef.current.active || annotEditRef.current.active || annotEraseRef.current.active) return false;
+        const entry = annotPublisherRef.current;
+        if (!entry) return false;
+        if (entry.inflight || entry.queued || entry.lastError) return false;
+        const state = annotSyncRef.current.state;
+        return state !== 'pending' && state !== 'error';
+      }
+
+      function annotMaybeAdoptCandidate() {
+        const candidate = annotCandidateRef.current;
+        if (!candidate) return;
+        const gate = annotGateRef.current;
+        if (!gate.open || candidate.dKey !== gate.key) {
+          annotCandidateRef.current = null;
+          return;
+        }
+        if (!annotCanAdopt()) return;
+        if (candidate.revision <= gate.revision) {
+          annotCandidateRef.current = null;
+          return;
+        }
+        gate.revision = candidate.revision;
+        annotApplyImported(candidate.shapes);
+        annotDirtyRef.current = false;
+        annotShownRevisionRef.current = Math.max(annotShownRevisionRef.current, candidate.revision);
+        annotSetStale(candidate.stale, candidate.staleReason);
+        annotSetSyncState('synced');
+        annotCandidateRef.current = null;
+      }
+
+      /**
+       * Hydrate `ui.annotations` after runtime/revision/view acceptance (§12.2). The document is
+       * located by the same-response context, never by sessionId or by "most recent" guessing.
+       */
+      function annotHydrate(ui) {
+        const gate = annotGateRef.current;
+        if (gate.epoch !== scopeEpochRef.current) return;
+        const scopeNow = scopeRef.current;
+        if (!scopeNow || scopeNow.legacy) return;
+        const doc = ui && ui.annotations;
+        const context = ui && ui.annotationContext;
+        const d = annotDOf(ui);
+        if (!doc || typeof doc !== 'object' || !d) return;
+        if (doc.version !== 1 || doc.space !== 'canvas-css-px') return;
+        const revision = Number(doc.revision);
+        if (!Number.isSafeInteger(revision) || revision < 0) return;
+        const shapes = Array.isArray(doc.shapes) ? doc.shapes : [];
+        const key = annotDKey(d);
+        // A non-empty document must cite exactly the authenticated context (including addressDigest).
+        if (shapes.length > 0 && !annotContextMatches(doc.context, context)) {
+          if (gate.open && gate.key !== key) annotDropLocalView({ exit: false });
+          return;
+        }
+        const entry = annotPublisherGet(d.scopeId, d.runtimeId, annotSurfaceName());
+        // The Host watermark must not be exceeded after a reload/remount (§12.4).
+        if (doc.source && doc.source.panelId === entry.panelId
+          && Number.isSafeInteger(Number(doc.source.clientRevision))) {
+          const watermark = Math.max(0, Number(doc.source.clientRevision));
+          if (watermark > entry.clientRevision) {
+            entry.clientRevision = watermark;
+            annotPublisherPersist(entry);
+          }
+        }
+        annotSetStale(doc.stale, doc.staleReason);
+        const viewSnapshot = annotViewSnapshot();
+        const firstForDocument = !gate.open || gate.key !== key;
+        if (firstForDocument) {
+          annotSubscribePublisher(entry, key);
+          gate.open = true;
+          gate.key = key;
+          gate.revision = revision;
+          gate.epoch = scopeEpochRef.current;
+          gate.context = Object.assign({}, context);
+          gate.d = d;
+          gate.scope = scopeNow;
+          gate.view = viewSnapshot;
+          entry.activeDKey = key;
+          entry.activeGeneration = annotMountGenerationRef.current;
+          entry.activeEpoch = scopeEpochRef.current;
+          if (entry.dirty && entry.pendingDKey === key && Array.isArray(entry.pendingShapes)) {
+            // A remount of the same D resumes the unconfirmed content (dirty/error), not the Host copy.
+            annotApplyImported(entry.pendingShapes);
+            annotDirtyRef.current = true;
+            annotContentSeqRef.current = Math.max(annotContentSeqRef.current, entry.pendingContentSeq);
+            annotShownRevisionRef.current = Math.max(entry.hostRevision, 0);
+            annotSetSyncState(entry.lastError ? 'error' : 'pending');
+            return;
+          }
+          annotApplyImported(shapes);
+          annotDirtyRef.current = false;
+          annotShownRevisionRef.current = revision;
+          annotSetSyncState('synced');
+          return;
+        }
+        gate.view = viewSnapshot;
+        if (revision > gate.revision) {
+          if (annotCanAdopt()) {
+            gate.revision = revision;
+            annotApplyImported(shapes);
+            annotDirtyRef.current = false;
+            annotShownRevisionRef.current = revision;
+            if (annotCandidateRef.current && annotCandidateRef.current.revision <= revision) {
+              annotCandidateRef.current = null;
+            }
+            if (!annotSyncRef.current.timer && !entry.inflight && !entry.queued && !entry.lastError) {
+              annotSetSyncState('synced');
+            }
+          } else {
+            annotCandidateRef.current = {
+              dKey: key,
+              revision,
+              shapes,
+              stale: doc.stale === true,
+              staleReason: doc.staleReason || null,
+            };
+          }
+        }
+      }
+
+      /** Pick up a newer candidate once a gesture/edit/cancel or ACK made the panel clean again. */
+      function annotResumeAfterTransient() {
+        window.setTimeout(() => {
+          annotMaybeAdoptCandidate();
+          if (annotChannelRef.current && annotDirtyRef.current && annotGateRef.current.open) annotPublishSchedule();
+        }, 0);
+      }
+
+      /* ---- 橡皮擦（docs/annotation-p0d.md §11.4）------------------------------------------- */
+
+      function annotEraseRadius(shape) {
+        const width = Number(shape.strokeWidth);
+        return Math.max(Number.isFinite(width) ? width / 2 : 0, ANNOT_ERASE_MIN_RADIUS);
+      }
+
+      function annotSegmentDistance(point, a, b) {
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const lengthSq = dx * dx + dy * dy;
+        if (!(lengthSq > 0)) return Math.hypot(point.x - a.x, point.y - a.y);
+        const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSq));
+        return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
+      }
+
+      /** Inside-or-on one triangle (the arrow head is a filled triangle, not a line). */
+      function annotPointInTriangle(point, triangle) {
+        if (!triangle || triangle.length !== 3) return false;
+        const cross = (a, b) => (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+        const d1 = cross(triangle[0], triangle[1]);
+        const d2 = cross(triangle[1], triangle[2]);
+        const d3 = cross(triangle[2], triangle[0]);
+        const hasNegative = d1 < -1e-9 || d2 < -1e-9 || d3 < -1e-9;
+        const hasPositive = d1 > 1e-9 || d2 > 1e-9 || d3 > 1e-9;
+        return !(hasNegative && hasPositive);
+      }
+
+      function annotHitContext() {
+        if (annotHitCtxRef.current) return annotHitCtxRef.current;
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = 1;
+          canvas.height = 1;
+          annotHitCtxRef.current = canvas.getContext('2d');
+        } catch { annotHitCtxRef.current = null; }
+        return annotHitCtxRef.current;
+      }
+
+      /**
+       * Real Path2D hit for rect/ellipse (§11.4): a hollow shape only hits on its stroke band, a
+       * filled one hits its interior too; an ellipse never falls back to its bounding box.
+       */
+      function annotHitPath(shape, point, radius) {
+        const context = annotHitContext();
+        if (!context) return false;
+        let path = null;
+        try {
+          path = new Path2D();
+          if (shape.type === 'rect') path.rect(shape.x, shape.y, shape.w, shape.h);
+          else path.ellipse(shape.cx, shape.cy, shape.rx, shape.ry, 0, 0, Math.PI * 2);
+        } catch { return false; }
+        if (shape.fill && context.isPointInPath(path, point.x, point.y)) return true;
+        if (!shape.stroke) return false;
+        context.lineWidth = radius * 2;
+        return context.isPointInStroke(path, point.x, point.y);
+      }
+
+      /** Text uses the rendered `getBBox()` in canvas CSS px; unreadable bbox = no hit (no guessing). */
+      function annotHitText(shape, point) {
+        const svg = annotSvgRef.current;
+        if (!svg) return false;
+        const id = String(shape.id || '').replace(/["\\]/g, '');
+        const node = svg.querySelector('g[data-utb-annot-id="' + id + '"] text');
+        if (!node || typeof node.getBBox !== 'function') return false;
+        let box = null;
+        try { box = node.getBBox(); } catch { box = null; }
+        if (!box || !(box.width > 0) || !(box.height > 0)) return false;
+        return point.x >= box.x && point.x <= box.x + box.width && point.y >= box.y && point.y <= box.y + box.height;
+      }
+
+      function annotHitArrow(shape, point, radius) {
+        const geometry = annotArrowGeometry({ x: shape.x1, y: shape.y1 }, { x: shape.x2, y: shape.y2 }, shape.strokeWidth);
+        if (!geometry) return annotSegmentDistance(point, { x: shape.x1, y: shape.y1 }, { x: shape.x2, y: shape.y2 }) <= radius;
+        if (annotSegmentDistance(point, { x: shape.x1, y: shape.y1 }, geometry.base) <= radius) return true;
+        return annotPointInTriangle(point, geometry.points);
+      }
+
+      function annotHitsShape(shape, point) {
+        const radius = annotEraseRadius(shape);
+        if (shape.type === 'rect' || shape.type === 'circle') return annotHitPath(shape, point, radius);
+        if (shape.type === 'text') return annotHitText(shape, point);
+        if (shape.type === 'arrow') return annotHitArrow(shape, point, radius);
+        if (shape.type === 'line') {
+          return annotSegmentDistance(point, { x: shape.x1, y: shape.y1 }, { x: shape.x2, y: shape.y2 }) <= radius;
+        }
+        if (shape.type === 'brush') {
+          const points = shape.points || [];
+          if (points.length === 1) return Math.hypot(point.x - points[0].x, point.y - points[0].y) <= radius;
+          for (let index = 1; index < points.length; index += 1) {
+            if (annotSegmentDistance(point, points[index - 1], points[index]) <= radius) return true;
+          }
+          return false;
+        }
+        return false;
+      }
+
+      function resetAnnotErase() {
+        const erase = annotEraseRef.current;
+        const svg = annotSvgRef.current;
+        if (erase.active && svg && erase.pointerId >= 0) {
+          try { svg.releasePointerCapture(erase.pointerId); } catch { /* ignore */ }
+        }
+        annotEraseRef.current = { active: false, pointerId: -1, map: null, last: null, changed: 0 };
+      }
+
+      /** One sample point deletes the topmost hit only (no distance re-ranking, no drill-through). */
+      function annotEraseAt(point) {
+        const shapes = annotShapesRef.current;
+        for (let index = shapes.length - 1; index >= 0; index -= 1) {
+          if (annotHitsShape(shapes[index], point)) {
+            annotShapesRef.current = shapes.slice(0, index).concat(shapes.slice(index + 1));
+            annotEraseRef.current.changed += 1;
+            annotContentSeqRef.current += 1;
+            annotDirtyRef.current = true;
+            setAnnotVersion((value) => value + 1);
+            return true;
+          }
+        }
+        return false;
+      }
+
+      /** Unclamped canvas point through a frozen mapping (the eraser must not smear on the border). */
+      function annotToCanvasRaw(map, clientX, clientY) {
+        return {
+          x: map.cx + (clientX - map.painted.left) / map.sx,
+          y: map.cy + (clientY - map.painted.top) / map.sy,
+        };
+      }
+
+      /** Only samples inside the visible canvas rect are erased (docs/annotation-p0d.md §11.4). */
+      function annotInViewRect(map, point) {
+        return point.x >= map.cx && point.x <= map.cx + map.w && point.y >= map.cy && point.y <= map.cy + map.h;
+      }
+
+      function startAnnotErase(map, event, point) {
+        const svg = annotSvgRef.current;
+        resetAnnotErase();
+        annotEraseRef.current = { active: true, pointerId: event.pointerId, map, last: point, changed: 0 };
+        annotMapSigRef.current = annotMapSignature(map);
+        try { if (svg) svg.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+        // 按下即擦；无命中时不排任何上报（§12.3：无命中的橡皮擦零 POST）。
+        if (annotEraseAt(point)) annotPublishSchedule();
+      }
+
+      function moveAnnotErase(event) {
+        const erase = annotEraseRef.current;
+        // 沿冻结映射取未 clamp 的画布点：拖出 P 时只处理与可见矩形相交的采样，不沿边界额外擦。
+        const point = annotToCanvasRaw(erase.map, event.clientX, event.clientY);
+        const last = erase.last || point;
+        const dx = point.x - last.x;
+        const dy = point.y - last.y;
+        // 原地去重：同一坐标重复 move 不再采样（不会继续钻层）。
+        if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) return;
+        const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / ANNOT_ERASE_STEP_PX));
+        let erased = false;
+        for (let index = 1; index <= steps; index += 1) {
+          const sample = { x: last.x + (dx * index) / steps, y: last.y + (dy * index) / steps };
+          if (!annotInViewRect(erase.map, sample)) continue;
+          if (annotEraseAt(sample)) erased = true;
+        }
+        erase.last = point;
+        if (erased) annotPublishSchedule();
+      }
+
+      function finishAnnotErase() {
+        const erase = annotEraseRef.current;
+        if (!erase.active) return;
+        const changed = erase.changed;
+        resetAnnotErase();
+        if (changed) annotFlushPending(); // 结束 flush；擦掉的对象不因 cancel/Esc 回滚
+      }
+
+      /** 清除画布：清已完成 + 草稿/编辑，立即发布空文档，保留模式/工具/样式（§11.4）。 */
+      function clearAnnotCanvas() {
+        if (!annotRef.current.on) return;
+        // The pointerdown of the button already cancelled a live edit; this covers keyboard activation.
+        if (annotEditRef.current.active) cancelAnnotText();
+        cancelAnnotDraft();
+        resetAnnotErase();
+        annotShapesRef.current = [];
+        annotContentSeqRef.current += 1;
+        annotDirtyRef.current = true;
+        setAnnotText(null);
+        setAnnotVersion((value) => value + 1);
+        // Explicit user clear is a content modification (release:false empty document), not a release.
+        annotPublishNow();
+      }
+
+      /** 清除按钮的按下阶段：先取消编辑，压住随后的 blur 提交（防止文字“复活”）。 */
+      function annotClearPointerDown() {
+        cancelAnnotDraft();
+        if (annotEditRef.current.active) cancelAnnotText();
+      }
+
+      function annotDraftNode(tag, attrs) {
+        const node = document.createElementNS(SVG_NS, tag);
+        for (const [key, value] of Object.entries(attrs || {})) node.setAttribute(key, String(value));
+        node.setAttribute('pointer-events', 'none');
+        return node;
+      }
+
+      /** Arrow geometry: head length min(3t, L), base width min(2t, L), same-colour filled triangle. */
+      function annotArrowGeometry(start, end, width) {
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const length = Math.hypot(dx, dy);
+        if (!(length > 0)) return null;
+        const t = Math.max(1, Number(width) || 1);
+        const headLength = Math.min(3 * t, length);
+        const headWidth = Math.min(2 * t, length);
+        const ux = dx / length;
+        const uy = dy / length;
+        const base = { x: end.x - ux * headLength, y: end.y - uy * headLength };
+        const nx = -uy;
+        const ny = ux;
+        return {
+          length,
+          base,
+          points: [
+            end,
+            { x: base.x + nx * (headWidth / 2), y: base.y + ny * (headWidth / 2) },
+            { x: base.x - nx * (headWidth / 2), y: base.y - ny * (headWidth / 2) },
+          ],
+        };
+      }
+
+      function annotPointsText(points) {
+        return (points || []).map((point) => `${Math.round(point.x * 100) / 100},${Math.round(point.y * 100) / 100}`).join(' ');
+      }
+
+      function clearAnnotDraftNode() {
+        const draft = annotDraftRef.current;
+        if (!draft) return;
+        while (draft.firstChild) draft.removeChild(draft.firstChild);
+      }
+
+      function buildAnnotDraft(gesture) {
+        const draft = annotDraftRef.current;
+        if (!draft) return;
+        clearAnnotDraftNode();
+        const style = gesture.style;
+        const fill = style.fill ? style.color : 'none';
+        const stroke = style.stroke ? style.color : 'none';
+        gesture.nodes = {};
+        if (gesture.tool === 'circle') {
+          gesture.nodes.circle = annotDraftNode('ellipse', {
+            cx: gesture.start.x, cy: gesture.start.y, rx: 0, ry: 0,
+            fill, stroke, 'stroke-width': style.width, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+          });
+          draft.appendChild(gesture.nodes.circle);
+        } else if (gesture.tool === 'rect') {
+          gesture.nodes.rect = annotDraftNode('rect', {
+            x: gesture.start.x, y: gesture.start.y, width: 0, height: 0,
+            fill, stroke, 'stroke-width': style.width, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+          });
+          draft.appendChild(gesture.nodes.rect);
+        } else if (gesture.tool === 'line') {
+          gesture.nodes.line = annotDraftNode('line', {
+            x1: gesture.start.x, y1: gesture.start.y, x2: gesture.start.x, y2: gesture.start.y,
+            fill: 'none', stroke: style.color, 'stroke-width': style.width, 'stroke-linecap': 'round',
+          });
+          draft.appendChild(gesture.nodes.line);
+        } else if (gesture.tool === 'arrow') {
+          gesture.nodes.line = annotDraftNode('line', {
+            x1: gesture.start.x, y1: gesture.start.y, x2: gesture.start.x, y2: gesture.start.y,
+            fill: 'none', stroke: style.color, 'stroke-width': style.width, 'stroke-linecap': 'round',
+          });
+          gesture.nodes.polygon = annotDraftNode('polygon', {
+            points: annotPointsText([gesture.start, gesture.start, gesture.start]),
+            fill: style.color, stroke: 'none',
+          });
+          draft.appendChild(gesture.nodes.line);
+          draft.appendChild(gesture.nodes.polygon);
+        } else if (gesture.tool === 'brush') {
+          gesture.nodes.polyline = annotDraftNode('polyline', {
+            points: annotPointsText(gesture.points),
+            fill: 'none', stroke: style.color, 'stroke-width': style.width,
+            'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+          });
+          draft.appendChild(gesture.nodes.polyline);
+        }
+      }
+
+      function renderAnnotDraft(gesture) {
+        if (!gesture || !gesture.nodes) return;
+        const start = gesture.start;
+        const end = gesture.end || start;
+        if (gesture.tool === 'circle' && gesture.nodes.circle) {
+          // PS ellipse default: the press and the release are two bbox corners (any direction).
+          gesture.nodes.circle.setAttribute('cx', String((start.x + end.x) / 2));
+          gesture.nodes.circle.setAttribute('cy', String((start.y + end.y) / 2));
+          gesture.nodes.circle.setAttribute('rx', String(Math.abs(end.x - start.x) / 2));
+          gesture.nodes.circle.setAttribute('ry', String(Math.abs(end.y - start.y) / 2));
+        } else if (gesture.tool === 'rect' && gesture.nodes.rect) {
+          gesture.nodes.rect.setAttribute('x', String(Math.min(start.x, end.x)));
+          gesture.nodes.rect.setAttribute('y', String(Math.min(start.y, end.y)));
+          gesture.nodes.rect.setAttribute('width', String(Math.abs(end.x - start.x)));
+          gesture.nodes.rect.setAttribute('height', String(Math.abs(end.y - start.y)));
+        } else if (gesture.tool === 'line' && gesture.nodes.line) {
+          gesture.nodes.line.setAttribute('x1', String(start.x));
+          gesture.nodes.line.setAttribute('y1', String(start.y));
+          gesture.nodes.line.setAttribute('x2', String(end.x));
+          gesture.nodes.line.setAttribute('y2', String(end.y));
+        } else if (gesture.tool === 'arrow' && gesture.nodes.line && gesture.nodes.polygon) {
+          const geometry = annotArrowGeometry(start, end, gesture.style.width);
+          if (geometry) {
+            gesture.nodes.line.setAttribute('x1', String(start.x));
+            gesture.nodes.line.setAttribute('y1', String(start.y));
+            gesture.nodes.line.setAttribute('x2', String(geometry.base.x));
+            gesture.nodes.line.setAttribute('y2', String(geometry.base.y));
+            gesture.nodes.polygon.setAttribute('points', annotPointsText(geometry.points));
+          }
+        } else if (gesture.tool === 'brush' && gesture.nodes.polyline) {
+          const points = gesture.points.concat([end]);
+          gesture.nodes.polyline.setAttribute('points', annotPointsText(points));
+        }
+      }
+
+      function scheduleAnnotRender(gesture) {
+        if (annotRafRef.current) return;
+        annotRafRef.current = window.requestAnimationFrame(() => {
+          annotRafRef.current = 0;
+          const current = annotGestureRef.current;
+          if (current.active && current === gesture) renderAnnotDraft(current);
+        });
+      }
+
+      function resetAnnotGesture() {
+        annotGestureRef.current = {
+          active: false, pointerId: -1, map: null, tool: '', style: null,
+          start: null, end: null, points: [], trace: [], pathLen: 0,
+          lastScreen: null, lastSampleScreen: null, lastPoint: null, nodes: null,
+        };
+      }
+
+      function cancelAnnotDraft() {
+        if (annotRafRef.current) {
+          window.cancelAnimationFrame(annotRafRef.current);
+          annotRafRef.current = 0;
+        }
+        const gesture = annotGestureRef.current;
+        const svg = annotSvgRef.current;
+        if (gesture.active && svg && gesture.pointerId >= 0) {
+          try { svg.releasePointerCapture(gesture.pointerId); } catch { /* ignore */ }
+        }
+        resetAnnotGesture();
+        clearAnnotDraftNode();
+        setAnnotBusy(false);
+        // A cancelled gesture may leave the panel clean: a newer Host revision can be adopted now.
+        annotResumeAfterTransient();
+      }
+
+      /** Allocate a local id above both the local watermark and every imported `aN` (never reuse). */
+      function annotAllocateId() {
+        const used = new Set(annotShapesRef.current.map((item) => item.id));
+        if (!Number.isSafeInteger(annotNextIdRef.current) || annotNextIdRef.current < 0) {
+          annotNextIdRef.current = 0;
+        }
+        let id = '';
+        let guard = 0;
+        do {
+          annotNextIdRef.current += 1;
+          id = 'a' + annotNextIdRef.current;
+          guard += 1;
+          if (guard > 100000) break;
+        } while (used.has(id));
+        return id;
+      }
+
+      function pushAnnotShape(shape) {
+        annotShapesRef.current = annotShapesRef.current.concat([
+          Object.assign({ id: annotAllocateId() }, shape),
+        ]);
+        annotContentSeqRef.current += 1;
+        annotDirtyRef.current = true;
+        setAnnotVersion((value) => value + 1);
+        // 提交/文字提交进入 150ms trailing 合并（§11.3）；失败只影响同步状态，不影响绘制。
+        annotPublishSchedule();
+      }
+
+      /** Validate the committed gesture; null = below the minimum gesture (nothing is created). */
+      function annotCommitFromGesture(gesture, point) {
+        const start = gesture.start;
+        const map = gesture.map;
+        const style = gesture.style;
+        const dxScreen = (point.x - start.x) * map.sx;
+        const dyScreen = (point.y - start.y) * map.sy;
+        if (gesture.tool === 'circle') {
+          // Bbox minimum: both sides ≥2 screen px (a thin drag is not an object).
+          if (Math.abs(dxScreen) < 2 || Math.abs(dyScreen) < 2) return null;
+          return {
+            type: 'circle',
+            cx: (start.x + point.x) / 2,
+            cy: (start.y + point.y) / 2,
+            rx: Math.abs(point.x - start.x) / 2,
+            ry: Math.abs(point.y - start.y) / 2,
+            color: style.color, strokeWidth: style.width, fill: Boolean(style.fill), stroke: Boolean(style.stroke),
+          };
+        }
+        if (gesture.tool === 'rect') {
+          if (Math.abs(dxScreen) < 2 || Math.abs(dyScreen) < 2) return null;
+          return {
+            type: 'rect', x: Math.min(start.x, point.x), y: Math.min(start.y, point.y),
+            w: Math.abs(point.x - start.x), h: Math.abs(point.y - start.y),
+            color: style.color, strokeWidth: style.width, fill: Boolean(style.fill), stroke: Boolean(style.stroke),
+          };
+        }
+        if (gesture.tool === 'line' || gesture.tool === 'arrow') {
+          if (Math.hypot(dxScreen, dyScreen) < 2) return null;
+          return { type: gesture.tool, x1: start.x, y1: start.y, x2: point.x, y2: point.y, color: style.color, strokeWidth: style.width, fill: false, stroke: true };
+        }
+        if (gesture.tool === 'brush') {
+          // A tiny closed loop can accumulate ≥2 screen px without ever reaching the 2 px sampling
+          // threshold between samples; fall back to the raw trace in that case only.
+          let points = gesture.points.slice();
+          if (points.length < 2 && gesture.trace.length >= 2) points = gesture.trace.slice();
+          const last = points[points.length - 1];
+          if (!last || Math.abs(last.x - point.x) > 1e-6 || Math.abs(last.y - point.y) > 1e-6) points.push(point);
+          // Cumulative *screen* path length (a closed loop returning to the first point is valid).
+          if (gesture.pathLen < 2 || points.length < 2) return null;
+          return { type: 'brush', points, color: style.color, strokeWidth: style.width, fill: false, stroke: true };
+        }
+        return null;
+      }
+
+      function onAnnotPointerDown(event) {
+        if (!annotRef.current.on || event.button !== 0) return;
+        const map = annotMap();
+        if (!map || !annotInside(map, event.clientX, event.clientY)) return; // letterbox: no stroke
+        event.preventDefault();
+        event.stopPropagation();
+        const svg = annotSvgRef.current;
+        if (svg) { try { svg.focus({ preventScroll: true }); } catch { /* ignore */ } }
+        const point = annotToCanvas(map, event.clientX, event.clientY);
+        if (annotRef.current.tool === 'text') {
+          openAnnotText(map, point);
+          return;
+        }
+        if (annotRef.current.tool === 'eraser') {
+          // 橡皮擦不产生图形、不走最小画图手势：按下即擦、拖动连续擦（§11.4）。
+          cancelAnnotDraft();
+          startAnnotErase(map, event, point);
+          return;
+        }
+        cancelAnnotDraft();
+        setAnnotBusy(true);
+        const style = annotSnapshot();
+        const gesture = {
+          active: true, pointerId: event.pointerId, map, tool: style.tool, style,
+          start: point, end: point, points: [point], trace: [point], pathLen: 0,
+          lastScreen: { x: event.clientX, y: event.clientY },
+          lastSampleScreen: { x: event.clientX, y: event.clientY },
+          lastPoint: point, nodes: null,
+        };
+        annotGestureRef.current = gesture;
+        annotMapSigRef.current = annotMapSignature(map);
+        buildAnnotDraft(gesture);
+        renderAnnotDraft(gesture);
+        try { if (svg) svg.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+      }
+
+      function onAnnotPointerMove(event) {
+        if (annotRef.current.on && annotEraseRef.current.active
+          && annotEraseRef.current.pointerId === event.pointerId) {
+          event.preventDefault();
+          moveAnnotErase(event);
+          return;
+        }
+        const gesture = annotGestureRef.current;
+        if (!annotRef.current.on || !gesture.active || gesture.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        const point = annotToCanvas(gesture.map, event.clientX, event.clientY);
+        if (gesture.tool === 'brush') {
+          const step = Math.hypot(event.clientX - gesture.lastScreen.x, event.clientY - gesture.lastScreen.y);
+          gesture.pathLen += step;
+          gesture.lastScreen = { x: event.clientX, y: event.clientY };
+          gesture.trace.push(point);
+          const sinceSample = Math.hypot(event.clientX - gesture.lastSampleScreen.x, event.clientY - gesture.lastSampleScreen.y);
+          // ≥2 screen CSS px between sampled points; the final point is appended on pointerup.
+          if (sinceSample >= 2) {
+            gesture.points.push(point);
+            gesture.lastSampleScreen = { x: event.clientX, y: event.clientY };
+            gesture.lastPoint = point;
+          }
+        }
+        gesture.end = point;
+        scheduleAnnotRender(gesture);
+      }
+
+      function onAnnotPointerUp(event) {
+        if (annotEraseRef.current.active && annotEraseRef.current.pointerId === event.pointerId) {
+          event.preventDefault();
+          finishAnnotErase();
+          return;
+        }
+        const gesture = annotGestureRef.current;
+        if (!annotRef.current.on || !gesture.active || gesture.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        const point = annotToCanvas(gesture.map, event.clientX, event.clientY);
+        const shape = annotCommitFromGesture(gesture, point);
+        const svg = annotSvgRef.current;
+        try { if (svg) svg.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
+        if (annotRafRef.current) {
+          window.cancelAnimationFrame(annotRafRef.current);
+          annotRafRef.current = 0;
+        }
+        resetAnnotGesture();
+        clearAnnotDraftNode();
+        setAnnotBusy(false);
+        if (shape) pushAnnotShape(shape);
+      }
+
+      function onAnnotPointerCancel(event) {
+        if (annotEraseRef.current.active
+          && (event === undefined || event.pointerId === undefined || annotEraseRef.current.pointerId === event.pointerId)) {
+          // 擦掉的对象不因 pointercancel/Esc 回滚，结束时照常 flush（§11.4）。
+          finishAnnotErase();
+          return;
+        }
+        const gesture = annotGestureRef.current;
+        if (!gesture.active) return;
+        if (event && event.pointerId !== undefined && gesture.pointerId !== event.pointerId) return;
+        cancelAnnotDraft();
+      }
+
+      function openAnnotText(map, point) {
+        cancelAnnotDraft();
+        if (annotEditRef.current.active) commitAnnotText();
+        const style = annotSnapshot();
+        const screen = annotScreenPoint(map, point);
+        annotEditRef.current = {
+          active: true, cancel: false, map, x: point.x, y: point.y, style,
+        };
+        annotMapSigRef.current = annotMapSignature(map);
+        annotEditSeqRef.current += 1;
+        setAnnotText({
+          id: annotEditSeqRef.current,
+          left: screen.x - map.boxRect.left,
+          top: screen.y - map.boxRect.top,
+          fontSize: 20 * map.sy,
+          color: style.color,
+        });
+        window.requestAnimationFrame(() => {
+          const input = annotInputRef.current;
+          if (input) { try { input.focus(); } catch { /* ignore */ } }
+        });
+      }
+
+      /** Commit/cancel one text edit. Cancellation is marked *before* the input unmounts, so the
+       * subsequent blur cannot submit twice (docs/annotation-p0d.md §4). */
+      function finishAnnotText(commit) {
+        const edit = annotEditRef.current;
+        if (!edit.active) return;
+        const input = annotInputRef.current;
+        const value = input ? String(input.value || '') : '';
+        edit.active = false;
+        if (!commit) edit.cancel = true;
+        setAnnotText(null);
+        if (!commit || edit.cancel) {
+          if (!commit) annotResumeAfterTransient();
+          return;
+        }
+        const text = value.slice(0, 200);
+        if (!text.trim()) return;
+        pushAnnotShape({
+          type: 'text', x: edit.x, y: edit.y, text,
+          color: edit.style.color, strokeWidth: edit.style.width, fill: true, stroke: false,
+        });
+      }
+
+      function commitAnnotText() {
+        finishAnnotText(true);
+      }
+
+      function cancelAnnotText() {
+        const edit = annotEditRef.current;
+        if (edit.active) edit.cancel = true;
+        finishAnnotText(false);
+      }
+
+      /** Cancel the uncommitted draft/edit only; committed shapes stay (mode exit keeps them). */
+      function annotCancelTransient() {
+        cancelAnnotDraft();
+        resetAnnotErase();
+        setAnnotBusy(false);
+        const edit = annotEditRef.current;
+        if (edit.active) {
+          edit.cancel = true;
+          edit.active = false;
+          setAnnotText(null);
+        }
+        // A cancelled gesture/edit may make the panel clean again: adopt a pending Host revision
+        // and/or retry a remembered dirty document once the channel is available (§12.3).
+        annotResumeAfterTransient();
+      }
+
+      function enterAnnotMode() {
+        // 用户 2026-11-03 第 2 条：尺寸调整模式内禁止进入标注（程序化/键盘同一道闸）。
+        if (sizingRef.current) return;
+        if (annotRef.current.on || !viewSync || !canvasOn) return;
+        // Finish any page drag (release its button) *before* the mode gate is raised.
+        if (dragRef.current.active) releaseFrameDrag();
+        // Drop unsent pan/zoom intent: entering the mode must not publish a stale view.
+        const panWrite = panWriteRef.current;
+        if (panWrite.timer) {
+          window.clearTimeout(panWrite.timer);
+          panWrite.timer = 0;
+        }
+        panWrite.latest = null;
+        cancelPanDrag();
+        panModeRef.current = false;
+        setPanMode(false);
+        setPanDragging(false);
+        clearZoomIntent();
+        resetZoomAnchor();
+        setMenu(false);
+        cancelDraft();
+        annotRef.current.on = true;
+        setAnnotOn(true);
+        window.requestAnimationFrame(() => {
+          const svg = annotSvgRef.current;
+          if (svg) { try { svg.focus({ preventScroll: true }); } catch { /* ignore */ } }
+        });
+      }
+
+      function exitAnnotMode() {
+        if (!annotRef.current.on) return;
+        // Closing the panel exits the mode but keeps every committed annotation visible (contract §5).
+        annotCancelTransient();
+        setAnnotText(null);
+        resetAnnotErase();
+        setAnnotBusy(false);
+        annotRef.current.on = false;
+        setAnnotOn(false);
+        // v2：模式退出立即 flush（§11.3）。
+        annotFlushPending();
+      }
+
+      function toggleAnnotMode() {
+        if (annotRef.current.on) exitAnnotMode();
+        else enterAnnotMode();
+      }
+
+      function chooseAnnotTool(tool) {
+        if (!annotRef.current.on || tool === annotRef.current.tool) return;
+        cancelAnnotDraft();
+        if (annotEditRef.current.active) commitAnnotText();
+        annotRef.current.tool = tool;
+        const style = annotStyleFor(tool, annotRef.current.mode || 'stroke');
+        annotRef.current.fill = style.fill;
+        annotRef.current.stroke = style.stroke;
+        setAnnotTool(tool);
+      }
+
+      function changeAnnotStyle(patch) {
+        if (!annotRef.current.on) return;
+        cancelAnnotDraft();
+        if (annotEditRef.current.active) commitAnnotText();
+        Object.assign(annotRef.current, patch);
+        if (patch.color !== undefined) setAnnotColor(patch.color);
+        if (patch.width !== undefined) setAnnotWidth(patch.width);
+      }
+
+      /**
+       * 用户 2026-11-03 第 1 条：填充/外框分页选择器。恰好一个选中；点已选项完全 no-op
+       * （在 cancel/commit 等副作用之前返回）。只有圆形/矩形可切换，其它工具整组 disabled。
+       */
+      function changeAnnotStyleMode(next) {
+        const current = annotRef.current;
+        if (!current.on || !annotIsClosedTool(current.tool) || next === current.mode) return;
+        cancelAnnotDraft();
+        if (annotEditRef.current.active) commitAnnotText();
+        current.mode = next;
+        const style = annotStyleFor(current.tool, next);
+        current.fill = style.fill;
+        current.stroke = style.stroke;
+        setAnnotStyleMode(next);
+      }
+
+      function annotTextKey(event) {
+        // IME composition owns Enter/Escape; keyCode 229 is the composition placeholder.
+        if (event.keyCode === 229 || annotComposingRef.current || (event.nativeEvent && event.nativeEvent.isComposing)) return;
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          commitAnnotText();
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          cancelAnnotText();
+        }
+      }
+
+      /** Committed shape → React SVG node. Geometry data lives on the root g; native geometry on
+       * the child element, so data, SVG and screen position can all be checked independently. */
+      function renderAnnotShape(shape) {
+        const common = {
+          key: shape.id,
+          'data-utb-annot-id': shape.id,
+          'data-utb-annot-type': shape.type,
+          'data-utb-annot-state': 'committed',
+          'data-utb-annot-color': shape.color,
+          'data-utb-annot-stroke-width': String(shape.strokeWidth),
+          'data-utb-annot-fill': shape.fill ? 'true' : 'false',
+          'data-utb-annot-stroke': shape.stroke ? 'true' : 'false',
+          style: { pointerEvents: 'none' },
+        };
+        if (shape.type === 'circle') {
+          return h('g', Object.assign({}, common, {
+            'data-utb-annot-cx': String(shape.cx),
+            'data-utb-annot-cy': String(shape.cy),
+            'data-utb-annot-rx': String(shape.rx),
+            'data-utb-annot-ry': String(shape.ry),
+          }), h('ellipse', {
+            cx: shape.cx, cy: shape.cy, rx: shape.rx, ry: shape.ry,
+            fill: shape.fill ? shape.color : 'none',
+            stroke: shape.stroke ? shape.color : 'none',
+            strokeWidth: shape.stroke ? shape.strokeWidth : 0,
+          }));
+        }
+        if (shape.type === 'rect') {
+          return h('g', Object.assign({}, common, {
+            'data-utb-annot-x': String(shape.x),
+            'data-utb-annot-y': String(shape.y),
+            'data-utb-annot-width': String(shape.w),
+            'data-utb-annot-height': String(shape.h),
+          }), h('rect', {
+            x: shape.x, y: shape.y, width: shape.w, height: shape.h,
+            fill: shape.fill ? shape.color : 'none',
+            stroke: shape.stroke ? shape.color : 'none',
+            strokeWidth: shape.stroke ? shape.strokeWidth : 0,
+          }));
+        }
+        if (shape.type === 'line') {
+          return h('g', Object.assign({}, common, {
+            'data-utb-annot-x1': String(shape.x1),
+            'data-utb-annot-y1': String(shape.y1),
+            'data-utb-annot-x2': String(shape.x2),
+            'data-utb-annot-y2': String(shape.y2),
+          }), h('line', {
+            x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2,
+            fill: 'none', stroke: shape.color, strokeWidth: shape.strokeWidth, strokeLinecap: 'round',
+          }));
+        }
+        if (shape.type === 'arrow') {
+          const geometry = annotArrowGeometry({ x: shape.x1, y: shape.y1 }, { x: shape.x2, y: shape.y2 }, shape.strokeWidth);
+          const base = geometry ? geometry.base : { x: shape.x2, y: shape.y2 };
+          return h('g', Object.assign({}, common, {
+            'data-utb-annot-x1': String(shape.x1),
+            'data-utb-annot-y1': String(shape.y1),
+            'data-utb-annot-x2': String(shape.x2),
+            'data-utb-annot-y2': String(shape.y2),
+            'data-utb-annot-head-length': geometry ? String(Math.min(3 * shape.strokeWidth, geometry.length)) : '0',
+            'data-utb-annot-head-width': geometry ? String(Math.min(2 * shape.strokeWidth, geometry.length)) : '0',
+          }), [
+            h('line', {
+              key: 'shaft', x1: shape.x1, y1: shape.y1, x2: base.x, y2: base.y,
+              fill: 'none', stroke: shape.color, strokeWidth: shape.strokeWidth, strokeLinecap: 'round',
+            }),
+            h('polygon', {
+              key: 'head',
+              points: geometry ? annotPointsText(geometry.points) : '',
+              fill: shape.color, stroke: 'none',
+            }),
+          ]);
+        }
+        if (shape.type === 'brush') {
+          return h('g', Object.assign({}, common, {
+            'data-utb-annot-points': JSON.stringify(shape.points),
+          }), h('polyline', {
+            points: annotPointsText(shape.points),
+            fill: 'none', stroke: shape.color, strokeWidth: shape.strokeWidth,
+            strokeLinecap: 'round', strokeLinejoin: 'round',
+          }));
+        }
+        if (shape.type === 'text') {
+          return h('g', Object.assign({}, common, {
+            'data-utb-annot-x': String(shape.x),
+            'data-utb-annot-y': String(shape.y),
+            'data-utb-annot-font-size': '20',
+          }), h('text', {
+            x: shape.x, y: shape.y, fontSize: 20,
+            fill: shape.color, stroke: 'none',
+            fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+            fontWeight: 400,
+            dominantBaseline: 'text-before-edge',
+          }, shape.text));
+        }
+        return null;
       }
 
       /**
@@ -2137,6 +4078,11 @@ window.__ModuleLoader__.load({
       }
 
       function onSizeWheel(event) {
+        if (annotRef.current.on) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         const node = event.target && event.target.closest ? event.target.closest('[data-utb-field]') : null;
         if (!node) return;
         const field = node.getAttribute('data-utb-field');
@@ -2154,6 +4100,26 @@ window.__ModuleLoader__.load({
         if (!event.deltaY) return;
         markHuman();
         stepViewField(field, event.deltaY < 0 ? 1 : -1, event);
+      }
+
+      /** 用户 2026-11-03 第 5 条：粗细输入滚轮（非 passive，clamp 1–20，即时提交，不 markHuman）。 */
+      function onAnnotWidthWheel(event) {
+        if (!annotRef.current.on) return;
+        const node = event.target && event.target.closest ? event.target.closest('[data-utb-annot-field="width"]') : null;
+        if (!node) return; // let the narrow bar scroll normally elsewhere
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.ctrlKey || event.metaKey) return;
+        if (!event.deltaY) return;
+        const current = annotRef.current;
+        if (current.tool === 'text' || current.tool === 'eraser') return;
+        const alt = Boolean(event.altKey);
+        const shift = Boolean(event.shiftKey) && !alt;
+        const step = alt ? 1 : shift ? 5 : 1;
+        const base = Number(current.width);
+        const next = clampNumber(Math.round(base + (event.deltaY < 0 ? step : -step)), 1, 20);
+        if (next === base) return;
+        changeAnnotStyle({ width: next });
       }
 
       /**
@@ -2217,6 +4183,7 @@ window.__ModuleLoader__.load({
       }
 
       function onFramePointerDown(event) {
+        if (annotRef.current.on) return; // annotation mode: zero page input
         if (event.button !== 0) return;
         if (panMode) {
           // Pan is the recovery path: it must start even when page input is fail-closed (stale
@@ -2258,6 +4225,7 @@ window.__ModuleLoader__.load({
       }
 
       function onFramePointerMove(event) {
+        if (annotRef.current.on) return; // annotation mode: zero page input
         if (!readyRef.current || writesPausedRef.current) return;
         const pan = panDragRef.current;
         if (pan.active && pan.pointerId === event.pointerId) {
@@ -2285,6 +4253,7 @@ window.__ModuleLoader__.load({
 
       /** The release is dispatched even when the pointer left the image (no stuck button). */
       function onFramePointerUp(event) {
+        if (annotRef.current.on) return; // annotation mode: zero page input
         const pan = panDragRef.current;
         if (pan.active && pan.pointerId === event.pointerId) {
           const moved = Math.abs(event.clientX - pan.startClientX) > 0.5 || Math.abs(event.clientY - pan.startClientY) > 0.5;
@@ -2319,6 +4288,7 @@ window.__ModuleLoader__.load({
 
       /** Best-effort release for pointercancel / lost capture / blur while dragging. */
       function releaseFrameDrag() {
+        if (annotRef.current.on) return; // annotation mode: never dispatch a page release
         if (panDragRef.current.active) {
           flushPanWrite();
           cancelPanDrag();
@@ -2557,6 +4527,7 @@ window.__ModuleLoader__.load({
       }
 
       function onFrameWheel(event) {
+        if (annotRef.current.on) return; // annotation mode: the stage listener consumes it
         if (panMode) {
           zoomCanvasByWheel(event);
           return;
@@ -2581,6 +4552,13 @@ window.__ModuleLoader__.load({
       }
 
       function onStageWheel(event) {
+        // Annotation mode owns every preview wheel (blank/letterbox/Ctrl/Meta included): consume it
+        // without scrolling the page, changing C/scale or scrolling the host.
+        if (annotRef.current.on) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         const target = event.target;
         if (!target || !target.closest) return;
         if (panMode) {
@@ -2619,6 +4597,10 @@ window.__ModuleLoader__.load({
       // One immutable scope/binding snapshot per generation. Identity or binding changes retire
       // every transport/poll/request and all UI state derived from the previous workspace.
       React.useEffect(() => {
+        // v3 §12.1: a binding/identity transition must not erase the workspace document. Hand any
+        // unconfirmed content to the module queue under the old frozen identity *before* the old
+        // remote/view refs are dropped, then retract this panel's local view only.
+        annotRetainDirty(true);
         requestGenerationRef.current += 1;
         if (abortRef.current) abortRef.current.abort();
         abortRef.current = new AbortController();
@@ -2680,6 +4662,10 @@ window.__ModuleLoader__.load({
         panModeRef.current = false;
         setPanMode(false);
         setPanDragging(false);
+        // A scope/runtime generation change retracts this panel's local drawing and exits the
+        // annotation mode; the tool/style preferences survive (panel-local UI state).
+        annotEpochRef.current = null;
+        annotDropLocalView({ exit: true });
         setFrameVersion(0);
         setViewVersion(0);
         displayTimes.current = [];
@@ -2875,6 +4861,11 @@ window.__ModuleLoader__.load({
               displayed: displayedRef.current,
               seq: stats.lastSeq,
               epoch: stats.lastEpoch,
+              annotationPanelId: annotPublisherRef.current ? annotPublisherRef.current.panelId : null,
+              annotationClientRevision: annotPublisherRef.current
+                ? (annotPublisherRef.current.ackedClientRevision || null) : null,
+              documentKey: annotPublisherRef.current && annotGateRef.current.open
+                && annotGateRef.current.context ? annotGateRef.current.context.documentKey : null,
               measured: true,
               measuredAt: Date.now(),
             }),
@@ -2892,6 +4883,18 @@ window.__ModuleLoader__.load({
         // missing-meta sample (the meta entry is consumed by the first load).
         if (frameGeomRef.current && frameGeomRef.current.src === source) return;
         const meta = frameMetaRef.current.get(source);
+        // A new document epoch invalidates the drawing; an ordinary frame refresh (same epoch) must
+        // keep both committed shapes and the active gesture (docs/annotation-p0d.md §5). A seed PNG
+        // is not a document transition. `seq`/`ui.revision` are deliberately not used here.
+        if (meta && meta.seed !== true && meta.epoch !== undefined && meta.epoch !== null
+          && Number.isFinite(Number(meta.epoch))) {
+          const epoch = Number(meta.epoch);
+          if (annotEpochRef.current !== null && epoch !== annotEpochRef.current) {
+            // A new document epoch: retract locally only; the Host document was rotated/cleared.
+            annotDropLocalView({ exit: false, discard: true });
+          }
+          annotEpochRef.current = epoch;
+        }
         // The mapping and the barriers read the *displayed* frame: decoded natural* plus the
         // capture-time CSS page size and top-level scroll (docs/canvas-viewport.md §5.1).
         const scroll = frameScrollOf(meta, null);
@@ -2956,8 +4959,16 @@ window.__ModuleLoader__.load({
         node.addEventListener('wheel', listener, { passive: false });
         return () => node.removeEventListener('wheel', listener);
       }, [sizing]);
+      React.useEffect(() => {
+        const node = annotBarRef.current;
+        if (!annotOn || !node || typeof node.addEventListener !== 'function') return undefined;
+        const listener = (event) => { if (annotWidthWheelRef.current) annotWidthWheelRef.current(event); };
+        node.addEventListener('wheel', listener, { passive: false });
+        return () => node.removeEventListener('wheel', listener);
+      }, [annotOn]);
 
       function sendEvents(events) {
+        if (annotRef.current.on) return; // single gate: annotation mode never dispatches page input
         if (!readyRef.current || writesPausedRef.current) return;
         const signal = abortRef.current ? abortRef.current.signal : undefined;
         callHost('input', { events }, { scope: scopeRef.current, signal }).catch(() => {});
@@ -2980,6 +4991,54 @@ window.__ModuleLoader__.load({
         return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', escape); };
       }, [menu]);
 
+      // Annotation mode: Esc order (composition → editor/draft cancel → exit) and the hard
+      // capability/lifecycle gate. Both listeners live only while the mode is on.
+      React.useEffect(() => {
+        if (!annotOn) return undefined;
+        const onKeyDown = (event) => {
+          if (event.key !== 'Escape') return;
+          if (annotComposingRef.current || event.isComposing) return;
+          if (annotEditRef.current.active) {
+            event.preventDefault();
+            cancelAnnotText();
+            return;
+          }
+          if (annotEraseRef.current.active) {
+            // 擦掉的对象不回滚；这里只结束手势，不退出模式（§11.4）。
+            event.preventDefault();
+            finishAnnotErase();
+            return;
+          }
+          if (annotGestureRef.current.active) {
+            event.preventDefault();
+            cancelAnnotDraft();
+            return;
+          }
+          event.preventDefault();
+          exitAnnotMode();
+          const button = annotButtonRef.current;
+          if (button) { try { button.focus({ preventScroll: true }); } catch { /* ignore */ } }
+        };
+        document.addEventListener('keydown', onKeyDown, true);
+        return () => document.removeEventListener('keydown', onKeyDown, true);
+      }, [annotOn]);
+
+      // A stage scroll changes the painted rect without a React render: an active gesture/edit must
+      // not keep drawing against a stale screen mapping.
+      React.useEffect(() => {
+        const node = stage.current;
+        if (!node || typeof node.addEventListener !== 'function') return undefined;
+        const onScroll = () => {
+          if (!annotRef.current.on) return;
+          if (annotGestureRef.current.active || annotEditRef.current.active) {
+            cancelAnnotDraft();
+            cancelAnnotText();
+          }
+        };
+        node.addEventListener('scroll', onScroll, { passive: true });
+        return () => node.removeEventListener('scroll', onScroll);
+      }, []);
+
       /** Adopt a navigation response snapshot; a newer edit made while it was in flight wins. */
       function finishNavigation(state, submittedVersion) {
         if (state) acceptRemote(state);
@@ -2998,11 +5057,15 @@ window.__ModuleLoader__.load({
 
       function submit(event) {
         if (event) event.preventDefault();
+        if (annotRef.current.on) return; // annotation mode: local navigation is disabled
         if (pendingRef.current.active) return;
         if (writesPausedRef.current) {
           console.warn('ui-testing: navigation paused while the main view is loading or ambiguous');
           return;
         }
+        // A local navigation initiated outside the mode invalidates the drawing immediately and
+        // submits a normal empty document under the old identity (§12.1).
+        annotNavigationClear();
         let parsed;
         try {
           const raw = draft.trim();
@@ -3072,7 +5135,9 @@ window.__ModuleLoader__.load({
       }
 
       function reload() {
+        if (annotRef.current.on) return; // annotation mode: local navigation is disabled
         if (reloadDisabled || writesPausedRef.current || !readyRef.current) return;
+        annotNavigationClear();
         cancelDraft();
         setError('');
         setNavBusy(true);
@@ -3098,8 +5163,10 @@ window.__ModuleLoader__.load({
       }
 
       function move(direction) {
+        if (annotRef.current.on) return; // annotation mode: local navigation is disabled
         const disabled = direction === 'back' ? backDisabled : forwardDisabled;
         if (disabled || writesPausedRef.current || !readyRef.current) return;
+        annotNavigationClear();
         cancelDraft();
         setError('');
         setNavBusy(true);
@@ -3183,8 +5250,143 @@ window.__ModuleLoader__.load({
       const canvasBarrierState = canvasOn ? canvasBarrier() : null;
       const canvasInputReady = Boolean(canvasBarrierState && canvasBarrierState.ready);
       const posRange = canvasOn ? VIEW_LIMITS.canvas : VIEW_LIMITS.scroll;
+      // P0-D annotation render facts. The SVG covers the *untranslated* painted rect; the viewBox is
+      // the accepted canvas window. Committed geometry stays in canvas CSS px, so C/scale changes
+      // move the drawing with the content instead of re-basing it.
+      const annotReady = viewSync && canvasOn;
+      // 用户 2026-11-03 追加：三选一 panfit 状态（恰好一个 pressed；default = 既非拖拽也非适应窗口）。
+      const panfitState = panMode ? 'pan' : fit ? 'fit' : 'default';
+      const annotMapNow = canvasOn && shot ? annotMap() : null;
+      const annotMapSignatureNow = annotMapSignature(annotMapNow);
+      if (!annotPanelIdRef.current) {
+        annotPanelIdRef.current = 'utb-annot-' + Math.random().toString(36).slice(2, 10);
+      }
+      const annotPanelId = annotPanelIdRef.current;
+      // Keep the synchronous ref in step with the rendered state (setters update it earlier, so a
+      // handler never observes a "next tick" mode/tool change).
+      annotRef.current.on = annotOn;
+      annotRef.current.tool = annotTool;
+      annotRef.current.color = annotColor;
+      annotRef.current.width = annotWidth;
+      // Same-tick truth for the sizing gate: the rendered state is authoritative, so a stale ref
+      // can never block enterAnnotMode while the entry is visibly enabled.
+      sizingRef.current = sizing;
+      const annotStyleNow = annotStyleFor(annotTool, annotStyleMode);
+      annotRef.current.mode = annotStyleMode;
+      annotRef.current.fill = annotStyleNow.fill;
+      annotRef.current.stroke = annotStyleNow.stroke;
+      // v3 同步状态（§12.5）：SVG 属性 + 状态栏 aria-live 提示。旧 Host 没有 annotationContext
+      // 时明确 unsupported 并保留绘制能力，绝不声称 Agent 已可见。The identity gate hides the
+      // previous scope's list until the new scope's first trusted state arrives.
+      const annotGateOpen = annotGateRef.current.open && annotGateRef.current.epoch === scopeEpoch;
+      const annotChannel = Boolean(annotContextNow());
+      annotChannelRef.current = annotChannel;
+      const annotSyncState = !annotChannel ? 'unsupported' : (annotGateOpen ? annotSync.state : 'idle');
+      const annotSyncRevision = annotGateOpen && Number.isFinite(Number(annotSync.revision))
+        ? Math.max(0, Math.round(Number(annotSync.revision))) : 0;
+      const annotStale = annotStaleState;
+      const annotNavHint = '标注按工作区保留，导航/刷新会清除当前页面标注';
+      const annotSyncText = annotSyncState === 'unsupported'
+        ? '标注未同步（Host 无标注通道）'
+        : annotSyncState === 'error'
+          ? '标注未同步'
+          : annotSyncState === 'pending'
+            ? '标注同步中…'
+            : '';
+      const annotSyncTitle = (annotSyncState === 'unsupported'
+        ? '标注未同步：当前 Host 没有标注上报通道，标注只在本面板可见，Agent 看不到'
+        : annotSyncState === 'error'
+          ? '标注未同步：最近一次上报失败，Agent 看到的内容可能已过期'
+          : annotSyncState === 'pending'
+            ? '标注同步中：正在把本次修改上报给 Host'
+            : annotStale.stale && annotStale.staleReason === 'panel-unseen'
+              ? '标注已保存到工作区，来源面板心跳已过期'
+              : '标注已同步给 Agent（只读线索，不构成页面事实）') + '；' + annotNavHint;
+      const annotVisibleShapes = annotGateOpen ? annotShapesRef.current : [];
+      React.useEffect(() => {
+        // The annotation channel came back (or a remount recovered unconfirmed content): publish
+        // the remembered dirty document. A clean panel never posts here (§12.1/§12.4).
+        if (!annotChannel || !annotGateOpen || !annotDirtyRef.current) return;
+        if (annotSyncRef.current.timer) return;
+        annotPublishSchedule();
+      }, [annotChannel, annotGateOpen]);
+      React.useEffect(() => {
+        const previous = annotMapSigRef.current;
+        annotMapSigRef.current = annotMapSignatureNow;
+        if (!annotOn || !previous || annotMapSignatureNow === previous) return;
+        // An external view/geometry change cancels the uncommitted draft/edit; committed shapes stay
+        // and are re-mapped by the new viewBox (docs/annotation-p0d.md §3).
+        if (annotGestureRef.current.active || annotEditRef.current.active || annotEraseRef.current.active) {
+          cancelAnnotDraft();
+          cancelAnnotText();
+          resetAnnotErase();
+          setAnnotBusy(false);
+        }
+      }, [annotMapSignatureNow, annotOn]);
+
+      React.useEffect(() => {
+        if (!annotOn) return;
+        // Running/runtime loss or a vanished canvas capability retracts the local view and exits;
+        // unconfirmed content is remembered (not flushed into a capability that is gone).
+        if (!running || !canvasOn) {
+          annotRetainDirty(false);
+          annotDropLocalView({ exit: true });
+        }
+      }, [annotOn, running, canvasOn]);
+      React.useEffect(() => {
+        // v3 §12.1/§12.4: a scope/binding transition only retracts this panel's local view. The
+        // unconfirmed content was already handed to the module queue by the reset effect; here the
+        // gate is reset so the new scope's first trusted state decides what may be shown/published.
+        annotRetainDirty(true);
+        annotCancelTransient();
+        annotUnsubscribePublisher();
+        annotPublisherRef.current = null;
+        setAnnotText(null);
+        resetAnnotErase();
+        setAnnotBusy(false);
+        annotShapesRef.current = [];
+        annotCandidateRef.current = null;
+        setAnnotVersion((value) => value + 1);
+        annotDirtyRef.current = false;
+        annotContentSeqRef.current = 0;
+        annotShownRevisionRef.current = 0;
+        annotSetStale(false, null);
+        annotGateRef.current = { epoch: scopeEpoch, open: false, key: '', revision: -1, context: null, d: null, scope: null, view: null };
+        annotRef.current.on = false;
+        setAnnotOn(false);
+        annotSetSyncState('idle');
+      }, [scopeEpoch]);
+      React.useEffect(() => () => {
+        // v3 §12.4: an unmount freezes the old identity, flushes genuinely dirty content through the
+        // module queue (it does not depend on this component's setState) and never sends a release.
+        if (annotSyncRef.current.timer) {
+          window.clearTimeout(annotSyncRef.current.timer);
+          annotSyncRef.current.timer = 0;
+        }
+        annotCancelTransient();
+        if (annotDirtyRef.current) {
+          const identity = annotIdentityNow({ anyEpoch: true });
+          const entry = annotPublisherRef.current;
+          if (identity) annotPublisherQueue(identity.entry, annotBuildSnapshot(identity, annotNormalize()));
+          else if (entry) {
+            const normalized = annotNormalize();
+            annotPublisherRemember(entry, {
+              shapes: normalized.shapes,
+              truncation: normalized.truncation,
+              contentSeq: annotContentSeqRef.current,
+              dKey: annotGateRef.current.key,
+            });
+          }
+          annotDirtyRef.current = false;
+        }
+        const entry = annotPublisherRef.current;
+        if (entry) entry.activeDKey = '';
+        annotUnsubscribePublisher();
+        annotPublisherRef.current = null;
+      }, []);
       /** 手动改比例时关闭自动适配并同步共享比例；重新勾选“适应窗口”只恢复本地自动适配。 */
       function changeFit(checked) {
+        if (annotRef.current.on) return; // size-bar controls are disabled in annotation mode
         fitRef.current = checked;
         setFit(checked);
         clearZoomIntent();
@@ -3203,6 +5405,78 @@ window.__ModuleLoader__.load({
         viewDirtyRef.current.scale = null;
         setZoom(String(percent));
       }
+      /**
+       * 用户 2026-11-03 第 4 条：拖拽/适应窗口分页选择器（互斥，最多一个 aria-pressed）。
+       * 选拖拽先关 fit（不发布），选适应窗口先退拖拽（保留既有 flush 语义），再各自切换。
+       */
+      function pressPanMode() {
+        if (panModeRef.current) {
+          changePanMode(false);
+          return;
+        }
+        if (fitRef.current) changeFit(false);
+        changePanMode(true);
+      }
+      function pressFitMode() {
+        if (fitRef.current) {
+          changeFit(false);
+          return;
+        }
+        if (panModeRef.current) changePanMode(false);
+        changeFit(true);
+      }
+      /** 用户 2026-11-03 追加：三选一的「默认」——既非拖拽也非适应窗口，只回落共享比例。 */
+      function pressPanFitDefault() {
+        if (!panModeRef.current && !fitRef.current) return; // already default: no-op
+        if (panModeRef.current) changePanMode(false);
+        if (fitRef.current) changeFit(false);
+      }
+      /**
+       * 用户 2026-11-03 第 3 条：用户主动切换环境时套该环境默认，只发布 width/height（不发布
+       * scale），fit=true、pan=false；annotOn 或非 ready 不生效。
+       */
+      function changeEnv(next) {
+        if (annotRef.current.on) return;
+        const option = ENVIRONMENTS.find((item) => item.id === next);
+        if (!option || !option.ready) return;
+        if (next === env) return;
+        const target = envDefaultSize(next);
+        setEnv(next);
+        const dirty = viewDirtyRef.current;
+        dirty.width = target.width;
+        dirty.height = target.height;
+        dirty.scale = null;
+        setWidth(String(target.width));
+        setHeight(String(target.height));
+        queueViewPatch({ width: target.width, height: target.height });
+        changePanMode(false);
+        changeFit(target.fit);
+      }
+      /**
+       * 用户 2026-11-03 第 5/7 条：左侧四个分辨率预设不再只是宽高——点任一预设同时把 X/Y 归零，
+       * 并按当前模式处理右侧 `拖拽|适应窗口|默认` 分页选择器（上下文相关，互斥联动）：
+       *   - 拖拽中 → 只退出拖拽（fit 本就是 false），右侧落到「默认」；
+       *   - 适应窗口中 → **保持**「适应窗口」（fit 是本地显示偏好，不发布比例；新尺寸自动适应）；
+       *   - 已是「默认」→ 仍是「默认」。
+       * 不改 `scale`/`%`（「默认」语义 = `%` 回落到共享 view.scale）。
+       *
+       * 宽高与坐标合并进同一个 120ms 的 v1 patch（一次 /viewport，带 expectedRevision）：画布
+       * Host 写 `canvasX/canvasY`，无画布但有共享 view 的 Host 写文档滚动 `x/y`，旧 Host（无
+       * 共享 view）只写宽高。X/Y 草稿立即显示 0，不等 Host 回显。
+       */
+      function applySizePreset(preset) {
+        if (annotRef.current.on) return; // size-bar controls are disabled in annotation mode
+        // 只退出拖拽（会 flush 待发平移写入，其 x/y 随后被本 patch 的 0 覆盖）；绝不关闭
+        // 「适应窗口」——它是本地显示偏好，用户从适应窗口点预设应继续适应新尺寸。
+        if (panModeRef.current) changePanMode(false);
+        changeSizeField('width', String(preset.w));
+        changeSizeField('height', String(preset.h));
+        if (!viewRef.current) return; // old Host: only width/height are writable
+        changePositionField('x', '0');
+        changePositionField('y', '0');
+        // changePositionField 只改草稿（与输入框一致）；归零必须搭同一合并 patch 提交。
+        queueViewPatch({ x: 0, y: 0 });
+      }
       function changeZoom(value) {
         changeScaleField(value);
       }
@@ -3211,8 +5485,34 @@ window.__ModuleLoader__.load({
       }
       stageWheelRef.current = onStageWheel;
       sizeWheelRef.current = onSizeWheel;
+      annotWidthWheelRef.current = onAnnotWidthWheel;
       const button = (label, children, onClick, disabled, extra) =>
         h('button', Object.assign({ type: 'button', className: 'utb-btn', title: label, 'aria-label': label, onClick, disabled }, extra || {}), children);
+      /**
+       * 用户 2026-11-03 追加：每个分页选项左侧的固定 8×8 标记位；只有选中项显示绿色小球，
+       * 未选中项 visibility:hidden 保留占位（切换时文字不左右跳动）。纯视觉，不参与计算/上报。
+       */
+      const segDot = (on, group) => h('svg', {
+        className: 'utb-seg-dot',
+        width: 8,
+        height: 8,
+        viewBox: '0 0 8 8',
+        'aria-hidden': 'true',
+        focusable: 'false',
+        'data-utb-seg-dot': on ? 'on' : 'off',
+        'data-utb-seg-group': group,
+        style: { visibility: on ? 'visible' : 'hidden' },
+      }, h('circle', { cx: 4, cy: 4, r: 3, fill: '#22c55e' }));
+      const annotToolButton = (tool, label) =>
+        h('button', {
+          type: 'button',
+          className: 'utb-btn utb-annot-tool',
+          title: label,
+          'aria-label': label,
+          'data-utb-annot-tool': tool,
+          'aria-pressed': annotTool === tool,
+          onClick: () => chooseAnnotTool(tool),
+        }, h(IconAnnotTool, { tool }));
 
       return h('div', {
         className: 'utb',
@@ -3232,7 +5532,8 @@ window.__ModuleLoader__.load({
               className: 'utb-select',
               value: env,
               'aria-label': '选择运行环境',
-              onChange: (e) => setEnv(e.target.value),
+              disabled: annotOn,
+              onChange: (e) => changeEnv(e.target.value),
             }, ENVIRONMENTS.map((option) => h('option', { key: option.id, value: option.id, disabled: !option.ready }, option.label))),
             h('span', { className: 'utb-env-caret', 'aria-hidden': true }, h(IconChevron, null)))),
         h('div', { className: 'utb-bar' },
@@ -3240,30 +5541,127 @@ window.__ModuleLoader__.load({
           button('前进', h(IconArrow, { dir: 'forward' }), () => move('forward'), forwardDisabled),
           button('刷新', h(IconReload, null), reload, reloadDisabled),
           h('form', { onSubmit: submit, style: { flex: '1 1 auto', minWidth: 0, display: 'flex' } },
-            h('input', { className: 'utb-addr', type: 'text', value: draft, spellCheck: false, 'aria-label': '网址', placeholder: '输入网址，例如 https://example.com', 'aria-invalid': error ? 'true' : undefined, 'data-invalid': error ? 'true' : 'false', title: error || undefined, onChange: changeAddress, onFocus: () => { focusedRef.current = true; dirtyRef.current = false; }, onBlur: blurAddress, onKeyDown: keyAddress })),
-          button('尺寸调整', h(IconSize, null), toggleSizing, false, { 'aria-pressed': sizing }),
+            h('input', { className: 'utb-addr', type: 'text', value: draft, spellCheck: false, 'aria-label': '网址', placeholder: '输入网址，例如 https://example.com', 'aria-invalid': error ? 'true' : undefined, 'data-invalid': error ? 'true' : 'false', title: error || undefined, disabled: annotOn, onChange: changeAddress, onFocus: () => { focusedRef.current = true; dirtyRef.current = false; }, onBlur: blurAddress, onKeyDown: keyAddress })),
+          button('标注', h(IconAnnot, null), toggleAnnotMode, !annotReady || sizing, {
+            ref: annotButtonRef,
+            title: sizing
+              ? '尺寸调整模式下不可进入标注（先关闭尺寸调整）'
+              : '标注（标注按工作区保留，导航/刷新会清除当前页面标注）',
+            'aria-pressed': annotOn,
+            'aria-controls': annotPanelId,
+            'data-utb-annot-entry': annotOn ? 'on' : sizing ? 'sizing' : annotReady ? 'ready' : 'unsupported',
+            // Closing the mode via this button must cancel an active text edit *before* the
+            // focus change blurs the editor (otherwise the blur would submit it).
+            onPointerDown: () => {
+              if (!annotRef.current.on || !annotEditRef.current.active) return;
+              annotEditRef.current.cancel = true;
+              annotEditRef.current.active = false;
+              setAnnotText(null);
+            },
+          }),
+          button('尺寸调整', h(IconSize, null), toggleSizing, annotOn, { 'aria-pressed': sizing }),
           h('span', { className: 'utb-sr', role: 'alert' }, error || ''),
           button('选择元素发送到聊天框（需浏览器运行时）', h(IconInspect, null), null, true),
           h('div', { className: 'utb-more' },
-            button('更多', h(IconMore, null), () => setMenu((v) => !v), false, { 'aria-expanded': menu, 'aria-haspopup': 'menu' }),
+            button('更多', h(IconMore, null), () => setMenu((v) => !v), annotOn, { 'aria-expanded': menu, 'aria-haspopup': 'menu' }),
             menu && h('div', { className: 'utb-pop', role: 'menu' },
               h('button', { type: 'button', className: 'utb-menu-item', role: 'menuitem', disabled: true, title: '需要浏览器运行时' }, '打开调试工具（暂不可用）'),
               openUrl
                 ? h('a', { className: 'utb-menu-item', role: 'menuitem', href: openUrl, target: '_blank', rel: 'noopener noreferrer', style: { textDecoration: 'none' }, onClick: () => setMenu(false) }, '在默认浏览器中打开')
                 : h('button', { type: 'button', className: 'utb-menu-item', role: 'menuitem', disabled: true }, '在默认浏览器中打开')))),
-        sizing && h('div', { className: 'utb-size', ref: sizeBarRef },
-          h('div', { className: 'utb-size-left', role: 'group', 'aria-label': '分辨率预设' },
-            PRESETS.map((preset) => h('button', {
-              key: preset.id,
+        annotOn && h('div', { className: 'utb-annot-bar', id: annotPanelId, role: 'group', 'aria-label': '标注工具', ref: annotBarRef },
+          h('div', { className: 'utb-annot-group', role: 'group', 'aria-label': '标注工具选择' },
+            ANNOT_TOOLS.map((tool) => annotToolButton(tool.id, tool.label))),
+          h('div', {
+            className: 'utb-seg utb-annot-seg',
+            role: 'group',
+            'aria-label': '填充与外框',
+            'data-utb-annot-seg': 'fill-stroke',
+          },
+            h('button', {
               type: 'button',
-              className: 'utb-preset',
-              title: `${preset.label} ${preset.w} × ${preset.h}`,
-              'aria-pressed': w === preset.w && ht === preset.h,
-              onClick: () => {
-                changeSizeField('width', String(preset.w));
-                changeSizeField('height', String(preset.h));
+              className: 'utb-seg-btn',
+              'data-utb-annot-mode': 'fill',
+              'aria-label': '填充',
+              title: '填充（仅圆形/矩形；当前色不透明）',
+              'aria-pressed': annotStyleMode === 'fill',
+              disabled: !annotIsClosedTool(annotTool),
+              onClick: () => changeAnnotStyleMode('fill'),
+            }, segDot(annotStyleMode === 'fill', 'fill-stroke'), '填充'),
+            h('button', {
+              type: 'button',
+              className: 'utb-seg-btn',
+              'data-utb-annot-mode': 'stroke',
+              'aria-label': '外框',
+              title: '外框（仅圆形/矩形；当前色 + 粗细）',
+              'aria-pressed': annotStyleMode === 'stroke',
+              disabled: !annotIsClosedTool(annotTool),
+              onClick: () => changeAnnotStyleMode('stroke'),
+            }, segDot(annotStyleMode === 'stroke', 'fill-stroke'), '外框')),
+          h('label', { className: 'utb-annot-check', title: '颜色' },
+            h('span', null, '颜色'),
+            h('input', {
+              type: 'color',
+              className: 'utb-annot-color',
+              value: annotColor,
+              'aria-label': '颜色',
+              disabled: annotTool === 'eraser',
+              onChange: (e) => changeAnnotStyle({ color: String(e.target.value || '').toLowerCase() }),
+            })),
+          h('label', { className: 'utb-annot-check', title: '粗细（1–20 画布 px）' },
+            h('span', null, '粗细'),
+            h('input', {
+              type: 'number',
+              className: 'utb-num utb-annot-width',
+              min: 1,
+              max: 20,
+              step: 1,
+              value: String(annotWidth),
+              'aria-label': '粗细',
+              'data-utb-annot-field': 'width',
+              disabled: annotTool === 'text' || annotTool === 'eraser',
+              onChange: (e) => {
+                const numeric = Number(e.target.value);
+                if (!Number.isFinite(numeric) || String(e.target.value).trim() === '') return;
+                changeAnnotStyle({ width: clampNumber(Math.round(numeric), 1, 20) });
               },
-            }, preset.label))),
+            })),
+          // v2 §11.4：横栏右侧（粗细之后）的可见文案按钮；仅模式内可见、无二次确认、空态禁用。
+          h('button', {
+            type: 'button',
+            className: 'utb-btn utb-annot-clear',
+            'aria-label': '清除画布',
+            title: '清除画布',
+            'data-utb-annot-action': 'clear',
+            disabled: !annotReady || (!annotShapesRef.current.length && !annotBusy && !annotText),
+            onPointerDown: annotClearPointerDown,
+            onClick: clearAnnotCanvas,
+          }, '清除画布')),
+        sizing && h('div', { className: 'utb-size', ref: sizeBarRef },
+          h('div', { className: 'utb-size-left' },
+            // 用户 2026-11-03 第 2 轮：左侧四个分辨率预设改为与「填充|外框」「拖拽|适应窗口|默认」
+            // 相同的分页选择器（绿色小球选中态）。选中 = 非拖拽且宽高精确匹配（零或一项选中）；
+            // 拖拽模式与预设互斥（pan 时四项全部 aria-pressed=false、小球隐藏）。
+            h('div', {
+              className: 'utb-seg utb-presets',
+              role: 'group',
+              'aria-label': '分辨率预设',
+              'data-utb-preset': '',
+            },
+              PRESETS.map((preset) => {
+                const selected = !panMode && w === preset.w && ht === preset.h;
+                return h('button', {
+                  key: preset.id,
+                  type: 'button',
+                  className: 'utb-seg-btn utb-preset',
+                  title: `${preset.label} ${preset.w} × ${preset.h}`,
+                  'data-utb-preset-opt': preset.id,
+                  'aria-label': preset.label,
+                  'aria-pressed': selected,
+                  disabled: annotOn,
+                  onClick: () => applySizePreset(preset),
+                }, segDot(selected, 'preset'), preset.label);
+              }))),
           h('span', { className: 'utb-gap' }),
           h('div', { className: 'utb-size-right' },
             h('span', { className: 'utb-pos-label', 'aria-hidden': true }, 'X'),
@@ -3281,7 +5679,7 @@ window.__ModuleLoader__.load({
                 : viewSync
                   ? '页面顶层滚动位置 X（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
                   : '旧 Host 不支持视口坐标同步',
-              disabled: !viewSync,
+              disabled: !viewSync || annotOn,
               onChange: (e) => changePositionField('x', e.target.value),
               onFocus: () => { viewFocusRef.current = 'x'; },
               onBlur: () => { viewFocusRef.current = ''; commitViewField('x'); },
@@ -3302,7 +5700,7 @@ window.__ModuleLoader__.load({
                 : viewSync
                   ? '页面顶层滚动位置 Y（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
                   : '旧 Host 不支持视口坐标同步',
-              disabled: !viewSync,
+              disabled: !viewSync || annotOn,
               onChange: (e) => changePositionField('y', e.target.value),
               onFocus: () => { viewFocusRef.current = 'y'; },
               onBlur: () => { viewFocusRef.current = ''; commitViewField('y'); },
@@ -3317,6 +5715,7 @@ window.__ModuleLoader__.load({
               'data-utb-field': 'width',
               'aria-label': '视口宽度（像素）',
               title: '视口宽度（200–4096 px）；滚轮调整（Shift ×10，Alt ×1）',
+              disabled: annotOn,
               onChange: (e) => changeSizeField('width', e.target.value),
               onFocus: () => { viewFocusRef.current = 'width'; },
               onBlur: () => { viewFocusRef.current = ''; commitViewField('width'); },
@@ -3332,30 +5731,52 @@ window.__ModuleLoader__.load({
               'data-utb-field': 'height',
               'aria-label': '视口高度（像素）',
               title: '视口高度（200–4096 px）；滚轮调整（Shift ×10，Alt ×1）',
+              disabled: annotOn,
               onChange: (e) => changeSizeField('height', e.target.value),
               onFocus: () => { viewFocusRef.current = 'height'; },
               onBlur: () => { viewFocusRef.current = ''; commitViewField('height'); },
               onKeyDown: (e) => sizeFieldKey(e, 'height'),
             }),
             h('span', null, 'px'),
-            h('label', { className: 'utb-check', title: '适应窗口仅本地显示，不改变共享比例/Agent 截图比例' },
-              h('input', { type: 'checkbox', checked: fit, onChange: (e) => changeFit(e.target.checked) }),
-              '适应窗口'),
-            h('label', {
-              className: 'utb-check',
-              title: panMode
-                ? '拖拽视口：按住画面拖动平移页面（内容跟手，X/Y 随之更新）；再点一次关闭并恢复页面交互'
-                : '拖拽视口：勾选后按住画面拖动可平移页面（内容跟手，X/Y 随之更新）；关闭后恢复页面交互',
+            h('div', {
+              className: 'utb-seg utb-panfit',
+              role: 'group',
+              'aria-label': '拖拽与适应',
+              'data-utb-panfit': '',
+              'data-utb-panfit-state': panfitState,
             },
-              h('input', {
-                type: 'checkbox',
-                checked: panMode,
-                disabled: !viewSync || !canvasOn,
-                'data-utb-check': 'pan',
+              h('button', {
+                type: 'button',
+                className: 'utb-seg-btn',
+                'data-utb-panfit-opt': 'pan',
                 'aria-label': '拖拽视口',
-                onChange: (e) => changePanMode(e.target.checked),
-              }),
-              '拖拽'),
+                title: panMode
+                  ? '拖拽视口：按住画面拖动平移页面（内容跟手，X/Y 随之更新）；再点一次关闭并恢复页面交互'
+                  : '拖拽视口：点击后按住画面拖动可平移页面（内容跟手，X/Y 随之更新）；关闭后恢复页面交互',
+                'aria-pressed': panMode,
+                disabled: !viewSync || !canvasOn || annotOn,
+                onClick: pressPanMode,
+              }, segDot(panMode, 'panfit'), '拖拽'),
+              h('button', {
+                type: 'button',
+                className: 'utb-seg-btn',
+                'data-utb-panfit-opt': 'fit',
+                'aria-label': '适应窗口',
+                title: '适应窗口仅本地显示，不改变共享比例/Agent 截图比例',
+                'aria-pressed': fit,
+                disabled: annotOn,
+                onClick: pressFitMode,
+              }, segDot(fit, 'panfit'), '适应窗口'),
+              h('button', {
+                type: 'button',
+                className: 'utb-seg-btn',
+                'data-utb-panfit-opt': 'default',
+                'aria-label': '默认',
+                title: '默认：不拖拽、不自动适应，按共享比例显示（不发布视口）',
+                'aria-pressed': !panMode && !fit,
+                disabled: annotOn,
+                onClick: pressPanFitDefault,
+              }, segDot(!panMode && !fit, 'panfit'), '默认')),
             h('input', {
               className: 'utb-num utb-zoom',
               type: 'number',
@@ -3368,6 +5789,7 @@ window.__ModuleLoader__.load({
               title: fit
                 ? '适应窗口仅本地显示，不改变共享比例/Agent 截图比例'
                 : '预览缩放比例（10–200%）；手动修改会关闭适应窗口，并作为共享比例（Agent 截图默认密度）',
+              disabled: annotOn,
               onChange: (e) => changeZoom(e.target.value),
               onFocus: () => { viewFocusRef.current = 'scale'; },
               onBlur: () => { viewFocusRef.current = ''; commitZoom(); },
@@ -3381,6 +5803,11 @@ window.__ModuleLoader__.load({
                 className: 'utb-box',
                 ref: frameBoxRef,
                 'data-fitted': fit && scale < 1 ? 'true' : 'false',
+                'data-utb-annot': annotOn ? 'on' : 'off',
+                // Stable read-only hooks for layout/state assertions when the size bar is closed
+                // (the annotation mode and the size bar are mutually exclusive, user 2026-11-03).
+                'data-utb-fit': fit ? 'true' : 'false',
+                'data-utb-pan-state': panMode ? 'on' : 'off',
                 'data-utb-canvas': canvasOn ? 'on' : 'off',
                 'data-utb-canvas-ready': canvasOn ? (canvasInputReady ? 'true' : 'false') : 'off',
                 'data-utb-canvas-blank': canvasOn ? 'checkerboard' : 'off',
@@ -3463,6 +5890,7 @@ window.__ModuleLoader__.load({
                   onPointerCancel: releaseFrameDrag,
                   onLostPointerCapture: releaseFrameDrag,
                   onKeyDown: (event) => {
+                    if (annotRef.current.on) return; // annotation mode: zero page input
                     if (event.metaKey || event.ctrlKey || event.altKey) return;
                     event.preventDefault();
                     if (event.key.length === 1) {
@@ -3476,7 +5904,69 @@ window.__ModuleLoader__.load({
                       { kind: 'key', type: 'keyUp', key: event.key, code: event.code, virtualKeyCode: virtual },
                     ]);
                   },
-                }))
+                }),
+                // P0-D annotation layer: covers the untranslated painted rect, viewBox = accepted
+                // canvas window. Committed shapes are React nodes; the live draft is one imperative
+                // <g> updated by rAF (never re-rendered per pointer move).
+                h('svg', {
+                  className: 'utb-annot-layer',
+                  ref: annotSvgRef,
+                  'data-utb-annot-layer': 'true',
+                  'data-utb-annot-space': 'canvas-css-px',
+                  'data-utb-annot-sync': annotSyncState,
+                  'data-utb-annot-revision': String(annotSyncRevision),
+                  role: 'img',
+                  'aria-label': '标注画布',
+                  tabIndex: annotOn ? 0 : -1,
+                  viewBox: annotMapNow
+                    ? `${annotMapNow.cx} ${annotMapNow.cy} ${annotMapNow.w} ${annotMapNow.h}`
+                    : '0 0 1 1',
+                  preserveAspectRatio: 'none',
+                  style: {
+                    position: 'absolute',
+                    left: annotMapNow ? annotMapNow.painted.left - annotMapNow.boxRect.left : 0,
+                    top: annotMapNow ? annotMapNow.painted.top - annotMapNow.boxRect.top : 0,
+                    width: annotMapNow ? annotMapNow.painted.width : 1,
+                    height: annotMapNow ? annotMapNow.painted.height : 1,
+                    overflow: 'hidden',
+                    zIndex: 2,
+                    display: annotMapNow ? 'block' : 'none',
+                    pointerEvents: annotOn ? 'auto' : 'none',
+                    cursor: annotOn ? (annotTool === 'text' ? 'text' : 'crosshair') : 'default',
+                    touchAction: 'none',
+                    userSelect: 'none',
+                  },
+                  onPointerDown: onAnnotPointerDown,
+                  onPointerMove: onAnnotPointerMove,
+                  onPointerUp: onAnnotPointerUp,
+                  onPointerCancel: onAnnotPointerCancel,
+                  onLostPointerCapture: onAnnotPointerCancel,
+                },
+                  annotVisibleShapes.map(renderAnnotShape),
+                  h('g', { key: 'annot-draft', 'data-utb-annot-state': 'draft', ref: annotDraftRef })),
+                annotText ? h('input', {
+                  key: 'annot-text-input-' + annotText.id,
+                  className: 'utb-annot-text-input',
+                  ref: annotInputRef,
+                  type: 'text',
+                  maxLength: 200,
+                  defaultValue: '',
+                  'aria-label': '标注文字',
+                  autoFocus: true,
+                  style: {
+                    left: annotText.left,
+                    top: annotText.top,
+                    width: 220,
+                    height: Math.max(18, annotText.fontSize * 1.4),
+                    fontSize: annotText.fontSize,
+                    color: annotText.color,
+                    borderColor: annotText.color,
+                  },
+                  onKeyDown: annotTextKey,
+                  onBlur: () => commitAnnotText(),
+                  onCompositionStart: () => { annotComposingRef.current = true; },
+                  onCompositionEnd: () => { annotComposingRef.current = false; },
+                }) : null)
               : h('div', { className: 'utb-empty' },
                 h('strong', null, '正在启动内嵌浏览器'),
                 '首次打开需要启动无头 Chromium，通常一两秒；完成后这里会显示实时画面。'))
@@ -3491,6 +5981,16 @@ window.__ModuleLoader__.load({
             MODE_LABEL[remote.mode === 'agent' ? 'agent' : mode]),
           h('span', { className: 'utb-sep', 'aria-hidden': true }),
           h('span', { className: 'utb-perf', title: `实际显示帧率与端到端显示延迟（测量值）；传输：${transportKind === 'ws' ? 'WebSocket 推送' : 'HTTP 轮询'}` }, `${fps} FPS ${frameMs} ms`),
+          // v2 §11.3：标注同步状态（title + aria-live='polite'），不弹 modal、不写页面 lastError。
+          h('span', {
+            className: 'utb-annot-sync',
+            'data-utb-annot-sync-status': annotSyncState,
+            'data-utb-annot-sync-revision': String(annotSyncRevision),
+            role: 'status',
+            'aria-live': 'polite',
+            title: annotSyncTitle,
+            style: { display: annotSyncText ? 'inline' : 'none' },
+          }, annotSyncText),
           h('span', { className: 'utb-gap' }),
           h('span', { className: 'utb-activity', title: remote.activity ? `运行时：${remote.activity}` : '视图状态' },
             remote.activity || activity)));

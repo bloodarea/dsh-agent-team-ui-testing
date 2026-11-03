@@ -4,7 +4,7 @@
 >
 > 用户目标：X/Y 像 PS 画布——表示“浏览器视口左上角零点”在文档画布上的位置，**可为负数**；继续往负数调，页面内容在视口内向右/下移动，露出空白；反向同理；没有内容的区域不显示内容。
 >
-> 本文是这次变更的权威契约。**已实现并通过进程内验收**（Host viewport 14/14、166/166；隔离 GUI 142/142、5 NOT_RUN；capture-p0 15/15、162/162；T3 56/56、415/415；全部 exit 0），证据见 [canvas-v2-2026-11-02.md](../tests/acceptance/evidence/canvas-v2-2026-11-02.md)。`viewport-control.md` 的“X/Y=页面滚动”仍描述 `x/y`；面板 X/Y 与画布空间以本文为准。**真实 3080 已于 2026-11-02 11:15 重启并加载画布 v2**：Host 画布语义（canvasX/Y、blank 合成、O=0 不重编码、T3 canvas mapping、blank act 零派发、导航复位、页面自主滚动保留 O）已在真实会话实测（[证据](../tests/acceptance/evidence/canvas-realhost-2026-11-02.md)）；**面板交互与需 GUI 认证的路由仍 NOT_RUN**。
+> 本文是这次变更的权威契约。**已实现并通过进程内验收**（Host viewport 14/14、166/166；隔离 GUI 画布轮 142/142、5 NOT_RUN；capture-p0 15/15、162/162；T3 56/56、415/415；全部 exit 0），证据见 [canvas-v2-2026-11-02.md](../tests/acceptance/evidence/canvas-v2-2026-11-02.md)。**标注 v1 轮同一 GUI 套件为 198/198、14 NOT_RUN，v2 起 222/222，v3 起 242/242，v4（2026-11-03 面板交互细节）起 256/256（Host 整包 19/206），见 [annotation-p0d.md](annotation-p0d.md)。** `viewport-control.md` 的“X/Y=页面滚动”仍描述 `x/y`；面板 X/Y 与画布空间以本文为准。**真实 3080 已于 2026-11-02 11:15 重启并加载画布 v2**：Host 画布语义（canvasX/Y、blank 合成、O=0 不重编码、T3 canvas mapping、blank act 零派发、导航复位、页面自主滚动保留 O）已在真实会话实测（[证据](../tests/acceptance/evidence/canvas-realhost-2026-11-02.md)）；**面板交互（画布与标注）与需 GUI 认证的路由仍 NOT_RUN**。
 
 > **P0-D 独立性（2026-11-02 用户裁定）**：混合画布是 P0 的**第四项独立基础设施**，不再挂在 P0-C 下。P0-C 只负责共享视口（`x/y` 真实滚动、宽高、`scale`、`get`/`set`、`expectedRevision` CAS、滚动观测）；P0-D 负责画布取景（`canvasX/canvasY`、`O=C−S`、内容盒与空白、面板棋盘格、拖拽/滚轮缩放、`q→p=q+O` 与 fail-closed、画布空间截图/T3 与 `composite` 证据）。两者共用同一份 Runtime `view` 与 revision，但**各自独立验收**：P0-C 看 `viewport.mjs` 的 H/V1–V10；P0-D 看 `viewport.mjs` 的 V11-canvas/V12-frame/V13-route、GUI `viewport-gui.mjs` 的 V13/V14、`capture-p0.mjs` C15 与 `t3-vision.mjs` C57。P0-D 不改变页面 DOM/CSS/视口/DPR/zoom。
 
@@ -105,7 +105,7 @@ limits.viewport.canvas 同上 + {width/height 仍为旧范围}
 ### 5.2 预览合成
 
 - 视口盒 `W*scale × H*scale` 作为裁剪容器（`overflow:hidden`）。**blank 在面板上是深色棋盘格**（固定屏幕像素格 12–16px、两个深色交替，纯本地显示样式，不随 `scale` 缩放）——2026-11-02 用户实测反馈「白页面 + 白空白看不出边界」后改为棋盘格；它只是可辨识的显示底色，**不是页面像素、不是证据**。
-- **面板显示色 ≠ 证据色**：面板 blank = 深色棋盘格；截图 / T3 的 blank 仍是纯白 `#ffffff`（`capture.canvas.blank`、`mapping.blank` 均为 `"#ffffff"`）——截图要能被像素断言、要被基线比较，不能掺入 UI 花纹。`O=0` 且帧与视口尺寸一致时图像完全覆盖盒子，棋盘格不可见，旧像素不变（V13.0d 像素锁定）。隔离 GUI 套件 `viewport-gui.mjs` **142/142 PASS、5 NOT_RUN、exit 0**（执行者两次）；Lead 复跑 118/118 + 7 NOT_RUN（seed 两条条件检查未触发，非失败）。
+- **面板显示色 ≠ 证据色**：面板 blank = 深色棋盘格；截图 / T3 的 blank 仍是纯白 `#ffffff`（`capture.canvas.blank`、`mapping.blank` 均为 `"#ffffff"`）——截图要能被像素断言、要被基线比较，不能掺入 UI 花纹。`O=0` 且帧与视口尺寸一致时图像完全覆盖盒子，棋盘格不可见，旧像素不变（V13.0d 像素锁定）。隔离 GUI 套件 `viewport-gui.mjs`（画布轮）**142/142 PASS、5 NOT_RUN、exit 0**（执行者两次）；Lead 复跑 118/118 + 7 NOT_RUN（seed 两条条件检查未触发，非失败）；**标注 v1 轮 198/198、v2 起 222/222、v3 起 242/242、v4 起 256/256（12 NOT_RUN）**（见 [annotation-p0d.md](annotation-p0d.md)）。
 - 当前帧内容在 `frame.scrollX/scrollY` 处的页面视口；显示位移 = `-(C - frame.scroll) * displayScale`（`displayScale = paintedWidth / W`，y 同理；用实际绘制矩形）。
 - 使用 `transform: translate(...)` 或等价偏移，**不改页面**；`O=0` 且 `frame.scroll=S` 时位移为 0，视觉与旧版一致。
 - **seed 帧**：静态页面可能没有 live frame；seed 是 `/screenshot` 的合成画布图。seed 必须记录生成时的 canvas (`C`) 与 `S`（或 view revision）；canvas 变化后旧 seed 失效并重新采集（同一页面状态只请求一次，失败保持 fail-closed），否则静态页在 pan 后无法恢复输入。

@@ -5,7 +5,7 @@
 ## 两个位置，别混淆
 
 - **模板**：`reference/skill-template-v1.1/`，一套**编写插件内置 Skill 的参考模板**，不是已启用的 Skill，也不是可运行的插件。入口 `reference/skill-template-v1.1/README_TEMPLATE.md`。该目录**不入库**（已在 `.gitignore`），只存在于本地工作区；从远端克隆的仓库没有它。
-- **已落地实现**：`skills/ui-testing/`（27 个文件）随插件发布，由 `index.js` 的 `ctx.inject(['skills'], …)` 注册为 `ui-testing`。运行时 Agent 通过 `skill` 工具加载正文，`resourceBase` 指向该目录，可再按需读取 `references/` 等资源。
+- **已落地实现**：`skills/ui-testing/`（31 个文件）随插件发布，由 `index.js` 的 `ctx.inject(['skills'], …)` 注册为 `ui-testing`。运行时 Agent 通过 `skill` 工具加载正文，`resourceBase` 指向该目录，可再按需读取 `references/` 等资源。**改 `SKILL.md` 或新增 `references/` 文件属 Host 侧资源变更，需要重启 DSH 才会重新注册**（`check-skill.mjs` 30/30、`check-skill-registry.mjs` 19/19 只证明仓库结构与注册可用，不证明已跑起来的会话看到了新正文）。
 
 模板自带 `knowledge/`、`manifests/` 在落地时被收进 `skills/ui-testing/` 内部（`skills/ui-testing/knowledge/…`、`skills/ui-testing/manifests/…`），这样 `package.json` 只需 `files: ["skills/**"]` 就能整包发布，不用在仓库根再加两个目录。
 
@@ -30,7 +30,7 @@
 
 1. 资源目录由 `index.js` 按 `new URL('./skills/ui-testing/', import.meta.url)` 定位，注册代码从 `SKILL.md` 的 frontmatter 取**单行** `description`（块标量会退回代码内常量），正文去掉 frontmatter 后作为 `content`。
 2. 注册走 `ctx.inject(['skills'], …)`：宿主没有 `skills` 服务或资源缺失时只记日志，不阻断浏览器工具，保证纯工具部署可用。
-3. `package.json` 的 `dsh.profile` 安装方式不变；新增 `files: ["skills/**"]`，`npm pack --dry-run` 可见 27 个 Skill 文件随包发布。
+3. `package.json` 的 `dsh.profile` 安装方式不变；新增 `files: ["skills/**"]`，`npm pack --dry-run` 可见 31 个 Skill 文件随包发布。
 4. 改 `index.js` / `package.json` / 新增 `skills/` 属 Host 变更，**需要重启 DSH** 才生效；`client.js` 仍是热更新。
 
 ## 验收入口

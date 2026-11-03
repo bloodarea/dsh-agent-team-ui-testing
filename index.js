@@ -778,6 +778,409 @@ function sha256Short(value, length = 16) {
   return createHash('sha256').update(String(value)).digest('hex').slice(0, length);
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * P0-D annotations — the human panel's annotation document as the Agent sees it
+ * (docs/annotation-p0d.md §11).
+ *
+ * The Host stores exactly one "last accepted" document per Runtime and exposes it through
+ * `Runtime.state()` (→ `browser_state.annotations`) and the authenticated `ui.annotations`. The
+ * panel writes it over its *only* write surface, `POST /plugins/ui-testing/annotations`; there is
+ * deliberately no 31st tool (the tool surface stays 30).
+ *
+ * Everything below is pure data handling: annotations never touch the page DOM/CSS, never enter a
+ * screenshot or a T3 source, never start Chromium, never take the page lease and never write the
+ * page `lastError`. Human notes are untrusted hints (`source.trusted:false`).
+ *
+ * The limits are soft and deterministic (§11.2), and the client applies the same rule so both
+ * sides converge on one normalized set: keep the newest 128 shapes, downsample every brush to
+ * ≤512 points (first and last point preserved, uniform index mapping), then drop the oldest *whole*
+ * shapes until both the 8192-point and the 65536-byte document budgets hold. A shape dropped as a
+ * whole is counted once in `droppedShapes` — its points are NOT double counted in `droppedPoints`,
+ * which only counts brush points removed by the per-shape downsampling.
+ * ------------------------------------------------------------------------------------------- */
+const ANNOTATION_VERSION = 1;
+const ANNOTATION_SPACE = 'canvas-css-px';
+const ANNOTATION_LIMITS = Object.freeze({
+  maxShapes: 128,
+  maxPointsPerShape: 512,
+  maxPointsPerDocument: 8192,
+  maxTextCodeUnits: 200,
+  maxDocumentBytes: 65536,
+  maxBodyBytes: 262144,
+  maxPanels: 16,
+  staleAfterMs: 30000,
+  strokeWidth: Object.freeze([1, 20]),
+  textFontSize: 20,
+});
+/** Shape geometry may sit anywhere on the canvas: C's lower bound plus the largest viewport. */
+const ANNOTATION_COORD_MIN = -10000000;
+const ANNOTATION_COORD_MAX = 10004096;
+const ANNOTATION_RECT_SIZE_MAX = 4096;
+const ANNOTATION_ELLIPSE_RADIUS_MAX = 2048;
+const ANNOTATION_TYPES = Object.freeze(['circle', 'rect', 'line', 'arrow', 'brush', 'text']);
+const ANNOTATION_SURFACES = Object.freeze(['main', 'sidebar']);
+const ANNOTATION_ID_PATTERN = /^a[1-9][0-9]{0,15}$/u;
+const ANNOTATION_HEX_PATTERN = /^#[0-9a-fA-F]{6}$/u;
+const ANNOTATION_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const ANNOTATION_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+/** Exactly these keys are accepted; anything else is INVALID_ARGUMENT (no silent extras). */
+const ANNOTATION_PUBLISH_FIELDS = Object.freeze([
+  'version', 'panelId', 'surface', 'clientRevision', 'context', 'view', 'shapes', 'truncation', 'release',
+]);
+const ANNOTATION_CONTEXT_FIELDS = Object.freeze([
+  'runtimeId', 'pageGeneration', 'documentEpoch', 'documentKey', 'addressDigest',
+]);
+const ANNOTATION_VIEW_FIELDS = Object.freeze([
+  'canvasX', 'canvasY', 'x', 'y', 'width', 'height', 'scale',
+  'contentWidth', 'contentHeight', 'viewRevision', 'frameEpoch',
+]);
+const ANNOTATION_TRUNCATION_FIELDS = Object.freeze(['droppedShapes', 'droppedPoints', 'shortenedTextCodeUnits']);
+const ANNOTATION_COMMON_FIELDS = Object.freeze(['id', 'type', 'color', 'strokeWidth', 'fill', 'stroke']);
+const ANNOTATION_GEOMETRY_FIELDS = Object.freeze({
+  rect: Object.freeze(['x', 'y', 'width', 'height']),
+  circle: Object.freeze(['cx', 'cy', 'rx', 'ry']),
+  line: Object.freeze(['x1', 'y1', 'x2', 'y2']),
+  arrow: Object.freeze(['x1', 'y1', 'x2', 'y2', 'head']),
+  brush: Object.freeze(['points']),
+  text: Object.freeze(['x', 'y', 'fontSize', 'text']),
+});
+/** JSON.parse keeps `__proto__` as an own key; those keys are refused instead of interpreted. */
+const ANNOTATION_POLLUTION_KEYS = Object.freeze(['__proto__', 'constructor', 'prototype']);
+
+/** Numeric limits advertised by `browser_capabilities.limits.annotations`. */
+function annotationLimits() {
+  return {
+    maxShapes: ANNOTATION_LIMITS.maxShapes,
+    maxPointsPerShape: ANNOTATION_LIMITS.maxPointsPerShape,
+    maxPointsPerDocument: ANNOTATION_LIMITS.maxPointsPerDocument,
+    maxTextCodeUnits: ANNOTATION_LIMITS.maxTextCodeUnits,
+    maxDocumentBytes: ANNOTATION_LIMITS.maxDocumentBytes,
+    maxBodyBytes: ANNOTATION_LIMITS.maxBodyBytes,
+    maxPanels: ANNOTATION_LIMITS.maxPanels,
+    staleAfterMs: ANNOTATION_LIMITS.staleAfterMs,
+  };
+}
+
+/** One refusal vocabulary for the annotation write surface: field/reason/limits only, no echo. */
+function annotationInvalid(field, reason) {
+  return new BrowserError('INVALID_ARGUMENT', `标注发布不合法：${field} (${reason})`, {
+    field, reason, limits: annotationLimits(),
+  });
+}
+
+/** The documentKey/代次 no longer name the current document: 409, zero writes (§11.2). */
+function annotationStale() {
+  return new BrowserError('INVALID_ARGUMENT', '标注上下文已过期：请读取最新 ui.annotationContext 后重新发布', {
+    field: 'context', reason: 'annotation-context-stale', limits: annotationLimits(),
+  });
+}
+
+function annotationNumber(value, field, {
+  min = -Infinity, max = Infinity, integer = false, exclusiveMin = false, nullable = false,
+} = {}) {
+  if (value === null || value === undefined) {
+    if (nullable) return null;
+    throw annotationInvalid(field, 'not-a-number');
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw annotationInvalid(field, 'not-finite');
+  const number = value === 0 ? 0 : value; // `-0` normalizes to 0 (§11.2)
+  if (integer && !Number.isSafeInteger(number)) throw annotationInvalid(field, 'not-an-integer');
+  if (exclusiveMin ? number <= min : number < min) throw annotationInvalid(field, 'out-of-range');
+  if (number > max) throw annotationInvalid(field, 'out-of-range');
+  return number;
+}
+
+function annotationBoolean(value, field) {
+  if (typeof value !== 'boolean') throw annotationInvalid(field, 'not-a-boolean');
+  return value;
+}
+
+function annotationString(value, field, maxLength) {
+  if (typeof value !== 'string' || !value) throw annotationInvalid(field, 'not-a-string');
+  if (value.length > maxLength) throw annotationInvalid(field, 'too-long');
+  return value;
+}
+
+/** Strict plain-object check: prototype pollution and class instances are refused up front. */
+function annotationObject(value, field) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw annotationInvalid(field, 'not-an-object');
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw annotationInvalid(field, 'not-a-plain-object');
+  for (const key of Object.keys(value)) {
+    if (ANNOTATION_POLLUTION_KEYS.includes(key)) throw annotationInvalid(field, 'prototype-pollution');
+  }
+  return value;
+}
+
+function annotationRejectUnknown(value, allowed, field) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) throw annotationInvalid(`${field}.${key}`, 'unknown-field');
+  }
+}
+
+/** Trim to `budget` UTF-16 code units without ever splitting a surrogate pair. */
+function annotationTrimText(text, budget) {
+  if (text.length <= budget) return { text, removed: 0 };
+  let cut = budget;
+  const last = text.charCodeAt(cut - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+  return { text: text.slice(0, cut), removed: text.length - cut };
+}
+
+/** Uniform downsample that always keeps the first and the last point (both sides compute this). */
+function annotationDownsample(points, maxPoints) {
+  const count = points.length;
+  if (count <= maxPoints) return { points, removed: 0 };
+  const kept = [];
+  for (let index = 0; index < maxPoints; index += 1) {
+    kept.push(points[Math.round((index * (count - 1)) / (maxPoints - 1))]);
+  }
+  return { points: kept, removed: count - maxPoints };
+}
+
+/** The Host recomputes the arrow head from the endpoints and the stroke width (§11.2). */
+function annotationArrowHead(shape) {
+  const length = Math.hypot(shape.x2 - shape.x1, shape.y2 - shape.y1);
+  return {
+    length: Math.min(3 * shape.strokeWidth, length),
+    width: Math.min(2 * shape.strokeWidth, length),
+  };
+}
+
+function normalizeAnnotationShape(raw, field, seenIds) {
+  const shape = annotationObject(raw, field);
+  const type = shape.type;
+  if (typeof type !== 'string' || !ANNOTATION_TYPES.includes(type)) throw annotationInvalid(`${field}.type`, 'invalid-enum');
+  annotationRejectUnknown(shape, [...ANNOTATION_COMMON_FIELDS, ...ANNOTATION_GEOMETRY_FIELDS[type]], field);
+  if (typeof shape.id !== 'string' || !ANNOTATION_ID_PATTERN.test(shape.id)) throw annotationInvalid(`${field}.id`, 'invalid-id');
+  if (seenIds.has(shape.id)) throw annotationInvalid(`${field}.id`, 'duplicate-id');
+  seenIds.add(shape.id);
+  if (typeof shape.color !== 'string' || !ANNOTATION_HEX_PATTERN.test(shape.color)) throw annotationInvalid(`${field}.color`, 'invalid-color');
+  const strokeWidth = annotationNumber(shape.strokeWidth, `${field}.strokeWidth`, {
+    min: ANNOTATION_LIMITS.strokeWidth[0], max: ANNOTATION_LIMITS.strokeWidth[1], integer: true,
+  });
+  const fill = annotationBoolean(shape.fill, `${field}.fill`);
+  const stroke = annotationBoolean(shape.stroke, `${field}.stroke`);
+  if (type === 'line' || type === 'arrow' || type === 'brush') {
+    if (fill !== false || stroke !== true) throw annotationInvalid(`${field}.fill`, 'fill-stroke-fixed');
+  } else if (type === 'text') {
+    if (fill !== true || stroke !== false) throw annotationInvalid(`${field}.fill`, 'fill-stroke-fixed');
+  } else if (!fill && !stroke) {
+    throw annotationInvalid(`${field}.fill`, 'fill-stroke-empty');
+  }
+  const coord = (value, name) => annotationNumber(value, `${field}.${name}`, {
+    min: ANNOTATION_COORD_MIN, max: ANNOTATION_COORD_MAX,
+  });
+  const normalized = {
+    id: shape.id,
+    type,
+    // The contract fixes lowercase six-digit hex; an upper-case client value is normalized once.
+    color: shape.color.toLowerCase(),
+    strokeWidth,
+    fill,
+    stroke,
+  };
+  let shortenedText = 0;
+  if (type === 'rect') {
+    normalized.x = coord(shape.x, 'x');
+    normalized.y = coord(shape.y, 'y');
+    normalized.width = annotationNumber(shape.width, `${field}.width`, { min: 0, max: ANNOTATION_RECT_SIZE_MAX, exclusiveMin: true });
+    normalized.height = annotationNumber(shape.height, `${field}.height`, { min: 0, max: ANNOTATION_RECT_SIZE_MAX, exclusiveMin: true });
+  } else if (type === 'circle') {
+    normalized.cx = coord(shape.cx, 'cx');
+    normalized.cy = coord(shape.cy, 'cy');
+    normalized.rx = annotationNumber(shape.rx, `${field}.rx`, { min: 0, max: ANNOTATION_ELLIPSE_RADIUS_MAX, exclusiveMin: true });
+    normalized.ry = annotationNumber(shape.ry, `${field}.ry`, { min: 0, max: ANNOTATION_ELLIPSE_RADIUS_MAX, exclusiveMin: true });
+  } else if (type === 'line' || type === 'arrow') {
+    normalized.x1 = coord(shape.x1, 'x1');
+    normalized.y1 = coord(shape.y1, 'y1');
+    normalized.x2 = coord(shape.x2, 'x2');
+    normalized.y2 = coord(shape.y2, 'y2');
+    if (normalized.x1 === normalized.x2 && normalized.y1 === normalized.y2) throw annotationInvalid(`${field}.x2`, 'degenerate-endpoints');
+    if (type === 'arrow') {
+      if (shape.head !== undefined && shape.head !== null) annotationObject(shape.head, `${field}.head`);
+      // Never trust a client head: it is derived from the endpoints + stroke width only.
+      normalized.head = annotationArrowHead(normalized);
+    }
+  } else if (type === 'brush') {
+    if (!Array.isArray(shape.points) || shape.points.length < 2) throw annotationInvalid(`${field}.points`, 'too-few-points');
+    const points = [];
+    for (let index = 0; index < shape.points.length; index += 1) {
+      const pair = shape.points[index];
+      if (!Array.isArray(pair) || pair.length !== 2) throw annotationInvalid(`${field}.points[${index}]`, 'invalid-point');
+      points.push([
+        coord(pair[0], `points[${index}][0]`),
+        coord(pair[1], `points[${index}][1]`),
+      ]);
+    }
+    normalized.points = points;
+  } else {
+    normalized.x = coord(shape.x, 'x');
+    normalized.y = coord(shape.y, 'y');
+    const fontSize = annotationNumber(shape.fontSize, `${field}.fontSize`, { min: 1, max: 4096, integer: true });
+    if (fontSize !== ANNOTATION_LIMITS.textFontSize) throw annotationInvalid(`${field}.fontSize`, 'font-size-fixed');
+    normalized.fontSize = fontSize;
+    if (typeof shape.text !== 'string') throw annotationInvalid(`${field}.text`, 'not-a-string');
+    const trimmed = annotationTrimText(shape.text, ANNOTATION_LIMITS.maxTextCodeUnits);
+    normalized.text = trimmed.text;
+    shortenedText = trimmed.removed;
+  }
+  return { shape: normalized, shortenedText };
+}
+
+function normalizeAnnotationView(raw) {
+  const view = annotationObject(raw, 'view');
+  annotationRejectUnknown(view, ANNOTATION_VIEW_FIELDS, 'view');
+  return {
+    canvasX: annotationNumber(view.canvasX, 'view.canvasX', { min: -10000000, max: 10000000 }),
+    canvasY: annotationNumber(view.canvasY, 'view.canvasY', { min: -10000000, max: 10000000 }),
+    x: annotationNumber(view.x, 'view.x', { min: -10000000, max: 10000000 }),
+    y: annotationNumber(view.y, 'view.y', { min: -10000000, max: 10000000 }),
+    width: annotationNumber(view.width, 'view.width', { min: 200, max: 4096, integer: true }),
+    height: annotationNumber(view.height, 'view.height', { min: 200, max: 4096, integer: true }),
+    scale: annotationNumber(view.scale, 'view.scale', { min: 0.1, max: 2 }),
+    contentWidth: annotationNumber(view.contentWidth, 'view.contentWidth', { min: 0, max: Number.MAX_SAFE_INTEGER, nullable: true }),
+    contentHeight: annotationNumber(view.contentHeight, 'view.contentHeight', { min: 0, max: Number.MAX_SAFE_INTEGER, nullable: true }),
+    viewRevision: annotationNumber(view.viewRevision, 'view.viewRevision', { min: 0, max: Number.MAX_SAFE_INTEGER, integer: true }),
+    frameEpoch: annotationNumber(view.frameEpoch, 'view.frameEpoch', { min: 0, max: Number.MAX_SAFE_INTEGER, integer: true, nullable: true }),
+  };
+}
+
+function normalizeAnnotationTruncation(raw) {
+  const zeros = { droppedShapes: 0, droppedPoints: 0, shortenedTextCodeUnits: 0 };
+  if (raw === undefined || raw === null) return zeros;
+  const truncation = annotationObject(raw, 'truncation');
+  annotationRejectUnknown(truncation, ANNOTATION_TRUNCATION_FIELDS, 'truncation');
+  for (const key of ANNOTATION_TRUNCATION_FIELDS) {
+    zeros[key] = annotationNumber(truncation[key], `truncation.${key}`, {
+      min: 0, max: Number.MAX_SAFE_INTEGER, integer: true,
+    });
+  }
+  return zeros;
+}
+
+/** Strict pre-flight of one publish body; only whitelisted, typed, in-range values survive. */
+function normalizeAnnotationPublish(body) {
+  const publish = annotationObject(body, 'annotations');
+  annotationRejectUnknown(publish, ANNOTATION_PUBLISH_FIELDS, 'annotations');
+  if (publish.version !== ANNOTATION_VERSION) throw annotationInvalid('version', 'unsupported-version');
+  const panelId = annotationString(publish.panelId, 'panelId', 64).toLowerCase();
+  if (!ANNOTATION_UUID_PATTERN.test(panelId)) throw annotationInvalid('panelId', 'invalid-panel-id');
+  if (typeof publish.surface !== 'string' || !ANNOTATION_SURFACES.includes(publish.surface)) throw annotationInvalid('surface', 'invalid-enum');
+  const clientRevision = annotationNumber(publish.clientRevision, 'clientRevision', {
+    min: 1, max: Number.MAX_SAFE_INTEGER, integer: true,
+  });
+  const release = publish.release === undefined || publish.release === null
+    ? false
+    : annotationBoolean(publish.release, 'release');
+  const context = annotationObject(publish.context, 'context');
+  annotationRejectUnknown(context, ANNOTATION_CONTEXT_FIELDS, 'context');
+  const normalizedContext = {
+    runtimeId: annotationString(context.runtimeId, 'context.runtimeId', 64),
+    pageGeneration: annotationNumber(context.pageGeneration, 'context.pageGeneration', {
+      min: 0, max: Number.MAX_SAFE_INTEGER, integer: true, nullable: true,
+    }),
+    documentEpoch: annotationNumber(context.documentEpoch, 'context.documentEpoch', {
+      min: 0, max: Number.MAX_SAFE_INTEGER, integer: true, nullable: true,
+    }),
+    documentKey: annotationString(context.documentKey, 'context.documentKey', 128),
+    addressDigest: annotationString(context.addressDigest, 'context.addressDigest', 64),
+  };
+  if (!ANNOTATION_DIGEST_PATTERN.test(normalizedContext.addressDigest)) throw annotationInvalid('context.addressDigest', 'invalid-digest');
+  const view = normalizeAnnotationView(publish.view);
+  const rawShapes = publish.shapes === undefined || publish.shapes === null ? [] : publish.shapes;
+  if (!Array.isArray(rawShapes)) throw annotationInvalid('shapes', 'not-an-array');
+  if (release && rawShapes.length > 0) throw annotationInvalid('shapes', 'release-requires-empty-shapes');
+  const seenIds = new Set();
+  const shapes = [];
+  let shortenedText = 0;
+  for (let index = 0; index < rawShapes.length; index += 1) {
+    const result = normalizeAnnotationShape(rawShapes[index], `shapes[${index}]`, seenIds);
+    shapes.push(result.shape);
+    shortenedText += result.shortenedText;
+  }
+  return {
+    panelId,
+    surface: publish.surface,
+    clientRevision,
+    release,
+    context: normalizedContext,
+    view,
+    shapes,
+    truncation: normalizeAnnotationTruncation(publish.truncation),
+    shortenedText,
+  };
+}
+
+/** The soft limits, applied to an already normalized shape list (docs/annotation-p0d.md §11.2). */
+function applyAnnotationLimits(shapes, clientTruncation, shortenedText) {
+  const truncation = {
+    droppedShapes: clientTruncation.droppedShapes,
+    droppedPoints: clientTruncation.droppedPoints,
+    shortenedTextCodeUnits: clientTruncation.shortenedTextCodeUnits + (shortenedText || 0),
+  };
+  let list = shapes;
+  if (list.length > ANNOTATION_LIMITS.maxShapes) {
+    truncation.droppedShapes += list.length - ANNOTATION_LIMITS.maxShapes;
+    list = list.slice(list.length - ANNOTATION_LIMITS.maxShapes);
+  }
+  list = list.map((shape) => {
+    if (shape.type !== 'brush') return shape;
+    const downsampled = annotationDownsample(shape.points, ANNOTATION_LIMITS.maxPointsPerShape);
+    truncation.droppedPoints += downsampled.removed;
+    return downsampled.removed > 0 ? { ...shape, points: downsampled.points } : shape;
+  });
+  const totalPoints = () => list.reduce((sum, shape) => sum + (shape.type === 'brush' ? shape.points.length : 0), 0);
+  while (list.length > 0 && totalPoints() > ANNOTATION_LIMITS.maxPointsPerDocument) {
+    list = list.slice(1);
+    truncation.droppedShapes += 1;
+  }
+  return { shapes: list, truncation };
+}
+
+/** Content digest of one panel revision: the same revision must carry the same content. */
+function annotationDigest(request) {
+  return createHash('sha256').update(JSON.stringify({
+    surface: request.surface,
+    release: request.release,
+    view: request.view,
+    shapes: request.shapes,
+    truncation: request.truncation,
+  })).digest('hex');
+}
+
+/**
+ * Bounded body read for the annotation route only (docs/annotation-p0d.md §11.2): the hard limit
+ * is 262144 bytes and every other route keeps its historical 8MiB `readJson`.
+ */
+function readAnnotationBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    const finish = (settle, value) => { if (settled) return; settled = true; settle(value); };
+    req.on('data', (chunk) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        finish(reject, annotationInvalid('body', 'annotation-body-too-large'));
+        try { req.destroy?.(); } catch { /* already gone */ }
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      const text = Buffer.concat(chunks).toString('utf8');
+      if (!text) { finish(reject, annotationInvalid('body', 'annotation-body-empty')); return; }
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { finish(reject, annotationInvalid('body', 'annotation-body-not-json')); return; }
+      finish(resolve, parsed);
+    });
+    req.on('error', (error) => finish(reject, asBrowserError(error)));
+  });
+}
+
 /**
  * One headless Chromium + temporary profile for the whole plugin, with N independent page targets.
  *
@@ -2166,6 +2569,21 @@ export class Runtime {
     this.viewObserveAt = 0;
     /** Last GUI originId that wrote the view (Agent writes keep it null); diagnostics only. */
     this.viewOriginId = null;
+    // P0-D annotations (docs/annotation-p0d.md §11.2): the last *accepted* human-panel document of
+    // this Runtime. `documentKey` is the opaque navigation token the panel must echo back; it is
+    // rotated (and the document dropped) on a main-document commit, main-context loss, same-document
+    // URL/hash/history change, close and CDP disconnect. `panels` is the 16-slot per-key watermark
+    // used for clientRevision de-duplication. `salt` keeps `addressDigest` un-reversible.
+    this.annot = {
+      document: null,
+      revision: 0,
+      documentKey: null,
+      panels: new Map(),
+      lastSeenAt: 0,
+      updatedAt: null,
+      lastRotateReason: null,
+      salt: randomUUID().replace(/-/gu, ''),
+    };
     this.activity = '空闲';
     this.agentUntil = 0;
     this.humanUntil = 0;
@@ -2684,6 +3102,10 @@ export class Runtime {
         this.metadataGeneration += 1;
         this.netMark({ kind: 'state', text: 'history', url: this.url });
         this.refreshMetadataSoon();
+        // A same-document URL/hash/history change is still a different address for the panel's
+        // annotations (docs/annotation-p0d.md §11.2): rotate the token and drop the document. Refs
+        // deliberately keep their epoch — same-document nodes are still the same objects.
+        this.#annotationRotate('history');
       }
       return;
     }
@@ -4093,7 +4515,7 @@ export class Runtime {
     this.lastErrorTarget = null;
   }
 
-  state() {
+  state(annotations = null) {
     return {
       mode: this.mode(),
       activity: redactText(this.activity),
@@ -4108,6 +4530,11 @@ export class Runtime {
       // canvas-space projection (docs/canvas-viewport.md §2).
       view: this.viewProjection(),
       canvas: this.canvasProjection(),
+      // Human panel annotations (docs/annotation-p0d.md §11.2): untrusted problem hints the Agent
+      // reads through `browser_state`. Pure JSON, no page text, no absolute path; reading it never
+      // starts a page and never takes the lease. `uiState()` passes the projection it already
+      // computed so the hot /state /frame path builds this document exactly once per request.
+      annotations: annotations || this.annotationsDocument(),
       seq: this.frames.seq,
       running: Boolean(this.cdp && !this.cdp.closed),
       error: redactText(this.lastError),
@@ -4129,8 +4556,9 @@ export class Runtime {
   uiState() {
     this.uiRevision += 1;
     const running = Boolean(this.cdp && !this.cdp.closed);
+    const annotations = this.annotationsDocument();
     return {
-      ...this.state(),
+      ...this.state(annotations),
       ui: {
         version: 1,
         runtimeId: this.runtimeId,
@@ -4143,10 +4571,222 @@ export class Runtime {
         view: this.viewProjection(),
         // Canvas-space projection (docs/canvas-viewport.md §2): C/O/content/blank for the panel.
         canvas: this.canvasProjection(),
+        // P0-D annotations (docs/annotation-p0d.md §11.2): the document the panel publishes to and
+        // the navigation token it must echo back. Additive only.
+        annotations,
+        annotationContext: this.annotationContext(),
         viewMeta: this.viewMeta(),
         observed: this.observedProjection(),
       },
     };
+  }
+
+  /* -------------------------------------------------------------------------------------------
+   * P0-D annotations — Agent-visible human notes (docs/annotation-p0d.md §11.2/§11.3).
+   *
+   * One "last accepted" document per Runtime, one write surface (`POST /annotations`, scoped and
+   * peer-authenticated only), one navigation token. Nothing here starts a page, takes the lease or
+   * writes `lastError`: a refused publish must cost the page nothing.
+   * ----------------------------------------------------------------------------------------- */
+
+  /** The navigation token the panel must echo back; created lazily, rotated on document changes. */
+  #annotationKey() {
+    if (!this.annot.documentKey) this.annot.documentKey = randomUUID();
+    return this.annot.documentKey;
+  }
+
+  /**
+   * Salted 64-hex digest of the current address. The real address (with its token/path) never
+   * enters the document, an error body or a log line — only this one-way digest does.
+   */
+  #annotationAddressDigest() {
+    return createHash('sha256')
+      .update(this.annot.salt)
+      .update('\u0000')
+      .update(String(this.url || ''))
+      .digest('hex');
+  }
+
+  /** Public context for `ui.annotationContext` (the same source the stored document cites). */
+  annotationContext() {
+    return {
+      runtimeId: this.runtimeId,
+      pageGeneration: this.pageGeneration(),
+      documentEpoch: this.documentEpoch(),
+      documentKey: this.#annotationKey(),
+      addressDigest: this.#annotationAddressDigest(),
+    };
+  }
+
+  /** Rotate the navigation token and drop everything stored under the old one (§11.2). */
+  #annotationRotate(reason) {
+    const hadDocument = this.annot.document !== null;
+    this.annot.documentKey = randomUUID();
+    this.annot.document = null;
+    this.annot.panels.clear();
+    this.annot.lastSeenAt = 0;
+    this.annot.updatedAt = null;
+    this.annot.lastRotateReason = reason;
+    if (hadDocument) this.annot.revision += 1;
+  }
+
+  /** A dead page can never validate a stored document: drop it the first time we notice. */
+  #annotationPrune() {
+    if (this.annot.document === null) return;
+    if (!this.running) { this.#annotationRotate('not-running'); return; }
+    if (this.annot.document.context.documentKey !== this.annot.documentKey) this.#annotationRotate('context-changed');
+  }
+
+  /** `stale`/`staleReason` are computed at read time (§11.3): never trusted from a snapshot. */
+  #annotationStale(document) {
+    if (!this.running) return { stale: true, staleReason: 'not-running' };
+    if (!document) return { stale: false, staleReason: null };
+    const context = document.context || {};
+    if (context.documentKey !== this.annot.documentKey
+      || context.pageGeneration !== this.pageGeneration()
+      || context.documentEpoch !== this.documentEpoch()) {
+      return { stale: true, staleReason: 'context-changed' };
+    }
+    const seenAt = Math.max(this.annot.lastSeenAt || 0, document.updatedAt || 0);
+    if (Date.now() - seenAt > ANNOTATION_LIMITS.staleAfterMs) return { stale: true, staleReason: 'panel-unseen' };
+    return { stale: false, staleReason: null };
+  }
+
+  /** Safe projection: `browser_state.annotations` and `ui.annotations` are the same JSON. */
+  annotationsDocument() {
+    this.#annotationPrune();
+    const document = this.annot.document;
+    const { stale, staleReason } = this.#annotationStale(document);
+    return {
+      version: ANNOTATION_VERSION,
+      space: ANNOTATION_SPACE,
+      revision: this.annot.revision,
+      updatedAt: document ? document.updatedAt : null,
+      source: document ? JSON.parse(JSON.stringify(document.source)) : null,
+      context: document ? JSON.parse(JSON.stringify(document.context)) : null,
+      view: document ? JSON.parse(JSON.stringify(document.view)) : null,
+      shapes: document ? JSON.parse(JSON.stringify(document.shapes)) : [],
+      truncated: document ? document.truncated === true : false,
+      truncation: document
+        ? { ...document.truncation }
+        : { droppedShapes: 0, droppedPoints: 0, shortenedTextCodeUnits: 0 },
+      stale,
+      staleReason,
+    };
+  }
+
+  /**
+   * `/metrics` heartbeat (docs/annotation-p0d.md §11.3): only a heartbeat naming the current source
+   * and the accepted clientRevision (and, when given, the current documentKey) refreshes
+   * `lastSeenAt`. It never touches shapes, the Host revision, `lastError`, the view or who may write.
+   */
+  noteAnnotationHeartbeat(input) {
+    const panelId = input && typeof input.annotationPanelId === 'string' ? input.annotationPanelId.toLowerCase() : null;
+    if (!panelId) return false;
+    const document = this.annot.document;
+    if (!document || !document.source) return false;
+    if (document.source.panelId !== panelId) return false;
+    const clientRevision = input.annotationClientRevision;
+    if (clientRevision !== undefined && clientRevision !== null) {
+      if (!Number.isSafeInteger(clientRevision) || clientRevision !== document.source.clientRevision) return false;
+    }
+    const documentKey = input.documentKey;
+    if (documentKey !== undefined && documentKey !== null) {
+      if (typeof documentKey !== 'string' || documentKey !== this.annot.documentKey) return false;
+    }
+    this.annot.lastSeenAt = Date.now();
+    return true;
+  }
+
+  /** The stored document as it will be projected (used for the exact byte budget as well). */
+  #annotationBuild(request, shapes, truncation, updatedAt) {
+    return {
+      version: ANNOTATION_VERSION,
+      space: ANNOTATION_SPACE,
+      revision: this.annot.revision + 1,
+      updatedAt,
+      source: {
+        kind: 'human-panel',
+        panelId: request.panelId,
+        surface: request.surface,
+        clientRevision: request.clientRevision,
+        trusted: false,
+      },
+      context: this.annotationContext(),
+      view: { ...request.view },
+      shapes: shapes.map((shape) => JSON.parse(JSON.stringify(shape))),
+      truncated: truncation.droppedShapes > 0 || truncation.droppedPoints > 0 || truncation.shortenedTextCodeUnits > 0,
+      truncation: { ...truncation },
+    };
+  }
+
+  /**
+   * Accept one publish (already structurally validated by `normalizeAnnotationPublish`).
+   *
+   * Order matters: a rejected request must leave the document, the revision, the panel watermark
+   * and `lastError` exactly as they were.
+   */
+  acceptAnnotations(request) {
+    if (!this.running) throw annotationInvalid('runtime', 'annotation-runtime-not-running');
+    if (request.context.runtimeId !== this.runtimeId) {
+      throw new BrowserError('SCOPE_INVALID', '标注发布指向了另一个运行时', {
+        field: 'context.runtimeId', reason: 'annotation-runtime-mismatch', limits: annotationLimits(),
+      });
+    }
+    const documentKey = this.#annotationKey();
+    const generation = this.pageGeneration();
+    const epoch = this.documentEpoch();
+    if (request.context.documentKey !== documentKey
+      || request.context.pageGeneration !== generation
+      || request.context.documentEpoch !== epoch) {
+      throw annotationStale();
+    }
+    const ack = (accepted, ignored, clientRevision) => ({
+      accepted, ignored, clientRevision, annotations: this.annotationsDocument(),
+    });
+    const panel = this.annot.panels.get(request.panelId) || null;
+    const digest = annotationDigest(request);
+    if (panel) {
+      // De-duplicate per panel: a late (lower) revision is acknowledged but never overwrites.
+      if (request.clientRevision < panel.clientRevision) return ack(false, true, panel.clientRevision);
+      if (request.clientRevision === panel.clientRevision) {
+        if (panel.digest !== digest) throw annotationInvalid('clientRevision', 'annotation-client-revision-conflict');
+        return ack(true, true, request.clientRevision);
+      }
+    } else if (this.annot.panels.size >= ANNOTATION_LIMITS.maxPanels) {
+      throw annotationInvalid('panelId', 'annotation-source-limit');
+    }
+    const current = this.annot.document;
+    if (request.release && current && current.source && current.source.panelId !== request.panelId) {
+      // A release may only clear the document its own panel published — never another panel's notes.
+      return ack(false, true, request.clientRevision);
+    }
+    let shapes;
+    let truncation;
+    if (request.release) {
+      shapes = [];
+      truncation = { droppedShapes: 0, droppedPoints: 0, shortenedTextCodeUnits: 0 };
+    } else {
+      const limited = applyAnnotationLimits(request.shapes, request.truncation, request.shortenedText);
+      shapes = limited.shapes;
+      truncation = limited.truncation;
+    }
+    const updatedAt = Date.now();
+    let document = this.#annotationBuild(request, shapes, truncation, updatedAt);
+    // Byte budget: drop the oldest whole shapes until the serialized document fits (never a
+    // half-serialized shape, never a truncated coordinate object).
+    while (Buffer.byteLength(JSON.stringify(document), 'utf8') > ANNOTATION_LIMITS.maxDocumentBytes && shapes.length > 0) {
+      shapes = shapes.slice(1);
+      truncation = { ...truncation, droppedShapes: truncation.droppedShapes + 1 };
+      document = this.#annotationBuild(request, shapes, truncation, updatedAt);
+    }
+    this.annot.revision += 1;
+    document.revision = this.annot.revision;
+    this.annot.document = document;
+    this.annot.updatedAt = updatedAt;
+    this.annot.lastSeenAt = updatedAt;
+    this.annot.panels.set(request.panelId, { clientRevision: request.clientRevision, digest });
+    return ack(true, false, request.clientRevision);
   }
 
   /** One HTTP-poll response in the historical shape plus frame metadata and epoch. */
@@ -5496,6 +6136,10 @@ export class Runtime {
   #t2BumpDocumentEpoch() {
     this.t2.documentEpoch += 1;
     this.#t2ClearRefs();
+    // The panel's annotations belong to the document that was just replaced (docs/annotation-p0d.md
+    // §11.2): rotate the navigation token and drop the stored document with it, so a late publish
+    // can only be refused as `annotation-context-stale`.
+    this.#annotationRotate('document');
   }
 
   #t2ReleaseGroup(objectGroup) {
@@ -8297,11 +8941,47 @@ export function apply(ctx) {
         sendJson(res, 405, { ok: false, ...error.payload(), error: error.message });
         return;
       }
+      if (action === '/annotations') {
+        // P0-D annotations (docs/annotation-p0d.md §11.2/§11.3): the ONLY write surface of the
+        // human panel's annotation document — not a tool (the surface stays 30 tools).
+        //   * scoped only: a legacy/unscoped request would have to guess a workspace, so it is
+        //     refused instead of being mapped to `legacy:default`;
+        //   * its own 262144-byte bounded body read (the other routes keep the 8MiB default);
+        //   * no page queue, no lease, no ensure, no `lastError` — a refused publish is free.
+        if (!scoped) {
+          const error = new BrowserError('SCOPE_FORBIDDEN', '标注发布只接受 scopeVersion=1 且通过 browserPeer 鉴权的请求');
+          sendJson(res, 403, { ok: false, ...error.payload(), error: error.message });
+          return;
+        }
+        let ack;
+        try {
+          const request = normalizeAnnotationPublish(await readAnnotationBody(req, ANNOTATION_LIMITS.maxBodyBytes));
+          const { entry } = await select();
+          registry.touch(entry);
+          ack = entry.runtime.acceptAnnotations(request);
+        } catch (error) {
+          const classified = asBrowserError(error);
+          const reason = classified.details && typeof classified.details.reason === 'string' ? classified.details.reason : null;
+          const mapped = scopeHttpStatus(classified.code);
+          // 409 = the panel published against a documentKey/代次 that has already been rotated away
+          // (zero writes); 400 = everything the Host refused to interpret. Never 5xx, never a
+          // page error: the annotation surface must not pollute the page's `lastError`.
+          const status = reason === 'annotation-context-stale' ? 409 : (mapped === 500 ? 400 : mapped);
+          sendJson(res, status, { ok: false, ...classified.payload(), error: classified.message });
+          return;
+        }
+        sendJson(res, 200, { ok: true, ...ack });
+        return;
+      }
       const body = await readJson(req);
       if (action === '/metrics') {
         const { entry } = await select();
         selected = entry;
         entry.runtime.recordClientMetrics(body);
+        // Optional annotation heartbeat (docs/annotation-p0d.md §11.3): only a heartbeat naming the
+        // current source + accepted clientRevision (and, when given, the current documentKey)
+        // refreshes lastSeenAt. It never rewrites shapes, the Host revision or lastError.
+        entry.runtime.noteAnnotationHeartbeat(body);
         // Metrics is the panel's viewer heartbeat: a hidden/closed panel stops renewing and its
         // page becomes idle-collectable even if a leaked WS socket never sent a Close frame.
         entry.runtime.touchViewer();
@@ -13024,6 +13704,40 @@ export function apply(ctx) {
             }
             : null,
         },
+        // P0-D annotations (docs/annotation-p0d.md §11.1). Declared, never probed: reading this
+        // starts nothing. This is NOT a tool — the Agent reads the document through
+        // `browser_state.annotations`, and only the authenticated scoped HTTP surface writes it, so
+        // the registered tool surface stays at 30.
+        annotations: {
+          version: ANNOTATION_VERSION,
+          space: ANNOTATION_SPACE,
+          readTool: 'browser_state',
+          readPath: 'annotations',
+          writeSurface: 'authenticated-scoped-http',
+          writeRoute: 'POST /plugins/ui-testing/annotations',
+          source: 'human-panel',
+          trusted: false,
+          screenshotOverlay: false,
+          coordinateSpace: 'canvas-css-px',
+          // d = a shape's canvas point; q = d − C, O = C − S, page-viewport p = q + O = d − S. The
+          // published `view` is the panel's accepted snapshot, not a live truth: read the current S
+          // before dispatching, and never dispatch when d is outside the content box or p is outside
+          // the current viewport. scale and the host DPR never enter p.
+          coordinateHint: 'd 为画布 CSS px；q=d-C、O=C-S、页面视口 p=q+O=d-S；派发前必须读取当前 S 再换算，旧快照不是当前命中；d 在内容盒外或 p 在当前视口外时不能派发；scale 与宿主 DPR 不进入 p',
+          reset: 'documentKey 在主文档提交、主上下文清除、同文档主框架 URL/hash/history 变化、close 与 CDP 断连时轮换并清空标注',
+          staleAfterMs: ANNOTATION_LIMITS.staleAfterMs,
+          limits: annotationLimits(),
+          observed: (() => {
+            const document = runtime.annotationsDocument();
+            return {
+              revision: document.revision,
+              updatedAt: document.updatedAt,
+              shapeCount: document.shapes.length,
+              stale: document.stale,
+              staleReason: document.staleReason,
+            };
+          })(),
+        },
         // Web P0 network (docs/network-p0.md §8.8). Declared, never probed.
         network: (() => {
           const caps = network.networkCapabilities(runtime.net, { control: runtime.netCtl, subTargets: NETWORK_SUBTARGETS });
@@ -13057,6 +13771,9 @@ export function apply(ctx) {
             deviceScaleFactor: 1,
             pageZoomChanged: false,
           },
+          // P0-D annotations (docs/annotation-p0d.md §11.2): the soft limits the Host enforces and
+          // the client applies to the same normalized set.
+          annotations: annotationLimits(),
           networkEntries: NETWORK_LIMIT,
           network: {
         ...network.limitsView(),

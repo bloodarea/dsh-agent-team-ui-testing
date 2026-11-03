@@ -32,7 +32,7 @@
 
 ## 共享视口更新（第 9 轮，2026-11-01）
 
-**Agent 视口控制已实现（verified，覆盖路径）**：新增第 10 个 T1 工具 `browser_viewport`（能力 `web.t1.viewport`，工具面 29 → 30），契约见 [viewport-control.md](viewport-control.md)。`get` 是只读缓存诊断（不启动浏览器/不发 CDP/不占租约/stale 明示），`set` 是页面操作（宽高才发 metrics override，scale-only 不改页面几何）；`x/y` 是文档 CSS 滚动位置实测回读；**P0-D 混合画布另立一项基础设施**：`canvasX/canvasY`（视口原点，±1e7，可为负）由 P0-D 提供（[canvas-viewport.md](canvas-viewport.md)），面板 X/Y 绑定画布原点，`O=C-S` 时空白合成；`scale` 0.1–2 是省略 scale 的截图默认密度，`expectedRevision` 冲突抛 `VIEWPORT_CONFLICT`（HTTP 409）且 patch 零应用。验收：`viewport.mjs` **14/14 probes、166/166 requiredChecks、exit 0**；隔离 DSH GUI `viewport-gui.mjs` **142/142 PASS、5 NOT_RUN、exit 0**（V12 拖拽 + V13 画布）；`capture-p0.mjs` **15/15、162/162**、`t3-vision.mjs` **56/56、415/415**、`runtime-faults` **16/16**；非回归 `run.mjs` 见「Lead 独立终验」。
+**Agent 视口控制已实现（verified，覆盖路径）**：新增第 10 个 T1 工具 `browser_viewport`（能力 `web.t1.viewport`，工具面 29 → 30），契约见 [viewport-control.md](viewport-control.md)。`get` 是只读缓存诊断（不启动浏览器/不发 CDP/不占租约/stale 明示），`set` 是页面操作（宽高才发 metrics override，scale-only 不改页面几何）；`x/y` 是文档 CSS 滚动位置实测回读；**P0-D 混合画布另立一项基础设施**：`canvasX/canvasY`（视口原点，±1e7，可为负）由 P0-D 提供（[canvas-viewport.md](canvas-viewport.md)），面板 X/Y 绑定画布原点，`O=C-S` 时空白合成；`scale` 0.1–2 是省略 scale 的截图默认密度，`expectedRevision` 冲突抛 `VIEWPORT_CONFLICT`（HTTP 409）且 patch 零应用。验收：`viewport.mjs` **19/19 probes、206/206 requiredChecks、exit 0**（画布 v2 14/166 + 标注 A1–A5）；隔离 DSH GUI `viewport-gui.mjs` **262/262 PASS、12 NOT_RUN、exit 0**（画布轮 142/142 → 标注 v1 198/198 → v2 222/222 → v3 242/242 → v4 258/258 → 尺寸预设归零 260/260 → 预设分页选择器+拖拽互斥 262/262，含 V12–V18 与 V18.16–V18.19）；`capture-p0.mjs` **15/15、162/162**、`t3-vision.mjs` **56/56、415/415**、`runtime-faults` **16/16**；非回归 `run.mjs` 见「Lead 独立终验」。
 
 **剩余缺口（不夸大）**：
 
@@ -126,7 +126,7 @@
 - 不要把 `unmodifiedText` 的 INCONCLUSIVE 写成“已验证”。
 - network P0 已 verified（52/52、266/266、8 NOT_RUN），但**不要把 8 条 NOT_RUN 说成通过**（C1 HTTPS、C2 二进制 body、C5 service worker、C20 单样本 p95、C35 淘汰 body 三态、C37 `modify-response`、C52 外部套件/真实宿主），也不要把 `G1.5` partial 说成“iframe/OOPIF/Worker/popup 全覆盖”，更不要把**真实宿主冒烟了 3 个入口**写成 7 个网络工具全部真宿主验收（control/证据/订阅仍未验）。
 - 不要把 `browser_network`（300 条元数据）当成 network P0 的采集/控制能力；也不要把 JSONL 导出当成断言通过。
-- 不要把 `browser_viewport get` 当"现在的真实状态"：它是缓存诊断（`stale` 明示）；要确定 set 之后的事实用返回的 `view`/`observed`。也不要把 `view.scale` 当页面缩放/DPR——它只是显示比例与默认截图密度；更不要把隔离 DSH GUI 的 142/142（V12+V13 画布）说成真实宿主**面板交互**已验证（真实宿主只复验了画布前 Agent 侧，见上文）。
+- 不要把 `browser_viewport get` 当"现在的真实状态"：它是缓存诊断（`stale` 明示）；要确定 set 之后的事实用返回的 `view`/`observed`。也不要把 `view.scale` 当页面缩放/DPR——它只是显示比例与默认截图密度；更不要把隔离 DSH GUI 的 142/142（画布轮）、198/198（标注 v1）、222/222（标注 v2）242/242（标注 v3）或 256/256（标注 v4 面板交互细节）说成真实宿主**面板交互/绑定链**已验证（真实宿主只复验了画布前 Agent 侧与标注读取路径；标注 v2/v3 的 Host/客户端面在隔离 fake-ctx 与真实 validator 下验证，真实 3080 只需刷新面板即可，见上文）。
 
 ## 7. 建议处理顺序（建议，不是承诺）
 

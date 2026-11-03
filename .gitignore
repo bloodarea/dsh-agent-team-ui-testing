@@ -1,2 +1,4 @@
 tests/acceptance/runs/
+tests/acceptance/evidence/viewport-gui-*/
+output/
 reference/

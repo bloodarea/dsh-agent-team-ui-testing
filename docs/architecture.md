@@ -5,7 +5,7 @@
 ```text
 package.json          DSH bundle 清单：dsh.bundle.patch + dsh.client（platform: web）；files 含 index.js/client.js/frame-*/browser-safety.js/capture-p0.js/**network-p0.js**/vision-t3.js/vision-baseline.js/cordis.patch.yml/locale/icon/skills
 cordis.patch.yml      插入一行 plugin：id = ui-testing-browser
-index.js              Host 半边：BrowserHost（单 Chromium/profile、多 page）、按 DSH 工作区的 RuntimeRegistry、租约/串行队列、scoped HTTP 路由、独立 HTTP 客户端、30 工具（10 T1 + 7 T2 + 6 T3 + 7 network）、每 Runtime 的权威共享 view（宽高/x/y/canvasX/Y/比例/来源/版本 + 实时观测）与内置 Skill；并承担网络全事件采集（Runtime 级 Network/Fetch 订阅、按需 body、子目标 setAutoAttach）与 browser_capabilities.network 报告
+index.js              Host 半边：BrowserHost（单 Chromium/profile、多 page）、按 DSH 工作区的 RuntimeRegistry、租约/串行队列、scoped HTTP 路由、独立 HTTP 客户端、30 工具（10 T1 + 7 T2 + 6 T3 + 7 network）、每 Runtime 的权威共享 view（宽高/x/y/canvasX/Y/比例/来源/版本 + 实时观测）、**P0-D 面板标注文档（`annotations` 存储 + `POST /annotations` 唯一写面 + `state/ui` 只读投影 + documentKey 轮换）**与内置 Skill；并承担网络全事件采集（Runtime 级 Network/Fetch 订阅、按需 body、子目标 setAutoAttach）与 browser_capabilities.network 报告
 browser-safety.js     BrowserError/CDP、错误分类（含 REF_STALE/TARGET_NOT_UNIQUE/NOT_INTERACTABLE/WAIT_TIMEOUT、T3 的 VISION_* 码与网络 P0 的 NET_* 码）、取消/定时器清理、URL 脱敏与目标/DNS 校验
 network-p0.js         P0 网络纯 JS 核心：事件/会话存储、标准化与有界配额、分析与统计、业务链路窗口、拦截/限速/重放规则、JSONL/HAR 导入导出与证据索引、订阅游标（零 npm 依赖，不直接持有 CDP）
 capture-p0.js         P0 采集基础设施：PNG 结构/CRC/解码、全量均匀/透明统计、尺寸校验、纯 JSON 映射投影、安全路径与原子 no-clobber 写入
@@ -13,7 +13,7 @@ vision-t3.js          T3 纯算法：PNG RGBA 编解码、crop/resize/预处理/
 vision-baseline.js    T3 受管基线：scopeHash 根、不可变 revision、head 规范 JSON、CAS 提交/墓碑、只读 list/get、故障注入点
 frame-source.js       Host 帧缓存：最新帧/元数据/捕获统计（与传输、UI 解耦）
 frame-push.js         Host 同源 WebSocket 推帧：单 upgrade dispatcher、按 scope 绑定 pusher、握手、合并推送、背压丢帧、鉴权、清理
-client.js             全部 UI（React，无 JSX，用 h()）；内含 UI-free 的 createFrameTransport；共享 view 的采纳/草稿/滚轮/fit/painted-rect 坐标映射/帧几何屏障
+client.js             全部 UI（React，无 JSX，用 h()）；内含 UI-free 的 createFrameTransport；共享 view 的采纳/草稿/滚轮/fit/painted-rect 坐标映射/帧几何屏障；P0-D 标注模式（入口/横栏、SVG 画布坐标层、模式总闸与生命周期）
 locale/{en,zh}.json   插件显示名与描述
 icon.svg              插件图标
 skills/ui-testing/    内置 Skill（SKILL.md + references/examples/templates/knowledge/manifests）
@@ -67,14 +67,29 @@ docs/                 项目记忆（本目录）；按工作区隔离的契约�
 - **Client（`client.js`）**：`ViewLimits`/`WHEEL_STEPS`（10/100/1 与 5/10/1，Alt 优先）、`paintedRect()` 与 `frameWheelDelta()` 纯几何、`viewOf()/viewCompanionsOf()` 解析 `ui.view`、`acceptView/adoptView/syncViewDrafts/clearCaughtUpDrafts`（草稿保护、外部变更取消 fit）、`queueViewPatch/flushViewPatch`（120ms 合并、按字段 patch、v1 带 `expectedRevision`、旧 Host 走 legacy 体）、`frameGeometry/geometryMatches/inputGeomReady`（≤250ms best-effort 屏障）、指针/滚轮/拖拽映射与释放，以及尺寸栏 X/Y 输入与 flex-wrap。
 - **帧（画布 v2 起改）**：`frame-source.js`/`frame-push.js` 新增 `scrollX/scrollY`（metadata 优先，缺失用采集时实测 S）；O=0 仍沿用旧 250ms best-effort 屏障，O≠0 改用 fail-closed 并可用 `/screenshot {canvas:true}` seed 恢复。
 
+## P0-D 标注职责（`client.js` + `index.js`）
+
+权威契约见 [annotation-p0d.md](annotation-p0d.md)。标注是 P0-D 的一个切片：**v1 为纯客户端视图层**；**v2（2026-11-02 第二轮）增加 Host 只读投影**，让 Agent 能读到标注用于定位问题——工具面仍 30，截图/T3 语义与目标页 DOM/CSS 不变。
+
+- **入口/横栏**：工具栏地址栏与尺寸调整之间的“标注”按钮（画笔图标）；独立 `.utb-annot-bar` 横栏含七工具（圆形/矩形/线段/箭头/画笔/文字/**橡皮擦**）、填充/外框、颜色、粗细与最右的**清除画布**按钮。打开面板即进入标注模式，再次点击退出。
+- **模式总闸**：`annotRef` 与 React state 同步；进入前结束页面拖动、清 pan/zoom 意图、`panMode=false`；所有 `img`/overlay 的 pointer/wheel/keydown 处理器与 `sendEvents` 在模式内统一拦截，页面零派发；地址/导航/刷新/更多/环境选择/尺寸入口禁用，已展开尺寸栏控件全禁用。
+- **SVG 画布层**：z-index 2（文字编辑器 z3），覆盖未平移的 `paintedRect`，`viewBox=Cx Cy W H`、`preserveAspectRatio=none`；几何以画布 CSS px 存储，映射见契约 §3；负 C/blank 可绘制，letterbox 不起笔；模式外 `pointer-events:none`、不占 Tab，标注仍可见。
+- **绘制/擦除/清除（`client.js`）**：活动手势与点数组放 ref（rAF 更新独立草稿），提交后进入已完成列表；普通帧刷新保留；**导航（documentKey 轮换）清空**；样式在起笔时快照；橡皮擦按 `Path2D`/段距/文字 `getBBox()` 命中（`r=max(线宽/2,6)` 画布 px，每次只删最上层一个）；清除画布清空已完成+草稿/编辑并立即发布空文档（保留模式与样式）。
+- **面板交互（v4，2026-11-03）**：标注栏 `填充|外框` 与尺寸栏 `拖拽|适应窗口|默认` 均为 `div.utb-seg` 分页选择器（单一真源 + 恰好一个 `aria-pressed`，`data-utb-annot-seg` / `data-utb-panfit`）；`annotStyleMode` 驱动 fill/stroke 二选一；`sizingRef` 让尺寸调整模式挡住标注入口（`data-utb-annot-entry`）；`ENV_DEFAULTS` 决定初始化与切环境的默认尺寸（只发 width/height）；标注栏非 passive wheel 监听驱动 `data-utb-annot-field=width` 的粗细步进（±1/Shift ±5/Alt ±1）。
+- **保留与隔离（v3，2026-11-02 第三轮）**：`client.js` 在 `acceptRemote` 里按 `D=(scope.id,runtimeId,documentKey,pageGeneration,documentEpoch)` **水合 `ui.annotations`**（同 D 只采纳更大 revision，render gate 遮旧 scope 列表）；scope/卸载/切页签**不再发 release/空文档**；卸载把未确认内容交给模块级 **retained queue** 立即 flush；发布者身份用 `sessionStorage`（key=版本前缀+scope.id+runtimeId+surface）复用 `{panelId, lastAllocatedClientRevision}` 并保持单调；ACK/409/重试/回调全部按 mount generation+scopeEpoch+D 归属，迟到的旧工作区回包不改当前状态。文档仍按 Runtime（=工作区）在 Host 侧一份，导航换文档。
+- **Agent 可见面（`index.js`）**：`Runtime` 存“最近接受的面板标注文档”（软限额 128 shapes/512 点每笔/8192 点/200 字符/64KiB、确定性裁剪）；唯一写面为仅认证 scoped `POST /plugins/ui-testing/annotations`（262144 字节有界读取、严格校验、409 `annotation-context-stale`、clientRevision 幂等与 panel 水位）；`state().annotations`（→ `browser_state.annotations`）与认证 `ui.annotations`/`ui.annotationContext` 同源；documentKey 在导航/同文档 URL/close/CDP 断连时轮换并清空；`browser_capabilities.annotations`/`limits.annotations` 声明读取方式与限额（不新增工具）。
+- **验收**：`tests/acceptance/viewport-gui.mjs` 的 V15（v1）与 V16（v2）、`tests/acceptance/viewport.mjs` 的 A1–A5 探针（隔离 DSH + 无头 Chrome/真实 Host，真实 CDP 输入、零派发计数、data/SVG/屏幕三方几何、证据 PNG）。
+
 ## client.js 内部结构
 
 1. `CSS` 常量 + 图标
 2. `createFrameTransport()` —— 与 UI 无关的传输层：WS 优先、`/frame` 80ms 轮询回退、重连、帧元数据、实测统计
-3. `DebugView` 组件 —— 顶部环境栏 / 工具栏 / 尺寸栏 / 预览区 / 底部状态栏；只消费 transport 的帧与状态；按右侧栏 `sessionId` 或 main 的 MoreRow 捕获 + `recent→runtimeId` binding 固定 scope，隐藏时停播
+3. `DebugView` 组件 —— 顶部环境栏 / 工具栏（标注入口、尺寸调整）/ 标注栏 / 尺寸栏 / 预览区（含标注 SVG 层）/ 底部状态栏；只消费 transport 的帧与状态；按右侧栏 `sessionId` 或 main 的 MoreRow 捕获 + `recent→runtimeId` binding 固定 scope，隐藏时停播
 4. `apply(ctx)` —— 面板、菜单行、右栏页签注册
 
 `DebugView` 与 `MoreRow` 各自渲染一份 `<style>`（原因见 [dsh-integration.md](dsh-integration.md)）。
+
+**2026-11-02 标注模式（P0-D 客户端切片）**：新增工具栏入口与标注横栏、SVG 画布坐标绘制层、模式互斥总闸、文字编辑与生命周期清理；只改 `client.js`，Host 无需重启，**需刷新面板**加载新 bundle。契约 [annotation-p0d.md](annotation-p0d.md)。
 
 **第 8 轮（网络 P0）`client.js` 未动**：网络能力只走 Agent 工具与 HTTP 路由，面板样式/文案/布局保持冻结；因此该轮不需要前端热更新，只有 Host 侧变更需要重启 DSH。
 
