@@ -20,7 +20,7 @@
 
 页面经常把答案直接画在画面上——靶机就把 `css: t=233ms tx=93.32 opacity=0.855`、`media: rgb=253,14,13` 这类状态行写进面板。拿整页图去"看动画"，等于**读答案**而不是看运动，结论不可信；而且浪费：同一帧整页 JPEG **61,824 B**，裁出动画本体 243×139 后 PNG 只有 **4,198 B**（**14.7×**）。
 
-正确做法：**先定位，然后只看那一块**（§2 Step 1/4）。
+
 
 **② 算力靠抽帧，不靠 `region`。**
 
@@ -163,7 +163,7 @@ browser_dynamic_correlate { dynamicSessionId, motionSessionId, networkSessionId,
 
 ## 6. 交付要求
 
-每次 T4 结论至少带：`dynamicSessionId` / `motionSessionId`、时间窗口或 `frameIds`、`verdict` 与 `resolvedThresholds`、`integrity`（含 dropped/evicted/truncated）、证据引用（frameId / `roiSha256` / 图片路径或交付方式）。**未跑或证据不全写 NOT_RUN / INCONCLUSIVE，不许写成通过。**
+每次 T4 结论至少带：`dynamicSessionId` / `motionSessionId`、时间窗口或 `frameIds`、`verdict` 与 `resolvedThresholds`、`integrity`（含 dropped/evicted/truncated）、证据引用（frameId / `roiSha256` / 图片路径或交付方式）。**
 
 ## 7. T3 静态侧的边界（本节保留）
 

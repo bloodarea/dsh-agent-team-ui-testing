@@ -73,11 +73,11 @@
 
 CAPTURE_FAILED（capture/true）可先诊断；INVALID_PNG、CAPTURE_SIZE_MISMATCH、CAPTURE_UPSCALED（capture/false）不交付坏图/尺寸异常图，保留安全expected/actual，不能用附件绕过。CAPTURE_TOO_LARGE（resource/false）需减少区域或scale；OUTPUT_PATH_INVALID（input/false）修正相对.png/out或绝对env根；OUTPUT_EXISTS（output/false）必须换out，不能覆盖；OUTPUT_WRITE_FAILED（output/true）先核对发布事实，link成功后不回滚。取消/超时/断连保留原码，retryable不授权自动重放。
 
-legacy无cwd默认仍staging；persist/out且无持久根报OUTPUT_PATH_INVALID(root_unknown)，不能静默暂存。暂存失败才file=null+capture_file_unavailable，图片继续交付；真实tmp不可写场景NOT_RUN。无附件时attachment_unavailable+fallback；这两种降级不能声称已落盘/模型已看图。其余封闭warnings为content_uniform/content_transparent/model_image_downscaled/attachment_reencoded/blank_check_skipped/capture_beyond_viewport；均匀统计不是产品视觉FAIL。P0暂存修订14/14、142/142见 [T1台账](../../knowledge/web/t1-capability-ledger.md)，不是provider或真实宿主P0加载证据。
+legacy无cwd默认仍staging；persist/out且无持久根报OUTPUT_PATH_INVALID(root_unknown)，不能静默暂存。暂存失败才file=null+capture_file_unavailable，图片继续交付；无附件时attachment_unavailable+fallback；这两种降级不能声称已落盘/模型已看图。其余封闭warnings为content_uniform/content_transparent/model_image_downscaled/attachment_reencoded/blank_check_skipped/capture_beyond_viewport；均匀统计不是产品视觉FAIL。
 
 ## 停止条件
 
-- 没有可用工具能证明当前断言：停止并报告 `BLOCKED` / `INCONCLUSIVE`。
+
 - 已确认真实缺陷：`FAIL` 并保留证据，不再尝试其它层级“翻案”。
-- 动作状态未知且不可逆：先查状态；仍未知则停止，报告 `ACTION_UNKNOWN`。
+- 动作状态未知且不可逆：先查状态；
 - 达到会话/时间/风险预算：停止，不做无限重试。

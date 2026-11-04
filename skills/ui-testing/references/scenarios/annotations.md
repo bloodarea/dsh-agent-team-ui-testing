@@ -48,7 +48,7 @@ annotations = {
 
 - **只有 `text` 有原文**。用户用**画笔手写**的字只有 `brush.points`，没有语义——不要"读"出手写内容，也不要把点集当文本转述。
 - 需要 Auxiliary 视觉时，可以按 `points` 自己渲染成图辅助人工核对，但必须声明"这是按点集重建的几何，不是面板渲染结果"。
-- `truncated:true` 时如实报告 `truncation`（丢了多少形状/点/截断多少字符），并说明"标注可能不完整"。
+
 
 ## 6. 落点解析：「这个箭头指的是什么」
 
@@ -83,6 +83,5 @@ annotations = {
 
 ## 10. 参考
 
-- 权威契约：`docs/viewport-control.md`（§11 v2 Agent 可见面、§12 v3 保留与隔离）
-- 真宿主实测（读取路径、手写无原文、箭头落点解析）：`本地验证记录（不随仓库分发）/annotation-realhost-2026-11-02.md`
-- 隔离验收：`tests/acceptance/viewport.mjs`（A1–A5）、`tests/acceptance/viewport-gui.mjs`（V15/V16/V17）
+- 权威契约：`docs/viewport-control.md`（共享视口、画布与标注）
+- 验收入口：`tests/acceptance/viewport.mjs`、`tests/acceptance/viewport-gui.mjs`

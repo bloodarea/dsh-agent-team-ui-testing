@@ -39,6 +39,6 @@
 
 CDP 超时/断连/取消可能已发生网页副作用，retryable 不等于可盲重试。signal 在 CDP 已发出后取消，队列内先关闭该工作区 page 再放锁；后续可懒启动，旧页内存态可能已丢失，须检查应用持久状态。网络/state/capabilities 不启动；state/capabilities 不申请租约；network、页面工具与全部 T2 工具受该工作区 single-owner-lease 限制（只读的 snapshot/node_state/wait_for 也要先拿租约）。
 
-P0截图失败抛BrowserError：CAPTURE_FAILED（capture/true）；INVALID_PNG/CAPTURE_SIZE_MISMATCH/CAPTURE_UPSCALED（capture/false）；CAPTURE_TOO_LARGE（resource/false）；OUTPUT_PATH_INVALID（input/false）；OUTPUT_EXISTS（output/false）；OUTPUT_WRITE_FAILED（output/true）。ABORTED/CDP_TIMEOUT/CDP_DISCONNECTED原码透传；UP只是尺寸保守拒绝，混合偏差为SIZE_MISMATCH。相同out不覆盖，重试换名；合法纯色只warn不失败。完整参数、八warnings与安全写入见 [证据契约](evidence.md)、[安全边界](../core/safety.md)；P0三次13/13、115/115报告见 [T1台账](../../knowledge/web/t1-capability-ledger.md)，真实宿主P0加载/provider仍NOT_RUN。
+P0截图失败抛BrowserError：CAPTURE_FAILED（capture/true）；INVALID_PNG/CAPTURE_SIZE_MISMATCH/CAPTURE_UPSCALED（capture/false）；CAPTURE_TOO_LARGE（resource/false）；OUTPUT_PATH_INVALID（input/false）；OUTPUT_EXISTS（output/false）；OUTPUT_WRITE_FAILED（output/true）。ABORTED/CDP_TIMEOUT/CDP_DISCONNECTED原码透传；UP只是尺寸保守拒绝，混合偏差为SIZE_MISMATCH。相同out不覆盖，重试换名；合法纯色只warn不失败。完整参数、八warnings与安全写入见 [证据契约](evidence.md)、[安全边界](../core/safety.md)；
 
 computed_style 只取首个匹配元素；properties 缺省返回全部样式，序列化可能省略 undefined 属性，不证明像素或遮挡。输入 schema 已在 N2 扩展 modifiers/virtualKeyCode 等字段；非法修饰键名/类型/越界掩码与非法 `key.type` 抛 `INVALID_ARGUMENT`，且校验发生在启动浏览器与派发之前。焦点仍无专门工具，只能用 key Tab/Shift+Tab 或页面内 JS，并以页面读回为准。

@@ -88,7 +88,7 @@ browser_screenshot {}
 { "viewport": { "width": 1280, "height": 800 }, "bytes": 182340, "image": "<base64 PNG>", "capturedAt": 0, "sha256": "<actual SHA-256>", "attachmentId": null }
 ```
 
-字段值仅为占位。可选附件服务保存并 render image block，attachmentId 使用实际引用；无服务 render base64-fallback 文本。不能把附件 ID 当文件路径，或把保存成功当 provider 实际可见；需真实会话另验。P0支持文档区域clip、连续scale和安全落盘，无像素差异/VLM，原始截图不代表T3/T4。当前暂存修订14/14、142/142报告见 [T1台账](../knowledge/web/t1-capability-ledger.md)；P0真实宿主重载/provider仍NOT_RUN。
+字段值仅为占位。可选附件服务保存并 render image block，attachmentId 使用实际引用；无服务 render base64-fallback 文本。不能把附件 ID 当文件路径，或把保存成功当 provider 实际可见；需真实会话另验。P0支持文档区域clip、连续scale和安全落盘，无像素差异/VLM，原始截图不代表T3/T4。
 
 需要局部高密度原图时，示意调用（不是运行记录）：
 
@@ -104,6 +104,6 @@ scale允许显式连续0.1–4（省略时跟随共享view.scale，cold 1）；�
 
 ## 5. 失败与停止
 
-- 点击后状态未变：先确认坐标、焦点与事件对；不要无限重复点击；无法确认时报告 `INCONCLUSIVE`。
+- 点击后状态未变：先确认坐标、焦点与事件对；不要无限重复点击；
 - 需要视觉判断：用 T3（`browser_vision_image`/`compare`/`check`）给出像素证据，不要用截图“看起来正常”代替证据。
 - 动作可能有副作用且状态未知：先查状态，不得盲重放。

@@ -3,26 +3,7 @@
   "capture_p0": {
     "contract": "docs/capture-p0.md",
     "status": "partial",
-    "verified_scope": "当前默认暂存修订C1–C14，Lead串行14/14、142/142、0失败、exit0；此前115/117保留历史，不代表宿主重载或provider视觉",
-    "final_reports": {
-      "capture": "tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json",
-      "result": "14/14、142/142、0失败、exit0；C14+23、C1+2",
-      "t1": "tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json:22/22、324/324、exit0",
-      "t1_flake": "tests/acceptance/runs/2026-11-01T05-59-53-185Z-105978/run-report.json:22 probes/21 PASS/1 FAIL；323/324 required通过、1 failed、exit1",
-      "t1_baseline": "tests/acceptance/runs/2026-11-01T04-30-43-916Z-53146/run-report.json:同项P21-host-output-contract loadingFailed快照失败，actual仅3条成功记录",
-      "t1_interpretation": "两次行为实现相同仅persist描述文案差异；既有环境flake随机复现，Lead判非P0回归；失败不能记PASS，验收需串行但不保证flake消失",
-      "t2": "tests/acceptance/runs/2026-11-01T06-01-14-788Z-107358/run-report.json:37/38+1 NOT_RUN、260/260、exit0",
-      "unit": "26/26",
-      "faults": "16/16",
-      "documentChecks": "文档后Skill/registry由Lead最终复核",
-      "t3": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json:criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0",
-      "t3_rerun": "tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json:同结果（criteria 56/56、389/389、exit0）",
-      "t1_latest": "tests/acceptance/runs/2026-11-01T07-31-29-210Z-168725/run-report.json:22/22、324/324、exit0（工具面 22）",
-      "t2_latest": "tests/acceptance/runs/2026-11-01T07-33-10-505Z-170262/run-report.json:37/38+1 NOT_RUN、260/260、exit0（工具面 22）",
-      "capture_latest": "tests/acceptance/runs/capture-p0-2026-11-01T07-35-21-142Z-176846/report.json:14/14、142/142、exit0",
-      "units_latest": "vision 算法 36/36、基线 52/52、capture 26/26、runtime-faults 16/16",
-      "other": "P0单测26/26、faults16/16、skill26/26、registry17/17（T3 收口时点）；无仓库output/PNG残留；此前115/117项与T1 P21 flake均属增量前历史"
-    },
+    "verified_scope": "截图采集的实现口径与边界（参数、PNG 校验、像素统计、文件生命周期）；不代表真实宿主重载或 provider 图像可见性",
     "file": {
       "pathKind": [
         "relative",
@@ -41,30 +22,6 @@
       "observed": "仅{persistence,relativePath}; staging relativePath=null，不暴露绝对路径"
     },
     "lifecycle": "默认staging插件实例级tmp目录，dispose清理；持久不清理；暂存失败file=null+capture_file_unavailable仍交付图；legacy默认暂存，持久无根OUTPUT_PATH_INVALID(root_unknown)",
-    "reports": [
-      "tests/acceptance/runs/capture-p0-2026-11-01T04-57-34-532Z-65733/report.json",
-      "tests/acceptance/runs/capture-p0-2026-11-01T04-58-28-002Z-66463/report.json",
-      "tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json"
-    ],
-    "final_lead_serial": {
-      "capture_reports": [
-        "tests/acceptance/runs/capture-p0-2026-11-01T05-15-01-055Z-85097/report.json",
-        "tests/acceptance/runs/capture-p0-2026-11-01T05-15-05-476Z-85616/report.json"
-      ],
-      "result": "两次13/13、117/117、0 failed、exit0",
-      "t1": "tests/acceptance/runs/2026-11-01T05-15-09-827Z-86138/run-report.json:22/22、324/324",
-      "t2": "tests/acceptance/runs/2026-11-01T05-17-06-786Z-87684/run-report.json:37/38+1 NOT_RUN、260/260",
-      "other": "P0单测26/26、faults16/16、skill25/25、registry17/17；无仓库output/PNG残留；此前115项属增量前历史"
-    },
-    "maxDelta_increment": {
-      "report": "tests/acceptance/runs/capture-p0-2026-11-01T05-09-04-665Z-79630/report.json",
-      "result": "13/13 probes、117/117 requiredChecks、0 failedChecks、exit0",
-      "field": "公开capture.anomaly.maxDelta：checked=false为null；checked=true为相对首像素最大通道差，白页0/内容页255；此前三份115项为增量前"
-    },
-    "regression": {
-      "report": "tests/acceptance/runs/2026-11-01T04-59-29-531Z-68121/run-report.json",
-      "result": "22/22 probes、324/324 requiredChecks、exit0"
-    },
     "parameters": {
       "scaleRange": [
         0.1,
@@ -145,120 +102,21 @@
     },
     "observed": "default1280x800; scale2=2560x1600; 101x50@1.11=112x56; headless=true/source=userAgent; C13 scroll/viewport/red/green/fixed rect前后不变",
     "unverified": [
-      "tmp不可写真实失败场景NOT_RUN",
-      "SIGKILL/崩溃暂存残留不保证",
-      "P0真实宿主重启加载与新会话调用NOT_RUN",
-      "provider视觉与最终图像尺寸NOT_RUN",
-      "canvas/WebGL内部源位图细节不会增加",
-      "C13不排除截图期间瞬时LBI",
-      "本地恶意进程TOCTOU未解决，非完整文件系统隔离"
+      "真实宿主重载与新会话调用",
+      "provider 图像可见性与最终图像尺寸",
+      "tmp 不可写等真实失败场景与崩溃残留",
+      "canvas/WebGL 内部源位图细节不会增加",
+      "本地恶意进程 TOCTOU 未解决，非完整文件系统隔离"
     ],
-    "tiers_unchanged": "T4 now implemented (5 tools, implemented-not-verified: 40 criteria 9 PASS/18 PARTIAL/13 NOT_RUN); T3 unchanged; no VLM/OCR/semantic naming"
+    "tiers_unchanged": "T3 与 T4 已实现；T4 的 40 条门槛尚未全覆盖；无 VLM/OCR/语义命名"
   },
-  "notice": "开发事实快照，不是运行时可用性声明。**注册表与 browser_capabilities 的实际结果优先于本文件与任何静态文档**。工具面 30 个 = T1 10 个（9 个历史工具 + 共享视口 browser_viewport；含独立 HTTP browser_http_request）+ T2 7 个（browser_snapshot/click/type/scroll/fill_form/node_state/wait_for）+ T3 6 个（browser_vision_image/find/compare/act/baseline/check）+ 网络 P0 7 个（browser_network_session/events/detail/trace/control/evidence/subscribe）。【P0 基础设施四项：P0-A 图片输入流（capture-p0）、P0-B 网络抓包（network-p0）、P0-C 共享视口（viewport-control）、P0-D 混合画布（canvas-viewport）】【P0-C 共享视口（覆盖路径 verified/partial 见 web.t1.viewport）】契约 docs/viewport-control.md：每个工作区 Runtime 一份权威 view={version,mode,x,y,canvasX,canvasY,width,height,scale,source,revision}（文档 CSS px），面板与 Agent 读写同一对象，顶层 viewport={width,height} 只是别名；x/y 是页面顶层滚动位置（Page.getLayoutMetrics 实测，自动滚动回显 source=page）；canvasX/canvasY 是视口左上角在文档画布上的位置（±1e7，可为负，面板 X/Y 绑定它，O=C-S 时预览/截图/T3 白色 blank 合成；O=0 与旧字节/像素一致），width/height 整数 200–4096，mode 由宽高派生，scale=0.1–2（10–200%）为 Host 权威显示比例，也是省略 scale 的截图默认密度；DPR 固定 1、页面 zoom 从不改变、不用设备模拟。browser_viewport get=只读缓存诊断（不 ensure/不发 CDP/不占租约，stale 明示），set=页面操作（懒启动+串行队列+single-owner-lease，仅宽高变化才发 metrics override），expectedRevision 队列内 CAS → VIEWPORT_CONFLICT(HTTP 409) 且 patch 零应用。HTTP POST /viewport 双形状（legacy {width,height} 保持 Number/round/clamp；v1 {version:1,...} 严校验），/state、/frame、ensure/navigate/reload/history 与 browser_state 都带安全 view 投影。截图显式 scale 0.1–4、省略时跟随 view.scale（cold 1）、低比例空输出提前拒绝；T3 Source.live 缺省跟随 view.scale、act 冻结原采集比例。面板尺寸栏新增 X/Y 与五个数值框滚轮、fit 仅本地显示、坐标按 painted rect 映射、宽高变更后帧几何屏障为 best-effort（≤250ms，partial）；2026-11-02 起另有「拖拽」复选框（只改 client.js：勾选后 grab/grabbing 光标，按住画面按内容跟手平移并节流写 x/y，勾选期间不向页面派发鼠标事件）。验收（同一最终代码）：Host viewport.mjs 14/14 probes、166/166 requiredChecks、0 failed、exit 0；隔离 DSH GUI viewport-gui.mjs 142/142 PASS、0 FAIL、5 NOT_RUN、exit 0（V12 拖拽 + V13 画布）；capture-p0 15/15、162/162、exit 0；t3-vision 56/56、415/415、exit 0；T1 run.mjs 见 Lead 终验。**NOT_RUN**：真实 3080 于 2026-11-02 11:15 重启后画布 v2 **Host 面已实测**（canvasX/Y/blank/合成截图/T3/blank act 零派发/导航复位/自主滚动保留 O，本地验证记录（不随仓库分发）/canvas-realhost-2026-11-02.md）；面板画布交互（X/Y 负值/滚轮/拖拽/seed）与需 GUI 认证的路由仍 NOT_RUN、H9 screencast 时序、GUI 侧 agent 归因/letterbox/旧 Host 降级/CAS 并发（分别由 Host H2/H5 或套件边界覆盖）、几何屏障的确定性保证。画布 v2 Lead 终验（2026-11-02，串行）：viewport 14/14 + 166/166；GUI 142/142 + 5 NOT_RUN；capture-p0 15/15 + 162/162；t3-vision 56/56 + 415/415；其余 run/t2/network/workspace/faults/check-skill 见 status.md「Lead 独立终验」。此前 2026-11-01 的 11/11+107/107、85/85、14/14+142/142、391/391 保留为历史。**仍未验证**：真实宿主面板交互（X/Y/滚轮/fit/命中映射/拖拽）、H9 screencast ACK 时序、GUI 5 条 NOT_RUN（agent 归因/letterbox/旧 Host 降级/CAS 并发/几何屏障）、provider 图像可见性——不得把隔离实例或进程内套件写成 3080 已验证。T2 接口按 docs/t2-structured-gui.md（契约权威），当前为**优化构建**（快照冗余文本压缩 + `browser_scroll` 不自动滚入/稳定性硬化）：进程内套件 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json` 探针 38（pass 37 / fail 0 / notRun 1 = C38 套件边界）、必需检查 **260/260**（该轮计数；终版 261/261 见前文终验段）、exit 0；真实宿主记录 `本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md` 的 14 行检查属**优化前构建**（pid <pid>，10:40:04 重载），已标「待真实宿主定向复验」，不得写成优化后已验。因此 7 个 web.t2.* 与聚合项 web.t2.structured-dom 记 verified（限于进程内 260 项 + 优化前真实宿主 14 行覆盖的行为）；未验证：优化构建的真实宿主定向复验 5 项、provider 图像可见性、仅 advisory 覆盖的 closed-shadow 不产生 ref 分支。 T3 静态视觉已实现并通过进程内验收：`tests/acceptance/t3-vision.mjs` criteria 56/56、requiredChecks **389/389**（该轮计数；终版 391/391 见前文终验段）、failedChecks 0、notApplicable 3（均带 reason）、exit 0（报告 `tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json`，执行者复跑 `tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json` 同结果）；6 个 web.t3.* 与聚合项 web.t3.static-vision 记 verified。**真实宿主重载、provider 图像可见性、T4 与上述 3 条 N/A 仍未验证**，不得由进程内套件推定。 网络 P0（第 8 轮，docs/network-p0.md 为权威契约）：工具面 22 → 29，新增 7 个 browser_network_*（session/events/detail/trace/control/evidence/subscribe）与聚合 web.network.p0，覆盖 HTTP/HTTPS 请求响应与头/体（按需、配额截断、读不到 available:false 不伪造）、WebSocket 双向帧、SSE、same-origin iframe 与 dedicated worker、统一时间轴与分析聚合、业务步骤链路、拦截/限速/断连/重放/Mock、JSONL+HAR 证据与多 Agent 独立订阅；旧 22 工具语义不变（截图只新增 capture.networkWindow，capture.version 仍 1）。**这 7 项与聚合项记 verified**，依据 Lead 独立串行复跑（同一最终代码）：`node tests/acceptance/network-p0.mjs` → criteria 52/52（pass 52 / fail 0）、requiredChecks 266、failedChecks 0、notRunChecks 8、exit 0，报告 `tests/acceptance/runs/2026-11-01T12-27-48-770Z-370586/run-report.json`；单测 `tests/network-p0.test.mjs` 43/43。**8 条 NOT_RUN 明确不算通过**：C1 HTTPS 独立验证（无本地 TLS 靶机，`limits.network.https=\"mechanism-identical\"`）、C2 二进制 body（靶机无二进制路由）、C5 service worker 采集（R1-21：attach 会暂停并破坏 register()；能力报 subTargets.service_worker=\"not-collected\"，shared_worker 同样 not-collected，OOPIF partial 未单独验证）、C20 单样本 p95（U 覆盖）、C35 被淘汰 body 三态（U 覆盖）、C37 modify-response（responseModification=false）、C52 外部四套件（由 T1 23/23+347/347、T2 37/38+1 NOT_RUN+261/261、T3 56/56+391/391、capture-p0 14/14+142/142 报告代证）、C52 真实宿主。**真实宿主 3080 未重启**（pid <pid>，17:24:28 启动早于本轮 index.js/network-p0.js 变更），重启后的网络冒烟、provider 与长连接稳定性仍 NOT_RUN；进程内套件不能替代真实宿主验收。",
+  "notice": "开发事实快照，不是运行时可用性声明。注册表与 browser_capabilities 的实际结果优先；静态状态不能映射成 available。",
   "platform": "web",
   "tier": "T1+T2+T3+T4",
   "runtime_authority": "Agent 当前工具注册表决定可调用名字；browser_capabilities 根据实际运行态返回 available/unavailable/unsupported；browser_state 只诊断运行态。静态 tier/台账/本 manifest 都不构成可用性证明。",
-  "source": "接口与限额来自 docs/t2-structured-gui.md §2/§3/§4/§5/§6（Lead 裁决的权威契约）；T1 事实来自 index.js 注册表与 Runtime 实现；不使用漂移行号",
-  "evidence": "【共享视口（本轮，覆盖路径）】`node tests/acceptance/viewport.mjs`（fake ctx + 真实 Chromium，同一最终代码）→ `tests/acceptance/runs/viewport-2026-11-01T16-13-39-758Z-559039/report.json` 与 `tests/acceptance/runs/viewport-2026-11-01T16-13-53-771Z-559488/report.json`（连跑两次）：probes 11/11、requiredChecks 107/107、failedChecks 0、findings 1（info：scale-only 布局不变且未发 metrics override）、exit 0。覆盖 V1 注册面、V2 冷启动诊断零启动、V3 预设/部分 patch/同值不增 revision/两 scope/非法参数零 CDP、V4 scale-only 布局不变与 override 计数、V5 x/y 实测与 clamp/单轴保留、H4b 页面自主滚动回显（source=page、revision+1、无空闲高频采样）、V6 CAS+BUSY、V7 legacy/v1 双形状 HTTP、V8 默认与显式截图比例、V9 T3 live 缺省比例、V10 lossless JSON 与关闭清 observed/x/y。GUI（隔离 DSH + 无头 Chrome，同一最终代码，连跑两次）`node tests/acceptance/viewport-gui.mjs` → `tests/acceptance/runs/viewport-gui-2026-11-01T16-09-04-966Z-554236/run-report.json` 与 `tests/acceptance/runs/viewport-gui-2026-11-01T16-10-07-443Z-555424/run-report.json`：**85/85 PASS、0 FAIL、5 NOT_RUN、exit 0**（含 2026-11-02 拖拽 V12）；证据 `本地验证记录（不随仓库分发）/viewport-gui-2026-11-01T16-09-04-966Z/`（9 张 PNG + SUMMARY）。回归同一时点：T1 `run.mjs` 23/23、349/349、exit 0（`tests/acceptance/runs/2026-11-01T16-14-07-752Z-559846/run-report.json`）；`capture-p0.mjs` 15/15、162/162、exit 0（`tests/acceptance/runs/capture-p0-2026-11-01T15-40-32-906Z-519432/report.json`）；`runtime-faults` 16/16（执行者/Lead 交接）。**5 条 GUI NOT_RUN 与原因**：V7.10 agent 归因（GUI 只能走 HTTP v1，Host 记为 source=gui；归因由 Host H2 覆盖）、V8.5 letterbox 零派发（实测帧无 letterbox band，painted rect 填满容器）、V10.4 旧 Host 降级（套件只起带 ui.view 的新 Host）、V10.5 expectedRevision 冲突（Host H5 覆盖，GUI 只断言 patch 携带 expectedRevision）、V10.6 宽高变更几何屏障仅 best-effort（帧协议未扩展，≤250ms，文档记 partial）。`expandViewPatch` 带 mode 时保留同传 x/y/scale 的偏差已由 task-7 修复（只改透传 + V3 增断言，不改 UI/API 语义）；画布 v2 Lead 终验（2026-11-02，串行）：viewport 14/14 + 166/166；GUI 142/142 + 5 NOT_RUN；capture-p0 15/15 + 162/162；t3-vision 56/56 + 415/415；其余 run/t2/network/workspace/faults/check-skill 见 status.md「Lead 独立终验」。此前 2026-11-01 的 11/11+107/107、85/85、14/14+142/142、391/391 保留为历史。**真实宿主**：3080 于 2026-11-02 11:15 重启后，30 工具/ui.view/browser_viewport 与**画布 v2 Host 面**（canvasX/Y/blank/合成截图/T3/blank act 零派发/导航复位）已实测；**面板画布交互与需 GUI 认证的路由仍 NOT_RUN**，隔离 DSH GUI 不能冒充真实面板。 【网络 P0（verified）】`node tests/acceptance/network-p0.mjs`（Lead 独立串行，同一最终代码）→ `tests/acceptance/runs/2026-11-01T12-27-48-770Z-370586/run-report.json`：criteriaTotal 52 / covered 52 / passed 52 / failed 0、requiredChecks 266、failedChecks 0、notRunChecks 8、exit 0；单测 `network-p0.test.mjs` 43/43。非回归同一时点：T1 `run.mjs` 23/23、347/347（`2026-11-01T12-39-01-545Z-382567`）；T2 `t2-structured.mjs` 37/38 + 1 NOT_RUN、261/261（`2026-11-01T12-40-39-213Z-384724`）；T3 `t3-vision.mjs` 56/56、415/415、notApplicable 3（`2026-11-01T12-43-30-666Z-391625`）；`capture-p0.mjs` 14/14、142/142（`capture-p0-2026-11-01T12-42-03-957Z-388489`）；runtime-faults 16/16、workspace-isolation 77/77、check-skill 27/27、registry 19/19；`node --check`/`git diff --check` 干净。未验证：真实宿主重启后网络冒烟与 provider/长连接稳定性（NOT_RUN）、C1 HTTPS、C2 二进制 body、C5 service worker、C20 单样本 p95、C35 淘汰 body 三态、C37 modify-response、OOPIF 未单独验证。 【T3 静态视觉（verified）】`node tests/acceptance/t3-vision.mjs`（Lead 串行复跑，同一最终代码）→ `tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json`：criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0；执行者复跑 `tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json` 同结果。回归：T1 `run.mjs` 22/22、324/324（`2026-11-01T07-31-29-210Z-168725`）；T2 `t2-structured.mjs` 37/38+1 NOT_RUN（C38 套件边界）、260/260（`2026-11-01T07-33-10-505Z-170262`）；P0 `capture-p0.mjs` 14/14、142/142（`capture-p0-2026-11-01T07-35-21-142Z-176846`）；单测 vision 36/36 + 基线 52/52、capture 26/26、runtime-faults 16/16；check-skill 26/26、registry 17/17。未验证：真实宿主重载、provider 图像可见性、T4、3 条 N/A（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups）、本地 TOCTOU/网络 FS CAS。【历史】以下 T2/T1/P0 记录保持原文（T2 优化构建时点，工具面当时为 16）。 T2 优化构建（进程内，Lead 独立复跑 exit 0）: node tests/acceptance/t2-structured.mjs → `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`：probes 38（pass 37 / fail 0 / notRun 1 = C38 §9.38）、requiredChecks **260/260**（此前 233；C4 24、C6 8、C25 18、C26 8）、criteriaCovered 38、findings 5（info/advisory）、exit 0。优化效果（同一 /web-t2.html、默认参数，两次捕获 tree/digest 一致）：nodeCount 421→275（−34.7%）、tree UTF-8 14432→9254（−35.9%）、`- text` 行 232→91。T1 回归: node tests/acceptance/run.mjs → `tests/acceptance/runs/2026-11-01T03-41-59-200Z-41002/run-report.json`：22/22 探针、324/324、findings 1（info: P20 unmodifiedText INCONCLUSIVE）、exit 0。runtime-faults 16/16、check-skill 25/25、check-skill-registry 17/17（均 exit 0）；`node --check` 与 `git diff --check` 通过（Lead 记录）。T2 真实宿主: `本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md` **14/14 检查行通过，但属优化前构建（pid <pid>）**；同文件已追加「优化构建复验（待真实宿主重载）」小节，列出待定向复验 5 项。历史真实宿主/套件：`runs/2026-10-31T19-25-29-077Z-54114`（233/233，优化前）、`runs/2026-10-31T19-26-07-741Z-55458`（T1 324/324）、团队复跑 `runs/2026-10-31T19-21-26-010Z-49307`、`runs/2026-10-31T19-22-02-871Z-50749`。【历史，T2 时点】注册面/能力报告实测（真实 Cordis + 真 SkillRegistry 挂载 index.js，未启动 Chromium）：注册 16 个工具；capabilities 返回 22 项能力与 limits.structuredGui；第 8 轮后注册面为 29。",
-  "observations": [
-    {
-      "id": "t2-suite-green",
-      "suite": "t2-structured",
-      "report": "tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json",
-      "result": "probes 38：pass 37 / fail 0 / notRun 1；requiredChecks 260/260、criteriaCovered 38、exit 0",
-      "build": "优化构建（快照冗余文本压缩 + scroll 不自动滚入/稳定性硬化）",
-      "coverage": "C1 注册面、C2 冷启动能力、C3 工作区隔离、C4 语义快照（24 checks，含压缩正负例）、C5 稳定摘要、C6 限额（8 checks，含注入 800×~220B 的 treeBytes 截断）、C7 boxes、C8 scope、C9 跨快照 ref 保留、C10 LRU2000、C11 导航失效、C12 节点身份、C13 唯一 selector、C14 可信 click、C15 hidden/disabled、C16 covered/motion、C17 离屏、C18 文本输入、C19 编辑限制、C20 Enter、C21 表单文本/布尔、C22 combobox/slider、C23 整批预检、C24 部分失败、C25 方向滚动（18 checks，含离屏/不稳定零派发 + hint + 恢复）、C26 to 滚动（8 checks）、C27 节点状态、C28 wait 成功、C29 wait 负例、C30 取消等待、C31 取消部分输入、C32 七工具 lease、C33 成功证据、C34 失败证据、C35 网络/脱敏/限额、C36 shadow/frame、C37 T1/宿主回归（进程内）",
-      "notRun": "C38 §9.38 真实宿主/声明（套件边界）"
-    },
-    {
-      "id": "real-host-verified",
-      "scope": "§9.38 真实宿主会话（优化前构建）",
-      "record": "本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md",
-      "result": "14/14 检查行通过（T2 时点 16 工具注册与 capabilities、snapshot 主文档/scope、可信 click、type、fill_form 7 字段、表单提交真值、toggle、wait text/textGone、文档与目标滚动、隐藏节点 node_state、覆盖目标 NOT_INTERACTABLE、导航后 REF_STALE、T1 未回归）",
-      "environment": "DSH 3080 pid <pid>（2026-11-01 10:40:04 重载）、<session-id>、scope <scope-id>（非 legacy）、fixture http://127.0.0.1:33631/web-t2.html",
-      "build_scope": "**优化前构建**；本记录不能代表优化后的快照压缩与 scroll 行为",
-      "boundary": "fake-ctx 套件内 C38 仍为 NOT_RUN（套件边界）；真实宿主证据以本记录为准",
-      "pending_recheck": {
-        "status": "待真实宿主定向复验（DSH 重启加载优化构建后）",
-        "items": [
-          "① snapshot 冗余文本已压缩：heading/button 无重复 text、分片分隔符为 `- text \" \"`、generic 无 ref",
-          "② 同名 sibling / 独立节点 refs 仍各自可点",
-          "③ 离屏目标 browser_scroll 零派发 + reason=outside-viewport + 固定 hint，滚文档后重试成功",
-          "④ 持续运动目标 → reason=unstable 零派发",
-          "⑤ T1 截图/导航未回归"
-        ]
-      },
-      "observations_not_failures": [
-        "快照树对纯文本节点的重复展开已在优化构建中压缩（原型记录里的体积问题，见 evidence 的 nodeCount/tree 字节对比）",
-        "browser_scroll 对当前视口外目标不自动滚入（契约 §4.3 裁决），先滚文档后成功"
-      ]
-    },
-    {
-      "id": "t1-suite-green",
-      "suite": "t1",
-      "report": "tests/acceptance/runs/2026-10-31T19-26-07-741Z-55458/run-report.json",
-      "result": "probes 22/22、requiredChecks 324/324、failedChecks 0、findings 1（info: P20 unmodifiedText INCONCLUSIVE）、exit 0"
-    },
-    {
-      "id": "still-unverified",
-      "items": [
-        "优化构建的真实宿主定向复验 5 项（见 real-host-verified.pending_recheck；现有 14 行属优化前构建）",
-        "provider 图像可见性（T1/T3 遗留，属 screenshot 附件链路，不是 T2 能力）",
-        "closed-shadow 不产生 ref：仅 C36 的一条 advisory 检查覆盖（其他 closed-shadow 分支为 required 且已通过）"
-      ]
-    },
-    {
-      "id": "capabilities-call-ok",
-      "tool": "browser_capabilities",
-      "observation": "真实 Cordis + 真 SkillRegistry 挂载 index.js 后调用成功，返回 22 工具对应的 28 项能力（12 T1 + 8 T2 + 7 T3 + 1 T4）与 limits.structuredGui（与契约 §5.3 一致）",
-      "limits": "available 是设计级状态；行为验证以 T2 套件报告为准"
-    },
-    {
-      "id": "t3-suite-verified",
-      "suite": "t3-vision",
-      "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
-      "rerun": "tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json",
-      "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3、exit 0",
-      "notApplicable": [
-        "C25 DOM 小数 / Blink 截断：Chrome 对小数 clip 取 floor，Host 按 §3.1 以实际采样构造 mapping 并记录 sizeTolerance(±1px)",
-        "C30 inert hit-test：inert 子树不参与命中测试（elementFromPoint/CDP 均返回 BODY），该断言不适用",
-        "C31 页面级 downs/ups：取消路径的按钮释放由 CDP 层保证，页面计数不可稳定观测"
-      ],
-      "coverage": "C1 注册面/C2 纯参数预检、C3–C4 live 采集与小数、C5 scope 隔离、C12 image 裁剪+识别、C14/C48 find、C17/C22/C24/C40 compare 与 mask、C25–C31 act 六步、C35–C41 基线/回归/CAS/墓碑、C43–C49 六类缺陷与 facts、C51 output、C55 BUSY 隔离、C56 闭环",
-      "unverified": [
-        "真实宿主重载：需要隔离 DSH 实例加载终版 index.js 并在真实 Agent 会话复跑 T3 工具（本进程套件不能代替）",
-        "provider 图像可见性：附件元数据不能证明模型实际看到原分辨率图像（NOT_RUN）",
-        "T4 动态视觉（帧序列/动画时序/连续视觉推理）仍 unsupported",
-        "3 条 notApplicable：C25 DOM 小数 / Blink 截断行为、C30 inert 子树不参与 hit-test（elementFromPoint 与 CDP 均返回 BODY）、C31 页面级 downs/ups 计数（原因均已记录）",
-        "本地恶意进程 TOCTOU 与网络文件系统 HEAD CAS：基线/落盘守卫不是安全沙箱"
-      ]
-    },
-    {
-      "id": "viewport-suite-partial",
-      "suite": "viewport + viewport-gui",
-      "reports": {
-        "host": [
-          "tests/acceptance/runs/viewport-2026-11-01T16-13-39-758Z-559039/report.json",
-          "tests/acceptance/runs/viewport-2026-11-01T16-13-53-771Z-559488/report.json"
-        ],
-        "gui": [
-          "tests/acceptance/runs/viewport-gui-2026-11-01T16-09-04-966Z-554236/run-report.json",
-          "tests/acceptance/runs/viewport-gui-2026-11-01T16-10-07-443Z-555424/run-report.json"
-        ]
-      },
-      "result": "Host：probes 14/14、requiredChecks 166/166、failedChecks 0、exit 0（画布 v2）；GUI（隔离 DSH）：142/142 PASS、0 FAIL、5 NOT_RUN、exit 0（V12 拖拽 + V13 画布）",
-      "coverage": "注册面/冷启动诊断零启动、预设与部分 patch、同值不增 revision、两 scope 独立、非法参数零 CDP、scale-only 布局不变且 override 计数不增、x/y 实测与 clamp/单轴保留、页面自主滚动回显、CAS 与 BUSY、legacy/v1 双形状 HTTP、默认与显式截图比例、T3 live 缺省比例与 act 冻结、lossless JSON、关闭清 observed/x/y；GUI 五个输入框滚轮步长与修饰键、120ms 合并、fit 本地语义、painted rect 坐标映射、画面滚轮 W/Pw 缩放、窄面板 wrap、宽高变更后输入屏障",
-      "notRun": [
-        "V7.10 agent 归因（Host H2 覆盖）",
-        "V8.5 letterbox 零派发（实测无 band）",
-        "V10.4 旧 Host 降级（套件只起新 Host）",
-        "V10.5 expectedRevision 冲突（Host H5 覆盖）",
-        "V10.6 几何屏障 best-effort（partial）"
-      ],
-      "limits": "真实 3080（2026-11-02 11:15 重启）画布 v2 Host 面已实测（canvasX/Y/blank/合成截图/T3/blank act 零派发/导航复位/自主滚动保留 O）；面板画布交互与需 GUI 认证的路由仍 NOT_RUN；H9 screencast 时序未单独实测；画布 v2 Lead 终验全绿（viewport 14/14+166/166、GUI 142/142+5 NOT_RUN、run 23/23+349/349、capture 15/15+162/162、t2 37/38+1 NOT_RUN+261/261、t3 56/56+415/415+notApplicable 3、network 52/52+266/266+8 NOT_RUN、chain 12/12+49+1 NOT_RUN、workspace 77/77、faults 16/16、check-skill 30/30、registry 19/19，全部 exit 0）"
-    }
-  ],
+  "source": "接口与限额来自 docs/t2-structured-gui.md §2/§3/§4/§5/§6（维护者的权威契约）；T1 事实来自 index.js 注册表与 Runtime 实现；不使用漂移行号",
+  "evidence": "工程状态快照，不是运行时可用性声明；可用性以注册表与 browser_capabilities 为准。验收命令与判读见 docs/verification.md。",
+  "observations": [],
   "runtime_contract": {
     "isolation": "per-workspace-page + single-owner-lease",
     "shared_page": false,
@@ -433,7 +291,7 @@
       "observedPolicy": "首次null，仅真实截图；file只{persistence,relativePath|null}，staging不公开绝对路径；查询不启动/不创建暂存根"
     },
     "viewport": {
-      "source": "docs/viewport-control.md §3/§7（Lead 2026-11-01 冻结）；运行态由 browser_capabilities.viewport 与 limits.viewport 报告",
+      "source": "docs/viewport-control.md §3/§7（维护者 冻结）；运行态由 browser_capabilities.viewport 与 limits.viewport 报告",
       "coordinateSpace": "document-css-px",
       "width": [
         200,
@@ -524,7 +382,7 @@
         "动画/时序/运动连续性（T4）"
       ],
       "compression": {
-        "contract": "docs/t2-structured-gui.md §3.1 第 1/2 条（2026-11-01 裁决）",
+        "contract": "",
         "rules": [
           "内容命名 owner（heading/button/link）且 name 来自其 contents 时，纯文本重复链只保留一份",
           "aria-label/aria-labelledby/外部 label 命名的 owner 不得吞掉子文本",
@@ -543,7 +401,7 @@
         }
       },
       "scroll": {
-        "contract": "docs/t2-structured-gui.md §4.3（2026-11-01 裁决）",
+        "contract": "docs/t2-structured-gui.md §4.3（ 裁决）",
         "autoScrollIntoView": false,
         "preDispatchGates": [
           "visible",
@@ -615,7 +473,7 @@
       "status": "partial",
       "tool": "browser_screenshot",
       "source_lines": "Runtime.screenshot / browser_screenshot execute+render",
-      "constraints": "P0详见capture_p0：显式 scale 连续 0.1–4（省略时 = 当前共享 view.scale，cold 为 1）、canvas CSS region（O=0与文档相同；O≠0白底合成并披露composite）/out相对.png，PNG结构/CRC/尺寸/全量均匀统计/JSON mapping/安全0600-no-clobber文件/delivery metadata/warnings；原始base64/hash/附件fallback兼容。capture.request 新增 scaleSource(explicit|view) 与 viewRevision，mapping 新增逐轴 cssPerPixel 与 scrollAtCapture；两轴期望像素 <1 时提前 INVALID_ARGUMENT(empty-output-dimensions)。当前C1–C15为15/15、162/162；默认staging绝对path/dispose清理，out/persist:true/非空env才persistent相对path；file含pathKind/persistence/root/ephemeral，observed无绝对路径。provider/真实宿主画布P0仍NOT_RUN，无视觉差异/VLM，不代表T3。"
+      "constraints": "P0详见capture_p0：显式 scale 连续 0.1–4（省略时 = 当前共享 view.scale，cold 为 1）、canvas CSS region（O=0与文档相同；O≠0白底合成并披露composite）/out相对.png，PNG结构/CRC/尺寸/全量均匀统计/JSON mapping/安全0600-no-clobber文件/delivery metadata/warnings；原始base64/hash/附件fallback兼容。capture.request 新增 scaleSource(explicit|view) 与 viewRevision，mapping 新增逐轴 cssPerPixel 与 scrollAtCapture；两轴期望像素 <1 时提前 INVALID_ARGUMENT(empty-output-dimensions)。默认staging绝对path/dispose清理，out/persist:true/非空env才persistent相对path；file含pathKind/persistence/root/ephemeral，observed无绝对路径。"
     },
     {
       "id": "web.t1.runtime-state",
@@ -629,7 +487,7 @@
       "status": "partial",
       "tool": "browser_capabilities",
       "source_lines": "Runtime 能力探测 / browser_capabilities",
-      "constraints": "P0新增capture/limits.capture声明与上次真实截图observed（首次null），不启动/不夺租约；设计上不启动、不占租约；工具面 30 项（10 T1 + 7 T2 + 6 T3 + 7 network），含 web.t1.http-request=available、web.t1.viewport=available（get 只读、set 页面操作，其他 owner 持租约时 set 报 BUSY、get 仍可读）、web.t2.*、web.t2.structured-dom、web.t3.* 与 web.network.*；另报 viewport 段（get/set/预设/比例/limits.viewport，observed 只来自真实读回）与 capture.defaultScaleSource='view.scale'；未启动的页面工具可 available（按需启动可能失败）；其他 owner 占用时页面/network/T2/T3 unavailable+BUSY、诊断与 HTTP 仍 available。available 只是设计级状态，行为验证看各套件报告。"
+      "constraints": "P0新增capture/limits.capture声明与上次真实截图observed（首次null），不启动/不夺租约；设计上不启动、不占租约；工具面 35 项（10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4），含 web.t1.http-request=available、web.t1.viewport=available（get 只读、set 页面操作，其他 owner 持租约时 set 报 BUSY、get 仍可读）、web.t2.*、web.t2.structured-dom、web.t3.* 与 web.network.*；另报 viewport 段（get/set/预设/比例/limits.viewport，observed 只来自真实读回）与 capture.defaultScaleSource='view.scale'；未启动的页面工具可 available（按需启动可能失败）；其他 owner 占用时页面/network/T2/T3 unavailable+BUSY、诊断与 HTTP 仍 available。available 只是设计级状态，行为验证看各套件报告。"
     },
     {
       "id": "web.t1.http-request",
@@ -643,63 +501,63 @@
       "status": "verified",
       "tool": "browser_snapshot",
       "source_lines": "docs/t2-structured-gui.md §2.2/§3；Runtime.snapshot",
-      "constraints": "AX 语义树文本 + refs。参数 scope?:{ref|selector 恰一}、maxNodes 1–2000（默认 500）、depth 0–32（默认 12）、boxes 默认 false。返回 snapshotId(s1,s2,…)/digest/tree/refs/nodeCount/truncated/truncationReasons/coverage{frame:'main',shadow:'ax-backed',complete}。ref 只给主文档中可 resolve 为 connected Element 的非 ignored 语义节点；iframe 是边界叶子、不输出内部 ref；不推导 CSS/role-name locator。采集中文档代次变化抛 REF_STALE，不发布混合快照。 已验证：C4(24)/C5/C6(8)/C7/C8（语义快照含冗余文本压缩正负例、稳定摘要、maxNodes/depth/treeBytes 截断、boxes、scope）。优化构建（契约 §3.1 第 1/2 条 2026-11-01 裁决）：内容命名 owner 的纯文本重复链只留一份、分片空白分隔符投影为单行 `- text \" \"`、不输出空文本行、generic 包装不再分配 ref（需查询时用显式 selector）；压缩在 emit/计数/字节预算前完成，跨构建 digest 变化不算回归；同 fixture 默认参数 nodeCount 421→275、tree 14432→9254 字节。 报告 runs/2026-10-31T19-25-29-077Z-54114。"
+      "constraints": "AX 语义树文本 + refs。参数 scope?:{ref|selector 恰一}、maxNodes 1–2000（默认 500）、depth 0–32（默认 12）、boxes 默认 false。返回 snapshotId(s1,s2,…)/digest/tree/refs/nodeCount/truncated/truncationReasons/coverage{frame:'main',shadow:'ax-backed',complete}。ref 只给主文档中可 resolve 为 connected Element 的非 ignored 语义节点；iframe 是边界叶子、不输出内部 ref；不推导 CSS/role-name locator。采集中文档代次变化抛 REF_STALE，不发布混合快照。压缩在 emit/计数/字节预算前完成，跨构建 digest 变化不算回归；同 fixture 默认参数 nodeCount 421→275、tree 14432→9254 字节。 报告"
     },
     {
       "id": "web.t2.click",
       "status": "verified",
       "tool": "browser_click",
       "source_lines": "docs/t2-structured-gui.md §2.2/§4.1；Runtime.click",
-      "constraints": "目标 ref 或 selector（恰一，均为 string）。button left/right/middle（默认 left）、clickCount 1–2、modifiers ≤4 不重复。before 读数先于滚动/聚焦；必要时 scrollIntoView(center) 并用两帧证明稳定（bbox 差值 ≤1px），命中校验（DOM.getNodeForLocation / open shadow 递归 elementFromPoint）必须命中目标或 composed descendant；随后 CDP mouseMoved/mousePressed/mouseReleased。hidden/disabled/inert/零面积/无交集/持续运动/overlay/pointer-events:none 一律零派发 NOT_INTERACTABLE，hidden/covered 带 details.escalation='T3'。无 force/JS click 参数。 已验证：C12/C13/C14/C15/C16/C17/C36（身份/唯一 selector/可信 click/hidden-disabled/覆盖与运动/离屏/影子 DOM）。 报告 runs/2026-10-31T19-25-29-077Z-54114。"
+      "constraints": "目标 ref 或 selector（恰一，均为 string）。button left/right/middle（默认 left）、clickCount 1–2、modifiers ≤4 不重复。before 读数先于滚动/聚焦；必要时 scrollIntoView(center) 并用两帧证明稳定（bbox 差值 ≤1px），命中校验（DOM.getNodeForLocation / open shadow 递归 elementFromPoint）必须命中目标或 composed descendant；随后 CDP mouseMoved/mousePressed/mouseReleased。hidden/disabled/inert/零面积/无交集/持续运动/overlay/pointer-events:none 一律零派发 NOT_INTERACTABLE，hidden/covered 带 details.escalation='T3'。无 force/JS click 参数。 报告"
     },
     {
       "id": "web.t2.type",
       "status": "verified",
       "tool": "browser_type",
       "source_lines": "docs/t2-structured-gui.md §2.2/§4.1；Runtime.typeText",
-      "constraints": "只支持原生 input[type=text|search|email|url|tel|password] 与 textarea；text ≤65536 字节（允许空串=清空），单行 input 含 CR/LF 抛 INVALID_ARGUMENT；replace 默认 true（Ctrl+A+Backspace 再 Input.insertText），false 追加到末尾；submit 在值验证后派发 Enter（virtualKeyCode 13），submitted=true 只表示 Enter 已派发，不代表业务提交成功。可信点击后用深层 activeElement 校验焦点；焦点被拦截/beforeinput 取消/值被恢复 → NOT_INTERACTABLE（focus-mismatch/value-mismatch）。contenteditable/number/date/file/hidden 抛 UNSUPPORTED。普通 insertText 不产生逐字符 keydown，不承诺 IME/composition。结果不回显输入文本（insertedCharacters 按 code point）。 已验证：C18/C19/C20（替换与追加/编辑限制与焦点校验/Enter 提交语义）。 报告 runs/2026-10-31T19-25-29-077Z-54114。"
+      "constraints": "只支持原生 input[type=text|search|email|url|tel|password] 与 textarea；text ≤65536 字节（允许空串=清空），单行 input 含 CR/LF 抛 INVALID_ARGUMENT；replace 默认 true（Ctrl+A+Backspace 再 Input.insertText），false 追加到末尾；submit 在值验证后派发 Enter（virtualKeyCode 13），submitted=true 只表示 Enter 已派发，不代表业务提交成功。可信点击后用深层 activeElement 校验焦点；焦点被拦截/beforeinput 取消/值被恢复 → NOT_INTERACTABLE（focus-mismatch/value-mismatch）。contenteditable/number/date/file/hidden 抛 UNSUPPORTED。普通 insertText 不产生逐字符 keydown，不承诺 IME/composition。结果不回显输入文本（insertedCharacters 按 code point）。 报告"
     },
     {
       "id": "web.t2.scroll",
       "status": "verified",
       "tool": "browser_scroll",
       "source_lines": "docs/t2-structured-gui.md §2.2/§4.3；Runtime.scroll",
-      "constraints": "目标 ref/selector 至多一个（省略=document.scrollingElement）；direction∈{up,down,left,right} 与 to∈{top,bottom} 恰一，to 禁止 amount；amount 默认 400（1–10000 CSS px）。direction 走 CDP mouseWheel（eventSource=cdp-input），两帧后最多观察 1000ms 至稳定；to 走 scrollTo({behavior:'instant'})（eventSource=dom-scroll）。返回 requested/scrollBefore/scrollAfter/moved；到边界 moved:false 仍成功；不可滚/被覆盖 NOT_INTERACTABLE；参数冲突 INVALID_ARGUMENT。 已验证：C25(18)/C26(8)（四方向 wheel 与目标滚动区、to=top|bottom 与参数校验）。2026-11-01 优化（契约 §4.3 裁决）：**不自动滚入视口**（`click`/`type` 的准备滚动语义不适用），`direction` 与 `to` 都在派发前校验 visible/stable(两帧 bbox ≤1px)/viewport 交集/中心命中，不满足即零派发 `NOT_INTERACTABLE`（reason=outside-viewport|unstable）并附**不含 selector 原文**的固定 `details.hint`；失败前后页面与元素 scroll 读数进 evidence，便于核对零副作用。 报告 runs/2026-10-31T19-25-29-077Z-54114。"
+      "constraints": "目标 ref/selector 至多一个（省略=document.scrollingElement）；direction∈{up,down,left,right} 与 to∈{top,bottom} 恰一，to 禁止 amount；amount 默认 400（1–10000 CSS px）。direction 走 CDP mouseWheel（eventSource=cdp-input），两帧后最多观察 1000ms 至稳定；to 走 scrollTo({behavior:'instant'})（eventSource=dom-scroll）。返回 requested/scrollBefore/scrollAfter/moved；到边界 moved:false 仍成功；不可滚/被覆盖 NOT_INTERACTABLE；参数冲突 INVALID_ARGUMENT。 优化（契约 §4.3 裁决）：**不自动滚入视口**（`click`/`type` 的准备滚动语义不适用），`direction` 与 `to` 都在派发前校验 visible/stable(两帧 bbox ≤1px)/viewport 交集/中心命中，不满足即零派发 `NOT_INTERACTABLE`（reason=outside-viewport|unstable）并附**不含 selector 原文**的固定 `details.hint`；失败前后页面与元素 scroll 读数进 evidence，便于核对零副作用。 报告"
     },
     {
       "id": "web.t2.fill_form",
       "status": "verified",
       "tool": "browser_fill_form",
       "source_lines": "docs/t2-structured-gui.md §2.2/§4.2；Runtime.fillForm",
-      "constraints": "fields 1–20 项，每项 {ref|selector 恰一, type, value}；type ∈ textbox/checkbox/radio/combobox/slider；整批文本合计 ≤65536 字节。整批预检（参数/全部目标身份/控件类型/选项与范围/基础 actionability/重复 backend 目标）通过才按序执行；失败立即停止、不回滚，details 带 applied/failedIndex/fields，可部分生效。checkbox 已满足不点击、radio 只接受 true；combobox 用原生 select 的 option.value 精确匹配（单选 string、多选 1–20 不重复 string[]），不打开原生 popup；slider 用原生 input[type=range] setter（值在 min/max 内且符合 step，step=any 不支持）。combobox/slider 为 DOM 控件写入（eventSource=dom-control，不声称 isTrusted）；textbox/checkbox/radio 为可信 CDP 输入（cdp-input）。自定义 ARIA combobox/slider 不接受。 已验证：C21/C22/C23/C24/C31（文本与布尔/combobox-slider dom-control/整批预检零派发/部分失败/取消）。 报告 runs/2026-10-31T19-25-29-077Z-54114。"
+      "constraints": "fields 1–20 项，每项 {ref|selector 恰一, type, value}；type ∈ textbox/checkbox/radio/combobox/slider；整批文本合计 ≤65536 字节。整批预检（参数/全部目标身份/控件类型/选项与范围/基础 actionability/重复 backend 目标）通过才按序执行；失败立即停止、不回滚，details 带 applied/failedIndex/fields，可部分生效。checkbox 已满足不点击、radio 只接受 true；combobox 用原生 select 的 option.value 精确匹配（单选 string、多选 1–20 不重复 string[]），不打开原生 popup；slider 用原生 input[type=range] setter（值在 min/max 内且符合 step，step=any 不支持）。combobox/slider 为 DOM 控件写入（eventSource=dom-control，不声称 isTrusted）；textbox/checkbox/radio 为可信 CDP 输入（cdp-input）。自定义 ARIA combobox/slider 不接受。 报告"
     },
     {
       "id": "web.t2.node_state",
       "status": "verified",
       "tool": "browser_node_state",
       "source_lines": "docs/t2-structured-gui.md §2.2/§5.1；Runtime.nodeState",
-      "constraints": "目标 ref/selector 恰一；返回现场读取的 NodeState（connected/role/name/tagName/inputType/visible/enabled/editable/readOnly/checked/selected/expanded/required/invalid/focused/bbox/inViewport/hitTarget/scroll，可编辑值脱敏）。hidden/disabled/readonly/covered 本身不导致读状态失败；不适用布尔属性为 null 而非 false；不发布新 snapshot/ref。 已验证：C27（角色/可见/启用/只读/勾选/选中/展开/焦点/bbox/hitTarget/滚动，含 AX 与 DOM 差异）。 报告 runs/2026-10-31T19-25-29-077Z-54114。"
+      "constraints": "目标 ref/selector 恰一；返回现场读取的 NodeState（connected/role/name/tagName/inputType/visible/enabled/editable/readOnly/checked/selected/expanded/required/invalid/focused/bbox/inViewport/hitTarget/scroll，可编辑值脱敏）。hidden/disabled/readonly/covered 本身不导致读状态失败；不适用布尔属性为 null 而非 false；不发布新 snapshot/ref。 报告"
     },
     {
       "id": "web.t2.wait_for",
       "status": "verified",
       "tool": "browser_wait_for",
       "source_lines": "docs/t2-structured-gui.md §2.2/§4.4；Runtime.waitFor",
-      "constraints": "条件恰属一类：仅 text / 仅 textGone / (ref|selector 至多一 + state 至少一 key)，混用抛 INVALID_ARGUMENT；state={visible,enabled,checked,valueEquals} 多 key 为 AND，valueEquals 精确等于；text/textGone 针对主文档 body.innerText（不穿 iframe/shadow，不支持 regex/任意 JS）。timeoutMs 默认 5000（0=只采一次，上限 30000；工具外层预算须留清理余量）、pollMs 默认 100（50–1000）。selector 0 命中时 {visible:false} 可满足，其余 state 不因缺失满足；>1 立即 TARGET_NOT_UNIQUE；ref 失效立即 REF_STALE（不能当“移除成功”）；到期限抛 WAIT_TIMEOUT（details 含 elapsedMs/polls/condition，retryable=true，不关闭 page）。matched 只需单次满足样本，不承诺持续满足；不发布新 snapshot/ref。 已验证：C28/C29/C30（成功路径/负例 WAIT_TIMEOUT/取消等待）。 报告 runs/2026-10-31T19-25-29-077Z-54114。"
+      "constraints": "条件恰属一类：仅 text / 仅 textGone / (ref|selector 至多一 + state 至少一 key)，混用抛 INVALID_ARGUMENT；state={visible,enabled,checked,valueEquals} 多 key 为 AND，valueEquals 精确等于；text/textGone 针对主文档 body.innerText（不穿 iframe/shadow，不支持 regex/任意 JS）。timeoutMs 默认 5000（0=只采一次，上限 30000；工具外层预算须留清理余量）、pollMs 默认 100（50–1000）。selector 0 命中时 {visible:false} 可满足，其余 state 不因缺失满足；>1 立即 TARGET_NOT_UNIQUE；ref 失效立即 REF_STALE（不能当“移除成功”）；到期限抛 WAIT_TIMEOUT（details 含 elapsedMs/polls/condition，retryable=true，不关闭 page）。matched 只需单次满足样本，不承诺持续满足；不发布新 snapshot/ref。 报告"
     },
     {
       "id": "web.t2.structured-dom",
       "status": "verified",
       "tool": null,
       "source_lines": "docs/t2-structured-gui.md §5.3；browser_capabilities 聚合项 web.t2.structured-dom",
-      "constraints": "聚合能力：snapshot → ref → 动作 → before/after 证据，其他 owner 持租约时与其他 T2 项一起 unavailable+BUSY。已验证（优化构建 T2 套件：probes 37/38 pass、requiredChecks 260/260；压缩与 scroll 硬化含在内）：主 frame、AX-backed open shadow（C36：open shadow ref 可信点击与深层身份）、CSS 不穿透 shadow/iframe（TARGET_NOT_FOUND）、iframe 仅边界叶子、closed-shadow 内部无 selector 路径、无 force、无视觉判定。未验证/仅 advisory：closed-shadow 不产生 ref 这一细分只有 C36 的一条 advisory 检查；§9.38 真实宿主会话已由 `本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md` 补齐（14/14 检查行通过；套件内 C38 仍记 NOT_RUN 属套件边界）。禁止据此声称跨帧或视觉能力。"
+      "constraints": "聚合能力：snapshot → ref → 动作 → before/after 证据，其他 owner 持租约时与其他 T2 项一起 unavailable+BUSY。未验证/仅 advisory：closed-shadow 不产生 ref 这一细分只有一条 advisory 检查；真实宿主行为需单独证据。禁止据此声称跨帧或视觉能力。"
     },
     {
       "id": "web.t1.viewport",
       "status": "partial",
       "tool": "browser_viewport",
       "source_lines": "docs/viewport-control.md §7；index.js 工具注册 browser_viewport + Runtime.viewProjection/applyView",
-      "constraints": "共享视口（第 10 个 T1 工具）。view={version:1,mode,x,y,canvasX,canvasY,width,height,scale,source,revision}，x/y 是文档 CSS px 的页面顶层滚动位置（Page.getLayoutMetrics 实测回读）；canvasX/canvasY 是视口左上角在文档画布上的位置（±1e7，可为负；面板 X/Y 绑定，O=C-S 时预览/截图/T3 白色 blank 合成；O=0 与旧字节/像素一致），width/height 为整数 200–4096，mode 由宽高精确匹配派生（custom 只作返回值），scale=0.1–2（10–200%）为 Host 权威显示比例与默认截图密度，source=default/gui/agent/page，revision 只在内容变化时递增。action=get 为只读缓存诊断（不接受其他字段；不 ensure、不发 CDP、不进队列、不占租约、不改 recent/error，可读他人租约下的缓存并明示 stale）；action=set 至少一个 view 字段（mode 与 width/height 互斥），走纯预检 → 串行队列 → 懒启动 + single-owner-lease，只有宽高变化才发 Emulation.setDeviceMetricsOverride，scale-only / x/y-only 不改 CSS 视口、DPR 或页面 zoom；expectedRevision 提供队列内 CAS，冲突抛 VIEWPORT_CONFLICT（HTTP 409）且 patch 零应用。已验证（Host 画布 v2：viewport.mjs 14/14 probes、166/166 requiredChecks、0 failed、exit 0；隔离 DSH GUI viewport-gui.mjs 142/142 PASS、0 FAIL、5 NOT_RUN、exit 0（V12 拖拽 + V13 画布）；capture-p0 15/15+162/162、t3-vision 56/56+415/415）：注册面/冷启动诊断零启动、预设与部分 patch、同值不增 revision、两 scope 独立、非法参数零 CDP、scale-only 布局不变且 override 计数不增、x/y 实测与 clamp/单轴保留、页面自主滚动回显（source=page、revision+1、无空闲高频采样）、CAS 与 BUSY、legacy/v1 双形状 HTTP、默认与显式截图比例、T3 live 缺省比例与 act 冻结、关闭清 observed/x/y。NOT_RUN：H9 screencast ACK/帧递增时序、真实面板交互（含画布/拖拽；真实宿主只复验了画布前 Agent 侧）、GUI 侧 agent 归因（Host H2 覆盖）、letterbox 零派发（实测无 band）、旧 Host 降级、GUI 侧 VIEWPORT_CONFLICT 并发（Host H5 覆盖）、宽高变更后几何屏障为 best-effort partial（帧协议未扩展）。expandViewPatch 带 mode 时保留同传 x/y/scale 的偏差已由 task-7 修复为透传（只改实现 + V3 增 6 项断言，不改 UI/API 语义）；修复后计数即上面的 14/14、166/166（画布 v2）。"
+      "constraints": "共享视口（第 10 个 T1 工具）。view={version:1,mode,x,y,canvasX,canvasY,width,height,scale,source,revision}，x/y 是文档 CSS px 的页面顶层滚动位置（Page.getLayoutMetrics 实测回读）；canvasX/canvasY 是视口左上角在文档画布上的位置（±1e7，可为负；面板 X/Y 绑定，O=C-S 时预览/截图/T3 白色 blank 合成；O=0 与旧字节/像素一致），width/height 为整数 200–4096，mode 由宽高精确匹配派生（custom 只作返回值），scale=0.1–2（10–200%）为 Host 权威显示比例与默认截图密度，source=default/gui/agent/page，revision 只在内容变化时递增。action=get 为只读缓存诊断（不接受其他字段；不 ensure、不发 CDP、不进队列、不占租约、不改 recent/error，可读他人租约下的缓存并明示 stale）；action=set 至少一个 view 字段（mode 与 width/height 互斥），走纯预检 → 串行队列 → 懒启动 + single-owner-lease，只有宽高变化才发 Emulation.setDeviceMetricsOverride，scale-only / x/y-only 不改 CSS 视口、DPR 或页面 zoom；expectedRevision 提供队列内 CAS，冲突抛 VIEWPORT_CONFLICT（HTTP 409）且 patch 零应用。真实宿主只复验了画布前 Agent 侧）、GUI 侧 agent 归因（Host H2 覆盖）、letterbox 零派发（实测无 band）、旧 Host 降级、GUI 侧 VIEWPORT_CONFLICT 并发（Host H5 覆盖）、宽高变更后几何屏障为 best-effort partial（帧协议未扩展）。"
     },
     {
       "id": "web.t1.browser-extras",
@@ -716,8 +574,8 @@
       "constraints": "source(默认live)/region(PixelRect)/resize(factor 1–4,nearest|bilinear)/preprocess(≤8)/annotations(≤64)/recognize/output。处理顺序固定：source→crop→resize→preprocess→统计+识别→标注→编码/校验/交付；分析与识别在标注前，regions 相对未标注图。无变换复用原 productId/原始 PNG；有变换 derived，标注另存未标注 derived 供 recognition 引用。返回 product/image/bytes/sha256/attachment*/file/analysis/recognition/evidence；无断言 verdict=INCONCLUSIVE(no-assertion)。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
-        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
-        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+        "report": "",
+        "result": ""
       }
     },
     {
@@ -728,8 +586,8 @@
       "constraints": "query 必填：method=color/components/edges/template + minArea/maxResults；template 只接受 product/baseline 源且不大于搜索 ROI。region 先裁 ROI，FindResult 坐标始终相对完整源图（ROI 原点已回加），documentCss 由 mapping 映射；无匹配为成功空列表（不是 TARGET_NOT_FOUND）；candidates 非 DOM 身份、semanticName 恒 null；默认不生成图片/文件/product（live 源仍生成可引用源 product）。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
-        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
-        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+        "report": "",
+        "result": ""
       }
     },
     {
@@ -740,8 +598,8 @@
       "constraints": "before/after 必须显式、两图必须同像素尺寸（否则 VISION_SIZE_MISMATCH）；region 为共同 PixelRect。YIQ 固定算法 yiq-v1（严格 >、白底合成、AA 3×3 排除、mask 并集不进分母）；masks 缺省继承 before 基线元数据、显式 [] 清空；options/thresholds 逐字段覆盖并返回 resolved*；全屏蔽抛 VISION_EMPTY_COMPARISON。输出完整尺寸 annotated diff PNG（红差异/黄AA/灰mask/蓝bbox）+ P0 落盘规则；similarity=1-D/C 不是语义相似度。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
-        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
-        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+        "report": "",
+        "result": ""
       }
     },
     {
@@ -752,8 +610,8 @@
       "constraints": "productId/action(move|click|drag)/point 必填；drag 必须 to，move 禁止 button/clickCount/steps/durationMs，drag 禁止 clickCount，button 只对 click/drag。六步：现场 layout/scroll/visualViewport 复验（逐轴 ≤0.01、scale=1）→ 同矩形重采样解码 RGBA hash 比对 → 视口校验（不自动滚动）→ DOM.getNodeForLocation + connected/disabled/inert + 两帧 rAF 命中稳定 → CDP Input 真实派发（finally 释放按键）→ 单次 after product。失败零派发：VISION_STALE_IMAGE/VISION_HIT_MISMATCH/NOT_INTERACTABLE(outside-viewport)/UNSUPPORTED(跨frame)。verdict 固定 INCONCLUSIVE(dispatch-only)。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
-        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
-        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+        "report": "",
+        "result": ""
       }
     },
     {
@@ -764,8 +622,8 @@
       "constraints": "action=list|get|create|update|delete + 条件必填/禁止字段互斥。root 用 P0 规则（DSH_UI_TESTING_CAPTURE_DIR 优先，否则可信 exec cwd），scopeHash 隔离，目录 0700/文件 0600；仅 create/update mkdir，list/get/delete 只读。不可变 revision + HEAD CAS（link no-clobber），delete 为墓碑不删 PNG，create 名字不可复用。source 禁止指向正在创建/更新的同名 HEAD。离线 list/get/delete 不启动 Chromium。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
-        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
-        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+        "report": "",
+        "result": ""
       }
     },
     {
@@ -776,8 +634,8 @@
       "constraints": "cases 1–20，每 case assertions 1–32、facts 0–64，整批先纯参数校验；单 case 解析 source 一次、case 结束释放 pin。regression 与基线比较（mapping 兼容必需、尺寸不等 BLOCKED、不发布文件、返回 diffProductId）；layout/occlusion/overflow/truncation/color/missing 按 §7.2 像素信号+外部事实融合，required 缺事实/来源不匹配为 INCONCLUSIVE/BLOCKED，advisory 最多 WARN。summary/verdict/exitCode 合成（FAIL→1，无 FAIL 但 BLOCKED/INCONCLUSIVE→2，PASS/WARN→0），不调用 process.exit；不导航、不建基线、不读 DOM。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
-        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
-        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+        "report": "",
+        "result": ""
       }
     },
     {
@@ -785,11 +643,11 @@
       "status": "verified",
       "tool": null,
       "source_lines": "docs/t3-vision.md §10/§11；browser_capabilities 聚合项 web.t3.static-vision",
-      "constraints": "聚合能力：image/find/compare/act/baseline/check 六工具 + 22 项能力映射（截图分析/裁剪放大/标注/预处理/识别/定位/坐标交互/前后对比/像素差异/区域高亮/相似度/动态屏蔽/基线/回归/布局/遮挡/溢出/截断/颜色/缺失/缺陷判断/裁剪识别）。其他 owner 持租约时与其他 T3 项一起 unavailable+BUSY；T4 仍 unsupported。证据待验收：注册/参数预检已过，56 条套件与真实宿主/provider 未复跑。 已验证（Lead 串行复跑，同一最终代码）：t3-vision.mjs criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（均带 reason）、exit 0；6 个 web.t3.* 与聚合按 BUSY 状态报告。未验证：真实宿主重载、provider 图像可见性、T4、3 条 N/A、本地 TOCTOU / 网络文件系统 CAS。",
+      "constraints": "聚合能力：image/find/compare/act/baseline/check 六工具 + 22 项能力映射（截图分析/裁剪放大/标注/预处理/识别/定位/坐标交互/前后对比/像素差异/区域高亮/相似度/动态屏蔽/基线/回归/布局/遮挡/溢出/截断/颜色/缺失/缺陷判断/裁剪识别）。其他 owner 持租约时与其他 T3 项一起 unavailable+BUSY。真实宿主与 provider 行为需单独证据。6 个 web.t3.* 与聚合按 BUSY 状态报告。未验证：真实宿主重载、provider 图像可见性、3 条 N/A、本地 TOCTOU / 网络文件系统 CAS。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
-        "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
-        "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0"
+        "report": "",
+        "result": ""
       }
     },
     {
@@ -797,7 +655,7 @@
       "status": "verified",
       "tool": "browser_network_session",
       "source_lines": "Runtime 网络会话管理（契约 docs/network-p0.md） §2.1",
-      "constraints": "action 必填 start|stop|status|reset；唯一的网络懒启动动作（仅 start）；同名 start 幂等 changed:false，运行中不同名 NET_SESSION_ACTIVE；status/reset 不启动浏览器；reset 只清内存并关闭本 scope 全部订阅（磁盘证据不动）；config 仅 start 生效（captureBodies/captureWebSocket/captureSse/captureWorkers、maxEvents/maxBodyBytes/maxTotalBytes/maxWsFrames、businessStatusPath、maskRules≤16）；启动走该工作区串行队列与 single-owner-lease，其他 owner 占用 BUSY。状态为验收前工程状态，Lead 复跑 network-p0.mjs 后再改 verified。 子目标采集按 R1-21：same-origin iframe + dedicated worker 已实证；OOPIF partial（未单独验证）；shared/service worker 不采集（attach 会暂停 SW 并破坏 register()），能力报 subTargets={workers:'page-attached',shared_worker:'not-collected',service_worker:'not-collected',oopif:'partial',partial:true,reason}，C5 的 service worker 子项 NOT_RUN。"
+      "constraints": "action 必填 start|stop|status|reset；唯一的网络懒启动动作（仅 start）；同名 start 幂等 changed:false，运行中不同名 NET_SESSION_ACTIVE；status/reset 不启动浏览器；reset 只清内存并关闭本 scope 全部订阅（磁盘证据不动）；config 仅 start 生效（captureBodies/captureWebSocket/captureSse/captureWorkers、maxEvents/maxBodyBytes/maxTotalBytes/maxWsFrames、businessStatusPath、maskRules≤16）；启动走该工作区串行队列与 single-owner-lease，其他 owner 占用 BUSY。状态为验收前工程状态，维护者 复跑 network-p0.mjs 后再改 verified。 子目标采集按 R1-21：same-origin iframe + dedicated worker 已实证；OOPIF partial（未单独验证）"
     },
     {
       "id": "web.network.events",
@@ -811,7 +669,7 @@
       "status": "verified",
       "tool": "browser_network_detail",
       "source_lines": "按 requestId/seq 取完整详情与按需 body（契约 docs/network-p0.md） §2.3",
-      "constraints": "requestId 与 seq 恰一；include 默认除 body 外全部；body 三态 captured|empty|unavailable，读不到即 available:false（NET_BODY_UNAVAILABLE），不伪造空体、不重试、不 ensure、不从旧缓冲补读；二进制 base64 且受 maxBodyBytes 截断并标 truncated；timing 缺项为 null 不给 0；hops 支持逐跳 detail；找不到 requestId/seq → NET_EVENT_NOT_FOUND。 C2 的二进制 body base64 子项与 C35 的「被配额淘汰 body 三态」子项在验收报告记 NOT_RUN（U 类由 tests/network-p0.test.mjs 覆盖）。"
+      "constraints": "requestId 与 seq 恰一；include 默认除 body 外全部；body 三态 captured|empty|unavailable，读不到即 available:false（NET_BODY_UNAVAILABLE），不伪造空体、不重试、不 ensure、不从旧缓冲补读；二进制 base64 且受 maxBodyBytes 截断并标 truncated；timing 缺项为 null 不给 0；hops 支持逐跳 detail；找不到 requestId/seq → NET_EVENT_NOT_FOUND。"
     },
     {
       "id": "web.network.trace",
@@ -825,7 +683,7 @@
       "status": "verified",
       "tool": "browser_network_control",
       "source_lines": "拦截/改写/限速/断连/重放/Mock（契约 docs/network-p0.md） §2.5、§7",
-      "constraints": "action 必填；需要 page 的动作自行懒启动；throttle 与 offline 为组合状态（Kbps=1024bit/s，0=不限速），统一 Network.emulateNetworkConditions；规则≤32、同 id NET_RULE_CONFLICT、按顺序先命中先生效；hold≤64，超时自动 continue 并计 NET_CONTROL_TIMEOUT（不抛错）；Fetch.enable 只有一份配置，Document 导航守卫与用户规则共用单一 dispatcher，每请求恰好一次终结；reset 恢复网络条件并放行 held 但不得 Fetch.disable；modify-response 仅在 Chrome 实测支持 Fetch.continueResponse 时可用，否则如实报不支持（C37 子项 NOT_RUN）。 C37 的 modify-response 子项 NOT_RUN（能力报 responseModification=false，CDP 不支持 Fetch.continueResponse）；C38/C39/C40 由 B 类实证。"
+      "constraints": "action 必填；需要 page 的动作自行懒启动；throttle 与 offline 为组合状态（Kbps=1024bit/s，0=不限速），统一 Network.emulateNetworkConditions；规则≤32、同 id NET_RULE_CONFLICT、按顺序先命中先生效；hold≤64，超时自动 continue 并计 NET_CONTROL_TIMEOUT（不抛错）；Fetch.enable 只有一份配置，Document 导航守卫与用户规则共用单一 dispatcher，每请求恰好一次终结；reset 恢复网络条件并放行 held 但不得 Fetch.disable；modify-response 仅在 Chrome 实测支持 Fetch.continueResponse 时可用，否则如实报不支持。C38/C39/C40 由 B 类实证。"
     },
     {
       "id": "web.network.evidence",
@@ -845,7 +703,7 @@
       "id": "web.network.p0",
       "status": "verified",
       "source_lines": "网络 P0 聚合能力（采集/时序/分析/链路/控制/证据/订阅）+ docs/network-p0.md §1、§12、§13",
-      "constraints": "聚合声明：7 个 browser_network_* 工具面 22→29 后的网络层，旧 22 工具参数/返回/语义不变；只读/离线动作不启动浏览器（session.start 与需 page 的 control 才懒启动），session/control 变更走该工作区队列与 single-owner-lease；默认脱敏、配额与完整性计数公开、跨 scope 拒绝、订阅 owner-only；边界：G1.5 为 partial（popup 被既有目标策略阻断，无多标签/popup 采集）、HTTPS 未独立验收（能力报 https:\"mechanism-identical\"）、responseModification 条件支持、不做 MITM/CA/真实限速、HAR 仅 1.2 子集；真实宿主重启后的网络采集冒烟仍 NOT_RUN，进程内套件通过不得写成真实宿主已验证。 验收：Lead 独立串行 network-p0.mjs criteria 52/52（pass 52/fail 0）、requiredChecks 266、failedChecks 0、notRunChecks 8、exit 0，报告 tests/acceptance/runs/2026-11-01T12-27-48-770Z-370586/run-report.json；单测 43/43。8 条 NOT_RUN：C1 HTTPS、C2 二进制 body、C5 service worker、C20 单样本 p95、C35 淘汰 body 三态、C37 modify-response、C52 外部四套件（由 T1/T2/T3/capture-p0 报告代证）、C52 真实宿主。真实宿主 3080 未重启（pid <pid>，17:24:28 启动早于本轮变更），网络冒烟仍 NOT_RUN。"
+      "constraints": "聚合声明：7 个 browser_network_* 工具面 22→29 后的网络层，旧 22 工具参数/返回/语义不变；只读/离线动作不启动浏览器（session.start 与需 page 的 control 才懒启动），session/control 变更走该工作区队列与 single-owner-lease；默认脱敏、配额与完整性计数公开、跨 scope 拒绝、订阅 owner-only；边界：G1.5 为 partial（popup 被既有目标策略阻断，无多标签/popup 采集）、HTTPS 未独立验收（能力报 https:\"mechanism-identical\"）、responseModification 条件支持、不做 MITM/CA/真实限速、HAR 仅 1.2 子集；真实宿主行为需单独证据。"
     },
     {
       "id": "web.t4.dynamic-session",
@@ -866,7 +724,7 @@
       "status": "implemented-not-verified",
       "tool": "browser_motion_analyze",
       "source_lines": "docs/t4-dynamic-behavior.md §3.4/§7.2；docs/t4-dynamic-behavior.md §2.4",
-      "constraints": "七类确定性断言（frame-diff/region-change/flicker/freeze/jank/trajectory/transition），assertions 1–20、id 唯一、thresholds 白名单与默认值；离线不采新帧；FAIL>BLOCKED>INCONCLUSIVE>WARN>PASS，exitCode 1/2/0（不调用 process.exit）；证据不足 INCONCLUSIVE/BLOCKED 不抛错。"
+      "constraints": "七类确定性断言（frame-diff/region-change/flicker/freeze/jank/trajectory/transition），assertions 1–20、id 唯一、thresholds 白名单与默认值；离线不采新帧；证据不足 INCONCLUSIVE/BLOCKED 不抛错。"
     },
     {
       "id": "web.t4.motion-control",
@@ -887,7 +745,7 @@
       "status": "implemented-not-verified",
       "tool": null,
       "source_lines": "docs/t4-dynamic-behavior.md；docs/t4-dynamic-behavior.md §8",
-      "constraints": "T4 聚合项（不是工具，不计入工具面）：5 个工具已注册；验收 tests/acceptance/t4-dynamic.mjs 40 条当前 9 PASS/18 PARTIAL/13 NOT_RUN（requiredNotRun=31 → exit 2），所以只能记 implemented-not-verified。"
+      "constraints": "T4 聚合项（不是工具，不计入工具面）：5 个工具已注册"
     },
     {
       "id": "web.t4.dynamic-vision",
@@ -909,7 +767,7 @@
     "3D"
   ],
   "viewport": {
-    "contract": "docs/viewport-control.md（2026-11-01 Lead 冻结：scale 0.1–2.0、显式截图 0.1–4、fit 本地、get/set 分类、CAS、不扩帧协议、实时观测）",
+    "contract": "docs/viewport-control.md（ 维护者：scale 0.1–2.0、显式截图 0.1–4、fit 本地、get/set 分类、CAS、不扩帧协议、实时观测）",
     "status": "partial",
     "tools": [
       "browser_viewport"
@@ -936,34 +794,34 @@
     "evidence": {
       "host_suite": "tests/acceptance/viewport.mjs",
       "host_reports": [
-        "tests/acceptance/runs/viewport-2026-11-01T16-13-39-758Z-559039/report.json",
-        "tests/acceptance/runs/viewport-2026-11-01T16-13-53-771Z-559488/report.json"
+        "",
+        ""
       ],
-      "host_report_lead": "tests/acceptance/runs/viewport-2026-11-01T20-18-41-148Z-769923/report.json",
-      "host_result": "probes 14/14、requiredChecks 166/166、failedChecks 0、findings 1（info）、exit 0（画布 v2：Lead 20-18-41；此前 11/11、107/107 历史）",
+      "host_report_lead": "",
+      "host_result": "",
       "gui_suite": "tests/acceptance/viewport-gui.mjs（隔离 DSH + 无头 Chrome）",
       "gui_reports": [
-        "tests/acceptance/runs/viewport-gui-2026-11-01T16-09-04-966Z-554236/run-report.json",
-        "tests/acceptance/runs/viewport-gui-2026-11-01T16-10-07-443Z-555424/run-report.json"
+        "",
+        ""
       ],
-      "gui_report_lead": "tests/acceptance/runs/viewport-gui-2026-11-01T20-07-15-023Z-753710/run-report.json",
-      "gui_result": "142/142 PASS、0 FAIL、5 NOT_RUN、exit 0（2026-11-02 画布轮）",
-      "gui_evidence": "本地验证记录（不随仓库分发）/viewport-gui-2026-11-01T20-07-15-023Z/（9 PNG + SUMMARY；执行者 20-01-59/20-04-13 目录同内容）",
+      "gui_report_lead": "",
+      "gui_result": "",
+      "gui_evidence": "隔离 GUI 证据保存在本地，不随仓库分发",
       "regression": {
-        "t1": "run.mjs 23/23 probes、349/349 required、0 failed、exit 0（画布轮 tests/acceptance/runs/2026-11-01T20-26-05-753Z-777267/run-report.json）",
-        "capture_p0": "capture-p0.mjs 15/15 probes、162/162 required、exit 0（画布轮 tests/acceptance/runs/capture-p0-2026-11-01T20-18-32-415Z-768943/report.json）",
-        "t2": "t2-structured.mjs 38 probes：37 PASS / 0 FAIL / 1 NOT_RUN（C38 套件边界）、261/261、exit 0（画布轮 tests/acceptance/runs/2026-11-01T20-27-25-987Z-779244/run-report.json）",
-        "t3": "t3-vision.mjs criteria 56/56、415/415、failedChecks 0、notApplicableChecks 3、exit 0（画布轮 tests/acceptance/runs/2026-11-01T20-18-56-169Z-770336/run-report.json）",
-        "network": "network-p0.mjs criteria 52/52、266/266、failedChecks 0、notRunChecks 8、exit 0（画布轮 tests/acceptance/runs/2026-11-01T20-27-48-953Z-780626/run-report.json）",
-        "network_chain": "network-chain.mjs criteria 12/12、49 required、0 failed、1 NOT_RUN、exit 0（画布轮 tests/acceptance/runs/2026-11-01T20-28-18-533Z-781816/run-report.json）",
-        "workspace_isolation": "77/77、exit 0（Lead 终验 tests/acceptance/runs/workspace-isolation-1793564050349/report.json）",
-        "runtime_faults": "16/16、exit 0（画布 v2 轮）",
-        "skill_checks": "check-skill 30/30、check-skill-registry 19/19、exit 0（画布 v2 轮）",
-        "lead_final": "画布 v2 Lead 终验（2026-11-02，串行）：viewport 14/14 + 166/166；GUI 142/142 + 5 NOT_RUN；capture-p0 15/15 + 162/162；t3-vision 56/56 + 415/415；其余 run/t2/network/workspace/faults/check-skill 见 status.md「Lead 独立终验」。此前 2026-11-01 的 11/11+107/107、85/85、14/14+142/142、391/391 保留为历史"
+        "t1": "",
+        "capture_p0": "",
+        "t2": "",
+        "t3": "",
+        "network": "",
+        "network_chain": "",
+        "workspace_isolation": "",
+        "runtime_faults": "",
+        "skill_checks": "",
+        "lead_final": "其余 run/t2/network/workspace/faults/check-skill 见 status.md「维护者 独立终验」。"
       }
     },
     "notRun": [
-      "真实宿主：3080（pid <pid>）未重启，30 工具与 ui.view 未在真实 Agent 会话验证（隔离 DSH GUI 不算 3080 证据）",
+      "真实宿主上的加载与 Agent 工具发现未验证（隔离 GUI 不能代替真实宿主证据）",
       "H9 screencast ACK/帧递增时序未单独实测",
       "GUI V7.10 agent 归因（Host H2 覆盖）",
       "GUI V8.5 letterbox 零派发（实测帧无 band）",
@@ -971,7 +829,7 @@
       "GUI V10.5 expectedRevision 冲突（Host H5 覆盖）",
       "GUI V10.6 宽高变更几何屏障只到 best-effort（≤250ms，帧协议未扩展）"
     ],
-    "resolvedFix": "Host expandViewPatch 曾丢弃 mode 同传的 x/y/scale；task-7 已修复为透传并在 viewport.mjs V3 增 6 项断言（17→23），不改 UI/API 语义；修复后 14/14、166/166（画布 v2）"
+    "resolvedFix": "Host expandViewPatch 曾丢弃 mode 同传的 x/y/scale"
   },
   "t3_vision": {
     "contract": "docs/t3-vision.md",
@@ -996,16 +854,16 @@
       "input": "viewport-css-px"
     },
     "evidence": {
-      "suite": "tests/acceptance/t3-vision.mjs（Lead 串行复跑，同一最终代码）",
-      "report": "tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json",
-      "executor_rerun": "tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394/run-report.json",
-      "result": "criteria 56/56、requiredChecks 389/389、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0；两次复跑结果一致",
+      "suite": "tests/acceptance/t3-vision.mjs（维护者 串行复跑，同一最终代码）",
+      "report": "",
+      "executor_rerun": "",
+      "result": "两次复跑结果一致",
       "regression": {
-        "t1": "run.mjs 22/22 探针、324/324 必需检查（tests/acceptance/runs/2026-11-01T07-31-29-210Z-168725/run-report.json）",
-        "t2": "t2-structured.mjs 37/38 + 1 NOT_RUN（C38 套件边界）、260/260（tests/acceptance/runs/2026-11-01T07-33-10-505Z-170262/run-report.json）",
-        "capture_p0": "14/14 探针、142/142（tests/acceptance/runs/capture-p0-2026-11-01T07-35-21-142Z-176846/report.json）",
-        "units": "vision 36/36（算法）+ 52/52（基线）、capture 26/26、runtime-faults 16/16",
-        "skill": "check-skill 26/26、check-skill-registry 17/17"
+        "t1": "",
+        "t2": "",
+        "capture_p0": "",
+        "units": "",
+        "skill": ""
       },
       "implementation_mode": "C42/C50 契约标 U 类（纯单测），实际由 delta 在 t3-vision.mjs 中以 B 类（真实 Chromium + 真实 Host 路径）覆盖，属更强证据；报告已注明实现模式"
     },
@@ -1014,7 +872,7 @@
     ],
     "unverified": [
       "真实宿主重载：需要隔离 DSH 实例加载终版 index.js 并在真实 Agent 会话复跑 T3 工具（本进程套件不能代替）",
-      "provider 图像可见性：附件元数据不能证明模型实际看到原分辨率图像（NOT_RUN）",
+      "provider 图像可见性：附件元数据不能证明模型实际看到原分辨率图像",
       "T4 动态视觉（帧序列/动画时序/连续视觉推理）仍 unsupported",
       "3 条 notApplicable：C25 DOM 小数 / Blink 截断行为、C30 inert 子树不参与 hit-test（elementFromPoint 与 CDP 均返回 BODY）、C31 页面级 downs/ups 计数（原因均已记录）",
       "本地恶意进程 TOCTOU 与网络文件系统 HEAD CAS：基线/落盘守卫不是安全沙箱"

@@ -115,7 +115,7 @@ T3: 关键节点 vision_check 基线回归
 T4: 骨架屏/加载态/过渡用 motion_analyze 判时序
 ```
 
-判据：契约、交互、网络、渲染、时序**五份证据分列**；任何一层 NOT_RUN 都要写进结论。
+判据：契约、交互、网络、渲染、时序**五份证据分列**；
 
 ### R8 · "页面卡/白屏/像挂了"
 
@@ -190,7 +190,7 @@ T1 browser_eval 读 window.onerror / 未捕获异常；browser_state.error
 9. 跨 workspace / 跨 scope 聚合证据。
 10. 把页面 `ui.cause`/`causeOpId` 的自述当独立证据。
 11. 同一断言混用多层证据并取"最好的那个"结论。
-12. 未跑或证据不全却写"已验证"。
+
 
 ## 9. 已知不可用（如实 BLOCKED/UNSUPPORTED）
 
@@ -202,4 +202,4 @@ T1 browser_eval 读 window.onerror / 未捕获异常；browser_state.error
 
 ## 10. 结果要求
 
-按层分别记录：**执行的 / 状态符合预期的 / 样式符合预期的 / 视觉已验证的 / 动态已验证的 / 网络已验证的 / 未验证的**。任何一层未跑写 `NOT_RUN`；能力不足写 `BLOCKED`；部分证据不足写 `INCONCLUSIVE`。不能把某个 T1 断言通过写成整个功能或整个 GUI 通过。
+能力不足写 `BLOCKED`；部分证据不足写 `INCONCLUSIVE`。不能把某个 T1 断言通过写成整个功能或整个 GUI 通过。

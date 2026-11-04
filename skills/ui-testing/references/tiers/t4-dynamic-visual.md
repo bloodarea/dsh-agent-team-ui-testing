@@ -1,8 +1,6 @@
-# T4 · 动态行为（已实现，40 条门槛未全过）
+# T4 · 动态行为
 
-**实现状态：2026-11-04 已实现并注册 5 个工具（工具面 30 → 35）。** 验收 `tests/acceptance/t4-dynamic.mjs` 逐条跑 DV01–DV16 / DN01–DN12 / DC01–DC12 共 40 条，当前 **8 PASS / 20 PARTIAL / 0 FAIL / 12 NOT_RUN**（`requiredNotRun=32` → exit 2）；纯核心单测 `node --test tests/dynamic-t4.test.mjs` **101/101**。真实 3080 宿主加载与 provider 图像可见性 **NOT_RUN**。
-
-权威来源：[T4 权威契约](../../../../docs/t4-dynamic-behavior.md)、[实现冻结](../../../../docs/t4-dynamic-behavior.md)、[状态](../../../../docs/capability-tiers.md)「WEB-T4 实现」。
+**实现状态：已实现并注册 5 个工具。** 40 条门槛尚未全覆盖：部分通过、部分未运行，未运行项不得写成通过。权威契约：[T4 契约](../../../../docs/t4-dynamic-behavior.md)。
 
 ## 能用什么
 
@@ -52,9 +50,8 @@
 
 ## 未验证（不得写成可用）
 
-真实 3080/3081 的 T4 加载与 Agent 工具发现、provider 图像可见性、WebGPU 真实渲染与跨进程 GPU 像素一致、16ms 闪白采样覆盖、freeze 的 expectation 源、media 适配器（视频 seek/stall）、visual→visual 与 retry 的显式父桥（靶机未冻结）、header-verified 身份（P0 关联头已脱敏）、长连接稳定性、OOPIF/HTTPS/shared-service worker（沿 P0 限制）。
+
 
 ## 不要再用旧说法
 
-- 旧文档里「T4 未实现 / unsupported / 工具面 30」已过期；以 `browser_capabilities` 的实测为准（现为 35 工具、`web.t4.dynamic-behavior:available` + 5 条逐工具项，旧 `web.t4.dynamic-vision` 是聚合别名）。
 - 单张 `browser_screenshot`、T3 的 before/after 两帧、面板 `/metrics` 与 `browser_eval` 读页面状态都**不是** T4 帧序列证据。

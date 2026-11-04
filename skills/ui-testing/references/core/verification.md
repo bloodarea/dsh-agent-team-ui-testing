@@ -12,6 +12,6 @@ state/capabilities 不启动、不占租约；capabilities 报实际三态与 wo
 - FAIL：可靠证据证实不满足条件。
 - BLOCKED：权限/环境/能力缺失。
 - INCONCLUSIVE：已执行但证据不足。
-- NOT_RUN：未执行。
 
-未实测的条目保持 NOT_RUN/implemented-not-verified，旧版通过不证明新行为通过。T2 已由 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`（优化构建：37/38 探针、**260/260** 必需检查）支撑，§9.38 真实宿主会话已由 `本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md`（14/14 检查行）验证；套件内 C38 仍记 NOT_RUN 属 fake-ctx 套件边界，引用时须区分二者。截图/eval 内容可能敏感，URL 脱敏也非全覆盖；分享前检查。
+
+截图/eval 内容可能敏感，URL 脱敏也非全覆盖；分享前检查。

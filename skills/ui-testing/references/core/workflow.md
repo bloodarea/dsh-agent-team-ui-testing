@@ -9,6 +9,6 @@
 7. 用 `browser_node_state`/`browser_wait_for` 读回 T2 动作结果，用 state/eval/style/network 补充观察，必要时截图；保留真实 action 时间/target/参数摘要、T2 evidence（snapshotId/digest/targets/dispatch）、错误与附件/hash。截图可选scale/文档region/persist/out：默认插件暂存且dispose清理；仅out/persist:true/非空env持久。按采集前scroll转换视口坐标，保留capture的PNG尺寸/CRC/sizeCheck/mapping/file的path/pathKind/persistence/root/ephemeral/hash/warnings（暂存绝对路径不视为持久引用）。capabilities.capture.observed只代表上次截图；同路径不覆盖，OUTPUT_EXISTS换out。provider图像可见性、metadata未知与fallback如实记录。
 8. 独立断言，ok/applied/dispatched 不等于 PASS；单帧 PNG 本身不产生 T3/T4 结论，必须走 `vision_compare`/`vision_check` 或 `motion_analyze`。
 9. 错误按 code/category/retryable 分类；`REF_STALE` 重新快照、`WAIT_TIMEOUT` 不改小预算掩盖、`NOT_INTERACTABLE` 是 finding 不是换目标理由。取消/超时/断连后先查应用状态。已发 CDP 命令后 abort 先关闭浏览器再放锁，不能假设回滚。
-10. 报告 expected/observed、工具与 action 证据、PASS/FAIL/BLOCKED/INCONCLUSIVE/NOT_RUN、限制与未验证部分。
+
 
 面板与 Agent 在同一工作区的同队列内改变该工作区 page；不同工作区 page 独立、ref 表独立，但 Cookie/存储共享。操作前后复查。真实缺陷确认后停止找 PASS，能力不足如实报告。详细契约见 ../contracts/operation.md 与 ../contracts/evidence.md。

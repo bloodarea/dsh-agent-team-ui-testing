@@ -1,9 +1,9 @@
 ---
 name: ui-testing
-description: 使用实际注册的 browser_navigate、browser_eval、browser_screenshot、browser_input、browser_network、browser_computed_style、browser_http_request、browser_viewport、browser_snapshot、browser_click、browser_type、browser_scroll、browser_fill_form、browser_node_state、browser_wait_for、browser_vision_image、browser_vision_find、browser_vision_compare、browser_vision_act、browser_vision_baseline、browser_vision_check、browser_network_session、browser_network_events、browser_network_detail、browser_network_trace、browser_network_control、browser_network_evidence、browser_network_subscribe、browser_dynamic_session、browser_motion_observe、browser_motion_analyze、browser_motion_control、browser_dynamic_correlate、browser_state、browser_capabilities 完成授权 Web 页面的调试与测试：T1 程序化接口（含独立 HTTP 请求/响应验证、共享视口 browser_viewport 的 get 只读诊断与 set 页面操作）+ T2 结构化 GUI（snapshot→ref→动作→证据→等待/节点状态）+ T3 静态视觉（PNG 裁剪/预处理/标注/确定性识别/坐标交互/像素差异/受管基线/回归与六类缺陷用例）+ P0 网络（HTTP/HTTPS 请求响应体与头、WebSocket/SSE、iframe/OOPIF/Worker 采集，统一时间轴，分析与聚合，业务步骤链路，拦截/限速/断连/重放/Mock，JSONL+HAR 证据与多 Agent 独立订阅；Lead 独立串行验收 network-p0.mjs criteria 52/52、requiredChecks 266、failedChecks 0、notRunChecks 8、exit 0；G1.5 为 partial、HTTPS 与 responseModification 条件未验、真实宿主重启后未验），并诊断运行态、租约、错误和结构化证据；P0截图支持显式scale 0.1–4（省略时跟随共享view.scale）/文档region/PNG校验/默认暂存与显式持久（persist参数；真实Chromium进程内14/14、142/142；宿主重载/provider待验）；P0 基础设施为四项独立能力：图片输入流（P0-A）、网络抓包（P0-B）、共享视口（P0-C）与混合画布（P0-D，canvasX/Y + 空白 + 拖拽/滚轮缩放 + 画布空间截图/T3）；共享视口与混合画布已通过进程内验收（viewport.mjs 14/14 probes、166/166 requiredChecks、exit 0；capture-p0 15/15、162/162；t3-vision 56/56、415/415）与隔离DSH GUI验收（viewport-gui.mjs 142/142 PASS、5 NOT_RUN、exit 0，含 V12 拖拽 + V13 画布 + V14 滚轮缩放），真实 3080 于 2026-11-02 11:15 重启后 Host 画布语义已实测（canvasX/Y/blank/合成截图/T3/blank act 零派发/导航复位），面板画布交互与 GUI 认证路由仍 NOT_RUN，T2 已实现并通过优化构建验收（37/38 探针、260/260 必需检查）与真实宿主 14/14 记录（该记录属优化前构建，优化后待定向复验；见 docs/t2-structured-gui.md 与 本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md），T3 静态视觉已实现并通过进程内验收（t3-vision.mjs criteria 56/56、requiredChecks 415/415、notApplicable 3、exit 0）与 2026-11-01 重启后 3080 真实宿主六工具冒烟（provider 图像可见性仍 NOT_RUN，见 本地验证记录（不随仓库分发）/t3-real-host-2026-11-01.md），T4 动态行为已实现（5 个工具：screencast/screenshot-loop 帧序列与有界存储、七类运动分析、WAAPI 控制与恢复、六向动态事件关联；40 条门槛 8 PASS/20 PARTIAL/12 NOT_RUN，真实宿主与 provider 仍 NOT_RUN），其他平台未实现，按当前注册表及运行态能力结果选路。
+description: 使用 browser_* 工具调试与测试已授权的 Web 页面：T1 程序化接口（导航、JS、截图、输入、网络元数据、计算样式、独立 HTTP、共享视口）、T2 结构化 GUI（snapshot→ref→动作→证据→等待/节点状态）、T3 静态视觉（PNG 裁剪/预处理/标注/确定性识别/坐标输入/像素差异/受管基线/回归）、T4 动态行为（帧序列、七类运动分析、WAAPI 控制与恢复、六向事件关联）、网络 P0（请求/WS/SSE 采集、时间轴、业务链路、拦截限速重放、JSONL/HAR 证据、多 Agent 订阅）。以 browser_capabilities 的实际运行态选路；证据不足时记 BLOCKED/INCONCLUSIVE。
 ---
 
-# UI Testing · Web T1/T2/T3 操作规范
+# UI Testing · Web T1–T4 与网络操作规范
 
 ## 何时使用
 
@@ -11,16 +11,14 @@ description: 使用实际注册的 browser_navigate、browser_eval、browser_scr
 
 ## 事实来源与边界
 
-运行时是无头 Chromium + CDP，加上 Host 侧独立 HTTP(S) 客户端；Host 实现入口为 `index.js`，网络纯逻辑在 `network-p0.js`。**工具面 35 个**：T1 10 个（含共享视口 `browser_viewport`）+ T2 7 个（`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`）+ T3 6 个（`browser_vision_image`、`browser_vision_find`、`browser_vision_compare`、`browser_vision_act`、`browser_vision_baseline`、`browser_vision_check`）+ 网络 P0 7 个（`browser_network_session`、`browser_network_events`、`browser_network_detail`、`browser_network_trace`、`browser_network_control`、`browser_network_evidence`、`browser_network_subscribe`）+ T4 5 个（`browser_dynamic_session`、`browser_motion_observe`、`browser_motion_analyze`、`browser_motion_control`、`browser_dynamic_correlate`）。共享视口的权威契约是 `docs/viewport-control.md`（§3 数据模型、§4 Host 应用/兼容、§5 面板坐标映射与滚轮、§6 截图比例、§7 工具/schema/错误/limits、§8 验收）；T2 的权威接口契约是本仓库 `docs/t2-structured-gui.md`（§2 工具表、§3 Ref、§4 动作/表单/等待、§5 证据、§6 错误）；T3 的权威契约是 `docs/t3-vision.md`（§2 工具表、§3 坐标/证据/错误、§4 算法、§5 识别、§6 act、§7 缺陷、§8 基线/回归）；网络 P0 的权威契约是 `docs/network-p0.md`（§2 七工具、§4 事件 schema/配额/完整性、§5 分析、§6 链路、§7 控制、§8 证据/安全/隔离、§9 靶机、§10 验收 C1–C52、§13 R1 裁决）。共享视口、T2、T3 与网络 P0 的代码与运行验收状态由实施报告另证。
+运行时是无头 Chromium + CDP，加上 Host 侧独立 HTTP(S) 客户端；Host 实现入口为 `index.js`，网络纯逻辑在 `network-p0.js`。**工具面 35 个**：T1 10 个（含共享视口 `browser_viewport`）+ T2 7 个（`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`）+ T3 6 个（`browser_vision_image`、`browser_vision_find`、`browser_vision_compare`、`browser_vision_act`、`browser_vision_baseline`、`browser_vision_check`）+ 网络 P0 7 个（`browser_network_session`、`browser_network_events`、`browser_network_detail`、`browser_network_trace`、`browser_network_control`、`browser_network_evidence`、`browser_network_subscribe`）+ T4 5 个（`browser_dynamic_session`、`browser_motion_observe`、`browser_motion_analyze`、`browser_motion_control`、`browser_dynamic_correlate`）。共享视口的权威契约是 `docs/viewport-control.md`（§3 数据模型、§4 Host 应用/兼容、§5 面板坐标映射与滚轮、§6 截图比例、§7 工具/schema/错误/limits、§8 验收）；T2 的权威接口契约是本仓库 `docs/t2-structured-gui.md`（§2 工具表、§3 Ref、§4 动作/表单/等待、§5 证据、§6 错误）；T3 的权威契约是 `docs/t3-vision.md`（§2 工具表、§3 坐标/证据/错误、§4 算法、§5 识别、§6 act、§7 缺陷、§8 基线/回归）；网络 P0 的权威契约是 `docs/network-p0.md`（§2 七工具、§4 事件 schema/配额/完整性、§5 分析、§6 链路、§7 控制、§8 证据/安全/隔离、§9 靶机、§10 验收 C1–C52、§13 R1 裁决）。共享视口、T2、T3 与网络 P0 的可用性以运行态为准，不以文档推断。
 
-- **T3 静态视觉已实现并已验收（verified）**：`tests/acceptance/t3-vision.mjs` criteria **56/56**、requiredChecks **391/391**（第 8 轮同一最终代码复跑：`tests/acceptance/runs/2026-11-01T12-43-30-666Z-391625`；此前 T3 收口轮为 389/389）、failedChecks 0、notApplicable 3（C25 DOM 小数/Blink 截断、C30 inert hit-test、C31 页面级 downs/ups，均带 reason）、exit 0——报告 `tests/acceptance/runs/2026-11-01T08-38-27-595Z-194712/run-report.json`（此前 `07-34-49-952Z-174834` 与执行者 `07-33-56-470Z-172394` 同结果）。**真实宿主已复验**：2026-11-01 16:23 重启后的 3080 真实会话内六工具冒烟 + 页面真值核对通过，见 `本地验证记录（不随仓库分发）/t3-real-host-2026-11-01.md`。**仍 NOT_RUN**：provider 图像可见性、T4 动态视觉，以及上述 3 条 N/A；不得由进程内套件推定。
-- **验收基线（Lead 独立复跑，exit 0）**：T1 `tests/acceptance/run.mjs` 23/23 组、**349/349** 必需检查（本轮共享视口同一最终代码复跑 `tests/acceptance/runs/2026-11-01T16-00-44-334Z-546478`；第 8 轮网络 P0 为 23/23、347/347 `tests/acceptance/runs/2026-11-01T12-39-01-545Z-382567`；此前 T3 收口轮为 22/22、324/324）、failedChecks 0、findings 1（info: `unmodifiedText` INCONCLUSIVE）——报告 `tests/acceptance/runs/2026-11-01T07-31-29-210Z-168725/run-report.json`（T3 收口时点：工具面 22；此前 16 工具时点为 `2026-11-01T03-41-59-200Z-41002`）；T2 `tests/acceptance/t2-structured.mjs`（**优化构建**）探针 38（**pass 37 / fail 0 / notRun 1 = C38 套件边界**）、必需检查 **261/261**（第 8 轮复跑 `tests/acceptance/runs/2026-11-01T12-40-39-213Z-384724`；此前 260/260）、criteriaCovered 38、exit 0——报告 `tests/acceptance/runs/2026-11-01T07-33-10-505Z-170262/run-report.json`（此前 T2 记录 `2026-11-01T03-41-31-025Z-39784`）（此前一轮 233/233：`runs/2026-10-31T19-25-29-077Z-54114`）；`runtime-faults` 16/16。优化实测（同 fixture/默认参数）：nodeCount 421→275（−34.7%）、tree 14432→9254 字节（−35.9%）、`- text` 行 232→91，两次捕获 tree/digest 一致。T2 的 §9.38 真实宿主已由 Lead 在 DSH 3080（pid <pid>，2026-11-01 10:40:04 重载）的真实 Agent 会话验收：`本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md` **14/14 检查行通过**——但该记录属**优化前构建**；优化构建（快照压缩 + scroll 硬化）已进程内 260/260 通过，**真实宿主定向复验 5 项仍待**（snapshot 压缩形态 / 同名与独立节点 refs / 离屏拒绝+hint+恢复 / 持续运动 unstable / T1 未回归），未完成前不得声称“优化后真实宿主已验证”。provider 图像可见性仍 NOT_RUN。
-- **T2 结构化 GUI 已实现并已验收（verified）**：优化构建套件 37/38 探针通过（套件内唯一 notRun = C38「真实宿主/声明」，属 fake-ctx 套件边界）、必需检查 **261/261**（第 8 轮复跑报告 `2026-11-01T12-40-39-213Z-384724`）、38 项 criteria 全覆盖；本文接口与流程按该实现与报告写。**仍有三项未验证**：优化构建的真实宿主定向复验 5 项（现有 14/14 记录属优化前构建）、provider 图像可见性（T1 遗留）、closed-shadow「不产生 ref」细分（仅 advisory 检查覆盖）。
-- **能力报告不能自证**：若 `browser_capabilities` 抛错或字段与注册 schema 不符，按“证据不足”处理（`BLOCKED`/`INCONCLUSIVE`），不要反向推断某能力可用或不可用。`available` 是设计级状态，不等于对应行为已验收。
-- 当前注册表决定工具是否可调用，`browser_capabilities` 再报告真实运行态；静态文档、manifest 与台账都不构成可用性证明。
+- **实现范围**：T1–T4 与网络 P0 共 35 个工具均已注册；T4 的 40 条门槛尚未全覆盖（部分通过、部分未运行），未运行项不得写成通过。
+- **工程状态与运行态分开**：静态文档、manifest 与台账只记录工程状态，不构成可用性证明；是否可用以注册表与 `browser_capabilities` 为准。
+- **能力报告不能自证**：若 `browser_capabilities` 抛错或字段与注册 schema 不符，按证据不足处理（`BLOCKED`/`INCONCLUSIVE`），不要反向推断某能力可用或不可用。
 - 独立 HTTP 请求由 `browser_http_request` 提供：Host 侧 HTTP(S) 客户端，不启动 Chromium、不依赖页面/页面 Cookie、不受页面租约与串行队列约束；默认不跟随重定向、默认 5s 总超时与 64 KiB 保留上限，每跳重定向都复验目标策略。`browser_eval` 内的页面 `fetch` 仍属页面上下文（受 CORS/Cookie/CSP/导航状态影响），不能替代它。
 - **按 DSH 工作区隔离 page，不是一个 page 共享。** 同一时刻最多一个 headless Chromium/profile；每个工作区独立 page、URL/viewport/history/网络缓冲/串行队列/租约/ref 表；Cookie、localStorage、cache 仍共享（明确非安全隔离）。没有多标签/frame 选择、下载、上传、Cookie 导出、文件选择工具。
-- 共享视口：每个工作区 Runtime 一份权威 `view={version,mode,x,y,width,height,scale,source,revision}`（文档 CSS px），Agent 的 `browser_viewport` 与面板读写同一对象；默认 1280×800@100%、DPR 固定 1、mobile=false。`scale` 0.1–2（10–200%）只是显示比例与默认截图密度，**不改变页面 CSS 视口、DPR 或页面 zoom**；只有显式改 width/height 才发 `Emulation.setDeviceMetricsOverride`。面板可调 200–4096 宽高、X/Y 滚动与比例，但"面板能调"不等于"已有证据"：真实宿主未重启前 30 工具与 `ui.view` 都是 NOT_RUN。
+- 共享视口：每个工作区 Runtime 一份权威 `view={version,mode,x,y,width,height,scale,source,revision}`（文档 CSS px），Agent 的 `browser_viewport` 与面板读写同一对象；默认 1280×800@100%、DPR 固定 1、mobile=false。`scale` 0.1–2（10–200%）只是显示比例与默认截图密度，**不改变页面 CSS 视口、DPR 或页面 zoom**；只有显式改 width/height 才发 `Emulation.setDeviceMetricsOverride`。
 - 面板 screencast 是事件驱动的 JPEG 预览（同源 WS 优先、HTTP 轮询回退）；`/metrics` 是预览诊断，不是 Agent 页面证据或 T4 帧序列。
 - 关闭清空网络/请求/URL/标题/帧缓存并回收进程与 profile，同时清空 T2 的 snapshot/ref 表。引用记录仍须核对 action 时间，避免引用同一次运行中更早的页面。
 - 没有直接 CDP 命令工具，不得自行拼 CDP、虚构 Playwright/Puppeteer 能力或调用内部面板 HTTP 路由绕过工具层。
@@ -42,7 +40,7 @@ description: 使用实际注册的 browser_navigate、browser_eval、browser_scr
 | `browser_network` | `{limit?:number}` | `{entries:[…]}`；默认 50、上限 300，URL 脱敏，记录响应与 `loadingFailed` 失败元数据；无头/正文。不启动浏览器，但受 owner 租约约束。 |
 | `browser_computed_style` | `{selector:string,properties?:string[]}` | `{ok:true,style}`；首个匹配元素；未命中返回分类 error 对象；无伪元素/iframe/Shadow DOM 内部定位，不证明视觉。 |
 | `browser_http_request` | `{url,method?,headers?,body?,timeoutMs?,maxBytes?,followRedirects?,maxRedirects?}` | 独立 HTTP(S)：`{ok:true,method,url,status,statusText,headers,contentType,encoding,body,bodyBytes,bodyTruncated,redirects,timings}`。`ok:true` **不等于 2xx**；`headers` 是小写头名→非空 string[]；`encoding` 为 utf8/base64；默认不跟随重定向、默认 5s/64 KiB（上限 20s/1 MiB/5 跳）；无 cookie jar；失败抛分类错误。 |
-| `browser_viewport` | `{action*:"get"\|"set", mode?:"wide"\|"landscape"\|"tablet"\|"phone", x?, y?, canvasX?, canvasY?, width?, height?, scale?, expectedRevision?}` | **get = 只读缓存诊断**：不接受其他字段，不 ensure/不发 CDP/不进队列/不占租约/不改 recent/error，可读他人租约下的缓存，返回 `{ok,running,view,observed,viewMeta}`，`viewMeta.stale=true` 表示缓存不新鲜（不保证此刻页面没动）。**set = 页面操作**：至少一个 view 字段（mode 与 width/height 互斥；mode 只展开宽高，同时给出的 x/y/scale 仍生效），走预检→串行队列→懒启动+租约；只有宽高变化才发 metrics override，scale-only / x/y-only 不改 CSS 视口、DPR、页面 zoom。`x/y` 是页面顶层滚动位置（文档 CSS px，`Page.getLayoutMetrics` 实测回读；超内容范围会被 clamp，`clamped.x/y` 如实报告；RTL 负 x 如实返回，set 只接受非负）；**`canvasX/canvasY`（2026-11-02 画布 v2）是视口左上角在文档画布上的位置**（±10,000,000，可为负/超内容界，负值使内容在视口内右/下移并露纯白 blank）；画布坐标与 x/y 不能同 patch（INVALID_ARGUMENT）；面板 X/Y 绑定画布坐标，拖拽平移写 canvas 坐标；拖拽模式下画面滚轮缩放画布（5%/Shift 10%/Alt 1%、严格锁屏幕光标点、fit 自动取消、Ctrl/Meta 不缩放），非拖拽模式滚轮仍滚页面。`O=C-S` 时截图/T3 走画布合成（`capture.canvas.composite=true`，blank 不存在于 DOM；**面板 blank 显示为深色棋盘格，截图/T3 的 blank 是纯白 #ffffff**）；`O=0` 与旧文档空间字节/像素一致。`width/height` 整数 200–4096；`scale` 0.1–2（10–200%），也是省略 scale 的截图默认密度。返回 `{ok,requested,before,view,observed,viewMeta,applied,settled,clamped,overrideApplied,appliedFields,canvasX,canvasY,offset,content}`；`expectedRevision` 与队列内当前 `view.revision` 不同 → `VIEWPORT_CONFLICT`（patch 零应用，带最新 view），别自动重放旧 patch。 |
+| `browser_viewport` | `{action*:"get"\|"set", mode?:"wide"\|"landscape"\|"tablet"\|"phone", x?, y?, canvasX?, canvasY?, width?, height?, scale?, expectedRevision?}` | **get = 只读缓存诊断**：不接受其他字段，不 ensure/不发 CDP/不进队列/不占租约/不改 recent/error，可读他人租约下的缓存，返回 `{ok,running,view,observed,viewMeta}`，`viewMeta.stale=true` 表示缓存不新鲜（不保证此刻页面没动）。**set = 页面操作**：至少一个 view 字段（mode 与 width/height 互斥；mode 只展开宽高，同时给出的 x/y/scale 仍生效），走预检→串行队列→懒启动+租约；只有宽高变化才发 metrics override，scale-only / x/y-only 不改 CSS 视口、DPR、页面 zoom。`x/y` 是页面顶层滚动位置（文档 CSS px，`Page.getLayoutMetrics` 实测回读；超内容范围会被 clamp，`clamped.x/y` 如实报告；RTL 负 x 如实返回，set 只接受非负）；**`canvasX/canvasY` 是视口左上角在文档画布上的位置**（±10,000,000，可为负/超内容界，负值使内容在视口内右/下移并露纯白 blank）；画布坐标与 x/y 不能同 patch（INVALID_ARGUMENT）；面板 X/Y 绑定画布坐标，拖拽平移写 canvas 坐标；拖拽模式下画面滚轮缩放画布（5%/Shift 10%/Alt 1%、严格锁屏幕光标点、fit 自动取消、Ctrl/Meta 不缩放），非拖拽模式滚轮仍滚页面。`O=C-S` 时截图/T3 走画布合成（`capture.canvas.composite=true`，blank 不存在于 DOM；**面板 blank 显示为深色棋盘格，截图/T3 的 blank 是纯白 #ffffff**）；`O=0` 与旧文档空间字节/像素一致。`width/height` 整数 200–4096；`scale` 0.1–2（10–200%），也是省略 scale 的截图默认密度。返回 `{ok,requested,before,view,observed,viewMeta,applied,settled,clamped,overrideApplied,appliedFields,canvasX,canvasY,offset,content}`；`expectedRevision` 与队列内当前 `view.revision` 不同 → `VIEWPORT_CONFLICT`（patch 零应用，带最新 view），别自动重放旧 patch。 |
 | `browser_state` | `{}` | `mode/activity/url/title/viewport/seq/running/error/errorAt/errorActionId/errorTarget` 与 owner 等诊断信息；本轮额外带安全 `view`（`view={version,mode,x,y,canvasX,canvasY,width,height,scale,source,revision}`）与 `ui.canvas` 投影但不保证新鲜（需要确定更新后事实用 `browser_viewport set` 的读回）；从 `document.title` 刷新标题，不懒启动、不申请租约；成功的页面/网络操作会清空错误四字段，诊断与 HTTP 调用不清。 |
 | `browser_capabilities` | `{}` | 实际运行态 `available/unavailable/unsupported`、原因/限制及 `single-owner-lease`；T2 段应含 7 个工具项与 `web.t2.structured-dom`；T3 段应含 6 个工具项 + 聚合 `web.t3.static-vision` 与 `vision` 块（`version:1`、`algorithmVersion:'t3-v1'`、`tools`、`sourceKinds`、`limits`、`observed:null|{observedAt,lastOperation,lastVerdict}`），T4 段应含 5 个工具项 + 聚合 `web.t4.dynamic-behavior` + 旧 `web.t4.dynamic-vision` 别名与 `dynamic` 块（`version:1`、`tools`、`sources`（screencast jpeg 精确=false / screenshot-loop png 精确=true）、`adapters`、`correlation`、`limits`、`observed:null|{...}`）与 `limits.dynamic`；并报 `viewport` 段与 `limits.viewport`（比例 0.1–2、预设、stale/settle、dsf=1、get 只读 / set 页面操作；画布 v2 另报 `viewport.canvas` 与 `limits.viewport.canvas`，range ±1e7、blankColor #ffffff、compositeProvenance true）、`limits.structuredGui`、`limits.vision` 与P0的 `capture/limits.capture`（`defaultScaleSource:"view.scale"`、`scaleRange:[0.1,4]`）；observed仅来自上次真实调用（截图或视觉），首次null，不含图像/绝对路径/页面文本；不懒启动、不建目录、不生成 product、不申请租约。附件服务缺失应明确降级，不能静态宣称图片可见。 |
 
@@ -62,7 +60,7 @@ browser_viewport { "action": "set", "canvasX": 300, "canvasY": 200 }      // 画
 - **页面自己会动**：滚动、`scrollIntoView`、点击、脚本都会移动页面，回读会以 `source:"page"`、`revision+1` 反映；因此 CAS 的旧 revision 很容易失效，冲突后重新读、重新判断，不要盲目重试。
 - **比例不等于页面缩放**：`scale` 只影响面板显示与"省略 scale 的截图密度"；判断布局要用页面 `innerWidth/innerHeight`、`devicePixelRatio`、`visualViewport.scale` 等真值，而不是截图尺寸。
 - **截图默认值改了**：`browser_screenshot` 省略 `scale` 现在跟随 `view.scale`（Agent 若把比例设成 0.65，后续默认截图就是 520×390 而不是 800×600）。需要固定分辨率时**显式给 scale**。
-- **验收口径**：Host `viewport.mjs` **14/14 probes、166/166 requiredChecks、exit 0**；隔离 DSH GUI `viewport-gui.mjs` **142/142 PASS、5 NOT_RUN、exit 0**（V12 拖拽 + V13 画布）；`capture-p0.mjs` **15/15、162/162**、`t3-vision.mjs` **56/56、415/415**。真实 3080 于 2026-11-02 11:15 重启后 **Host 画布语义已实测**（canvasX/Y、blank、合成截图、T3 canvas、blank act 零派发、导航复位、自主滚动保留 O）；**面板画布交互（X/Y 负值/滚轮/拖拽/seed）与需 GUI 认证的路由仍 NOT_RUN**，不得由隔离实例或「面板写入 canvasX/Y」推定。
+- **边界**：画布是视图层合成，`O≠0` 时截图会重编码并披露 `composite:true`；`fixed`/`sticky` 随整帧平移；空白区域不存在于 DOM。面板画布交互与需认证的 GUI 路由不在本 Skill 的结论范围内。
 
 ### T2（7 个，结构化 GUI）
 
@@ -134,7 +132,7 @@ browser_network_evidence {action:"export"|"link"|"integrity"}   # 或 browser_ne
 - **脱敏**：URL 敏感 query、敏感头（`authorization`/`cookie`/`set-cookie`/`x-api-key`/`x-auth-token`/`x-net-token`/`proxy-authorization`）、JSON/form 敏感字段一律 `***`，原值不进事件/证据/日志/错误消息；关联标识以每会话 HMAC 的公开 hash 呈现。脱敏不是通用秘密检测器，导出/分享前仍需检查。
 - **不伪造**：body 读不到 `available:false`；淘汰/丢弃/截断必须计数并进 `integrity`；时间相邻只能标 `basis:"temporal"`，不能冒充因果；`ok:true` 只表示调用完成。
 - **旧 22 工具不变**：这 7 个是本轮**纯新增**，不属于契约 §1.2「旧 22 工具保持不变」；旧工具的加法式增强只有两处——`browser_screenshot` 证据新增 `capture.networkWindow`（`capture.version` 仍 **1**，其余 capture/附件/file 语义不变）、T2 动作与网络事件加 mark 关联（`networkDelta` 仍在）；`browser_network` 仍是最近 300 条元数据环形缓冲，T3 六工具未改。
-- **验收与边界**：Lead 独立串行 `network-p0.mjs` → criteria **52/52（pass 52 / fail 0）**、requiredChecks **266**、failedChecks **0**、notRunChecks **8**、exit 0；单测 43/43；台账 7 工具与 G1.1–G6.9 记 **verified**。**8 条 NOT_RUN 必须原样报告、不算通过**：C1 HTTPS（无 TLS 靶机）、C2 二进制 body（靶机无二进制路由）、C5 service worker（R1-21：attach 会暂停并破坏 `register()`）、C20 单样本 p95（U 覆盖）、C35 淘汰 body 三态（U 覆盖）、C37 `modify-response`（`responseModification=false`）、C52 外部四套件（T1/T2/T3/capture-p0 报告代证）、C52 真实宿主。`G1.5` 仍 **partial**：same-origin iframe + dedicated worker 已实证，OOPIF `partial` 未单独验证，shared/service worker 不采集（`subTargets.service_worker="not-collected"`），popup 被既有目标策略阻断。能力报 `limits.network.https="mechanism-identical"`（与 `responseModification` 并列）。**进程内 ≠ 真实宿主**：3080 重启后的网络冒烟仍 NOT_RUN。
+- **边界**：`G1.5` 为 partial——OOPIF 部分覆盖，shared/service worker 不采集，popup 被目标策略阻断；HTTPS 未独立验收（`limits.network.https:"mechanism-identical"`）；`responseModification` 视 Chrome 实测能力；HAR 只保证 1.2 子集。只读动作不启动浏览器，`session.start` 与需要 page 的 control 才懒启动。
 
 
 ### T4（5 个，动态行为）
@@ -143,7 +141,7 @@ browser_network_evidence {action:"export"|"link"|"integrity"}   # 或 browser_ne
 | --- | --- | --- |
 | `browser_dynamic_session` | `action` | start/stop/status/reset/**extend**；`config.captureVisual` 视觉采集（`source:"screencast"` 共享预览 JPEG 流 / `source:"screenshot-loop"` PNG 精确采样），或 `captureVisual:false`+`networkSessionId` 建纯网络关联视图（不启动 P0、不采帧） |
 | `browser_motion_observe` | `motionSessionId` | 只读帧/事件查询：`cursor`/`sinceSeq`/`window`/`frameIds` 互斥、`includeImages`≤3、`fresh` 显式真实采样；**`region` = 只交付该矩形（crop-on-delivery，PNG，需配 `includeImages`）**；不 ensure、不续租 |
-| `browser_motion_analyze` | `motionSessionId`,`assertions` | 七类断言：`frame-diff`/`region-change`/`flicker`/`freeze`/`jank`/`trajectory`/`transition`；离线不采新帧；`FAIL>BLOCKED>INCONCLUSIVE>WARN>PASS`，`exitCode` 1/2/0 |
+| `browser_motion_analyze` | `motionSessionId`,`assertions` | 七类断言：`frame-diff`/`region-change`/`flicker`/`freeze`/`jank`/`trajectory`/`transition`；离线不采新帧
 | `browser_motion_control` | `motionSessionId`,`action` | `pause`/`resume`/`seek`/`rate`/`restore`；`adapterId`+`targetIds`≤20，逐目标 `before/after` 回读，`applied/failedIndex/restoreStatus`；`restoreToken` 只在 restore 用 |
 | `browser_dynamic_correlate` | `dynamicSessionId` | 六向关联：`operation→visual`/`operation→network`/`network→visual`/`visual→network`/`network→network`/`visual→visual`；`includeTemporal` 默认 false |
 
@@ -166,13 +164,7 @@ browser_network_evidence {action:"export"|"link"|"integrity"}   # 或 browser_ne
 
 ## P0 截图采集与证据
 
-**当前默认暂存修订**：14/14、142/142、exit0，Lead最终报告 `tests/acceptance/runs/capture-p0-2026-11-01T05-52-05-302Z-104057/report.json`（C14新增23项、C1+2）；T1 `tests/acceptance/runs/2026-11-01T05-49-22-590Z-100191/run-report.json` 22/22、324/324；T2 `tests/acceptance/runs/2026-11-01T05-50-44-987Z-101531/run-report.json` 37/38+1 NOT_RUN、260/260。默认暂存/显式持久语义见下方与安全参考；以下115/117均修订前历史，不代表当前默认路径。
-
-最终Lead独立串行复跑两次均13/13、117/117、exit0：`tests/acceptance/runs/capture-p0-2026-11-01T05-15-01-055Z-85097/report.json`、`tests/acceptance/runs/capture-p0-2026-11-01T05-15-05-476Z-85616/report.json`；T1 `tests/acceptance/runs/2026-11-01T05-15-09-827Z-86138/run-report.json` 22/22、324/324。以下115项为增量前历史；验收使用串行执行避免并发干扰。
-
-权威契约为仓库 `docs/capture-p0.md`；进程内真实Chromium三次各 **13/13、115/115、exit0**，报告 `tests/acceptance/runs/capture-p0-2026-11-01T04-57-34-532Z-65733/report.json`、`tests/acceptance/runs/capture-p0-2026-11-01T04-58-28-002Z-66463/report.json`、`tests/acceptance/runs/capture-p0-2026-11-01T04-58-32-550Z-66980/report.json`；本轮主回归 `tests/acceptance/runs/2026-11-01T04-59-29-531Z-68121/run-report.json` **22/22、324/324**。这些是fake ctx+真实Chromium证据，P0真实宿主重载/provider视觉仍NOT_RUN。
-
-- 公开maxDelta增量验收 `tests/acceptance/runs/capture-p0-2026-11-01T05-09-04-665Z-79630/report.json` **13/13、117/117、exit0**；此前115项为增量前。anomaly.maxDelta在checked=false为null，checked=true为相对首像素最大通道差，白页0/内容页255。
+权威契约是 `docs/capture-p0.md`。以下为实现口径与边界，不是验收记录。
 - 单CDP clip，DSF固定1，输出逐轴 `round(css×scale)`，最多16M像素；1.11合法，101×50实测112×56。默认截现场可见视口；region是文档CSS坐标，输入/T2 bbox是视口CSS坐标，按scroll与mapping转换。
 - capture含request/environment/png/expected/sizeCheck/mapping/anomaly/file/delivery/warnings；mapping只含JSON数据和公式。页面DPR未知为null，DSF来源runtime-override；headless联合product/userAgent判断并返回headlessSource，Chrome152实测userAgent。CRC/尺寸失败不交付；≤16M全量检查均匀/透明只警告，不自动判页面FAIL。
 - persist:boolean默认false（非布尔INVALID_ARGUMENT）；out/persist:true/非空env任一触发持久，false不取消out/env。持久根env优先（必须绝对有效，非法不回退）否则可信cwd，省略out用output/capture/<actionId>.png；file为relative/persistent/root=env|workspace/ephemeral=false。其它调用包括legacy无cwd默认实例级`<tmp>/dsh-ui-testing-capture-*`，file为absolute/staging/root=staging/ephemeral=true，dispose清理；默认不写工作区。持久无根报OUTPUT_PATH_INVALID(root_unknown)；暂存失败仅file=null+capture_file_unavailable，仍交付图片。拒绝绝对out/..段/反斜杠/空段/非.png，总长≤200字节、单段≤100，0600/link/no-clobber。observed.file仅{persistence,relativePath|null}，不暴露绝对暂存路径。tmp不可写真实场景/SIGKILL残留未验。
@@ -210,7 +202,7 @@ browser_node_state（现场读状态）/ browser_wait_for（等条件）
     - text "第二段"
 ```
 
-**树是压缩后的语义投影（2026-11-01 优化）**：
+**树是压缩后的语义投影（压缩投影）**：
 
 - 内容命名 owner（heading/button/link 且 name 来自其 contents）的纯文本重复链**只保留一份**——看到 `heading "设置"` 就不要再期待其下出现同名 `text "设置"`；AX 里 `aria-label`/`labelledby`/外部 `label` 命名的 owner **不会**吞掉子文本，因此这类节点的子文本仍然出现。
 - 内联片段之间的空白投影为**单独一行** `- text " "`，不会出现 `- text ""` 空文本行；不要把这些分隔行当成内容，也不要把它们拼进断言文本。
@@ -319,14 +311,14 @@ T2 交互断言失败（`NOT_INTERACTABLE`、点击后业务值未变、`WAIT_TI
 
 上例中 `Tab` 让焦点前进、`Shift+Tab` 回退、`Ctrl+A` 的页面 keydown 为 `e.ctrlKey===true && e.key==='a'`、位掩码 `10`（2|8）等价 ctrl+shift。派发成功仍不等于断言通过：焦点、默认动作与业务副作用必须在页面内读回（如 `document.activeElement.id`、自己装的 keydown 记录器），不要用 `applied` 计数或截图代替。
 
-**输入真值边界**：`pointerType:'pen'` 按 CDP 要求传字符串并归一到 `mouse|pen`，页面 `PointerEvent.pointerType` 可读回 `"pen"`（整数 1/2 仍兼容，但不要用它冒充触控笔/压感）；`commands`（如 `["selectAll"]`）与 `unmodifiedText` 在部分平台没有可观察的页面效果——验收必须读 selection/`beforeinput`/最终 value 等页面真值，无法观察时如实记 `INCONCLUSIVE/platform-no-visible-effect`，不得把“工具调用成功”写成行为已验证。焦点仍无专门工具，用 Tab/Shift+Tab 或页面内 JS，并以页面读回为准。
+**输入真值边界**：`pointerType:'pen'` 按 CDP 要求传字符串并归一到 `mouse|pen`，页面 `PointerEvent.pointerType` 可读回 `"pen"`；焦点仍无专门工具，用 Tab/Shift+Tab 或页面内 JS，并以页面读回为准。
 
 ## 独立 HTTP 请求（`browser_http_request`）
 
 用于验证接口契约、响应头/状态码、与页面解耦的请求与错误分类。**不要**用 `browser_eval` 里的页面 `fetch`（页面上下文、受 CORS/Cookie/CSP/导航状态影响）或 `browser_network`（只有元数据、无头/正文）冒充它。
 
 - 参数：`url` 必填；`method` 限 `GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS`（大小写严格）；`headers` 只接受单值字符串（禁止 `host`、`content-length`、`transfer-encoding`、`connection`、`proxy-*`、`sec-*`、`cookie`、`accept-encoding` 等由客户端/协议托管的头，整次调用零派发）；`body` 仅 UTF-8 文本 ≤64 KiB，`GET/HEAD` 提供即拒绝，不自动设置 `content-type`；`timeoutMs` 是**总截止时间**（默认 5000、1–20000，覆盖 DNS/连接/每跳重定向/响应头/正文）；`maxBytes` 是响应保留上限（默认 65536、1–1048576，超限即停读并标记截断）；`followRedirects` 默认 `false`，显式 `true` 时须自己给 `maxRedirects`（0–5）。
-- 语义：`ok:true` 只表示**取得了响应**，不是 2xx；404/500 正常返回，按 `status` 判定。`headers` 是小写头名→非空 `string[]`（保留重复值）；`encoding` 为 `utf8`/`base64`；`bodyBytes` 是保留的原始实体字节数；`bodyTruncated` 仅在超上限时为 true；`redirects` 列出已实际跟随的跳（脱敏）。不自动解压响应（发送 `accept-encoding: identity`），压缩响应按原始字节返回 base64。
+- 语义：`ok:true` 只表示**取得了响应**，不是 2xx；`headers` 是小写头名→非空 `string[]`（保留重复值）；`encoding` 为 `utf8`/`base64`；`bodyBytes` 是保留的原始实体字节数；`bodyTruncated` 仅在超上限时为 true；`redirects` 列出已实际跟随的跳（脱敏）。不自动解压响应（发送 `accept-encoding: identity`），压缩响应按原始字节返回 base64。
 - 安全：每次派发（含**每一跳**重定向）都走与页面相同的目标策略；HTTPS→HTTP 降级拒绝；跨 origin 重定向清空全部调用方头；无 cookie jar、不读页面 Cookie/存储/DSH 登录态；显式 `authorization`/`x-api-key` 可传，但放行不等于获得业务授权。URL 与敏感响应头值脱敏，正文仍可能含敏感数据。
 - 生命周期：不启动 Chromium、不占页面租约、不进页面串行队列；其他 owner 持租约或 Chromium 未启动时仍可用；取消/超时只销毁当前请求，不关闭浏览器、不改页面错误；不自动重试（副作用未知时先查状态）。
 - 错误：`HTTP_TIMEOUT`（timeout/retryable）、`HTTP_FAILED`（network/retryable）、`HTTP_REDIRECT_LIMIT`（network/不可重试），以及 `INVALID_ARGUMENT`（参数/目标/降级被拒）、DNS 的 `NAV_FAILED`、`ABORTED`。
@@ -353,7 +345,7 @@ browser_http_request {
 4. 页面操作与 network 先由 `exec.agent.session.header.cwd` / `exec.agent.id` 解析到所属 DSH 工作区 runtime，再申请**该 runtime 的** single-owner-lease；同工作区其他 session 收到 retryable `BUSY`，不同工作区互不影响。缺失 exec/agent 走 legacy；**空闲租约 15s，进行中保持**；state/capabilities 可继续诊断。`agent/disposed` 只释放对应 owner。T2 的只读工具（snapshot/node_state/wait_for）同样要过租约。
 5. 同一工作区的面板与 Agent 使用该工作区的串行队列和 page；不同工作区不共享 URL/viewport/队列/租约/ref 表，但共享 Cookie/存储。租约只防同工作区并发写，不是跨工作区安全边界。**ref 只在本工作区 runtime 内有效**：A 产生的 ref 在 B 是 `REF_STALE`，两边各自的 `e1` 只解析到各自节点。
 6. signal 取消已经发出的 CDP 命令时，在队列内关闭浏览器后再放锁；后续可懒启动。取消不回滚网页副作用，不得盲重放提交/删除/支付；等待被取消时 `after` 可能为 null，不要伪造。
-7. 无法判断能力或结果时报告 `BLOCKED/INCONCLUSIVE`，不因静态声明或工具返回成功而假设通过。
+
 
 ## 错误与操作纪律
 
@@ -412,8 +404,8 @@ browser_http_request {
 - 共享视口引用 `view`（含 `revision`/`source`）与 `observed`/`viewMeta`（`observedAt`/`stale`）；`source:"page"` 表示位置变化是页面自己造成的，不是你上次 set 的结果。截图默认比例要写清是 `scaleSource:"view"`（跟随共享比例）还是 `"explicit"`。
 - 截图引用真实 `capturedAt/sha256/attachmentId`；附件 ID 不是文件路径。附件保存或 image block 生成不自动证明 provider 已显示图像；无服务的 base64-fallback 文本不能冒充已看到画面。
 - T3 引用 `evidence.vision`：`version/operation/provenance(algorithmVersion=t3-v1)`、`source`（kind/productId/sha256/尺寸/capturedAt/mapping，live 另带 CaptureV1）、`coordinateSpace`、`regions`、`metrics`、`baseline`（name/revision/headToken/tombstone）、`facts`（trusted=false）、`verdict{status,reason}`、`dispatch`、`output`、`incomplete/truncated`。`compare` 引用 `comparison.metrics`（totalPixels/maskedPixels/comparedPixels/diffPixels/aaPixels/diffRatio/similarity）与 resolved masks/options/thresholds；`check` 引用每 assertion 的 status/reason/metrics/diffProductId 与 summary/verdict/exitCode。
-- 原始截图及可见附件仍不等于 T3 分析；T3 也只支持指定区域/分辨率/时间/阈值下的像素结论，不证明业务、交互、可访问性或整页正确。`/metrics` 只证明预览管线指标。T3 的进程内验收为 `tests/acceptance/runs/2026-11-01T08-38-27-595Z-194712/run-report.json`（criteria 56/56、requiredChecks 389/389、notApplicable 3、exit 0；此前 `07-34-49-952Z-174834` 同结果）；真实宿主冒烟见 `本地验证记录（不随仓库分发）/t3-real-host-2026-11-01.md`，provider 图像可见性仍写 `NOT_RUN`。
-- 报告包含目标、期望/实际、工具参数、action 证据、失败/回退原因、`PASS/FAIL/BLOCKED/INCONCLUSIVE/NOT_RUN` 和未验证部分；不得伪造路径、附件或已通过状态。T2 未跑的条件写 `NOT_RUN`，不写“已通过”。
+- 原始截图及可见附件仍不等于 T3 分析；T3 也只支持指定区域/分辨率/时间/阈值下的像素结论，不证明业务、交互、可访问性或整页正确。`/metrics` 只证明预览管线指标。
+不得伪造路径、附件或已通过状态。
 
 ## 读取面板标注（P0-D annotations）
 

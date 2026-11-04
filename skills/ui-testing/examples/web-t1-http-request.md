@@ -32,7 +32,7 @@ browser_http_request { "url": "http://127.0.0.1:3000/api/health" }
 
 判定口径：
 
-- `ok:true` 只表示**取得了响应**；404/500 也走成功返回，业务结论看 `status` 与 `body`。
+- `ok:true` 只表示**取得了响应**；
 - `headers` 是小写头名 → 非空 `string[]`；`bodyBytes` 是保留的原始实体字节，不受 `JSON.parse` 影响。
 - `encoding` 为 `base64` 时（二进制/非文本/截断在多字节码点中间）不要当文本解析。
 - 要断言接口“完整响应”，先确认 `bodyTruncated === false`；截断结果不能替代完整 JSON 断言。

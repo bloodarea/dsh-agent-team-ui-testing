@@ -1,7 +1,6 @@
-# T3 · 静态视觉（已实现并通过进程内验收；真实宿主/provider 仍 NOT_RUN）
+# T3 · 静态视觉
 
-> 权威契约：[`docs/t3-vision.md`](../../../../docs/t3-vision.md)（§1 范围/源图/校验、§2 六工具 schema、§3 坐标与统一证据/错误码、§4 PNG 与 YIQ diff、§5 识别限制、§6 坐标交互、§7 六类缺陷与事实、§8 基线/回归、§9 56 条验收、§10 能力映射、§11 交接）。
-> 本文件只是**已实现能力的操作摘要**，不替代契约；字段、边界与验收口径以契约为准。
+> 权威契约：[`docs/t3-vision.md`](../../../../docs/t3-vision.md)。本文件是已实现能力的操作摘要，字段、边界与验收口径以契约为准。
 
 ## 已实现的六个工具（当前工具面 35 = 10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4）
 
@@ -36,19 +35,11 @@
 
 ## 与 T1/T2 的关系
 
-`browser_screenshot` 仍是原始 PNG 采集（P0），不隐式产生 productId；要用同一画面做视觉分析，先 `browser_vision_image` 取得 product。T2 负责语义元素与可交互目标；T3 的 `act` 用当前截图里的顶层命中点，不是“知道调用者想要哪个 DOM 对象”，也不是 T2 `NOT_INTERACTABLE` 的 force 逃生口。`escalation:"T3"` 只提示需要视觉分析；`escalation:"T4"`（持续运动）仍未实现。
+`browser_screenshot` 仍是原始 PNG 采集（P0），不隐式产生 productId；要用同一画面做视觉分析，先 `browser_vision_image` 取得 product。T2 负责语义元素与可交互目标；T3 的 `act` 用当前截图里的顶层命中点，不是“知道调用者想要哪个 DOM 对象”，也不是 T2 `NOT_INTERACTABLE` 的 force 逃生口。`escalation:"T3"` 只提示需要视觉分析；`escalation:"T4"` 提示需要连续帧证据（持续运动）。
 
-## 验收状态（verified / 进程内）
+## 结论边界
 
-- **进程内真实 Chromium（同一最终代码，Lead 串行复跑）**：`node tests/acceptance/t3-vision.mjs` → criteria **56/56**、requiredChecks **389/389**、failedChecks **0**、notApplicable **3**、exit 0
-  报告 `tests/acceptance/runs/2026-11-01T07-34-49-952Z-174834/run-report.json`；执行者复跑 `tests/acceptance/runs/2026-11-01T07-33-56-470Z-172394` 结果一致。
-- **回归**：T1 `run.mjs` 22/22、324/324（`2026-11-01T07-31-29-210Z-168725`）；T2 `t2-structured.mjs` 37/38 + 1 NOT_RUN（C38 套件边界）、260/260（`2026-11-01T07-33-10-505Z-170262`）；
-  P0 `capture-p0.mjs` 14/14、142/142（`capture-p0-2026-11-01T07-35-21-142Z-176846`）；单测 vision 36/36 + 基线 52/52、capture 26/26、runtime-faults 16/16；check-skill 26/26、registry 17/17。
-- **3 条 notApplicable（不是 PASS，均带 reason）**：
-  1. `C25` DOM 小数 / Blink 截断：Chrome 对小数 clip 取 floor（79.5→79），Host 按 §3.1 以实际采样构造 mapping 并记录 `sizeTolerance`（±1px）；页面侧小数字面量不可稳定观测。
-  2. `C30` inert hit-test：inert 子树不参与命中测试（`elementFromPoint`/CDP 均返回 BODY），故「inert 命中→零派发」不可达；已由 Lead 裁决改为断言「inert 按钮未被激活/事件不递送」，Host 侧保留 composed 祖先 inert 检查作防御。
-  3. `C31` 页面级 downs/ups：取消/部分派发的按钮释放由 CDP 层保证，页面事件计数不能稳定观测（部分派发仍不重放）。
-- **真实宿主已复验**：2026-11-01 16:23 重启后的 3080 真实会话内完成六工具冒烟（live 裁剪/识别/两图比较/baseline 全套/check/act + 页面真值），记录 `本地验证记录（不随仓库分发）/t3-real-host-2026-11-01.md`；同一时点复跑本套件 56/56、389/389、exit 0（`2026-11-01T08-38-27-595Z-194712`）。
-- **仍未验证（NOT_RUN，不得由本套件推定）**：provider 图像可见性（附件已作为 image block 进入会话，但未专项验收）、T4 动态视觉；
-  以及本地恶意进程 TOCTOU、网络文件系统下的 HEAD CAS、`link/fsync` 崩溃孤儿等运行风险。
-- 能力台账（`manifests/declared-capabilities.json`）中 6 个 `web.t3.*` 与聚合 `web.t3.static-vision` 记 **verified**，并已写入上述报告路径、N/A 与未验证项。
+- 结论只对指定源图、区域、分辨率与阈值负责；`ok:true`、截图成功、识别到候选、坐标已派发都不等于视觉验收通过。
+- `INCONCLUSIVE`/`BLOCKED` 必须原样报告，不能降级成 PASS；`advisory` 事实最多给 `WARN`。
+- 3 条 N/A 子项（DOM 小数/Blink 截断、inert 命中、页面级 downs/ups）以 reason 说明，不计入 PASS。
+- 真实宿主加载与 provider 图像可见性需要单独证据。

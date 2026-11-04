@@ -30,12 +30,12 @@ escalation{tier:"T3"|"T4"|null,reason}, incomplete[], truncated
 - `resolved.role/name/bbox` 是现场读数；`identity.*` 是身份证明（Element/connected/ownerDocument/backendNodeId 一致）。`nodeAfter:null` + `incomplete` 含 `node-after-document-changed` 表示动作触发了文档切换，不能用新页节点冒充旧身份。
 - `networkDelta` 用 Runtime 单调 `seq` 统计一次动作期间的新增/响应/失败事件，最多回 20 条，`total`/`dropped` 说明窗口总量与丢弃（缓冲覆盖+输出截断），不是因果归属。
 - `escalation` 只表示建议层级（hidden/covered → T3，unstable → T4），**不等于**该层可用。
-- 脱敏：可编辑控件 `value:null` + `valueRedacted:true`；密码类控件连 text/AX value 一并屏蔽；`requested` 不含 selector 原文；args 只保留结构摘要；action evidence ≤262144 字节、targets ≤20、单节点 text/name/value ≤512/256/512 字节，超限先删网络条目再截断文本，并置 `truncated`。页面自由文本仍可能敏感。
+- 脱敏：可编辑控件 `value:null` + `valueRedacted:true`；密码类控件连 text/AX value 一并屏蔽；`requested` 不含 selector 原文；args 只保留结构摘要；页面自由文本仍可能敏感。
 
 截图保留 image base64；可用时 `ctx.attachments.saveImage` 保存附件并 render image block。缺少附件服务明确 render base64-fallback 文本。附件 ID 不是文件路径，保存成功不等于 provider 已显示图像；真实可见性需在视觉 provider 会话实测。不能宣称已落本地证据文件，除非有实际返回/授权保存证据。截图与 eval 内容不自动脱敏，image block 可能进入 provider 上下文。
 
-P0的 `capture.version=1` 与T2 evidence独立：含request/environment/png/expected/sizeCheck/mapping/anomaly/file/delivery/warnings，mapping仅JSON+公式；DPR未知null、DSF来源runtime-override，headlessSource来自product/userAgent。原图尺寸/hash/文件是采集事实，delivery仅附件metadata，不自证provider。默认staging（绝对path/ephemeral=true，插件dispose清理）；out/persist:true/非空env才persistent（env或cwd根相对path/ephemeral=false）。file含pathKind/persistence/root/ephemeral，暂存不能当持久证据；observed.file只含persistence/relativePath|null不公开绝对路径。仅file非null且hash匹配可声明已有文件，暂存失败file=null+既有warning。路径规则见 [安全边界](../core/safety.md)。≤16M像素全量均匀/透明统计不替代视觉判定；C13前后布局相同不排除瞬时LBI，canvas位图细节不增加，TOCTOU未解决。当前暂存修订验收14/14、142/142，115/117为历史，报告见 [T1台账](../../knowledge/web/t1-capability-ledger.md)；P0宿主重载/provider仍NOT_RUN。
+P0的 `capture.version=1` 与T2 evidence独立：含request/environment/png/expected/sizeCheck/mapping/anomaly/file/delivery/warnings，mapping仅JSON+公式；DPR未知null、DSF来源runtime-override，headlessSource来自product/userAgent。原图尺寸/hash/文件是采集事实，delivery仅附件metadata，不自证provider。默认staging（绝对path/ephemeral=true，插件dispose清理）；out/persist:true/非空env才persistent（env或cwd根相对path/ephemeral=false）。file含pathKind/persistence/root/ephemeral，暂存不能当持久证据；observed.file只含persistence/relativePath|null不公开绝对路径。仅file非null且hash匹配可声明已有文件，暂存失败file=null+既有warning。路径规则见 [安全边界](../core/safety.md)。≤16M像素全量均匀/透明统计不替代视觉判定；C13前后布局相同不排除瞬时LBI，canvas位图细节不增加，TOCTOU未解决。真实宿主与 provider 行为需单独证据。
 
 没有独立JSONL证据包、自动assertion_status、帧序列或视觉差异分析；原始PNG落盘不等于独立证据包。`/metrics` 是预览管线诊断，不能替代页面断言。close 清空网络/URL/标题/帧缓存**与 T2 的 snapshot/ref 表**；引用记录仍要核对本轮 action 时序。
 
-报告独立记录 expected/observed、tools_used、真实 action/附件引用、限制与 PASS/FAIL/BLOCKED/INCONCLUSIVE/NOT_RUN。原始截图可见也不把 T3/T4 升为已实现；证据不足时 INCONCLUSIVE，未执行 NOT_RUN。T2 断言必须给出 `snapshotId/digest` + `targets[].resolved` + `dispatch` 与页面真值读数：**`dispatched:true` 不是 PASS**，`dispatch.completed` 也只说明派发过程。
+原始截图可见也不把 T3/T4 升为已实现；T2 断言必须给出 `snapshotId/digest` + `targets[].resolved` + `dispatch` 与页面真值读数：**`dispatched:true` 不是 PASS**，`dispatch.completed` 也只说明派发过程。
