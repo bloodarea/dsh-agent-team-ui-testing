@@ -1,6 +1,6 @@
 # 按需选择与升级示例（当前实现）
 
-> 本插件已实现 Web T1（程序化接口）+ T2（结构化 GUI，待运行验收）；T3/T4 与其它平台未实现。下表说明每个断言该用什么、以及**不能装作可用**的边界；独立 HTTP 请求由 `browser_http_request` 覆盖（SEL-08），元素级交互由 T2 覆盖（SEL-10…SEL-14）。示例状态是行为规范，不是运行证据。
+> 本插件已实现 Web T1（程序化接口）+ T2（结构化 GUI，待运行验收）；T3/T4 已实现（T4 部分门槛 NOT_RUN），其它平台未实现。下表说明每个断言该用什么、以及**不能装作可用**的边界；独立 HTTP 请求由 `browser_http_request` 覆盖（SEL-08），元素级交互由 T2 覆盖（SEL-10…SEL-14）。示例状态是行为规范，不是运行证据。
 
 | ID | 断言 | 当前可用方法 | 正确行为 |
 |---|---|---|---|
@@ -8,8 +8,8 @@
 | SEL-02 | 登录按钮的 `display` 是 `block` | `browser_computed_style` | 直接读计算样式；说明只证明 computed style，不证明像素 |
 | SEL-03 | 点击后进入下一步（需要可信点击证据） | `browser_snapshot` → `browser_click` | ref/唯一 selector + `evidence.dispatch`；再用 `browser_node_state` 或页面真值断言；`dispatched:true` 不是 PASS |
 | SEL-04 | 页面发起了某接口且返回 200 | `browser_network` | 响应与 loadingFailed 元数据、URL 脱敏；无头/正文，其他 owner BUSY |
-| SEL-05 | 弹窗布局像素级正确 | **无 T3** | `BLOCKED` / `INCONCLUSIVE`；原始截图/可选 image block 不提供像素差异或阈值分析 |
-| SEL-06 | 过渡动画时长 300ms 且流畅 | **无 T4** | `BLOCKED`；单帧截图/`browser_eval` JS 值不能冒充 |
+| SEL-05 | 弹窗布局像素级正确 | `browser_vision_image` + `browser_vision_compare`（或 `check` 回归） | 给像素差异/区域/阈值证据；只拿到原始截图不算像素结论 |
+| SEL-06 | 过渡动画时长 300ms 且流畅 | `browser_dynamic_session` + `browser_motion_analyze`（`transition`/`jank`） | 用帧序列 + 时间戳 + `transition` 断言；单帧截图/`browser_eval` JS 值不能冒充 |
 | SEL-07 | 按钮的 ARIA accessible name 正确 | `browser_snapshot`（T2） | 用 AX 文本树的 role/name 断言；不要用 `browser_eval` 读 DOM 属性冒充语义树 |
 | SEL-08 | 独立 HTTP 请求的响应头与状态码 | `browser_http_request` | 直接请求，读 `status/headers/body`；默认不跟随重定向、无 cookie jar；超时/网络/重定向超限有分类错误 |
 | SEL-09 | 选择元素并回传聊天 | **面板“选择元素”未实现（按钮禁用）** | `BLOCKED`；但“按 ref 操作元素”已由 T2 覆盖，与面板点选回传是两件事，不要混为一谈 |
@@ -19,6 +19,11 @@
 | SEL-13 | 同名两个 Save 按钮该点哪一个 | `browser_click` | 用 `ref` 或更精确的唯一 selector；`TARGET_NOT_UNIQUE` 时**不能取第一个** |
 | SEL-14 | input[type=number] / contenteditable 输入 | **T2 `browser_type` 不支持** | 抛 `UNSUPPORTED`；回落 T1 `browser_input` + 页面读回，并注明证据强度不同 |
 | SEL-15 | iframe / closed shadow 内部元素 | **无 T2 路径** | `BLOCKED`；只报告边界叶子状态，不把动作送进内部、不落到相似节点 |
+| SEL-16 | 交互后列表应刷新（请求 + DOM + 渲染都成立） | P0 `network_trace` + T2 `wait_for` + T3 `vision_check` | 三份证据分别成立；缺一项写"部分验证"，不合成一个 PASS |
+| SEL-17 | 点了按钮但画面"好像没变" | T4 `region-change` + `motion_observe{region}`（必要再 T3 `compare`） | 区分「真的没变 / 变得太小 / 变了没注意」；不能凭印象说没变 |
+| SEL-18 | 错误横幅是否由那次 500 引起 | P0 `events` 定位 + T4 抓横幅出现 + `dynamic_correlate` | 只有 explicit/redirect/initiator 可写因果；`observed` 只能写关联 |
+| SEL-19 | 加载骨架屏/过渡的时序 | T4 `motion_analyze`（`transition`/`freeze`/`jank`） | 帧序列 + 时间戳 + `resolvedThresholds`；`freeze` 需可核验 expectation |
+| SEL-20 | 页面像卡死/白屏 | T4 `jank`/`freeze` + P0 时间轴 + T1 runtime 错误 | 三方向证据；采样不足写 INCONCLUSIVE，不写"没卡" |
 
 ## 回退与停止的正确姿势
 

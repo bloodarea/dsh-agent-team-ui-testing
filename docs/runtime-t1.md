@@ -134,7 +134,7 @@ T3（第 7 轮新增 6 个）：`browser_vision_image`、`browser_vision_find`�
 
 `browser_viewport` 的 `get` 是**缓存诊断**（包装器按 `readOnly(args)` 在 `run()` 之外执行：不 ensure、不发 CDP、不进队列、不申请/续租租约、不改 recent/error），`set` 与其它页面工具一样走预检 → 串行队列 → 懒启动 + single-owner-lease；`expectedRevision` 冲突抛 `VIEWPORT_CONFLICT`（HTTP 409）且 patch 零应用。详见 [viewport-control.md](viewport-control.md) §7。
 
-T2 与 T1 共用同一 Runtime/队列/租约，`browser_snapshot` 的 ref 表按 Runtime 隔离；七工具都是页面操作（懒启动 + BUSY），`browser_state`/`browser_capabilities` 与独立 HTTP 不因 T2 改变语义。`browser_capabilities` 新增 `web.t2.*` 与 `limits.structuredGui`。**本文 T2 轮快照中的“T3/T4 仍 unsupported”已被第 7 轮取代**：T3 六个视觉工具与 `web.t3.*` 已实现并验收，T4 仍 unsupported。
+T2 与 T1 共用同一 Runtime/队列/租约，`browser_snapshot` 的 ref 表按 Runtime 隔离；七工具都是页面操作（懒启动 + BUSY），`browser_state`/`browser_capabilities` 与独立 HTTP 不因 T2 改变语义。`browser_capabilities` 新增 `web.t2.*` 与 `limits.structuredGui`。**本文 T2 轮快照中的“T3/T4 仍 unsupported”已被第 7 轮取代**：T3 六个视觉工具与 `web.t3.*` 已实现并验收；T4 已于 2026-11-04 实现（5 个 `browser_*` 工具，工具面 35），见 [status.md](status.md)「WEB-T4 实现」。
 
 M0–M2 的 `single-owner-lease` 保留，但已改为**按 DSH 工作区**：页面操作与 network 先按 exec 身份解析工作区 runtime，再申请该 runtime 的租约；空闲 15s、进行中保持，同工作区其他 session 返回 `BUSY`，不同工作区互不影响。exec 身份缺失走 `legacy:default`；`agent/disposed` 只释放对应 owner。同一工作区的面板与 Agent 使用同一 page/串行队列；不同工作区 page/URL/viewport/网络缓冲独立，但 Cookie/存储共享。state/capabilities 不启动浏览器也不占租约。`browser_http_request` 仍是独立分支：不启动 Chromium、不申请/续租、不进页面队列、不建 page/entry，插件卸载时取消在飞请求。帧管线、`/metrics`、WS 都不是 Agent 工具。scope 身份、请求头/query、recent→binding 与限制见 [workspace-isolation.md](workspace-isolation.md)。
 

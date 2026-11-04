@@ -1,0 +1,1169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH T4 动态视觉靶机</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    min-height: 100vh;
+    background: #0b1220;
+    color: #e2e8f0;
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
+  }
+  header { padding: 12px 18px 4px; }
+  h1 { margin: 0; font-size: 20px; letter-spacing: 0.2px; }
+  #t4v-subtitle { margin: 2px 0 0; color: #94a3b8; font-size: 12px; }
+  #t4v-status {
+    margin: 6px 0 0; padding: 5px 8px; border-radius: 6px;
+    background: #101b31; color: #93c5fd; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .t4v-controls {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px;
+    color: #cbd5e1; font-size: 12px;
+  }
+  .t4v-controls label { display: inline-flex; gap: 5px; align-items: center; }
+  button, select, input[type="range"] {
+    font: inherit; color: #e2e8f0; background: #1b2a45; border: 1px solid #35507a;
+    border-radius: 6px; padding: 4px 9px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: #24385c; }
+  input[type="range"] { padding: 0; width: 170px; accent-color: #60a5fa; }
+  #t4v-seek-value { min-width: 54px; text-align: right; color: #93c5fd; font-family: ui-monospace, Menlo, monospace; }
+  .t4v-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;
+    max-width: 1180px; margin: 10px auto 16px; padding: 0 18px;
+  }
+  .t4v-card {
+    min-width: 0; padding: 9px 12px 10px; border: 1px solid #24324d; border-radius: 10px;
+    background: linear-gradient(180deg, #111c33, #0d1628);
+  }
+  .t4v-card h2 { margin: 0; font-size: 15px; }
+  .t4v-card .t4v-desc { margin: 1px 0 7px; color: #94a3b8; font-size: 12px; }
+  .t4v-stage {
+    display: flex; align-items: center; justify-content: center; height: 166px;
+    border-radius: 8px; background: #070d19; overflow: hidden;
+  }
+  #t4v-css-orb {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: radial-gradient(circle at 32% 30%, #fef3c7, #f59e0b 42%, #b45309 100%);
+    box-shadow: 0 0 22px rgba(245, 158, 11, 0.45);
+    will-change: transform, opacity;
+  }
+  canvas { display: block; width: 240px; height: 160px; border-radius: 5px; background: #000; }
+  video { display: block; width: 240px; height: 160px; border-radius: 5px; background: #000; object-fit: contain; }
+  .t4v-truth {
+    margin: 7px 0 0; color: #8fb3d9; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  @media (max-width: 900px) { .t4v-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body data-t4v-scenario="normal" data-t4v-paused="false" data-t4v-ready="false">
+<header>
+  <h1 id="t4v-title">DSH T4 动态视觉靶机</h1>
+  <p id="t4v-subtitle">确定性动态视觉靶机：CSS / Canvas 2D / WebGL / 动态媒体；逻辑时钟由 rAF 推进，暂停与 seek 全冻结。</p>
+  <p id="t4v-status">booting</p>
+  <div class="t4v-controls" role="group" aria-label="T4 视觉靶机控制">
+    <button type="button" id="t4v-pause">暂停</button>
+    <button type="button" id="t4v-resume">恢复</button>
+    <button type="button" id="t4v-reset">重置</button>
+    <label>场景
+      <select id="t4v-scenario-select">
+        <option value="normal">normal</option>
+        <option value="flash">flash</option>
+        <option value="freeze">freeze</option>
+        <option value="jank">jank</option>
+        <option value="media-stall">media-stall</option>
+      </select>
+    </label>
+    <label>seek
+      <input type="range" id="t4v-seek" min="0" max="3000" step="1" value="0">
+      <span id="t4v-seek-value">0 ms</span>
+    </label>
+    <button type="button" id="t4v-step-back">-50 ms</button>
+    <button type="button" id="t4v-step-forward">+50 ms</button>
+  </div>
+</header>
+<main class="t4v-grid">
+  <section class="t4v-card" id="t4v-panel-css" data-panel="css">
+    <h2>CSS / DOM 动画</h2>
+    <p class="t4v-desc">真实 Web Animations API（transform + opacity，周期 1200 ms）</p>
+    <div class="t4v-stage"><div id="t4v-css-orb"></div></div>
+    <p class="t4v-truth" id="t4v-css-truth" data-panel="css">css: waiting</p>
+  </section>
+  <section class="t4v-card" id="t4v-panel-canvas2d" data-panel="canvas2d">
+    <h2>Canvas 2D 动画</h2>
+    <p class="t4v-desc">固定 seed 24 粒子；每帧全量重绘并计算 FNV-1a RGBA checksum</p>
+    <div class="t4v-stage"><canvas id="t4v-canvas2d" width="240" height="160"></canvas></div>
+    <p class="t4v-truth" id="t4v-canvas2d-truth" data-panel="canvas2d">canvas2d: waiting</p>
+  </section>
+  <section class="t4v-card" id="t4v-panel-webgl" data-panel="webgl">
+    <h2>WebGL / WebGPU 场景</h2>
+    <p class="t4v-desc">优先 WebGL2；u_time 驱动确定性图案；readPixels checksum；WebGPU 如实探测</p>
+    <div class="t4v-stage"><canvas id="t4v-canvas-webgl" width="240" height="160"></canvas></div>
+    <p class="t4v-truth" id="t4v-webgl-truth" data-panel="webgl">webgl: waiting</p>
+  </section>
+  <section class="t4v-card" id="t4v-panel-media" data-panel="media">
+    <h2>动态媒体</h2>
+    <p class="t4v-desc">3 s WebM（0–1 s 红 / 1–2 s 绿 / 2–3 s 蓝 + 移动白块）；真实 play/pause/currentTime</p>
+    <div class="t4v-stage"><video id="t4v-video" muted playsinline preload="auto" width="240" height="160"></video></div>
+    <p class="t4v-truth" id="t4v-media-truth" data-panel="media">media: waiting</p>
+  </section>
+</main>
+<script>
+(function () {
+  'use strict';
+
+  var DURATION_MS = 3000;
+  var SEED = 20261104;
+  var CSS_PERIOD_MS = 1200;
+  var FLASH_START_MS = 640;
+  var FLASH_END_MS = 656;
+  var FREEZE_AT_MS = 800;
+  var MEDIA_STALL_AT_MS = 1200;
+  var MEDIA_ASSET = '/t4/visual/t4-visual-media.webm';
+  var SCENARIOS = ['normal', 'flash', 'freeze', 'jank', 'media-stall'];
+
+  var body = document.body;
+  var statusEl = document.getElementById('t4v-status');
+  var pauseButton = document.getElementById('t4v-pause');
+  var resumeButton = document.getElementById('t4v-resume');
+  var resetButton = document.getElementById('t4v-reset');
+  var scenarioSelect = document.getElementById('t4v-scenario-select');
+  var seekInput = document.getElementById('t4v-seek');
+  var seekValue = document.getElementById('t4v-seek-value');
+  var stepBack = document.getElementById('t4v-step-back');
+  var stepForward = document.getElementById('t4v-step-forward');
+  var orb = document.getElementById('t4v-css-orb');
+  var canvas2d = document.getElementById('t4v-canvas2d');
+  var ctx2d = canvas2d.getContext('2d');
+  var webglCanvas = document.getElementById('t4v-canvas-webgl');
+  var video = document.getElementById('t4v-video');
+  var cssTruth = document.getElementById('t4v-css-truth');
+  var canvasTruth = document.getElementById('t4v-canvas2d-truth');
+  var webglTruth = document.getElementById('t4v-webgl-truth');
+  var mediaTruth = document.getElementById('t4v-media-truth');
+
+  var scenario = 'normal';
+  var paused = false;
+  var tMs = 0;
+  var clockFrame = 0;
+  var lastRaf = performance.now();
+  var startedAtWallMs = Date.now();
+  var lastTickWallMs = startedAtWallMs;
+  var lastCanvasT = -1;
+  var opSeq = 0;
+  var eventSeq = 0;
+  var timelineSeq = 0;
+  var ops = [];
+  var events = [];
+  var timeline = [];
+  var anomalies = { flashFrames: [], frozenAtMs: null, jankFrames: [], mediaStalled: false };
+  var cssAnimation = null;
+  var webgl = null;
+  var videoFrameCount = 0;
+  var lastVideoMediaTime = -1;
+  var lastSampleAtMs = -1;
+  var mediaUrl = null;
+  var mediaEpoch = 0;
+  var mediaFallback = null;
+  var mediaReady = false;
+
+  var truth = {
+    durationMs: DURATION_MS,
+    seed: SEED,
+    panels: ['css', 'canvas2d', 'webgl', 'media'],
+    css: { periodMs: CSS_PERIOD_MS, animatedProps: ['transform', 'opacity'] },
+    canvas2d: { width: 240, height: 160, particles: 24, checksum: 'fnv1a32-rgba' },
+    webgl: { width: 240, height: 160, api: 'unavailable' },
+    media: {
+      asset: MEDIA_ASSET,
+      durationMs: DURATION_MS,
+      checkpoints: [
+        { ms: 500, dominant: 'r' },
+        { ms: 1500, dominant: 'g' },
+        { ms: 2500, dominant: 'b' }
+      ],
+      fallback: null
+    }
+  };
+
+  var clock = {
+    nowMs: 0,
+    paused: false,
+    rate: 1,
+    frame: 0,
+    startedAtWallMs: startedAtWallMs,
+    lastTickWallMs: lastTickWallMs
+  };
+
+  var panels = {
+    css: {
+      panel: 'css', timeMs: 0,
+      transform: { translateX: 0, scale: 1 }, opacity: 1,
+      animationCount: 0, animations: []
+    },
+    canvas2d: {
+      panel: 'canvas2d', timeMs: 0, frames: 0, draws: 0,
+      particle0: { x: 0, y: 0 }, checksum: '00000000', frozen: false, flash: false
+    },
+    webgl: {
+      panel: 'webgl', timeMs: 0, frames: 0, checksum: '00000000',
+      contextType: 'none', renderer: null,
+      webgpu: { available: false, reason: 'probe pending' }
+    },
+    media: {
+      panel: 'media', durationMs: 0, currentTimeMs: 0, paused: true, readyState: 0,
+      frameCount: 0, sample: { r: 0, g: 0, b: 0 }, stalled: false, frozen: true
+    }
+  };
+
+  /* ---------------------------------------------------------------------------------------------
+   * Deterministic helpers
+   * ------------------------------------------------------------------------------------------- */
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function mulberry32(seed) {
+    var state = seed >>> 0;
+    return function next() {
+      state = (state + 0x6D2B79F5) >>> 0;
+      var t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /** FNV-1a 32-bit over raw RGBA bytes, returned as 8 lower-case hex digits. */
+  function fnv1aRgba(bytes) {
+    var hash = 0x811c9dc5 >>> 0;
+    for (var index = 0; index < bytes.length; index += 1) {
+      hash ^= bytes[index];
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return ('00000000' + hash.toString(16)).slice(-8);
+  }
+
+  function jsonClone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function trimTimeline() {
+    if (timeline.length > 1200) timeline.splice(0, timeline.length - 1200);
+  }
+
+  function recordOp(kind, target, detail) {
+    var op = {
+      opId: 'op-' + (++opSeq),
+      kind: kind,
+      target: target,
+      atMs: Math.floor(tMs),
+      atWallMs: Date.now(),
+      detail: detail || null
+    };
+    ops.push(op);
+    if (ops.length > 300) ops.shift();
+    timeline.push({
+      seq: ++timelineSeq,
+      domain: 'operation',
+      kind: kind,
+      target: target,
+      panel: null,
+      atMs: op.atMs,
+      atWallMs: op.atWallMs,
+      causeOpId: null,
+      opId: op.opId,
+      detail: op.detail
+    });
+    trimTimeline();
+    return op;
+  }
+
+  function recordEvent(kind, panel, causeOpId, detail) {
+    var event = {
+      seq: ++eventSeq,
+      kind: kind,
+      panel: panel || null,
+      atMs: Math.floor(tMs),
+      atWallMs: Date.now(),
+      causeOpId: causeOpId || null,
+      detail: detail || null
+    };
+    events.push(event);
+    if (events.length > 800) events.shift();
+    timeline.push({
+      seq: ++timelineSeq,
+      domain: 'visual',
+      kind: kind,
+      panel: event.panel,
+      atMs: event.atMs,
+      atWallMs: event.atWallMs,
+      causeOpId: event.causeOpId,
+      detail: event.detail
+    });
+    trimTimeline();
+    return event;
+  }
+
+  function clearLedger() {
+    ops.length = 0;
+    events.length = 0;
+    timeline.length = 0;
+    opSeq = 0;
+    eventSeq = 0;
+    timelineSeq = 0;
+  }
+
+  function resetAnomalies() {
+    anomalies.flashFrames.length = 0;
+    anomalies.frozenAtMs = null;
+    anomalies.jankFrames.length = 0;
+    anomalies.mediaStalled = false;
+  }
+
+  /* ---------------------------------------------------------------------------------------------
+   * CSS panel: a real Web Animations API animation, frozen by pause() + currentTime.
+   * ------------------------------------------------------------------------------------------- */
+
+  function initCss() {
+    cssAnimation = orb.animate([
+      { offset: 0.0, transform: 'translateX(0px) scale(0.55)', opacity: 0.35 },
+      { offset: 0.25, transform: 'translateX(120px) scale(1.25)', opacity: 1.0 },
+      { offset: 0.60, transform: 'translateX(40px) scale(0.80)', opacity: 0.60 },
+      { offset: 1.0, transform: 'translateX(0px) scale(0.55)', opacity: 0.35 }
+    ], {
+      id: 't4v-css-orb-anim',
+      duration: CSS_PERIOD_MS,
+      iterations: Infinity,
+      easing: 'linear',
+      fill: 'both'
+    });
+    cssAnimation.play();
+    cssAnimation.currentTime = 0;
+    renderCss();
+  }
+
+  function renderCss() {
+    var style = getComputedStyle(orb);
+    var matrix = style.transform || '';
+    var translateX = 0;
+    var scale = 1;
+    var match = /matrix\(([^)]+)\)/.exec(matrix);
+    if (match) {
+      var parts = match[1].split(',').map(Number);
+      if (parts.length >= 6) {
+        translateX = parts[4];
+        scale = Math.hypot(parts[0], parts[1]);
+      }
+    }
+    var animations = orb.getAnimations().map(function (animation, index) {
+      return {
+        id: animation.id || ('css-orb-' + (index + 1)),
+        currentTimeMs: Math.round(Number(animation.currentTime) || 0),
+        playState: animation.playState
+      };
+    });
+    panels.css.timeMs = Math.floor(tMs);
+    panels.css.transform = {
+      translateX: Math.round(translateX * 1000) / 1000,
+      scale: Math.round(scale * 1000) / 1000
+    };
+    panels.css.opacity = Math.round(Number(style.opacity) * 1000) / 1000;
+    panels.css.animationCount = animations.length;
+    panels.css.animations = animations;
+    cssTruth.textContent = 'css: t=' + panels.css.timeMs + 'ms tx=' + panels.css.transform.translateX
+      + ' scale=' + panels.css.transform.scale + ' opacity=' + panels.css.opacity
+      + ' anim=' + panels.css.animationCount;
+  }
+
+  /* ---------------------------------------------------------------------------------------------
+   * Canvas 2D panel: 24 seeded particles, positions are a pure function of logical time.
+   * ------------------------------------------------------------------------------------------- */
+
+  var particles = [];
+  (function initParticles() {
+    var random = mulberry32(SEED);
+    for (var index = 0; index < 24; index += 1) {
+      particles.push({
+        phase: random() * Math.PI * 2,
+        radius: 18 + random() * 56,
+        speed: 0.5 + random() * 1.6,
+        size: 2.2 + random() * 3.4,
+        hue: Math.round(random() * 360)
+      });
+    }
+  })();
+
+  function particlePosition(particle, timeMs) {
+    var seconds = timeMs / 1000;
+    var angle = particle.phase + seconds * particle.speed * Math.PI * 2;
+    return {
+      x: 120 + Math.cos(angle) * particle.radius * 1.45 + Math.sin(angle * 0.7) * 9,
+      y: 80 + Math.sin(angle * 0.9) * particle.radius * 0.85 + Math.cos(angle * 1.3) * 7
+    };
+  }
+
+  function drawParticles(timeMs) {
+    ctx2d.fillStyle = '#0b1020';
+    ctx2d.fillRect(0, 0, 240, 160);
+    ctx2d.strokeStyle = 'rgba(96, 165, 250, 0.16)';
+    ctx2d.lineWidth = 1;
+    for (var line = 1; line < 6; line += 1) {
+      ctx2d.beginPath();
+      ctx2d.moveTo(0, line * 26.5);
+      ctx2d.lineTo(240, line * 26.5);
+      ctx2d.stroke();
+    }
+    for (var index = 0; index < particles.length; index += 1) {
+      var particle = particles[index];
+      var position = particlePosition(particle, timeMs);
+      ctx2d.beginPath();
+      ctx2d.fillStyle = 'hsl(' + particle.hue + ', 82%, 62%)';
+      ctx2d.arc(position.x, position.y, particle.size, 0, Math.PI * 2);
+      ctx2d.fill();
+    }
+  }
+
+  function renderCanvas(timeMs, options) {
+    var opts = options || {};
+    var force = opts.force === true;
+    var causeOpId = opts.causeOpId || null;
+    panels.canvas2d.timeMs = Math.floor(timeMs);
+
+    if (scenario === 'freeze' && timeMs >= FREEZE_AT_MS) {
+      panels.canvas2d.frozen = true;
+      panels.canvas2d.flash = false;
+      if (anomalies.frozenAtMs === null) {
+        anomalies.frozenAtMs = FREEZE_AT_MS;
+        recordEvent('anomaly', 'canvas2d', causeOpId, { kind: 'freeze', frozenAtMs: FREEZE_AT_MS });
+      }
+      return;
+    }
+    panels.canvas2d.frozen = false;
+
+    if (scenario === 'jank' && !force) {
+      if (clockFrame % 3 === 2) {
+        anomalies.jankFrames.push(clockFrame);
+        if (anomalies.jankFrames.length > 600) anomalies.jankFrames.shift();
+        panels.canvas2d.flash = false;
+        recordEvent('anomaly', 'canvas2d', causeOpId, { kind: 'jank', frame: clockFrame });
+        return;
+      }
+    }
+
+    var white = false;
+    if (scenario === 'flash') {
+      if (timeMs >= FLASH_START_MS && timeMs < FLASH_END_MS) {
+        white = true;
+      } else if (!force && lastCanvasT < FLASH_START_MS && timeMs >= FLASH_END_MS) {
+        // The rAF clock can step over the 16 ms window; still show exactly ONE white frame.
+        // `lastCanvasT` advances on every draw, so the next tick is normal again.
+        white = true;
+      }
+    }
+
+    if (white) {
+      ctx2d.fillStyle = '#ffffff';
+      ctx2d.fillRect(0, 0, 240, 160);
+      panels.canvas2d.flash = true;
+    } else {
+      drawParticles(timeMs);
+      panels.canvas2d.flash = false;
+    }
+
+    panels.canvas2d.frames += 1;
+    panels.canvas2d.draws += 1;
+    var first = particlePosition(particles[0], timeMs);
+    panels.canvas2d.particle0 = { x: Math.round(first.x * 1000) / 1000, y: Math.round(first.y * 1000) / 1000 };
+    var image = ctx2d.getImageData(0, 0, 240, 160);
+    panels.canvas2d.checksum = fnv1aRgba(image.data);
+    lastCanvasT = timeMs;
+
+    if (white) {
+      anomalies.flashFrames.push(panels.canvas2d.frames);
+      if (anomalies.flashFrames.length > 120) anomalies.flashFrames.shift();
+      recordEvent('anomaly', 'canvas2d', causeOpId, { kind: 'flash', frame: panels.canvas2d.frames, checksum: panels.canvas2d.checksum });
+    } else if (panels.canvas2d.frames % 30 === 0) {
+      recordEvent('draw', 'canvas2d', null, { frame: panels.canvas2d.frames, checksum: panels.canvas2d.checksum });
+    }
+    canvasTruth.textContent = 'canvas2d: t=' + panels.canvas2d.timeMs + 'ms frames=' + panels.canvas2d.frames
+      + ' checksum=' + panels.canvas2d.checksum + ' frozen=' + panels.canvas2d.frozen + ' flash=' + panels.canvas2d.flash;
+  }
+
+  /* ---------------------------------------------------------------------------------------------
+   * WebGL panel: WebGL2 preferred, WebGL1 fallback, honest WebGPU probe, readPixels checksum.
+   * ------------------------------------------------------------------------------------------- */
+
+  var VERTEX_SHADER = 'attribute vec2 a_pos; void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }';
+  var FRAGMENT_SHADER = [
+    'precision mediump float;',
+    'uniform float u_time;',
+    'uniform vec2 u_res;',
+    'void main() {',
+    '  vec2 p = gl_FragCoord.xy / u_res;',
+    '  float wave = 0.5 + 0.5 * sin((p.x * 6.0 + u_time * 2.0) * 3.14159265);',
+    '  vec3 col = vec3(wave, p.y, 0.5 + 0.5 * sin(p.y * 8.0 - u_time * 3.0));',
+    '  vec2 c = vec2(0.5 + 0.3 * sin(u_time * 1.5), 0.5 + 0.2 * cos(u_time * 2.0));',
+    '  float block = step(abs(p.x - c.x), 0.08) * step(abs(p.y - c.y), 0.12);',
+    '  col = mix(col, vec3(1.0, 1.0, 1.0), block);',
+    '  gl_FragColor = vec4(col, 1.0);',
+    '}'
+  ].join('\n');
+
+  function compileShader(gl, type, source) {
+    var shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      var log = gl.getShaderInfoLog(shader);
+      gl.deleteShader(shader);
+      throw new Error('shader compile failed: ' + log);
+    }
+    return shader;
+  }
+
+  function probeWebgpu() {
+    if (typeof navigator === 'undefined' || !navigator.gpu) {
+      return { available: false, reason: 'navigator.gpu unavailable' };
+    }
+    navigator.gpu.requestAdapter().then(function (adapter) {
+      panels.webgl.webgpu = adapter
+        ? { available: true, reason: null }
+        : { available: false, reason: 'navigator.gpu present but requestAdapter() returned null' };
+    }).catch(function (error) {
+      panels.webgl.webgpu = { available: false, reason: 'requestAdapter failed: ' + String(error && error.message || error) };
+    });
+    return { available: true, reason: null };
+  }
+
+  function initWebgl() {
+    var attributes = { preserveDrawingBuffer: true, antialias: false, alpha: false, depth: false, stencil: false };
+    var gl = null;
+    var contextType = 'none';
+    try { gl = webglCanvas.getContext('webgl2', attributes); if (gl) contextType = 'webgl2'; } catch (error) { gl = null; }
+    if (!gl) {
+      try { gl = webglCanvas.getContext('webgl', attributes); if (gl) contextType = 'webgl'; } catch (error) { gl = null; }
+    }
+    panels.webgl.contextType = contextType;
+    truth.webgl.api = contextType === 'none' ? 'unavailable' : contextType;
+    panels.webgl.webgpu = probeWebgpu();
+    if (!gl) {
+      webglTruth.textContent = 'webgl: unavailable (WebGPU ' + (panels.webgl.webgpu.available ? 'available' : 'unavailable') + ')';
+      return;
+    }
+    try {
+      var vertex = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER);
+      var fragment = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER);
+      var program = gl.createProgram();
+      gl.attachShader(program, vertex);
+      gl.attachShader(program, fragment);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error('program link failed: ' + gl.getProgramInfoLog(program));
+      gl.useProgram(program);
+      var buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      var position = gl.getAttribLocation(program, 'a_pos');
+      gl.enableVertexAttribArray(position);
+      gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+      var renderer = null;
+      var debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+      if (debugInfo) renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+      webgl = {
+        gl: gl,
+        uTime: gl.getUniformLocation(program, 'u_time'),
+        uRes: gl.getUniformLocation(program, 'u_res'),
+        pixels: new Uint8Array(240 * 160 * 4)
+      };
+      panels.webgl.renderer = typeof renderer === 'string' ? renderer : null;
+      renderWebgl(0, { force: true });
+    } catch (error) {
+      panels.webgl.contextType = contextType;
+      panels.webgl.renderer = null;
+      webgl = null;
+      webglTruth.textContent = 'webgl: init failed: ' + String(error && error.message || error);
+    }
+  }
+
+  function renderWebgl(timeMs, options) {
+    var opts = options || {};
+    panels.webgl.timeMs = Math.floor(timeMs);
+    if (!webgl) {
+      webglTruth.textContent = 'webgl: ' + panels.webgl.contextType + ' frames=' + panels.webgl.frames
+        + ' checksum=' + panels.webgl.checksum + ' gpu=' + (panels.webgl.webgpu.available ? 'available' : 'unavailable');
+      return;
+    }
+    var gl = webgl.gl;
+    gl.viewport(0, 0, 240, 160);
+    gl.uniform1f(webgl.uTime, timeMs / 1000);
+    gl.uniform2f(webgl.uRes, 240, 160);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, 240, 160, gl.RGBA, gl.UNSIGNED_BYTE, webgl.pixels);
+    panels.webgl.frames += 1;
+    panels.webgl.checksum = fnv1aRgba(webgl.pixels);
+    if (panels.webgl.frames % 30 === 0 && !opts.force) {
+      recordEvent('draw', 'webgl', null, { frame: panels.webgl.frames, checksum: panels.webgl.checksum });
+    }
+    webglTruth.textContent = 'webgl: t=' + panels.webgl.timeMs + 'ms ctx=' + panels.webgl.contextType
+      + ' frames=' + panels.webgl.frames + ' checksum=' + panels.webgl.checksum
+      + ' gpu=' + (panels.webgl.webgpu.available ? 'available' : 'unavailable');
+  }
+
+  /* ---------------------------------------------------------------------------------------------
+   * Media panel: real <video> play/pause/currentTime, blob URL for reliable seek, RGB sampling.
+   * ------------------------------------------------------------------------------------------- */
+
+  var sampleCanvas = document.createElement('canvas');
+  sampleCanvas.width = 32;
+  sampleCanvas.height = 18;
+  var sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+
+  function mediaDuration() {
+    if (Number.isFinite(video.duration) && video.duration > 0) return Math.round(video.duration * 1000);
+    return 0;
+  }
+
+  function waitForMetadata(timeoutMs) {
+    return new Promise(function (resolve) {
+      if (video.readyState >= 1) { resolve(); return; }
+      var done = false;
+      function finish() {
+        if (done) return;
+        done = true;
+        video.removeEventListener('loadedmetadata', finish);
+        clearTimeout(timer);
+        resolve();
+      }
+      var timer = setTimeout(finish, timeoutMs || 5000);
+      video.addEventListener('loadedmetadata', finish);
+    });
+  }
+
+  async function seekVideoTo(seconds) {
+    if (!mediaReady || mediaFallback) return;
+    if (video.readyState < 1) return;
+    var duration = Number.isFinite(video.duration) ? video.duration : DURATION_MS / 1000;
+    var target = clamp(seconds, 0, Math.max(0, duration - 0.001));
+    if (Math.abs(video.currentTime - target) < 0.0005 && !video.seeking) {
+      renderMediaSample();
+      return;
+    }
+    await new Promise(function (resolve) {
+      var done = false;
+      function finish() {
+        if (done) return;
+        done = true;
+        video.removeEventListener('seeked', finish);
+        clearTimeout(timer);
+        resolve();
+      }
+      var timer = setTimeout(finish, 2500);
+      video.addEventListener('seeked', finish);
+      try { video.currentTime = target; } catch (error) { finish(); }
+    });
+    var startedAt = performance.now();
+    while (video.seeking && performance.now() - startedAt < 2000) {
+      await new Promise(function (resolve) { setTimeout(resolve, 25); });
+    }
+    await new Promise(function (resolve) { requestAnimationFrame(resolve); });
+    renderMediaSample();
+  }
+
+  function renderMediaSample() {
+    panels.media.durationMs = mediaDuration();
+    panels.media.currentTimeMs = Math.round(video.currentTime * 1000);
+    panels.media.paused = video.paused;
+    panels.media.readyState = video.readyState;
+    panels.media.frameCount = videoFrameCount;
+    panels.media.frozen = paused;
+    panels.media.stalled = scenario === 'media-stall'
+      && video.currentTime * 1000 >= MEDIA_STALL_AT_MS
+      && video.paused;
+    if (video.readyState >= 2) {
+      try {
+        sampleCtx.drawImage(video, 0, 0, 32, 18);
+        var data = sampleCtx.getImageData(0, 0, 32, 18).data;
+        var r = 0, g = 0, b = 0, count = 0;
+        for (var index = 0; index < data.length; index += 4) {
+          r += data[index]; g += data[index + 1]; b += data[index + 2]; count += 1;
+        }
+        panels.media.sample = {
+          r: Math.round(r / count),
+          g: Math.round(g / count),
+          b: Math.round(b / count)
+        };
+      } catch (error) {
+        panels.media.sampleError = String(error && error.message || error);
+      }
+    }
+    mediaTruth.textContent = 'media: t=' + panels.media.currentTimeMs + 'ms ready=' + panels.media.readyState
+      + ' dur=' + panels.media.durationMs + ' frame=' + panels.media.frameCount
+      + ' rgb=' + panels.media.sample.r + ',' + panels.media.sample.g + ',' + panels.media.sample.b
+      + ' stalled=' + panels.media.stalled + (mediaFallback ? ' fallback=' + mediaFallback : '');
+  }
+
+  function startVideoFrameLoop() {
+    if (typeof video.requestVideoFrameCallback !== 'function') return;
+    var onFrame = function () {
+      videoFrameCount += 1;
+      lastVideoMediaTime = video.currentTime;
+      renderMediaSample();
+      video.requestVideoFrameCallback(onFrame);
+    };
+    video.requestVideoFrameCallback(onFrame);
+  }
+
+  function renderMediaTick() {
+    if (!mediaReady) return;
+    if (scenario === 'media-stall' && !video.paused && video.currentTime * 1000 >= MEDIA_STALL_AT_MS) {
+      try { video.pause(); } catch (error) { /* ignore */ }
+      panels.media.stalled = true;
+      if (!anomalies.mediaStalled) {
+        anomalies.mediaStalled = true;
+        recordEvent('anomaly', 'media', null, { kind: 'media-stall', currentTimeMs: Math.round(video.currentTime * 1000) });
+      }
+    }
+    if (scenario === 'media-stall' && video.paused && video.currentTime * 1000 >= MEDIA_STALL_AT_MS) {
+      panels.media.stalled = true;
+    }
+    if (typeof video.requestVideoFrameCallback !== 'function') {
+      if (video.currentTime !== lastVideoMediaTime) {
+        lastVideoMediaTime = video.currentTime;
+        videoFrameCount += 1;
+      }
+    }
+    panels.media.currentTimeMs = Math.round(video.currentTime * 1000);
+    panels.media.paused = video.paused;
+    panels.media.readyState = video.readyState;
+    panels.media.durationMs = mediaDuration();
+    panels.media.frameCount = videoFrameCount;
+    panels.media.frozen = paused;
+    if (clockFrame % 2 === 0 || Math.abs(panels.media.currentTimeMs - lastSampleAtMs) > 120) {
+      lastSampleAtMs = panels.media.currentTimeMs;
+      renderMediaSample();
+    }
+  }
+
+  async function initMedia() {
+    var epoch = ++mediaEpoch;
+    try {
+      var response = await fetch(MEDIA_ASSET, { cache: 'no-store' });
+      if (!response.ok) throw new Error('asset HTTP ' + response.status);
+      var blob = await response.blob();
+      if (epoch !== mediaEpoch) return;
+      if (mediaUrl) URL.revokeObjectURL(mediaUrl);
+      mediaUrl = URL.createObjectURL(blob);
+      video.src = mediaUrl;
+      video.muted = true;
+      mediaFallback = null;
+      truth.media.fallback = null;
+      await waitForMetadata(5000);
+      if (epoch !== mediaEpoch) return;
+      if (!Number.isFinite(video.duration) || video.duration <= 0) {
+        // Repair a MediaRecorder-style WebM without a Duration element: a huge seek makes Chrome
+        // compute the real duration from the buffered blob; then return to the start.
+        await new Promise(function (resolve) {
+          var done = false;
+          function finish() { if (done) return; done = true; video.removeEventListener('seeked', finish); clearTimeout(timer); resolve(); }
+          var timer = setTimeout(finish, 2000);
+          video.addEventListener('seeked', finish);
+          try { video.currentTime = 1e101; } catch (error) { finish(); }
+        });
+        try { video.currentTime = 0; } catch (error) { /* ignore */ }
+      }
+      mediaReady = true;
+      truth.media.durationMs = mediaDuration() || DURATION_MS;
+      panels.media.durationMs = truth.media.durationMs;
+      await seekVideoTo(0);
+      startVideoFrameLoop();
+      if (!paused) video.play().catch(function (error) { panels.media.playError = String(error && error.message || error); });
+    } catch (error) {
+      if (epoch !== mediaEpoch) return;
+      mediaFallback = 'canvas-capture-stream';
+      mediaReady = true;
+      truth.media.fallback = 'canvas-capture-stream';
+      truth.media.fallbackReason = 'asset-unavailable: ' + String(error && error.message || error);
+      panels.media.durationMs = 0;
+      var fallbackCanvas = document.createElement('canvas');
+      fallbackCanvas.width = 320;
+      fallbackCanvas.height = 180;
+      var fallbackCtx = fallbackCanvas.getContext('2d');
+      (function drawFallback() {
+        var segment = Math.min(2, Math.floor(tMs / 1000));
+        fallbackCtx.fillStyle = ['#ff0000', '#00ff00', '#0000ff'][segment];
+        fallbackCtx.fillRect(0, 0, 320, 180);
+        fallbackCtx.fillStyle = '#ffffff';
+        fallbackCtx.fillRect(Math.round((tMs / DURATION_MS) * 272), 60, 48, 60);
+        requestAnimationFrame(drawFallback);
+      })();
+      try {
+        video.srcObject = fallbackCanvas.captureStream(30);
+        video.muted = true;
+        await video.play();
+      } catch (playError) {
+        panels.media.playError = String(playError && playError.message || playError);
+      }
+      panels.media.readyState = video.readyState;
+      renderMediaSample();
+    }
+  }
+
+  async function resetMedia(seconds) {
+    if (!mediaReady) return;
+    if (mediaFallback) {
+      renderMediaSample();
+      return;
+    }
+    try {
+      video.pause();
+      await seekVideoTo(seconds);
+    } catch (error) {
+      panels.media.seekError = String(error && error.message || error);
+    }
+  }
+
+  /* ---------------------------------------------------------------------------------------------
+   * Clock, pause/resume/seek/scenario
+   * ------------------------------------------------------------------------------------------- */
+
+  function setPausedDom() {
+    body.dataset.t4vPaused = paused ? 'true' : 'false';
+    clock.paused = paused;
+    panels.media.frozen = paused;
+  }
+
+  function pauseInternal(causeOpId) {
+    paused = true;
+    setPausedDom();
+    if (cssAnimation) {
+      cssAnimation.pause();
+      cssAnimation.currentTime = tMs;
+    }
+    try { video.pause(); } catch (error) { /* ignore */ }
+    recordEvent('control', null, causeOpId, { action: 'pause', nowMs: Math.floor(tMs) });
+    updateStatus();
+  }
+
+  function resumeInternal(causeOpId) {
+    paused = false;
+    setPausedDom();
+    lastRaf = performance.now();
+    if (cssAnimation) {
+      cssAnimation.play();
+      cssAnimation.currentTime = tMs;
+    }
+    if (mediaReady && !mediaFallback) {
+      if (!(scenario === 'media-stall' && video.currentTime * 1000 >= MEDIA_STALL_AT_MS)) {
+        video.play().catch(function (error) { panels.media.playError = String(error && error.message || error); });
+      }
+    }
+    recordEvent('control', null, causeOpId, { action: 'resume', nowMs: Math.floor(tMs) });
+    updateStatus();
+  }
+
+  async function seekTo(targetMs, options) {
+    var opts = options || {};
+    var target = clamp(Math.round(Number(targetMs) || 0), 0, DURATION_MS);
+    var wasPaused = paused;
+    paused = true;
+    setPausedDom();
+    tMs = target;
+    clock.nowMs = target;
+    if (cssAnimation) {
+      cssAnimation.pause();
+      cssAnimation.currentTime = tMs;
+    }
+    try { video.pause(); } catch (error) { /* ignore */ }
+    if (!wasPaused && opts.causeOpId) {
+      recordEvent('control', null, opts.causeOpId, { action: 'seek-pause', nowMs: target });
+    }
+    renderCss();
+    renderCanvas(tMs, { force: true, causeOpId: opts.causeOpId || null });
+    renderWebgl(tMs, { force: true });
+    seekInput.value = String(target);
+    seekValue.textContent = target + ' ms';
+    await seekVideoTo(target / 1000);
+    renderMediaSample();
+    updateStatus();
+    recordEvent('media', 'media', opts.causeOpId || null, { action: 'seek', targetMs: target });
+    return { ok: true, nowMs: target, paused: true };
+  }
+
+  function clearPanelState() {
+    panels.css.timeMs = 0;
+    panels.css.transform = { translateX: 0, scale: 1 };
+    panels.css.opacity = 1;
+    panels.css.animationCount = 0;
+    panels.css.animations = [];
+    panels.canvas2d.timeMs = 0;
+    panels.canvas2d.frames = 0;
+    panels.canvas2d.draws = 0;
+    panels.canvas2d.particle0 = { x: 0, y: 0 };
+    panels.canvas2d.checksum = '00000000';
+    panels.canvas2d.frozen = false;
+    panels.canvas2d.flash = false;
+    panels.webgl.timeMs = 0;
+    panels.webgl.frames = 0;
+    panels.webgl.checksum = '00000000';
+    panels.media.durationMs = mediaDuration();
+    panels.media.currentTimeMs = 0;
+    panels.media.paused = true;
+    panels.media.readyState = video.readyState;
+    panels.media.frameCount = 0;
+    panels.media.sample = { r: 0, g: 0, b: 0 };
+    panels.media.stalled = false;
+    panels.media.frozen = true;
+    videoFrameCount = 0;
+    lastVideoMediaTime = -1;
+    lastSampleAtMs = -1;
+  }
+
+  async function applyScenario(name, causeOpId, options) {
+    var opts = options || {};
+    if (SCENARIOS.indexOf(name) === -1) throw new Error('unknown scenario: ' + name);
+    scenario = name;
+    visual.scenario = name;
+    body.dataset.t4vScenario = name;
+    scenarioSelect.value = name;
+    if (opts.clear !== false) {
+      resetAnomalies();
+      clearLedger();
+    }
+    tMs = 0;
+    clock.nowMs = 0;
+    clock.frame = 0;
+    clockFrame = 0;
+    paused = true;
+    setPausedDom();
+    if (cssAnimation) {
+      cssAnimation.pause();
+      cssAnimation.currentTime = 0;
+    }
+    lastCanvasT = -1;
+    clearPanelState();
+    renderCss();
+    renderCanvas(0, { force: true, causeOpId: causeOpId || null });
+    renderWebgl(0, { force: true });
+    seekInput.value = '0';
+    seekValue.textContent = '0 ms';
+    await resetMedia(0);
+    if (opts.run !== false) {
+      paused = false;
+      setPausedDom();
+      lastRaf = performance.now();
+      if (cssAnimation) cssAnimation.play();
+      if (mediaReady && !mediaFallback) {
+        video.play().catch(function (error) { panels.media.playError = String(error && error.message || error); });
+      }
+    }
+    updateStatus();
+    return { ok: true, scenario: scenario, paused: paused };
+  }
+
+  function updateStatus() {
+    statusEl.textContent = 'scenario=' + scenario + ' paused=' + paused + ' t=' + Math.floor(tMs) + 'ms'
+      + ' frame=' + clock.frame + ' ops=' + ops.length + ' events=' + events.length
+      + (mediaFallback ? ' media=fallback' : ' media=asset');
+    body.dataset.t4vScenario = scenario;
+    body.dataset.t4vPaused = paused ? 'true' : 'false';
+    body.dataset.t4vMediaFallback = mediaFallback || 'none';
+  }
+
+  function loop(now) {
+    requestAnimationFrame(loop);
+    lastTickWallMs = Date.now();
+    clock.lastTickWallMs = lastTickWallMs;
+    if (paused) {
+      lastRaf = now;
+      return;
+    }
+    var dt = Math.min(Math.max(0, now - lastRaf), 50);
+    lastRaf = now;
+    if (dt <= 0) return;
+    tMs = Math.min(DURATION_MS, tMs + dt);
+    clock.nowMs = Math.floor(tMs);
+    clock.frame += 1;
+    clockFrame = clock.frame;
+    if (cssAnimation) cssAnimation.currentTime = tMs;
+    renderCss();
+    renderCanvas(tMs);
+    renderWebgl(tMs);
+    renderMediaTick();
+    if (clock.frame % 30 === 0) {
+      recordEvent('clock', null, null, { frame: clock.frame, nowMs: clock.nowMs });
+    }
+    if (tMs >= DURATION_MS) {
+      pauseInternal(null);
+      recordEvent('anomaly', null, null, { kind: 'duration-end', nowMs: DURATION_MS });
+    }
+    updateStatus();
+  }
+
+  /* ---------------------------------------------------------------------------------------------
+   * Public truth API (frozen shape, see tests/ui-test_prep_contract §1)
+   * ------------------------------------------------------------------------------------------- */
+
+  function snapshot() {
+    var orderedTimeline = timeline.slice().sort(function (left, right) {
+      return left.atWallMs - right.atWallMs || left.seq - right.seq;
+    });
+    return jsonClone({
+      version: 1,
+      fixture: 'web-t4-visual',
+      truth: truth,
+      clock: clock,
+      panels: panels,
+      scenario: scenario,
+      ops: ops,
+      events: events,
+      timeline: orderedTimeline,
+      anomalies: anomalies,
+      // Functions are omitted from the serialized snapshot; the live API still exposes them.
+      controls: {}
+    });
+  }
+
+  function samplePanel(name) {
+    if (!panels[name]) throw new Error('unknown panel: ' + name);
+    return jsonClone(panels[name]);
+  }
+
+  function setPausedPublic(value) {
+    var next = Boolean(value);
+    if (next === paused) return snapshot();
+    if (next) {
+      var pauseOp = recordOp('pause', 'setPaused');
+      pauseInternal(pauseOp.opId);
+    } else {
+      var resumeOp = recordOp('resume', 'setPaused');
+      resumeInternal(resumeOp.opId);
+    }
+    return snapshot();
+  }
+
+  async function seekPublic(targetMs) {
+    var op = recordOp('seek', 'controls.seek');
+    var result = await seekTo(targetMs, { causeOpId: op.opId });
+    return result;
+  }
+
+  async function setScenarioPublic(name) {
+    // applyScenario clears the ledger (a scenario switch resets t/anomalies/events); record the
+    // scenario operation AFTER that clear so the opId remains resolvable in `ops`.
+    await applyScenario(name, null, { clear: true });
+    recordOp('scenario', 'controls.setScenario', { scenario: name });
+    return { ok: true, scenario: scenario, paused: paused };
+  }
+
+  async function resetPublic() {
+    await applyScenario('normal', null, { clear: true });
+    recordOp('click', 'controls.reset');
+    return { ok: true, scenario: scenario, paused: paused };
+  }
+
+  var visual = {
+    version: 1,
+    fixture: 'web-t4-visual',
+    truth: truth,
+    clock: clock,
+    panels: panels,
+    scenario: scenario,
+    ops: ops,
+    events: events,
+    timeline: timeline,
+    anomalies: anomalies,
+    controls: {
+      pause: function () { return setPausedPublic(true); },
+      resume: function () { return setPausedPublic(false); },
+      reset: resetPublic,
+      seek: seekPublic,
+      setScenario: setScenarioPublic,
+      state: snapshot,
+      samplePanel: samplePanel
+    },
+    state: snapshot,
+    setPaused: setPausedPublic,
+    seek: seekPublic,
+    setScenario: setScenarioPublic,
+    reset: resetPublic,
+    samplePanel: samplePanel
+  };
+  window.__t4 = { visual: visual };
+
+  /* ---------------------------------------------------------------------------------------------
+   * Controls
+   * ------------------------------------------------------------------------------------------- */
+
+  pauseButton.addEventListener('click', function () {
+    var op = recordOp('click', 't4v-pause');
+    pauseInternal(op.opId);
+  });
+  resumeButton.addEventListener('click', function () {
+    var op = recordOp('click', 't4v-resume');
+    resumeInternal(op.opId);
+  });
+  resetButton.addEventListener('click', function () {
+    resetPublic();
+  });
+  scenarioSelect.addEventListener('change', function () {
+    setScenarioPublic(scenarioSelect.value);
+  });
+  seekInput.addEventListener('input', function () {
+    seekValue.textContent = String(Math.round(Number(seekInput.value) || 0)) + ' ms';
+  });
+  seekInput.addEventListener('change', function () {
+    var op = recordOp('seek', 't4v-seek', { requestedMs: Math.round(Number(seekInput.value) || 0) });
+    seekTo(seekInput.value, { causeOpId: op.opId });
+  });
+  stepBack.addEventListener('click', function () {
+    var op = recordOp('click', 't4v-step-back');
+    seekTo(Math.floor(tMs) - 50, { causeOpId: op.opId });
+  });
+  stepForward.addEventListener('click', function () {
+    var op = recordOp('click', 't4v-step-forward');
+    seekTo(Math.floor(tMs) + 50, { causeOpId: op.opId });
+  });
+  document.addEventListener('visibilitychange', function () {
+    recordEvent('visibility', null, null, { state: document.visibilityState });
+  });
+
+  /* ---------------------------------------------------------------------------------------------
+   * Boot
+   * ------------------------------------------------------------------------------------------- */
+
+  async function boot() {
+    initCss();
+    initWebgl();
+    updateStatus();
+    requestAnimationFrame(function start(now) {
+      lastRaf = now;
+      requestAnimationFrame(loop);
+    });
+    await initMedia();
+    // Frozen contract §1: `?scenario=` is an entry point, not only the select/API. Unknown values
+    // keep the default `normal` (no silent coercion to a different scenario).
+    var requested = new URLSearchParams(location.search).get('scenario');
+    if (requested && SCENARIOS.indexOf(requested) !== -1) {
+      await applyScenario(requested, null, { clear: true });
+    }
+    updateStatus();
+    body.dataset.t4vReady = 'true';
+  }
+
+  boot().catch(function (error) {
+    statusEl.textContent = 'boot error: ' + String(error && error.message || error);
+    body.dataset.t4vReady = 'error';
+  });
+})();
+</script>
+</body>
+</html>

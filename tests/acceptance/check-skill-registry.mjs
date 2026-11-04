@@ -112,11 +112,13 @@ async function main() {
       'browser_network_trace', 'browser_network_control', 'browser_network_evidence', 'browser_network_subscribe'];
     // The shared-viewport tool is the 10th T1 tool (docs/viewport-control.md §7).
     const toolNames = [...registeredTools.keys()];
-    record('真实 ctx.plugin 挂载后注册恰好 30 个 browser_* 工具（含 browser_viewport 与 7 个 network 工具）', toolNames.length === 30
+    const t4Tools = ['browser_dynamic_session', 'browser_motion_observe', 'browser_motion_analyze',
+      'browser_motion_control', 'browser_dynamic_correlate'];
+    record('真实 ctx.plugin 挂载后注册恰好 35 个 browser_* 工具（含 browser_viewport、7 个 network 与 5 个 T4 工具）', toolNames.length === 35
       && toolNames.every((name) => name.startsWith('browser_')) && netTools.every((name) => registeredTools.has(name))
-      && registeredTools.has('browser_viewport'),
-      { count: toolNames.length, network: netTools.filter((name) => registeredTools.has(name)), viewport: registeredTools.has('browser_viewport') });
-    record('30 个注册工具都带 object 参数 schema 与 execute', toolNames.length === 30
+      && registeredTools.has('browser_viewport') && t4Tools.every((name) => registeredTools.has(name)),
+      { count: toolNames.length, network: netTools.filter((name) => registeredTools.has(name)), viewport: registeredTools.has('browser_viewport'), t4: t4Tools.filter((name) => registeredTools.has(name)) });
+    record('35 个注册工具都带 object 参数 schema 与 execute', toolNames.length === 35
       && [...registeredTools.values()].every((definition) => definition.parameters?.type === 'object'
         && Array.isArray(definition.parameters?.required) && typeof definition.execute === 'function'),
       [...registeredTools.values()].filter((definition) => definition.parameters?.type !== 'object'

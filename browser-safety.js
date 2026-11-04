@@ -63,6 +63,19 @@ const TAXONOMY = {
   // 只有 BUSY/ABORTED/CDP_*/RUNTIME_LIMIT 这些平台码可以透传。
   NET_INVALID_ARGUMENT: ['input', false], NET_OUTPUT_ROOT_UNKNOWN: ['output', false],
   NET_OUTPUT_PATH_INVALID: ['input', false], NET_OUTPUT_WRITE_FAILED: ['output', true],
+  // Web T4 (docs/t4-dynamic-behavior.md §7.3): the DYNAMIC_* surface is its own taxonomy — a
+  // dynamic refusal must never degrade into INTERNAL, and missing frame/clock evidence is an
+  // evidence problem, not a page failure. `scope` = the session/event is gone or belongs to
+  // another scope, `input` = pure pre-check (zero start/control), `capability` = the requested
+  // frame source/encoding/adapter is unavailable (never silently substituted), `evidence` =
+  // clock/mapping limits make an exact claim impossible (keep the events, degrade the verdict),
+  // `state` = page-generation/control conflict, `resource` = a declared budget.
+  DYNAMIC_INVALID_ARGUMENT: ['input', false], DYNAMIC_SESSION_NOT_FOUND: ['scope', false],
+  DYNAMIC_EVENT_NOT_FOUND: ['scope', false], DYNAMIC_SESSION_ACTIVE: ['concurrency', false],
+  DYNAMIC_SOURCE_UNAVAILABLE: ['capability', false], DYNAMIC_CLOCK_UNCERTAIN: ['evidence', false],
+  DYNAMIC_LIMIT_EXCEEDED: ['resource', false], DYNAMIC_TIMEOUT: ['timeout', true],
+  DYNAMIC_CONTROL_CONFLICT: ['state', false], DYNAMIC_RESTORE_FAILED: ['state', false],
+  DYNAMIC_MAPPING_INCOMPATIBLE: ['evidence', false],
 };
 export class BrowserError extends Error {
   constructor(code, message, details = {}) {

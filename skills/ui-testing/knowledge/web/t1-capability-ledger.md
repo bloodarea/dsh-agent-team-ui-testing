@@ -78,7 +78,7 @@ M0–M2 前历史套件最初 P1–P10 为 10 组/61 项，随后帧管线扩为
 
 真实 Agent screenshot/provider 图像可见性仍 NOT_RUN；本轮新增的 `browser_http_request` 在**真实宿主 Agent 会话**中的注册/调用尚未验证（P22 为 fake ctx + 本地网络；P21 为真实宿主校验器；隔离实例 HTTP 回归只证明 apply() 加载，不等于工具调用）。本轮 P22/P20 具体计数与结论以仓库 `tests/acceptance/runs/` 报告为准，报告未覆盖的路径不得推定通过。
 
-T2已实现（验收与构建范围见T2台账）；T3 已实现并验收；网络 P0 七工具已实现并验收；共享视口（browser_viewport）已实现并通过进程内 + 隔离 GUI 验收，但真实宿主未重启（NOT_RUN）。T4、下载/上传/Cookie 导出/多标签/frame 级目标、跨工作区 Cookie/localStorage/IndexedDB/cache 隔离、M3 高层输入、完整网络沙箱、独立 JSONL 证据包仍未实现。面板 WS/HTTP 预览与 metrics 不构成 T3/T4 证据。真实 Agent exec 身份链与两个 GUI 工作区的 3081 证据见 docs/workspace-isolation.md。
+T2已实现（验收与构建范围见T2台账）；T3 已实现并验收；网络 P0 七工具已实现并验收；共享视口（browser_viewport）已实现并通过进程内 + 隔离 GUI 验收，但真实宿主未重启（NOT_RUN）。下载/上传/Cookie 导出/多标签/frame 级目标、跨工作区 Cookie/localStorage/IndexedDB/cache 隔离、M3 高层输入、完整网络沙箱、独立 JSONL 证据包仍未实现。**（2026-11-04 更新：T4 已实现并注册 5 个工具，工具面 30→35；T4 的 40 条门槛 8 PASS/20 PARTIAL/12 NOT_RUN，详见 [T4 台账](t2-capability-ledger.md) 与 `references/tiers/t4-dynamic-visual.md`。）**面板 WS/HTTP 预览与 metrics 不构成 T3/T4 证据。真实 Agent exec 身份链与两个 GUI 工作区的 3081 证据见 docs/workspace-isolation.md。
 
 ## 变更日志
 

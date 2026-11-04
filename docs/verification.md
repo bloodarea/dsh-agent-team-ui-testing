@@ -37,12 +37,12 @@ node tests/acceptance/viewport-gui.mjs  # 隔离 DSH GUI：尺寸栏 X/Y/滚轮/
 ## 1. 主机侧验收（不启动 DSH）
 
 ```bash
-node tests/acceptance/run.mjs                    # 主验收：23 组 / 349 项必需检查（含 P22 独立 HTTP 95 项；工具面 30）
+node tests/acceptance/run.mjs                    # 主验收：23 组 / 349 项必需检查（含 P22 独立 HTTP 95 项；工具面 35）
 node tests/acceptance/viewport.mjs                # 共享视口 Host 套件：11 probes / 107 项必需检查
 node tests/acceptance/workspace-isolation.test.mjs # 按工作区 page 隔离：77 项（真实 Chromium + fake ctx；含 scope/lease/frame/idle/上限/身份矩阵）
 node --test tests/acceptance/runtime-faults.test.mjs  # CDP 故障注入与 Runtime 边界（16 项；rm 竞态已修，DNS 用注入 resolve 固定）
 node tests/acceptance/check-skill.mjs            # Skill 结构/引用/工具名/清单一致性（30 项）
-node tests/acceptance/check-skill-registry.mjs   # 真实 DSH SkillRegistry 注册/发现/加载（19 项，含 30 工具面）
+node tests/acceptance/check-skill-registry.mjs   # 真实 DSH SkillRegistry 注册/发现/加载（19 项，含 35 工具面）
 node tests/acceptance/verify-3081.mjs            # 真实隔离宿主 legacy HTTP 集成（22 项，含认证/UI 投影与输入回归）
 DSH_3081_HOME=/tmp/dsh-utb-home node tests/acceptance/workspace-isolation-3081.mjs # 真实 3081：17 项 scope/WS/frame/close
 DSH_3081_HOME=/tmp/dsh-utb-home node tests/acceptance/gui-workspace-3081.mjs       # 真实 3081 GUI：两个注册工作区/会话、main/右栏 scope、WS、隐藏停播

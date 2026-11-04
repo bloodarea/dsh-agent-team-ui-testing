@@ -524,7 +524,7 @@ async function listFilesRecursive(dir) {
  * ---------------------------------------------------------------------------------------------- */
 
 const CRITERIA = [
-  ['§9.C1', 'B', '注册恰好 30 工具（含 7 个 network）、6 个 T3 名称/required 符合 §2.1、原 23 名称/required 与 7 个 network 工具不回归；capabilities 仅诊断'],
+  ['§9.C1', 'B', '注册恰好 35 工具（含 7 network + 5 T4）、6 个 T3 名称/required 符合 §2.1、原 23 + 7 network 不回归；capabilities 仅诊断'],
   ['§9.C2', 'U', 'root/嵌套未知字段、非有限/错误类型、非法 Name、条件字段冲突拒绝；纯参数错误零副作用'],
   ['§9.C3', 'B', 'live 默认/scale1.25/source.region 尺寸/hash/mapping 正确，不改变 viewport/scroll'],
   ['§9.C4', 'B', 'live CSS 小数合法，越文档边界/零面积/负原点在 capture 前拒绝；顶层 PixelRect 整数'],
@@ -674,7 +674,15 @@ const NETWORK_SURFACE = [
   { name: 'browser_network_subscribe', required: ['action'] },
 ];
 
-const FULL_SURFACE = [...T1_SURFACE, ...T2_SURFACE, ...T3_TOOLS, ...NETWORK_SURFACE];
+// Web T4 dynamic behavior (docs/t4-dynamic-behavior.md §7.2): five tools added by the T4 round.
+const T4_SURFACE = [
+  { name: 'browser_dynamic_session', required: ['action'] },
+  { name: 'browser_motion_observe', required: ['motionSessionId'] },
+  { name: 'browser_motion_analyze', required: ['motionSessionId', 'assertions'] },
+  { name: 'browser_motion_control', required: ['motionSessionId', 'action'] },
+  { name: 'browser_dynamic_correlate', required: ['dynamicSessionId'] },
+];
+const FULL_SURFACE = [...T1_SURFACE, ...T2_SURFACE, ...T3_TOOLS, ...NETWORK_SURFACE, ...T4_SURFACE];
 
 function requiredOf(definition) {
   return [...(definition?.parameters?.required || [])].sort();
@@ -692,9 +700,9 @@ async function probeC1({ check, finding }) {
   try {
     const names = harness.toolNames();
     const expected = FULL_SURFACE.map((tool) => tool.name);
-    check('冷启动注册恰好 30 个工具（10 T1 + 7 T2 + 6 T3 + 7 network）', names.length === 30
+    check(`冷启动注册恰好 ${FULL_SURFACE.length} 个工具（10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4）`, names.length === FULL_SURFACE.length
       && JSON.stringify([...names].sort()) === JSON.stringify([...expected].sort()), {
-      expected: { count: 30, names: expected }, actual: { count: names.length, names },
+      expected: { count: FULL_SURFACE.length, names: expected }, actual: { count: names.length, names },
     });
     const problems = [];
     for (const tool of FULL_SURFACE) {
@@ -707,7 +715,7 @@ async function probeC1({ check, finding }) {
       if (typeof definition.description !== 'string' || !definition.description.trim()) problems.push(`${tool.name}: description 为空`);
       if (typeof definition.execute !== 'function') problems.push(`${tool.name}: execute 不是函数`);
     }
-    check('30 个工具的 parameters/required/execute/description 与契约一致（原 23 项未回归）', problems.length === 0, { expected: [], actual: problems });
+    check(`${FULL_SURFACE.length} 个工具的 parameters/required/execute/description 与契约一致（原 23 + 7 network + 5 T4 未回归）`, problems.length === 0, { expected: [], actual: problems });
 
     const rawCdp = names.filter((name) => /cdp|devtools|protocol|runtime\.|page\./i.test(name));
     check('没有暴露原始 CDP/协议命令工具', rawCdp.length === 0, { expected: [], actual: rawCdp });
@@ -743,8 +751,8 @@ async function probeC1({ check, finding }) {
     });
     const aggregate = capabilities.find((item) => item.id === 'web.t3.static-vision');
     check('web.t3.static-vision 聚合项 available 且不带 tool', aggregate?.status === 'available' && !aggregate?.tool, { expected: { status: 'available', tool: null }, actual: aggregate });
-    check('capabilities 覆盖 30 个工具条目（23 旧工具 + 7 network）', capabilities.filter((item) => item.tool).length === 30, {
-      expected: 30, actual: capabilities.filter((item) => item.tool).length,
+    check(`capabilities 覆盖 ${FULL_SURFACE.length} 个工具条目（23 旧 + 7 network + 5 T4）`, capabilities.filter((item) => item.tool).length === FULL_SURFACE.length, {
+      expected: FULL_SURFACE.length, actual: capabilities.filter((item) => item.tool).length,
     });
     // The T3 surface must not regress while the network group lands: the six T3 tools stay
     // available and their projection ids still resolve, independently of the new group.
@@ -759,7 +767,8 @@ async function probeC1({ check, finding }) {
       actual: networkEntries.map((item) => `${item.id}:${item.tool || '(aggregate)'}:${item.status}`),
     });
     const t4 = capabilities.filter((item) => String(item.id || '').toLowerCase().includes('t4'));
-    check('T4 仍 unsupported 且没有同名工具', t4.length >= 1 && t4.every((item) => item.status === 'unsupported' && !item.tool), { expected: 'T4 unsupported', actual: t4 });
+    check('T4 五工具 + 聚合 + 旧别名均 available（不是草案名）', t4.length >= 7 && t4.every((item) => item.status === 'available')
+      && T4_SURFACE.every((tool) => t4.some((item) => item.tool === tool.name)), { expected: 'T4 available (5 tool + aggregate + alias)', actual: t4 });
 
     // T1/T2 regression probes: the original surface still works on the T3 fixture.
     await freshPage(harness, T3_PATH, execOf('c1-cold'));
@@ -2565,14 +2574,14 @@ async function probeC56({ harness, check, finding }) {
 
   const caps = await call(harness, 'browser_capabilities', {});
   const capabilities = caps.value?.capabilities || [];
-  check(`capabilities 可追溯：${FULL_SURFACE.length} 个工具条目（30 = 23 旧 + 7 network）+ 六项 web.t3.* + 聚合项`,
+  check(`capabilities 可追溯：${FULL_SURFACE.length} 个工具条目（35 = 23 旧 + 7 network + 5 T4）+ 六项 web.t3.* + 聚合项`,
     capabilities.filter((item) => item.tool).length === FULL_SURFACE.length
       && T3_TOOLS.every((tool) => capabilities.some((item) => item.tool === tool.name && item.status === 'available'))
       && capabilities.some((item) => item.id === 'web.t3.static-vision' && item.status === 'available'), {
       expected: { tools: FULL_SURFACE.length, t3Tools: 6 }, actual: { tools: capabilities.filter((item) => item.tool).length },
     });
   const t4 = capabilities.filter((item) => String(item.id || '').toLowerCase().includes('t4'));
-  check('T4 仍 unsupported（不宣称动态视觉）', t4.length >= 1 && t4.every((item) => item.status === 'unsupported'), { expected: 'unsupported', actual: t4 });
+  check('T4 已注册为 available（5 工具 + 聚合 + 别名），且不降低本套件的静态视觉断言', t4.length >= 7 && t4.every((item) => item.status === 'available'), { expected: 'available', actual: t4 });
   check('22 能力映射表在报告中完整（§10 22 行）', Array.isArray(report.environment.capabilityMap) && report.environment.capabilityMap.length === 22
     && report.environment.capabilityMap.every((row) => row.capability && row.tool), {
     expected: 22, actual: report.environment.capabilityMap?.length,
@@ -2593,7 +2602,7 @@ async function probeC56({ harness, check, finding }) {
   });
   finding({
     id: 'C56-closed-loop',
-    summary: 'capture→find→act→compare→baseline→check 闭环完成；22 能力映射可追溯；T4 仍 unsupported。闪烁场景只比较静态两帧，报告不声称无中间闪烁。真实宿主加载与 provider 图像可见性仍为 NOT_RUN。',
+    summary: 'capture→find→act→compare→baseline→check 闭环完成；22 能力映射可追溯；T4 五工具已注册（其 40 条门槛由 t4-dynamic.mjs 另证，本套件不代替）。闪烁场景只比较静态两帧，报告不声称无中间闪烁。真实宿主加载与 provider 图像可见性仍为 NOT_RUN。',
     evidence: { flashVerdict, realHost: 'NOT_RUN', providerVisibility: 'NOT_RUN' },
   });
 }
@@ -3234,7 +3243,7 @@ async function writeEvidence() {
 }
 
 const B_PROBES = [
-  { id: 'C1-registration', criteria: '§9.C1', title: '注册 30 工具 / capabilities 仅诊断', expected: '恰好 30 工具（10 T1 + 7 T2 + 6 T3 + 7 network）、required 与 §2.1/§2 一致、capabilities.vision 完整、T1/T2 关键路径不回归', body: probeC1 },
+  { id: 'C1-registration', criteria: '§9.C1', title: '注册 35 工具 / capabilities 仅诊断', expected: '恰好 35 工具（10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4）、required 与 §2.1/§2 一致、capabilities.vision 完整、T1/T2 关键路径不回归', body: probeC1 },
   { id: 'C3-live-capture', criteria: '§9.C3', title: 'live 默认/scale/region 与 mapping', expected: '默认 1280×800；红块 @1.25=100×75；mapping 与 P0 公式一致；不改变页面', body: probeC3 },
   { id: 'C4-bounds', criteria: '§9.C4', title: '文档边界与 PixelRect 整数', expected: '越界/负原点/零面积/顶层小数拒绝；101×50@1.11=112×56', body: probeC4 },
   { id: 'C5-scope', criteria: '§9.C5', title: 'product scope 隔离与导航后离线分析', expected: '跨 scope SOURCE_NOT_FOUND；导航后读图成功、act 失效', body: probeC5 },

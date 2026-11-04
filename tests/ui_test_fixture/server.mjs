@@ -84,6 +84,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
+// WEB-T4 preparation fixtures (not loaded by the plugin runtime). The Lead wires these routes
+// once; their bodies are owned by t4-visual-route.mjs / t4-network-route.mjs. See
+// tests/ui_test_fixture/t4-visual.md and t4-network.md for the frozen truth tables.
+import { handleT4VisualRoute, disposeT4Visual } from './t4-visual-route.mjs';
+import { handleT4NetworkRoute, handleT4NetworkUpgrade, disposeT4Network } from './t4-network-route.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOST = '127.0.0.1';
@@ -818,6 +823,8 @@ export async function startFixtureServer({ host = HOST, port = 0 } = {}) {
   const flakyAttempts = new Map();   // flaky key -> requests observed so far
   // Shop chain state: orders keyed by runId + a monotonic per-request id counter.
   const shopState = { orders: new Map(), seq: 0 };
+  // WEB-T4 preparation fixtures: per-server-instance state owned by the t4-*-route.mjs modules.
+  const t4State = { visual: {}, network: {} };
   const liveSockets = new Set();     // ws sockets + SSE responses, force-closed by close()
   const server = createServer(async (req, res) => {
     try {
@@ -872,6 +879,8 @@ export async function startFixtureServer({ host = HOST, port = 0 } = {}) {
       }
       if (await handleShopRoute(req, res, url, { shop: shopState })) return;
       if (await handleNetworkRoute(req, res, url, { flakyAttempts, liveSockets })) return;
+      if (await handleT4VisualRoute(req, res, url, t4State.visual)) return;
+      if (await handleT4NetworkRoute(req, res, url, t4State.network)) return;
       json(res, 404, { error: 'not-found', status: 404 });
     } catch (error) {
       if (!res.headersSent) json(res, 500, { error: 'fixture-server-error', message: String(error && error.message || error) });
@@ -887,6 +896,9 @@ export async function startFixtureServer({ host = HOST, port = 0 } = {}) {
       pathname = new URL(req.url || '/', `http://${HOST}`).pathname;
     } catch { /* fall through to destroy */ }
     if (pathname !== '/n/ws') {
+      // WEB-T4 network fixture owns its own upgrade path(s). It must either take the socket or
+      // declare it unhandled, in which case the connection is destroyed (never left half-open).
+      if (handleT4NetworkUpgrade({ req, socket, head, pathname, state: t4State.network })) return;
       socket.destroy();
       return;
     }
@@ -972,6 +984,9 @@ export async function startFixtureServer({ host = HOST, port = 0 } = {}) {
   const close = () => new Promise((resolve) => {
     if (closed) return resolve();
     closed = true;
+    // T4 fixtures own timers/SSE/WS sockets outside liveSockets; let them release first.
+    try { disposeT4Visual(t4State.visual); } catch { /* fixture cleanup is best-effort */ }
+    try { disposeT4Network(t4State.network); } catch { /* fixture cleanup is best-effort */ }
     // SSE responses and WebSocket sockets would otherwise keep the listener alive forever.
     for (const socket of liveSockets) {
       try {

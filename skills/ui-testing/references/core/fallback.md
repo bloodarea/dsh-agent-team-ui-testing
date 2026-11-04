@@ -1,6 +1,6 @@
 # Fallback & Stop · 恢复与停止（当前实现版）
 
-> 本文件只在按 `selection.md` 选路后参与决策。回退是换一个方法验证**同一个预先确定的断言**；不能降低验收标准，也不能用新结果覆盖已证实的缺陷。当前插件已实现 T1 + T2，**T3/T4 未实现**：T2 → T3/T4 的升级只是提示，不是可用路径。
+> 本文件只在按 `selection.md` 选路后参与决策。回退是换一个方法验证**同一个预先确定的断言**；不能降低验收标准，也不能用新结果覆盖已证实的缺陷。当前插件已实现 T1 + T2 + T3 + T4 + 网络 P0（35 工具）：T2 → T3 → T4 的升级是**真实可用路径**，且跨层证据要分别记账。
 
 ## 决策流程
 
@@ -41,8 +41,8 @@
 | --- | --- | --- |
 | `REF_STALE` | 重新 `browser_snapshot` 拿新 ref | 复用旧 ref、猜编号、按坐标硬点 |
 | `TARGET_NOT_FOUND` / `TARGET_NOT_UNIQUE` | 改用 ref 或更精确的唯一 selector | 取第一个匹配、`nth-child` 碰运气 |
-| `NOT_INTERACTABLE`（hidden/covered） | 记 `FAIL`；需要视觉成因时 `BLOCKED`（T3 未实现） | force/JS click、改坐标、换相似节点 |
-| `NOT_INTERACTABLE`（unstable） | 记 `FAIL`；动画判断 `BLOCKED`（T4 未实现） | 缩短观察窗口假装稳定 |
+| `NOT_INTERACTABLE`（hidden/covered） | 记 `FAIL`；需要视觉成因时用 T3 截图/对比给出成因证据 | force/JS click、改坐标、换相似节点 |
+| `NOT_INTERACTABLE`（unstable） | 记 `FAIL`；动画/时序判断走 T4（帧序列 + `motion_analyze`） | 缩短观察窗口假装稳定 |
 | `NOT_INTERACTABLE`（focus/value-mismatch） | 记 `FAIL` 并保留 dispatch 证据 | 直接写 DOM value 凑结果 |
 | `WAIT_TIMEOUT` | 记 `FAIL`/`INCONCLUSIVE`，检查条件是否写错 | 缩小 `timeoutMs` 掩盖、把超时当“元素不存在” |
 | `UNSUPPORTED`（contenteditable/`number`/`date`/`file` 等） | 回落 T1 并说明证据强度不同 | 声称 T2 已完成该输入 |

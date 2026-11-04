@@ -351,11 +351,13 @@ async function probe1ToolSurface({ harness, check, finding }) {
   const expectedNames = EXPECTED_TOOLS.map((tool) => tool.name);
   const actualNames = harness.toolNames();
 
-  // 30 = 10 T1 (docs/runtime-t1.md + docs/viewport-control.md §7 browser_viewport)
+  // 35 = 10 T1 (docs/runtime-t1.md + docs/viewport-control.md §7 browser_viewport)
   //      + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
-  //      + 7 network (docs/network-p0.md §2). Counted against EXPECTED_TOOLS so a group surface
-  //      cannot drift silently; the "same names" assertion below still proves nothing extra.
-  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network）`, actualNames.length === EXPECTED_TOOLS.length, {
+  //      + 7 network (docs/network-p0.md §2)
+  //      + 5 T4 (docs/t4-dynamic-behavior.md §7 / docs/t4-implementation-contract.md §2).
+  //      Counted against EXPECTED_TOOLS so a group surface cannot drift silently; the "same
+  //      names" assertion below still proves nothing extra.
+  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4）`, actualNames.length === EXPECTED_TOOLS.length, {
     expected: { count: EXPECTED_TOOLS.length, names: expectedNames },
     actual: { count: actualNames.length, names: actualNames },
   });
@@ -379,6 +381,19 @@ async function probe1ToolSurface({ harness, check, finding }) {
   check('每个工具的 parameters/required/execute/description 与预期一致', schemaProblems.length === 0, {
     expected: EXPECTED_TOOLS,
     actual: { problems: schemaProblems },
+  });
+
+  // Web T4 group (docs/t4-dynamic-behavior.md §7): five tools, disjoint from every older group.
+  const { T4_TOOLS, NETWORK_TOOLS: NET_T4, LEGACY_TOOLS: LEGACY_T4 } = await import(pathToFileURL(join(HERE, 'harness.mjs')).href);
+  const t4Names = T4_TOOLS.map((tool) => tool.name);
+  const t4Missing = t4Names.filter((name) => !actualNames.includes(name));
+  check('T4 组恰好 5 个工具且全部注册', T4_TOOLS.length === 5 && t4Missing.length === 0, {
+    expected: { count: 5, names: t4Names }, actual: { missing: t4Missing, registered: actualNames.length },
+  });
+  check('T4 组工具名不与旧 23 工具及 7 个 network 工具重名', LEGACY_T4.every((tool) => !t4Names.includes(tool.name))
+    && NET_T4.every((tool) => !t4Names.includes(tool.name)) && new Set(actualNames).size === actualNames.length, {
+    expected: 'disjoint + unique',
+    actual: { legacy: LEGACY_T4.length, network: NET_T4.length, t4: t4Names },
   });
 
   const rawCdpTools = actualNames.filter((name) => /cdp|devtools|protocol|page\.|runtime\./i.test(name));

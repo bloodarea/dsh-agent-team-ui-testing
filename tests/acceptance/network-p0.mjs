@@ -2240,10 +2240,12 @@ async function probeC50({ harness, check }) {
   const names = harness.toolNames();
   const networkNames = module.NETWORK_TOOLS.map((tool) => tool.name);
   const legacyNames = module.LEGACY_TOOLS.map((tool) => tool.name);
-  // 30 tools since the shared-viewport round: 23 legacy (22 pre-network + browser_viewport) + 7 network.
-  check('注册表恰好 30 个工具（23 旧 + 7 network），名称与契约一致', names.length === 30
-    && networkNames.every((name) => names.includes(name)) && legacyNames.every((name) => names.includes(name)),
-    { expected: { total: 30, network: 7, legacy: 23 }, actual: { total: names.length, missingNetwork: networkNames.filter((n) => !names.includes(n)) } });
+  // 35 tools since the T4 round: 23 legacy (22 pre-network + browser_viewport) + 7 network + 5 T4.
+  const t4Names = (module.T4_TOOLS || []).map((tool) => tool.name);
+  check('注册表恰好 35 个工具（23 旧 + 7 network + 5 T4），名称与契约一致', names.length === 35
+    && networkNames.every((name) => names.includes(name)) && legacyNames.every((name) => names.includes(name))
+    && t4Names.every((name) => names.includes(name)),
+    { expected: { total: 35, network: 7, legacy: 23, t4: 5 }, actual: { total: names.length, missingNetwork: networkNames.filter((n) => !names.includes(n)), missingT4: t4Names.filter((n) => !names.includes(n)) } });
   const schemaProblems = [];
   for (const tool of module.NETWORK_TOOLS) {
     const definition = harness.tools.get(tool.name);
@@ -2325,9 +2327,9 @@ const BEARER = ['Bearer', 'SECRET', 'netfixture02'].join(' ');
 /** C52 — non-regression invariants that can be proven inside this process. */
 async function probeC52({ harness, check, notRun }) {
   const exec = execOf('c52');
-  check('本套件所有探针使用的工具都在 30 个注册工具内（无 CDP shim）', harness.toolNames().length === 30
+  check('本套件所有探针使用的工具都在 35 个注册工具内（无 CDP shim）', harness.toolNames().length === 35
     && harness.toolNames().every((name) => name.startsWith('browser_')),
-    { expected: 30, actual: harness.toolNames().length });
+    { expected: 35, actual: harness.toolNames().length });
   await freshSession(harness, { exec, name: 'c52' });
   await clickAndAwait(harness, '#net-fetch-json', 'fetch-json', { exec });
   const legacy = await call(harness, 'browser_network', { limit: 20 }, exec);

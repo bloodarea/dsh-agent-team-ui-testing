@@ -4,7 +4,7 @@
 >
 > 契约与验收依据：仓库 `docs/network-p0.md`（§2 七工具、§4 事件 schema/配额/完整性、§5 分析、§6 链路、§7 控制、§8 证据/安全/隔离、§9 靶机、§10 验收 C1–C52、§13 R1 裁决）。实现：`index.js`（CDP 采集/注册/租约）+ `network-p0.js`（事件/会话/分析/链路/控制/证据/订阅纯 JS 核心），错误码在 `browser-safety.js`。历史台账见 [t1-capability-ledger.md](t1-capability-ledger.md)、[t2-capability-ledger.md](t2-capability-ledger.md)（保持不改）。
 
-**当前口径**：工具面 **22 → 29**（+7 network）。这 7 个是**纯新增**，不属于契约 §1.2「旧 22 工具保持不变」；旧工具的加法式增强只有两处——`browser_screenshot` 证据新增 `capture.networkWindow`（`capture.version` 仍 **1**）、T2 动作与网络事件加 mark 关联（`networkDelta` 仍在），`browser_network` 仍是 300 条元数据环形缓冲、T3 未改。
+**当前口径**：工具面 **22 → 29**（+7 network）。（**2026-11-04 更新：已到 35 = 10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4**。）这 7 个是**纯新增**，不属于契约 §1.2「旧 22 工具保持不变」；旧工具的加法式增强只有两处——`browser_screenshot` 证据新增 `capture.networkWindow`（`capture.version` 仍 **1**）、T2 动作与网络事件加 mark 关联（`networkDelta` 仍在），`browser_network` 仍是 300 条元数据环形缓冲、T3 未改。
 
 **验收状态（Lead 独立串行复跑，同一最终代码，2026-11-01 12:27）**：
 

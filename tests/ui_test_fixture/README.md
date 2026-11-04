@@ -1,6 +1,6 @@
 # tests/ui_test_fixture — 明确授权的本地 Web 靶机
 
-这是 **`dsh-agent-team-ui-testing` 插件 T1/T2 Web 验收专用的本地靶机**，由本仓库自行编写并明确授权被测 Agent 访问。它**不是**外网站点、不是用户数据、也不包含任何真实凭据。
+这是 **`dsh-agent-team-ui-testing` 插件 Web 验收专用的本地靶机**（T1/T2/T3、P0 与 WEB-T4 准备靶机），由本仓库自行编写并明确授权被测 Agent 访问。它**不是**外网站点、不是用户数据、也不包含任何真实凭据。
 
 ## 性质与边界
 
@@ -43,6 +43,12 @@ node -e "import('./tests/ui_test_fixture/server.mjs').then(async (m) => { const 
 **网络验收靶机**（T1 网络采集 / `browser_http_request` 等）另有 21 条 `/n/*` 确定性路由、两个页面与一个 Worker 脚本，逐项真值见 §NET：`/n/json`、`/n/echo`、`/n/status/*`、`/n/slow`、`/n/redirect/{1,2}`、`/n/final`、`/n/gzip`、`/n/chunked`、`/n/large`、`/n/sse`、`/n/ws`、`/n/poll`、`/n/flaky`、`/n/token`、`/n/cors`、`/n/worker.js`、`/n/worker-data`、`/n/iframe.html`、`/n/iframe-data`；页面 `/web-network.html`、`/web-network-frame.html`、`/web-network-oopif.html`。
 
 **电商业务链路靶机**：5 个真实 MPA 页面 `/shop/{products,product,order,checkout,orders}.html` + `/api/shop/*`（`products` / `products/:id` / `orders`(GET·POST) / `orders/status` / `orders/list` / `checkout` / `reset`）+ 共用记账脚本 `/shop/shop-ledger.js`；冻结 `runId=chain-1`、订单号 `ORD-chain-1-1`，逐项真值见 §SHOP。
+
+**WEB-T4 准备靶机（仅准备资产；T4 仍未实现、工具面仍 30）**：两套确定性靶机与独立真值表——
+
+- `/web-t4-visual.html`：CSS/DOM、Canvas 2D、WebGL/WebGPU、动态媒体四卡，逻辑时钟暂停/seek、五场景（normal/flash/freeze/jank/media-stall）、`window.__t4.visual` 真值；见 [t4-visual.md](t4-visual.md)。
+- `/web-t4-network.html` + `/api/t4/*` + `/t4/ws`：单页电商链路（加入购物车→GET 刷新→结算→订单更新），含幂等重复、失败重试、慢请求、轮询、SSE、WS、错误→UI 传导与 `window.__t4.net` + 服务端账本双真值；见 [t4-network.md](t4-network.md)。
+- 冻结口径：[t4-prep-contract.md](t4-prep-contract.md)；验收：`flock /tmp/dsh-t4-browser.lock node tests/acceptance/t4-visual-fixtures.mjs` / `... t4-network-fixtures.mjs`。两套只证明靶机与证据链可用，**不注册 T4 工具、不改变 30 工具能力面**。
 
 ## 页面断言值（验收脚本依赖，改动页面必须同步改 `tests/acceptance/run.mjs`）
 `index.html`：

@@ -1,23 +1,60 @@
-# T4 · 动态视觉理解（未实现 / 不可用）
+# T4 · 动态行为（已实现，40 条门槛未全过）
 
-**实现状态：未实现，不可用。** 本插件没有动画时间轴、连续帧采集、录屏或运动轨迹分析工具。
+**实现状态：2026-11-04 已实现并注册 5 个工具（工具面 30 → 35）。** 验收 `tests/acceptance/t4-dynamic.mjs` 逐条跑 DV01–DV16 / DN01–DN12 / DC01–DC12 共 40 条，当前 **8 PASS / 20 PARTIAL / 0 FAIL / 12 NOT_RUN**（`requiredNotRun=32` → exit 2）；纯核心单测 `node --test tests/dynamic-t4.test.mjs` **101/101**。真实 3080 宿主加载与 provider 图像可见性 **NOT_RUN**。
 
-## 不存在的能力
+权威来源：[T4 权威契约](../../../../docs/t4-dynamic-behavior.md)、[实现冻结](../../../../docs/t4-implementation-contract.md)、[状态](../../../../docs/status.md)「WEB-T4 实现」。
 
-- 没有 Agent 可调用的帧序列/录屏/动画采样工具；
-- 没有 Web Animations API 时间轴读取封装；
-- 没有 CDP `Animation` 域封装、FFmpeg / OpenCV 分析；
-- 没有帧率、卡顿、丢帧、过渡时长或轨迹的定量证据通道。
+## 能用什么
 
-## 不要用现有工具冒充 T4
+| 能力 | 工具 | 说明 |
+| --- | --- | --- |
+| 连续帧采集 / 续约 | `browser_dynamic_session` | `source:"screencast"` 共享预览 JPEG 流（唯一协调器、唯一 ACK、有界存储、dropped/evicted 计数）；`source:"screenshot-loop"` PNG 精确采样（50–1000ms，单飞，真实采样区间） |
+| 时间轴查询 | `browser_motion_observe` | 帧/事件只读查询、`fresh` 显式采样、**`region` crop-on-delivery（只看动画那一块）**；只读不 ensure、不续租 |
+| 运动分析 | `browser_motion_analyze` | `frame-diff` / `region-change` / `flicker` / `freeze` / `jank` / `trajectory` / `transition`，确定性阈值 + `resolvedThresholds` + limitations |
+| 时间控制 | `browser_motion_control` | WAAPI `pause/resume/seek/rate/restore`，逐目标回读，`restoreToken`，部分应用与恢复状态如实报告 |
+| 事件关联 | `browser_dynamic_correlate` | 六向关联，`explicit/redirect/initiator`=confirmed-causal，`observed`=关联，`temporal` 默认过滤，输出 pairs/unresolved/suppressedTemporal/integrity |
 
-- `browser_screenshot` 是单帧 PNG，可选附件 image block 或无服务的 base64-fallback 文本；provider 实际可见性另验，单帧不能证明动画。
-- `browser_state` 的 `seq` 是 screencast 帧序号，只用于面板预览的“是否有新帧”判断，**不是 Agent 可查询的连续帧序列**，也不能导出帧内容。
-- `browser_eval` 可以执行页面 JS（例如读取 `element.getAnimations()` 的返回值），但这只是 JS 状态读取，不是 T4 的时间轴采集与视觉验证管线；不能证明画面流畅、无闪烁、无丢帧。
-- 面板 screencast 是事件驱动预览（WS 优先、HTTP 回退），无固定显示帧率保证，也不提供 Agent 帧序列证据。
+动态网络（DN）继续复用 7 个 `browser_network_*`（HTTP/WS/SSE/轮询/重放/证据/订阅），**没有第二套抓包 API**。
 
-当断言依赖动画/过渡/运动连续性时，报告 `BLOCKED` 或 `INCONCLUSIVE`，说明 T4 未实现；不要用“看起来在动”或单张截图代替定量证据。
+## 怎么用（最短路径）
 
-## 可交付条件（未来）
+```text
+1) browser_dynamic_session { action:"start", config:{ captureVisual:true, source:"screencast", durationMs:3000 } }
+   → { dynamicSessionId, motionSessionId }
+2) 执行被测动作（browser_click / 页面 __t4 方法 / 导航）
+3) browser_motion_observe { motionSessionId, sinceSeq:0, limit:50 }        # 帧元数据 + 事件
+4) browser_motion_analyze { motionSessionId, window:{fromMs,toMs},
+     assertions:[{ id:"a1", type:"jank", expectedIntervalMs:16, thresholds:{ intervalFactor:2 } }] }
+   → verdict/exitCode/summary；证据不足是 INCONCLUSIVE/BLOCKED，不是 PASS
+5) 需要精确像素：另起 source:"screenshot-loop"（PNG，precise=true）再 analyze
+6) 需要控制：browser_motion_control { motionSessionId, action:"pause", adapterId:"waapi", targetIds:["#t4v-css-orb"] }
+   然后 action:"restore" + restoreToken 复原
+7) 需要关联：先 browser_network_session start，再
+   browser_dynamic_correlate { dynamicSessionId, motionSessionId, networkSessionId, directions:["network-visual"] }
+8) 分析耗时较长：browser_dynamic_session { action:"extend", durationMs:30000 }   # 续约（单次≤60000、累计≤300000ms，仅 running 有效）
+9) browser_dynamic_session { action:"stop" }   # 尽力恢复本会话控制字段
+```
 
-必须存在真实帧采集、时间戳来源、可重复的采样区间与阈值、正负例证据，才允许标记为可用；在此之前，任何文档不得声称 T4 可用。
+## 三条铁律（详版方法论见 `references/scenarios/visual-motion.md`）
+
+1. **不要用整页截图"理解动画"**：页面常把答案画在画面上（`t=233ms tx=93.32 opacity=0.855`），整页图等于泄漏答案；且整帧 JPEG 61,824 B vs 裁剪 243×139 PNG 4,198 B（**14.7×**）。先 `region-change` 定位 bbox → 再 `observe {region}` 只看这块。
+2. **算力靠抽帧不靠 region**：JPEG 必须整帧解码；176 帧全序列 **20.5s→BLOCKED**，抽 6 帧 **883ms**。
+3. **采样没覆盖 ≠ 没有异常**：16ms 闪白抓不到即报"采样不足"，不写"无闪烁"。
+
+## 判读规则（必须遵守）
+
+- 帧证据：`sourceTimestamp` 是原始 CDP 秒（缺失为 `null`，**不得**用接收时刻填充）；`encodedSha256` 与 `rgbaSha256` 分列，编码字节不同 ≠ 画面变化；`dropped/evicted/ackFailures/gaps/truncated` 必须计数并看。
+- 精度：`screencast` 是 JPEG（`precise=false`，`limitations` 含 `jpeg-compression-noise`），只做粗粒度亮度/变化率判定；精确像素/颜色等值只用 `screenshot-loop` 的 PNG。解码失败 → `INCONCLUSIVE(decoder-unavailable)`。
+- 负结论门槛：`flicker` 需要 A→B→A 三帧；`freeze` 需要可核验的「预期应动」声明 + 独立推进旁证 + ≥3 次像素复核；`jank` 的 `expectedIntervalMs` 必须显式给（不是面板 40ms 预览间隔）。**采样没覆盖到 ≠ 没有异常**。
+- 会话生命周期：`durationMs` 默认 3000、硬上限 60000。Agent 一次工具往返约 11.7s，**多步取证必须显式给 `durationMs` 或用 `extend` 续约**；`extend` 仅对 `running` 有效（已停会话返回 `DYNAMIC_SESSION_NOT_ACTIVE`，不复活），累计 ≤300000ms，不放大帧/字节/算法预算。用 `deadlineMs`/`cumulativeMs` 判断剩余时间。
+- 控制：只对已声明目标；`restore` 只还原本会话改过的字段；页面代次/目标变化 → `DYNAMIC_CONTROL_CONFLICT`，不覆盖外部新状态；不擅自暂停被测应用。
+- 关联：无共同 ID 或协议父端点不得判因果；同 trace/幂等键只证明同组；页面 `ui.cause`/`causeOpId` 是声明证据，需独立旁证（真实 response/WS 事件、DOM 回读、帧像素）才可升级；跨 scope / documentEpoch 不合并。
+
+## 未验证（不得写成可用）
+
+真实 3080/3081 的 T4 加载与 Agent 工具发现、provider 图像可见性、WebGPU 真实渲染与跨进程 GPU 像素一致、16ms 闪白采样覆盖、freeze 的 expectation 源、media 适配器（视频 seek/stall）、visual→visual 与 retry 的显式父桥（靶机未冻结）、header-verified 身份（P0 关联头已脱敏）、长连接稳定性、OOPIF/HTTPS/shared-service worker（沿 P0 限制）。
+
+## 不要再用旧说法
+
+- 旧文档里「T4 未实现 / unsupported / 工具面 30」已过期；以 `browser_capabilities` 的实测为准（现为 35 工具、`web.t4.dynamic-behavior:available` + 5 条逐工具项，旧 `web.t4.dynamic-vision` 是聚合别名）。
+- 单张 `browser_screenshot`、T3 的 before/after 两帧、面板 `/metrics` 与 `browser_eval` 读页面状态都**不是** T4 帧序列证据。

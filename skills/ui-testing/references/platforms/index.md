@@ -4,7 +4,7 @@
 
 | 平台 | 文档 | 当前状态 |
 |---|---|---|
-| Web / Chromium（无头） | `web.md` | T1 部分实现（`verified` / `partial`）+ T2 结构化 GUI **已实现并验收**（`verified`，含真实宿主 14/14 检查行：`tests/acceptance/evidence/t2-real-host-2026-11-01.md`）；T3–T4 未实现 |
+| Web / Chromium（无头） | `web.md` | T1 部分实现（`verified` / `partial`）+ T2 结构化 GUI **已实现并验收**（`verified`，含真实宿主 14/14 检查行：`tests/acceptance/evidence/t2-real-host-2026-11-01.md`）；T3/T4 已实现（T4 40 条门槛 8 PASS/20 PARTIAL/12 NOT_RUN） |
 | Windows | 未创建 | 未定义 / 不可用 |
 | Linux | 未创建 | 未定义 / 不可用 |
 | Android | 未创建 | 未定义 / 不可用 |

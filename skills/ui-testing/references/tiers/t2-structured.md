@@ -47,7 +47,7 @@
 - **表单**：`combobox` 按 `option.value` 精确匹配、**不打开原生 select popup**；`slider` 用原生 setter、**不模拟拖拽**；自定义 ARIA combobox/slider 不接受。结构赋值不能替代 popup / 拖拽手势测试。
 - **输入**：不承诺 IME/composition 与逐字符 keydown；contenteditable/富文本编辑器、`number`/`date`/`file`/`hidden` 抛 `UNSUPPORTED`。
 - **不做**：上传/下载、drag/drop、文件选择器、JSDialog 管理、多标签/popup 接管、触摸、截图 diff、独立证据文件包。
-- **视觉归类**：hit-test 只证明当前坐标命中；颜色、可读性、遮挡成因、canvas/WebGL 文字等仍属 T3；动画/时序属 T4。两者仍 unsupported。
+- **视觉归类**：hit-test 只证明当前坐标命中；颜色、可读性、遮挡成因、canvas/WebGL 文字等属 T3（`browser_vision_image`/`compare`）；动画/时序属 T4（`browser_dynamic_session` + `motion_analyze`）。两者均已实现。
 
 ## 不要用旧层级冒充 T2
 

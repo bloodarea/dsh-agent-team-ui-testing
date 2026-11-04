@@ -49,10 +49,13 @@ export async function capabilityProbe({ harness, check }) {
   const t3Problems = expectedT3.filter(([id, tool]) => !capabilities.some((item) => item.id === id && item.tool === tool && item.status === 'available'));
   const t3Aggregate = capabilities.find((item) => item.id === 'web.t3.static-vision');
   const t4Entries = capabilities.filter((item) => /t4/i.test(item.id));
-  check('六项 web.t3.* 投影与 web.t3.static-vision 聚合 available，T4 仍 unsupported 且没有同名工具',
+  const t4ToolNames = ['browser_dynamic_session', 'browser_motion_observe', 'browser_motion_analyze',
+    'browser_motion_control', 'browser_dynamic_correlate'];
+  check('六项 web.t3.* 投影与 web.t3.static-vision 聚合 available，T4 五工具 + 聚合 + 旧别名 available',
     t3Problems.length === 0 && t3Aggregate?.status === 'available' && !t3Aggregate?.tool
-      && t4Entries.length > 0 && t4Entries.every((item) => item.status === 'unsupported' && !item.tool), {
-    expected: [...expectedT3.map(([id]) => `${id}:available`), 'web.t3.static-vision:available', 'T4 unsupported + no tool'],
+      && t4Entries.length >= 7 && t4Entries.every((item) => item.status === 'available')
+      && t4ToolNames.every((name) => t4Entries.some((item) => item.tool === name)), {
+    expected: [...expectedT3.map(([id]) => `${id}:available`), 'web.t3.static-vision:available', 'T4: 5 tool + aggregate + alias, all available'],
     actual: { problems: t3Problems, aggregate: t3Aggregate, t4: t4Entries },
   });
   const t1Tools = capabilities.filter((item) => item.id.startsWith('web.t1.') && item.tool);

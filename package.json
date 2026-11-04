@@ -9,7 +9,7 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["index.js", "client.js", "frame-source.js", "frame-push.js", "browser-safety.js", "capture-p0.js", "vision-t3.js", "vision-baseline.js", "network-p0.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "skills/**"],
+  "files": ["index.js", "client.js", "frame-source.js", "frame-push.js", "browser-safety.js", "capture-p0.js", "vision-t3.js", "vision-baseline.js", "network-p0.js", "dynamic-t4.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "skills/**"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": { "platform": "web", "immediately": true, "inject": [] }

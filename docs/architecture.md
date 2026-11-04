@@ -3,14 +3,15 @@
 > 索引：[docs/index.md](index.md)
 
 ```text
-package.json          DSH bundle 清单：dsh.bundle.patch + dsh.client（platform: web）；files 含 index.js/client.js/frame-*/browser-safety.js/capture-p0.js/**network-p0.js**/vision-t3.js/vision-baseline.js/cordis.patch.yml/locale/icon/skills
+package.json          DSH bundle 清单：dsh.bundle.patch + dsh.client（platform: web）；files 含 index.js/client.js/frame-*/browser-safety.js/capture-p0.js/**network-p0.js**/vision-t3.js/vision-baseline.js/**dynamic-t4.js**/cordis.patch.yml/locale/icon/skills
 cordis.patch.yml      插入一行 plugin：id = ui-testing-browser
-index.js              Host 半边：BrowserHost（单 Chromium/profile、多 page）、按 DSH 工作区的 RuntimeRegistry、租约/串行队列、scoped HTTP 路由、独立 HTTP 客户端、30 工具（10 T1 + 7 T2 + 6 T3 + 7 network）、每 Runtime 的权威共享 view（宽高/x/y/canvasX/Y/比例/来源/版本 + 实时观测）、**P0-D 面板标注文档（`annotations` 存储 + `POST /annotations` 唯一写面 + `state/ui` 只读投影 + documentKey 轮换）**与内置 Skill；并承担网络全事件采集（Runtime 级 Network/Fetch 订阅、按需 body、子目标 setAutoAttach）与 browser_capabilities.network 报告
+index.js              Host 半边：BrowserHost（单 Chromium/profile、多 page）、按 DSH 工作区的 RuntimeRegistry、租约/串行队列、scoped HTTP 路由、独立 HTTP 客户端、35 工具（10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4）、每 Runtime 的权威共享 view（宽高/x/y/canvasX/Y/比例/来源/版本 + 实时观测）、**P0-D 面板标注文档（`annotations` 存储 + `POST /annotations` 唯一写面 + `state/ui` 只读投影 + documentKey 轮换）**与内置 Skill；并承担网络全事件采集（Runtime 级 Network/Fetch 订阅、按需 body、子目标 setAutoAttach）、screencast 帧源协调与 T4 动态会话/控制/关联，以及 browser_capabilities.network 与 .dynamic 报告
 browser-safety.js     BrowserError/CDP、错误分类（含 REF_STALE/TARGET_NOT_UNIQUE/NOT_INTERACTABLE/WAIT_TIMEOUT、T3 的 VISION_* 码与网络 P0 的 NET_* 码）、取消/定时器清理、URL 脱敏与目标/DNS 校验
 network-p0.js         P0 网络纯 JS 核心：事件/会话存储、标准化与有界配额、分析与统计、业务链路窗口、拦截/限速/重放规则、JSONL/HAR 导入导出与证据索引、订阅游标（零 npm 依赖，不直接持有 CDP）
 capture-p0.js         P0 采集基础设施：PNG 结构/CRC/解码、全量均匀/透明统计、尺寸校验、纯 JSON 映射投影、安全路径与原子 no-clobber 写入
 vision-t3.js          T3 纯算法：PNG RGBA 编解码、crop/resize/预处理/标注、analysis/Sobel、yiq-v1 diff、识别/模板、几何映射、参数校验、VisionProductStore
 vision-baseline.js    T3 受管基线：scopeHash 根、不可变 revision、head 规范 JSON、CAS 提交/墓碑、只读 list/get、故障注入点
+dynamic-t4.js         T4 纯核心（零 CDP/零依赖/零 fs）：DynamicFrameStore（有界帧存储、淘汰、dropped/evicted/gaps、encoded/rgba 双 hash）、DynamicEventLog 与逻辑/墙钟时间锚点、七类确定性运动原语、runMotionAssertions、correlateDynamic 六向关联与候选预算诊断、baseline JPEG 解码与 region 裁剪
 frame-source.js       Host 帧缓存：最新帧/元数据/捕获统计（与传输、UI 解耦）
 frame-push.js         Host 同源 WebSocket 推帧：单 upgrade dispatcher、按 scope 绑定 pusher、握手、合并推送、背压丢帧、鉴权、清理
 client.js             全部 UI（React，无 JSX，用 h()）；内含 UI-free 的 createFrameTransport；共享 view 的采纳/草稿/滚轮/fit/painted-rect 坐标映射/帧几何屏障；P0-D 标注模式（入口/横栏、SVG 画布坐标层、模式总闸与生命周期）
@@ -18,8 +19,8 @@ locale/{en,zh}.json   插件显示名与描述
 icon.svg              插件图标
 skills/ui-testing/    内置 Skill（SKILL.md + references/examples/templates/knowledge/manifests）
 tests/ui_test_exam/   插件自身能力的对照测试靶机（20 处预设缺陷），见该目录 README
-tests/ui_test_fixture/ 自建授权本地靶机（确定性断言值），供验收脚本使用
-tests/acceptance/     真实验收脚本：fake ctx 驱动 index.js、帧推送/轮询、能力台账检查、Skill 注册检查
+tests/ui_test_fixture/ 自建授权本地靶机（确定性断言值），供验收脚本使用；含 WEB-T4 靶机 `web-t4-visual.html` / `web-t4-network.html`（T4 已实现，见 t4-dynamic-behavior.md / t4-implementation-contract.md）
+tests/acceptance/     真实验收脚本：fake ctx 驱动 index.js、帧推送/轮询、能力台账检查、Skill 注册检查；含 T4 靶机验收 `t4-visual-fixtures.mjs` / `t4-network-fixtures.mjs` 与 T4 实现验收 `t4-dynamic.mjs`（40 条 DV/DN/DC）
 reference/            本地参考资产（Skill 模板包 v1.1）**不入库**：已进 .gitignore，见 skill-authoring.md
 docs/                 项目记忆（本目录）；按工作区隔离的契约见 workspace-isolation.md
 ```
@@ -29,7 +30,7 @@ docs/                 项目记忆（本目录）；按工作区隔离的契约�
 - **Snapshot/Ref 引擎**：`Accessibility.getFullAXTree` 建语义树并按规则压缩/截断；给可解析 Element 分配单调 `eN`，ref 表按 Runtime 隔离、2000 项 LRU、跨快照按 `(documentEpoch, backendNodeId)` 复用；跨文档提交/上下文丢失/close 清空。
 - **目标解析与 actionability**：`ref`/唯一 `selector` → `DOM.resolveNode` + 身份复验 → 单次 `Runtime.callFunctionOn` 读 NodeState（可见/启用/可编辑/checked/expanded/focused/bbox/hit-test，含 open shadow 的 composed 命中）→ 自动滚动 + 稳定性确认 → CDP 真实输入派发。
 - **证据**：统一 `evidence.version=1` 结构（provenance/targets/before/after/dispatch/networkDelta/escalation/incomplete），成功放结果、失败放 `BrowserError.details`；输入文本与可编辑 value 永不回显。
-- **能力报告**：`browser_capabilities` 报 T2/T3/network 各段工具项（注册表共 30 工具）、`web.t1.viewport`、`web.t2.*`、`web.t3.*`、`web.network.*` 与 `viewport/limits.viewport`、`limits.structuredGui/limits.vision/limits.network`，T4 仍 `unsupported`。
+- **能力报告**：`browser_capabilities` 报 T1/T2/T3/network/T4 各段工具项（注册表共 35 工具）、`web.t1.viewport`、`web.t2.*`、`web.t3.*`、`web.network.*`、`web.t4.*` 与 `viewport/limits.viewport`、`limits.structuredGui/limits.vision/limits.network/limits.dynamic`、`dynamic` 段（tools/sources/adapters/correlation/limits/observed）。
 
 ## T3 静态视觉职责
 

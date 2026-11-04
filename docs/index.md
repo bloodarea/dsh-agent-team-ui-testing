@@ -15,9 +15,11 @@
 | [runtime-t1.md](runtime-t1.md) | T1/T2 运行时：无头 Chromium、HTTP 接口（含 `/viewport` 双形状与 `ui.view`）、30 个 Agent 工具面与限制 | 改运行时/接工具时 |
 | [viewport-control.md](viewport-control.md) | **P0-C 共享视口语义契约（已实现；含 2026-11-02 面板拖拽模式）**：`view` 数据模型/观测节流、get/set 分类、CAS、HTTP 与 UI 投影、面板坐标映射与滚轮、截图默认比例、`browser_viewport` schema/错误/limits 与 H1–H10/GUI 验收 | 改视口、截图默认比例、面板尺寸栏或排查桌面/移动端布局回归时 |
 | [canvas-viewport.md](canvas-viewport.md) | **P0-D 混合画布（hybrid canvas，2026-11-02 用户要求，已实现；与 P0-C 独立验收，真实 3080 Host 面已实测）**：X/Y=视口左上角在文档画布上的坐标（可负/可越界）、`canvasX/canvasY` 增量字段、S/O 不变量、blank 合成、截图/T3 canvas mapping、输入与 fail-closed、验收与限制 | 改画布语义、负坐标、blank、拖拽平移或合成截图/T3 时 |
-| [annotation-p0d.md](annotation-p0d.md) | **P0-D 标注模式（annotation，2026-11-02 三轮）**：工具栏入口、独立标注栏（七工具含橡皮擦/填充/外框/颜色/粗细/清除画布）、模式互斥与页面零派发、SVG 画布坐标锚定与映射公式、文字编辑/IME、**Agent 可见面（`browser_state.annotations` + `/state ui.annotations`，工具面仍 30）**、**v3 跨分页/会话保留 + 工作区隔离（水合/retained queue/发布者身份）**、**v4 交互细节（填充/外框与「拖拽\|适应窗口\|默认」两组分页选择器单选、双向模式互斥、默认分辨率按环境、粗细滚轮）**、可测 DOM 契约与 V15/V16/V17/V18 验收；Agent 读取流程另内置为 bundled skill 参考 `skills/ui-testing/references/scenarios/annotations.md`（SKILL.md「读取面板标注（P0-D annotations）」小节） | 改标注面板/绘制交互/擦除清除/上报可见性/保留与隔离，补验收或判断标注边界时 |
+| [annotation-p0d.md](annotation-p0d.md) | **P0-D 标注模式（annotation，2026-11-02 三轮）**：工具栏入口、独立标注栏（七工具含橡皮擦/填充/外框/颜色/粗细/清除画布）、模式互斥与页面零派发、SVG 画布坐标锚定与映射公式、文字编辑/IME、**Agent 可见面（`browser_state.annotations` + `/state ui.annotations`，该轮工具面 30；T4 后为 35）**、**v3 跨分页/会话保留 + 工作区隔离（水合/retained queue/发布者身份）**、**v4 交互细节（填充/外框与「拖拽\|适应窗口\|默认」两组分页选择器单选、双向模式互斥、默认分辨率按环境、粗细滚轮）**、可测 DOM 契约与 V15/V16/V17/V18 验收；Agent 读取流程另内置为 bundled skill 参考 `skills/ui-testing/references/scenarios/annotations.md`（SKILL.md「读取面板标注（P0-D annotations）」小节） | 改标注面板/绘制交互/擦除清除/上报可见性/保留与隔离，补验收或判断标注边界时 |
 | [capture-p0.md](capture-p0.md) | **P0-A 图片输入流/截图采集**：截图参数/高 DPI/无损裁剪/尺寸校验/空白识别/安全写入/错误与能力探测 | 改 browser_screenshot、判断截图证据可信度时 |
 | [network-p0.md](network-p0.md) | **P0-B 网络抓包权威契约**（P0 三项之一：P0-A capture-p0.md、P0-C viewport-control.md）：7 个 `browser_network_*` 工具 schema、事件模型/配额/完整性、分析、业务链路、控制、证据与脱敏、靶机路由、验收 C1–C52 与 §13 R1 裁决 | 改网络工具、判定网络能力边界（G1.5 partial、HTTPS/`responseModification` NOT_RUN）或复跑网络验收时 |
+| [t4-dynamic-behavior.md](t4-dynamic-behavior.md) | **WEB-T4 权威契约（已实现，工具面 30→35）**：动态视觉/动态网络/动态事件关联三部分、统一时间轴与事件信封、帧源与适配器边界、六向关联的 basis/grade 与反误判、五个工具 schema、DV/DN/DC 40 条验收门槛 | 改 T4 工具、判定联动语义或复核 40 条验收时 |
+| [t4-implementation-contract.md](t4-implementation-contract.md) | **WEB-T4 实施契约（已冻结，2026-11-04）**：五工具根 schema/条件校验/返回、`DYNAMIC_*` 错误分类、`dynamic-t4.js` 纯核心 API（帧存储/时间轴/七原语/DC）、能力报告 30→33→34→35 过渡、DC 字段映射与因果约束、40 条断言归属 | 读/改 T4 实现、复跑 40 条验收或核对能力声明时 |
 | [t2-structured-gui.md](t2-structured-gui.md) | **Web T2** 结构化 GUI 权威契约：七工具、Ref 协议、证据/错误、非目标与 38 条验收条件 | 改 T2 工具/证据/验收，或判断 T2 能力边界时 |
 | [workspace-isolation.md](workspace-isolation.md) | 按 DSH 工作区隔离调试实例：scope 身份链、请求协议、每工作区 page Runtime、生命周期与验收 | 改运行时隔离/面板绑定/查 scope 契约时 |
 | [skill-authoring.md](skill-authoring.md) | 内置 Skill 编写参考（模板包位置、以实际实现为准的对照表） | 写/改 SKILL 时 |
@@ -26,6 +28,7 @@
 | [ui-spec.md](ui-spec.md) | 已定稿界面的尺寸与规格 | 动 UI 前（需用户同意） |
 | [dsh-integration.md](dsh-integration.md) | DSH 插件接入要点与已踩的坑 | 接新能力、排查不生效时 |
 | [verification.md](verification.md) | 怎么验证（隔离实例 + 无头 CDP） | 需要证明"改生效了"时 |
+| [T4 真实宿主证据](../tests/acceptance/evidence/t4-real-host-2026-11-04.md) | 3080 重启后 T4 真实宿主冒烟：35 工具/`web.t4.*`、screencast 480–600 帧、screenshot-loop 19 帧、jank 实测分布、provider 图像可见性，以及 4 条真实宿主缺陷 | 判断 T4 在真实宿主是否可用、哪些子项仍需重启复验时 |
 | [constraints.md](constraints.md) | 边界与其他约定（靶机、README 定位） | 涉及考试/对外文档时 |
 
 ## 维护约定

@@ -469,7 +469,7 @@ function hintOf(result) {
  * ---------------------------------------------------------------------------------------------- */
 
 async function probeC1({ check, finding }) {
-  const { EXPECTED_TOOLS, NETWORK_TOOLS, LEGACY_TOOLS, createHarness } = await import(pathToFileURL(join(HERE, 'harness.mjs')).href);
+  const { EXPECTED_TOOLS, NETWORK_TOOLS, LEGACY_TOOLS, T4_TOOLS, createHarness } = await import(pathToFileURL(join(HERE, 'harness.mjs')).href);
   const harness = await createHarness({ name: 'C1-cold' });
   try {
     const names = harness.toolNames();
@@ -514,18 +514,20 @@ async function probeC1({ check, finding }) {
     });
     const caps = await call(harness, 'browser_capabilities', {}, execOf());
     const toolEntries = (caps.value?.capabilities || []).filter((item) => item.tool);
-    check('capabilities 覆盖全部 30 个工具（含 10 个 T1 + 7 个 T2 + 6 个 T3 + 7 个 network）', toolEntries.length === EXPECTED_TOOLS.length && EXPECTED_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
+    check('capabilities 覆盖全部 35 个工具（含 10 个 T1 + 7 个 T2 + 6 个 T3 + 7 个 network + 5 个 T4）', toolEntries.length === EXPECTED_TOOLS.length && EXPECTED_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
       expected: { count: EXPECTED_TOOLS.length }, actual: toolEntries.map((item) => `${item.tool}:${item.status}`),
     });
     // Proves the pre-network surface did not regress independently of the new group: the 23
     // legacy tools (22 pre-viewport + browser_viewport) must still be declared, and the 7 network
     // tools must be declared too.
-    check('旧 23 工具（22 旧 + browser_viewport）与新增 7 个 network 工具都各自完整声明', LEGACY_TOOLS.length === 23 && NETWORK_TOOLS.length === 7
+    check('旧 23 工具（22 旧 + browser_viewport）与 7 个 network、5 个 T4 工具都各自完整声明', LEGACY_TOOLS.length === 23 && NETWORK_TOOLS.length === 7
       && LEGACY_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name))
-      && NETWORK_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
-      expected: { legacy: 23, network: 7 },
+      && NETWORK_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name))
+      && T4_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
+      expected: { legacy: 23, network: 7, t4: 5 },
       actual: { legacyMissing: LEGACY_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name),
-        networkMissing: NETWORK_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name) },
+        networkMissing: NETWORK_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name),
+        t4Missing: T4_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name) },
     });
     finding({ id: 'C1-param-validation-before-start', severity: 'info', summary: '纯参数校验先于 ensure/派发（INVALID_ARGUMENT 后 running 仍为 false）已由 browser_state 实测确认。' });
   } finally {
@@ -565,8 +567,8 @@ async function probeC2({ check, finding }) {
     const structured = capabilities.find((item) => item.id === 'web.t2.structured-dom');
     check('web.t2.structured-dom 单独 available', structured?.status === 'available' && !structured?.tool, { expected: { status: 'available' }, actual: structured });
     // T3 is implemented (docs/t3-vision.md §11): six tool projections + the static-vision aggregate
-    // are available; T4 still has no tool and stays unsupported. Strictly stronger than the pre-T3
-    // "T3/T4 unsupported" assertion.
+    // are available; T4 is implemented too (5 tools + aggregate + legacy alias, all available).
+    // Strictly stronger than the pre-T3/pre-T4 "unsupported" assertions.
     const expectedT3Caps = [
       ['web.t3.image', 'browser_vision_image'], ['web.t3.find', 'browser_vision_find'],
       ['web.t3.compare', 'browser_vision_compare'], ['web.t3.act', 'browser_vision_act'],
@@ -575,10 +577,12 @@ async function probeC2({ check, finding }) {
     const t3Problems = expectedT3Caps.filter(([id, tool]) => !capabilities.some((item) => item.id === id && item.tool === tool && item.status === 'available'));
     const t3Aggregate = capabilities.find((item) => item.id === 'web.t3.static-vision');
     const t4Entries = capabilities.filter((item) => /t4/i.test(item.id));
-    check('六项 web.t3.* 与 static-vision 聚合 available，T4 仍 unsupported 且没有同名工具',
+    check('六项 web.t3.* 与 static-vision 聚合 available，T4 五工具 + 聚合 + 旧别名均 available',
       t3Problems.length === 0 && t3Aggregate?.status === 'available' && !t3Aggregate?.tool
-        && t4Entries.length > 0 && t4Entries.every((item) => item.status === 'unsupported' && !item.tool), {
-      expected: [...expectedT3Caps.map(([id]) => `${id}:available`), 'web.t3.static-vision:available', 'T4 unsupported, no tool'],
+        && t4Entries.length >= 7 && t4Entries.every((item) => item.status === 'available')
+        && ['browser_dynamic_session', 'browser_motion_observe', 'browser_motion_analyze',
+          'browser_motion_control', 'browser_dynamic_correlate'].every((name) => t4Entries.some((item) => item.tool === name)), {
+      expected: [...expectedT3Caps.map(([id]) => `${id}:available`), 'web.t3.static-vision:available', 'T4: 5 tool + aggregate + alias, all available'],
       actual: { problems: t3Problems, aggregate: t3Aggregate, t4: t4Entries },
     });
     const description = harness.tools.get('browser_capabilities')?.description || '';

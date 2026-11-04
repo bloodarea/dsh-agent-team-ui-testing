@@ -1,6 +1,6 @@
 # T1 · 程序化接口（M0–M2）
 
-部分实现；**工具面 30 个 = 本文的 T1 10 个（含独立 HTTP `browser_http_request` 与共享视口 `browser_viewport`）+ T2 7 个**（见 [T2 表](t2-structured.md)）**+ T3 6 个**（见 [T3 表](t3-static-visual.md)，权威契约 `docs/t3-vision.md`）**+ 网络 P0 7 个**（`browser_network_session`、`browser_network_events`、`browser_network_detail`、`browser_network_trace`、`browser_network_control`、`browser_network_evidence`、`browser_network_subscribe`，权威契约 `docs/network-p0.md`）。注册表决定可调用名字，browser_capabilities 报实际运行态三态；静态工程状态不能当 available。验收：M0–M2 的 P1–P21 加上 P22（独立 HTTP），具体计数与结论以仓库 runs/ 报告为准；T2 优化构建套件已跑绿（37/38 探针、**260/260** 必需检查、criteriaCovered 38、exit 0，报告 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`；套件内 C38 真实宿主/声明为 NOT_RUN，属 fake-ctx 套件边界），真实宿主 14/14 记录见 `tests/acceptance/evidence/t2-real-host-2026-11-01.md`（属优化前构建，优化后待定向复验）；provider 图像可见性仍 NOT_RUN。详细返回见 [操作契约](../contracts/operation.md)。
+部分实现；**工具面 35 个 = 本文的 T1 10 个（含独立 HTTP `browser_http_request` 与共享视口 `browser_viewport`）+ T2 7 个**（见 [T2 表](t2-structured.md)）**+ T3 6 个**（见 [T3 表](t3-static-visual.md)，权威契约 `docs/t3-vision.md`）**+ 网络 P0 7 个**（`browser_network_session`、`browser_network_events`、`browser_network_detail`、`browser_network_trace`、`browser_network_control`、`browser_network_evidence`、`browser_network_subscribe`，权威契约 `docs/network-p0.md`）**+ T4 5 个**（见 [T4 表](t4-dynamic-visual.md)，权威契约 `docs/t4-dynamic-behavior.md`）。注册表决定可调用名字，browser_capabilities 报实际运行态三态；静态工程状态不能当 available。验收：M0–M2 的 P1–P21 加上 P22（独立 HTTP），具体计数与结论以仓库 runs/ 报告为准；T2 优化构建套件已跑绿（37/38 探针、**260/260** 必需检查、criteriaCovered 38、exit 0，报告 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`；套件内 C38 真实宿主/声明为 NOT_RUN，属 fake-ctx 套件边界），真实宿主 14/14 记录见 `tests/acceptance/evidence/t2-real-host-2026-11-01.md`（属优化前构建，优化后待定向复验）；provider 图像可见性仍 NOT_RUN。详细返回见 [操作契约](../contracts/operation.md)。
 
 | 操作 | 工具 | 关键边界 |
 | --- | --- | --- |
@@ -14,7 +14,7 @@
 | CSSOM | browser_computed_style | 首匹配，未命中 error 对象；无伪元素/iframe/Shadow DOM 内部定位 |
 | 状态 | browser_state | document.title 刷新与 owner 诊断，不启动/不占租约；error/errorAt/errorActionId/errorTarget 由成功页面操作清空 |
 | 独立 HTTP | browser_http_request | Host HTTP(S) 客户端：不启动浏览器/不占租约；默认 GET、5s 总超时、64KiB 保留上限、不跟随重定向；每跳复验目标、无 cookie jar、新错误码 HTTP_TIMEOUT/HTTP_FAILED/HTTP_REDIRECT_LIMIT；`ok:true` 非 2xx |
-| 能力 | browser_capabilities | 实际 available/unavailable/unsupported 与原因限制，不启动/不占租约；按段报 T1/T2（7+1）/T3（6+1）/network（7+1，聚合 `web.network.p0`，含必报标量 `limits.network.https:"mechanism-identical"` 与并列的 `responseModification` 实测值），并报 `limits.structuredGui`、`vision`/`limits.vision`、`network`/`limits.network`（T4 仍 unsupported） |
+| 能力 | browser_capabilities | 实际 available/unavailable/unsupported 与原因限制，不启动/不占租约；按段报 T1/T2（7+1）/T3（6+1）/network（7+1，聚合 `web.network.p0`，含必报标量 `limits.network.https:"mechanism-identical"` 与并列的 `responseModification` 实测值），并报 `limits.structuredGui`、`vision`/`limits.vision`、`network`/`limits.network`、`dynamic`/`limits.dynamic` |
 
 同一时刻一个无头 Chromium/profile；每个 DSH 工作区一个 page。single-owner-lease 按工作区，15s idle、进行中保持、缺 exec 走 legacy、disposed 只释放对应 owner。页面操作与 network（含 network P0 的 session/control 变更）受同工作区租约，network P0 只读/离线动作不加租约；state/capabilities 可诊断。同工作区页面工具与面板同串行队列；已发 CDP 命令后 abort 先关闭该 page 再放锁，后续可懒启动。Cookie/存储共享，非安全隔离。
 
@@ -22,4 +22,4 @@
 
 安全策略见 [安全边界](../core/safety.md)：loopback 允许，RFC1918 默认阻断，可显式环境变量开放；Document/DNS/最终 URL 校验不等于对子资源/页面 fetch/WebSocket 的完整网络沙箱，仍有 rebinding 风险。
 
-所有工具 action 元数据进入 render；操作成功与断言分离。网络元数据不证明完整接口契约（接口契约用 `browser_http_request`），CSSOM 不证明视觉，原始截图可见不意味着 T3/T4 已实现。元素语义与元素级交互优先走 T2（`browser_snapshot`/`browser_click`/`browser_type`/`browser_fill_form`/`browser_wait_for`，见 [T2 表](t2-structured.md)）；下载/上传/Cookie 导出、多 target/frame 选择、Agent 视口工具、T3/T4 仍 unsupported。验收状态见 [T1 台账](../../knowledge/web/t1-capability-ledger.md)、[T2 台账](../../knowledge/web/t2-capability-ledger.md) 与 [网络 P0 台账](../../knowledge/web/network-p0-capability-ledger.md)，未有本轮证据前不标 verified。
+所有工具 action 元数据进入 render；操作成功与断言分离。网络元数据不证明完整接口契约（接口契约用 `browser_http_request`），CSSOM 不证明视觉，原始截图可见不意味着 T3/T4 已实现。元素语义与元素级交互优先走 T2（`browser_snapshot`/`browser_click`/`browser_type`/`browser_fill_form`/`browser_wait_for`，见 [T2 表](t2-structured.md)）；下载/上传/Cookie 导出、多 target/frame 选择、Agent 视口工具；T3/T4 已实现（T4 部分门槛 NOT_RUN）。验收状态见 [T1 台账](../../knowledge/web/t1-capability-ledger.md)、[T2 台账](../../knowledge/web/t2-capability-ledger.md) 与 [网络 P0 台账](../../knowledge/web/network-p0-capability-ledger.md)，未有本轮证据前不标 verified。

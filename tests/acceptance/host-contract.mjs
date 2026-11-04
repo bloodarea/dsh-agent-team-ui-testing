@@ -210,7 +210,10 @@ export async function hostOutputContractProbe({ harness, check, finding, fixture
     ['browser_navigate', { url: fixture.url }],
     ['browser_state', {}],
     ['browser_capabilities', {}],
-    ['browser_network', { limit: 3 }],
+    // limit 3 made this probe order-dependent: the failed entry can be pushed out of the last three
+    // entries by the fixture's own traffic (favicon/api/data), so the check flaked. Read a wider
+    // window and still assert on the failed entry itself.
+    ['browser_network', { limit: 50 }],
     ['browser_eval', { expression: '({answer: 42})' }],
     ['browser_computed_style', { selector: 'body', properties: ['display'] }],
     ['browser_input', { events: [] }],

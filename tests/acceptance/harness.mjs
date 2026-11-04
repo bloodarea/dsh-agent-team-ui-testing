@@ -32,10 +32,13 @@ import { fileURLToPath } from 'node:url';
 import { apply } from '../../index.js';
 
 /**
- * The tool surface implemented by index.js, 30 tools:
+ * The tool surface implemented by index.js, 35 tools:
  *   10 T1 (docs/runtime-t1.md + docs/viewport-control.md §7 `browser_viewport`)
  * + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
- * + 7 network P0 (docs/network-p0.md §2).
+ * + 7 network P0 (docs/network-p0.md §2)
+ * + 5 Web T4 dynamic behavior (contract docs/t4-dynamic-behavior.md §7, implementation contract
+ *   docs/t4-implementation-contract.md §2: dynamic_session / motion_observe / motion_analyze /
+ *   motion_control / dynamic_correlate).
  *
  * `required` is the *registered JSON schema* required array only. The contract's runtime
  * constraints (exactly one of ref/selector, exactly one of direction/to, wait condition legality,
@@ -85,6 +88,15 @@ export const EXPECTED_TOOLS = Object.freeze([
   Object.freeze({ name: 'browser_network_control', required: ['action'] }),
   Object.freeze({ name: 'browser_network_evidence', required: ['action'] }),
   Object.freeze({ name: 'browser_network_subscribe', required: ['action'] }),
+  // --- Web T4 dynamic behavior (docs/t4-dynamic-behavior.md §7.2) --------------------------
+  // Only the contract-fixed root `required` entries are registered; every conditional rule
+  // (captureVisual->source, source->encoding, window xor frameIds, action-specific control
+  // fields, ...) is enforced at execution time by the plugin.
+  Object.freeze({ name: 'browser_dynamic_session', required: ['action'] }),
+  Object.freeze({ name: 'browser_motion_observe', required: ['motionSessionId'] }),
+  Object.freeze({ name: 'browser_motion_analyze', required: ['motionSessionId', 'assertions'] }),
+  Object.freeze({ name: 'browser_motion_control', required: ['motionSessionId', 'action'] }),
+  Object.freeze({ name: 'browser_dynamic_correlate', required: ['dynamicSessionId'] }),
 ]);
 
 /** The seven Web T2 tools declared in docs/t2-structured-gui.md §2.2. */
@@ -106,18 +118,29 @@ export const NETWORK_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => [
   'browser_network_subscribe',
 ].includes(tool.name)));
 
+/** The five Web T4 dynamic-behavior tools declared in docs/t4-dynamic-behavior.md §7.2. */
+export const T4_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => [
+  'browser_dynamic_session', 'browser_motion_observe', 'browser_motion_analyze',
+  'browser_motion_control', 'browser_dynamic_correlate',
+].includes(tool.name)));
+
+/** Alias kept for suites that name the group by capability id (`web.t4.dynamic-behavior`). */
+export const DYNAMIC_TOOLS = T4_TOOLS;
+
 /** The Web T1 tools (9 original + `browser_viewport`), excluded from every newer group. */
 export const T1_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => !T2_TOOLS.some((t2) => t2.name === tool.name)
   && !T3_TOOLS.some((t3) => t3.name === tool.name)
-  && !NETWORK_TOOLS.some((net) => net.name === tool.name)));
+  && !NETWORK_TOOLS.some((net) => net.name === tool.name)
+  && !T4_TOOLS.some((t4) => t4.name === tool.name)));
 
 /**
  * The tools that existed before the network P0 round (T1 + T2 + T3, 23 after the viewport round).
  * Suites that assert "the old surface did not regress" compare against this list instead of the
- * full 30, so the historical assertion keeps its original strength while the new group is
+ * full 35, so the historical assertion keeps its original strength while each newer group is
  * asserted separately.
  */
-export const LEGACY_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => !NETWORK_TOOLS.some((net) => net.name === tool.name)));
+export const LEGACY_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => !NETWORK_TOOLS.some((net) => net.name === tool.name)
+  && !T4_TOOLS.some((t4) => t4.name === tool.name)));
 
 export const PROFILE_PREFIX = 'dsh-ui-testing-';
 

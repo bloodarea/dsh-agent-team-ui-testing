@@ -2514,6 +2514,665 @@ function sessionAliases(status) {
   };
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * Web T4 dynamic behaviour — Host side (docs/t4-dynamic-behavior.md §2/§3/§7).
+ *
+ * Division of labour: this Host layer owns the *real* frame intake (the one shared CDP
+ * screencast), the bounded enqueue/ACK accounting, the session state machine, the mapping
+ * snapshot and the tool surface. Every pixel/timeline/analysis algorithm lives in the pure
+ * `dynamic-t4.js` module (executor-A) so it can be unit tested without a browser. The Host never
+ * decodes a JPEG: it hands the raw base64 payload + metadata to the core store, which decodes
+ * (`decodeJpegRgba`) and keeps `encodedSha256`/`rgbaSha256` separately.
+ *
+ * Invariants enforced here:
+ *  - exactly one screencast coordinator per Runtime: the page start still sends the single
+ *    `Page.startScreencast` (preview JPEG/72/1600×1200) and the T4 sink only *taps* it;
+ *    T4 never sends start/stop/ACK on its own.
+ *  - the T4 sink receives the raw params BEFORE the preview latest-frame overwrite.
+ *  - a sink failure is counted and suppressed: it can never block `frames.accept()` or the ACK.
+ *  - one active dynamic session per scope; a pure-network view (captureVisual:false) creates no
+ *    page, takes no page lease and never starts/stops the referenced P0 session.
+ * ------------------------------------------------------------------------------------------- */
+const DYNAMIC_VERSION = 1;
+const DYNAMIC_ALGORITHM_VERSION = 't4-draft-v1';
+/**
+ * The five frozen T4 tool names (docs/t4-dynamic-behavior.md §7 / implementation contract §2).
+ * `DYNAMIC_REGISTERED_TOOLS` is the subset actually registered at this build; it is the ONLY
+ * source for the capability report (never a manifest expectation).
+ */
+const DYNAMIC_TOOL_NAMES = Object.freeze([
+  'browser_dynamic_session', 'browser_motion_observe', 'browser_motion_analyze',
+  'browser_motion_control', 'browser_dynamic_correlate',
+]);
+const DYNAMIC_REGISTERED_TOOLS = Object.freeze([
+  'browser_dynamic_session', 'browser_motion_observe', 'browser_motion_analyze',
+  'browser_motion_control', 'browser_dynamic_correlate',
+]);
+const DYNAMIC_MILESTONE = 'M3';
+
+/** Per-tool constraints for browser_capabilities; each says what the registered tool really does. */
+function dynamicCapabilityConstraints(name) {
+  const common = [
+    'T4 group: one shared dynamic session per scope; stored observe/analyze never ensure or renew a lease',
+    'no second screencast controller: the T1 preview stream is tapped before latest-frame overwrite',
+    'unknown/missing evidence is INCONCLUSIVE/BLOCKED, never a PASS; temporal proximity is not causality',
+  ];
+  if (name === 'dynamic-session') {
+    return [...common,
+      'visual start/stop/reset are page operations (single-owner lease); status and pure-network views are Host-memory only',
+      'screencast=shared preview JPEG (no stop/restart, explicit png/region/non-1 scale refused by name)',
+      'captureVisual:false requires an existing P0 network session; never starts/stops P0',
+    ];
+  }
+  if (name === 'motion-observe') {
+    return [...common, 'stored reads are read-only; fresh=true is the only explicit page sample'];
+  }
+  if (name === 'motion-analyze') {
+    return [...common, 'offline: analyzes stored immutable frames only; never captures a new frame'];
+  }
+  return common;
+}
+const DYNAMIC_SESSION_ACTIONS = Object.freeze(['start', 'stop', 'status', 'reset', 'extend']);
+const DYNAMIC_SOURCES = Object.freeze(['screencast', 'screenshot-loop']);
+const DYNAMIC_ENCODINGS = Object.freeze(['png', 'jpeg']);
+const DYNAMIC_DIRECTIONS = Object.freeze([
+  'operation->visual', 'operation->network', 'network->visual',
+  'visual->network', 'network->network', 'visual->visual',
+]);
+const DYNAMIC_ASSERTION_TYPES = Object.freeze([
+  'frame-diff', 'region-change', 'flicker', 'freeze', 'jank', 'trajectory', 'transition',
+]);
+const DYNAMIC_BASES = Object.freeze(['explicit', 'redirect', 'initiator', 'observed', 'temporal']);
+const DYNAMIC_GRADES = Object.freeze(['confirmed-causal', 'observed-association', 'temporal-proximity']);
+/**
+ * T4_LIMITS names are fixed by docs/t4-implementation-contract.md §1 and are projected verbatim
+ * into `limits.dynamic`; defaults and hard caps stay separate so a default is never reported as a
+ * hard limit. Values below are the frozen contract numbers.
+ */
+const T4_LIMITS = Object.freeze({
+  maxActiveSessions: 1,
+  retainedSessions: 4,
+  durationMs: 3000,
+  // Lead+advisor freeze (2026-11-04): a single Agent tool round-trip can exceed 10s, so the hard
+  // session cap is 60s. This adds NO extend/keepalive: `fresh` and an idempotent `start` never
+  // extend a running session, frame/byte/algorithm budgets do not scale with duration
+  // (180/300 frames, 32/64 MiB, 5000ms), recalibrateAfterMs stays 10000, and motion-control
+  // timeMs plus analysis threshold bounds stay 0–10000ms.
+  durationMsHard: 60000,
+  maxFrames: 180,
+  maxFramesHard: 300,
+  maxBytes: 33554432,
+  maxBytesHard: 67108864,
+  maxFramePixels: 4000000,
+  maxFrameBytes: 8388608,
+  maxEvents: 5000,
+  maxEventsHard: 20000,
+  maxRegions: 100,
+  maxEvidenceBytes: 262144,
+  maxWorkingSetBytes: 268435456,
+  algorithmBudgetMs: 5000,
+  correlationPageSize: 200,
+  maxCandidateCompares: 40000,
+  correlationBeforeMs: 250,
+  correlationAfterMs: 1000,
+  maxCorrelationBeforeMs: 5000,
+  maxCorrelationAfterMs: 5000,
+  maxCalibrationSamples: 5,
+  maxClockUncertaintyMs: 10,
+  recalibrateAfterMs: 10000,
+  maxImagesPerObserve: 3,
+  sampleIntervalMsMin: 50,
+  sampleIntervalMsMax: 1000,
+  scaleMin: 0.1,
+  scaleMax: 2,
+  maxControlTargets: 20,
+  maxSessionExtendMs: 60000,
+  sessionCapMs: 300000,
+  maxAssertions: 20,
+  maxIds: 200,
+  maxMasks: 64,
+});
+const DYNAMIC_LIMITS = T4_LIMITS;
+/** Host-only delivery/query budgets (not part of the frozen T4_LIMITS projection). */
+const DYNAMIC_INTERNAL = Object.freeze({
+  observeLimit: 50,
+  observeLimitMax: 200,
+  maxIdBytes: 128,
+  imageBytes: 262144,
+  imageBytesTotal: 524288,
+  maxStep: 10000,
+});
+const DYNAMIC_ASSERTION_THRESHOLDS = Object.freeze({
+  'frame-diff': Object.freeze(['pixelThreshold', 'changeRatio']),
+  'region-change': Object.freeze(['pixelThreshold', 'changeRatio', 'minArea']),
+  flicker: Object.freeze(['pixelThreshold', 'changeRatio', 'stableRatio', 'brightnessDelta', 'maxDurationMs']),
+  freeze: Object.freeze(['pixelThreshold', 'stableRatio', 'minDurationMs']),
+  jank: Object.freeze(['intervalFactor']),
+  trajectory: Object.freeze(['maxStep']),
+  transition: Object.freeze(['pixelThreshold', 'changeRatio', 'stableRatio', 'stableSamples']),
+});
+const DYNAMIC_ASSERTION_FIELDS = Object.freeze([
+  'id', 'type', 'region', 'masks', 'thresholds', 'expectedIntervalMs', 'query', 'expectation',
+]);
+const DYNAMIC_CONFIG_FIELDS = Object.freeze([
+  'captureVisual', 'networkSessionId', 'source', 'encoding', 'durationMs', 'maxFrames',
+  'maxBytes', 'region', 'scale', 'sampleIntervalMs',
+]);
+
+/** Opaque Host ids; the ID domain is (scope, dynamicSessionId, frameSeq), never a CDP id. */
+function newDynamicSessionId() { return 'dyn_' + randomUUID().replace(/-/gu, ''); }
+function newMotionSessionId() { return 'mot_' + randomUUID().replace(/-/gu, ''); }
+function newDynamicFrameId() { return 'frm_' + randomUUID().replace(/-/gu, '').slice(0, 24); }
+function dynamicMonoNow() { return performance.now(); }
+function dynamicSha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
+
+/** Strict DYNAMIC_* key check (a dynamic refusal must never surface as NET_/INVALID_ARGUMENT). */
+function assertDynamicKeys(value, allowed, label) {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + ' 必须是对象', { label });
+  }
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + ' 含未知字段 ' + key, { field: key, allowed: [...allowed] });
+    }
+  }
+  return value;
+}
+
+function dynamicFinite(value, label) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + ' 必须是有限数字', { field: label });
+  }
+  return value;
+}
+
+function dynamicInteger(value, label, min, max) {
+  dynamicFinite(value, label);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + ' 必须是 ' + min + '–' + max + ' 的整数', { field: label, min, max, value });
+  }
+  return value;
+}
+
+/** Canvas CSS rect (config region) or integer PixelRect (assertion region). */
+function dynamicRect(value, label, { integer = false } = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + ' 必须是 {x,y,width,height}', { field: label });
+  }
+  assertDynamicKeys(value, ['x', 'y', 'width', 'height'], label);
+  const rect = { x: value.x, y: value.y, width: value.width, height: value.height };
+  for (const [key, raw] of Object.entries(rect)) {
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.' + key + ' 必须是有限数字', { field: label + '.' + key });
+    }
+    if (integer && !Number.isInteger(raw)) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.' + key + ' 必须是整数', { field: label + '.' + key });
+    }
+  }
+  if (integer && (rect.x < 0 || rect.y < 0)) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + ' 的 x/y 必须是 ≥0 的整数', { field: label, value: rect });
+  }
+  if (rect.width < 1 || rect.height < 1) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + ' 宽高必须 ≥ 1', { field: label });
+  }
+  const pixels = Math.round(rect.width) * Math.round(rect.height);
+  if (pixels > DYNAMIC_LIMITS.maxFramePixels) {
+    throw new BrowserError('DYNAMIC_LIMIT_EXCEEDED', label + ' 像素超过上限', { field: label, pixels, max: DYNAMIC_LIMITS.maxFramePixels });
+  }
+  return rect;
+}
+
+/** A bounded, de-duplicated, same-scope opaque id list (frames/events/adapters). */
+function dynamicIdList(value, label, max) {
+  if (value === undefined) return null;
+  if (!Array.isArray(value)) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + ' 必须是数组', { field: label });
+  if (value.length > max) throw new BrowserError('DYNAMIC_LIMIT_EXCEEDED', label + ' 数量超过上限', { field: label, count: value.length, max });
+  const list = [];
+  const seen = new Set();
+  for (const item of value) {
+    if (typeof item !== 'string' || item === '' || Buffer.byteLength(item, 'utf8') > DYNAMIC_INTERNAL.maxIdBytes) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + ' 含非法 id（≤' + DYNAMIC_INTERNAL.maxIdBytes + ' 字节字符串）', { field: label });
+    }
+    if (seen.has(item)) continue;
+    seen.add(item);
+    list.push(item);
+  }
+  return list;
+}
+
+/** Config → closed normalized shape. Pure: any refusal costs zero CDP start, zero sink. */
+function normalizeDynamicConfig(input, { viewScale, activeEncoding }) {
+  const raw = assertDynamicKeys(input || {}, DYNAMIC_CONFIG_FIELDS, 'config');
+  const captureVisual = raw.captureVisual === undefined ? true : raw.captureVisual;
+  if (typeof captureVisual !== 'boolean') {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'config.captureVisual 必须是布尔值', { field: 'config.captureVisual' });
+  }
+  const config = {
+    captureVisual,
+    networkSessionId: null,
+    source: null,
+    encoding: null,
+    // Contract defaults: durationMs 3000 / maxFrames 180 / maxBytes 32 MiB / scale 1.
+    durationMs: DYNAMIC_LIMITS.durationMs,
+    maxFrames: DYNAMIC_LIMITS.maxFrames,
+    maxBytes: DYNAMIC_LIMITS.maxBytes,
+    region: null,
+    scale: 1,
+    sampleIntervalMs: null,
+    // Resolved only by the Host at start; echoed in evidence for audit (never a caller guess).
+    resolvedViewScale: viewScale,
+  };
+  if (raw.networkSessionId !== undefined && raw.networkSessionId !== null) {
+    if (typeof raw.networkSessionId !== 'string' || raw.networkSessionId === '' || Buffer.byteLength(raw.networkSessionId, 'utf8') > DYNAMIC_INTERNAL.maxIdBytes) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'config.networkSessionId 必须是 ≤' + DYNAMIC_INTERNAL.maxIdBytes + ' 字节的字符串', { field: 'config.networkSessionId' });
+    }
+    config.networkSessionId = raw.networkSessionId;
+  }
+  if (raw.durationMs !== undefined) {
+    config.durationMs = dynamicInteger(raw.durationMs, 'config.durationMs', 1, DYNAMIC_LIMITS.durationMsHard);
+  }
+  if (raw.maxFrames !== undefined) {
+    config.maxFrames = dynamicInteger(raw.maxFrames, 'config.maxFrames', 1, DYNAMIC_LIMITS.maxFramesHard);
+  }
+  if (raw.maxBytes !== undefined) {
+    config.maxBytes = dynamicInteger(raw.maxBytes, 'config.maxBytes', 1, DYNAMIC_LIMITS.maxBytesHard);
+  }
+  if (raw.region !== undefined) config.region = dynamicRect(raw.region, 'config.region');
+  if (raw.scale !== undefined) {
+    dynamicFinite(raw.scale, 'config.scale');
+    if (raw.scale < DYNAMIC_LIMITS.scaleMin || raw.scale > DYNAMIC_LIMITS.scaleMax) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'config.scale 必须在 ' + DYNAMIC_LIMITS.scaleMin + '–' + DYNAMIC_LIMITS.scaleMax, { field: 'config.scale', value: raw.scale });
+    }
+    config.scale = raw.scale;
+  }
+  if (!captureVisual) {
+    // Pure network correlation view: exactly captureVisual:false + networkSessionId; no frame
+    // source, no encoding, no duration, no sampling knobs.
+    const forbidden = ['source', 'encoding', 'durationMs', 'maxFrames', 'maxBytes', 'region', 'scale', 'sampleIntervalMs']
+      .filter((key) => raw[key] !== undefined);
+    if (forbidden.length) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'captureVisual:false 时不允许字段 ' + forbidden.join(','), { fields: forbidden });
+    }
+    if (!config.networkSessionId) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'captureVisual:false 必须给 networkSessionId', { field: 'config.networkSessionId' });
+    }
+    return config;
+  }
+  if (raw.source === undefined) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'captureVisual:true 必须给 config.source', { field: 'config.source', allowed: [...DYNAMIC_SOURCES] });
+  }
+  if (!DYNAMIC_SOURCES.includes(raw.source)) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'config.source 不合法', { field: 'config.source', allowed: [...DYNAMIC_SOURCES] });
+  }
+  config.source = raw.source;
+  if (raw.encoding !== undefined && !DYNAMIC_ENCODINGS.includes(raw.encoding)) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'config.encoding 不合法', { field: 'config.encoding', allowed: [...DYNAMIC_ENCODINGS] });
+  }
+  const requestedEncoding = raw.encoding === undefined ? null : raw.encoding;
+  if (config.source === 'screencast') {
+    // Contract §4.4: the shared preview stream is not reconfigured. An explicit request it cannot
+    // satisfy is refused by name (DYNAMIC_SOURCE_UNAVAILABLE), never silently downgraded and never
+    // answered with a start/stop of the preview stream.
+    if (requestedEncoding === 'png') {
+      throw new BrowserError('DYNAMIC_SOURCE_UNAVAILABLE', '共享 screencast 只提供 jpeg 编码（预览流不可停/不可重启）', {
+        reason: 'encoding-conflict', requestedEncoding: 'png', activeEncoding: 'jpeg', supported: ['jpeg'], previewPreserved: true,
+      });
+    }
+    config.encoding = activeEncoding || 'jpeg';
+    if (raw.region !== undefined) {
+      throw new BrowserError('DYNAMIC_SOURCE_UNAVAILABLE', '共享 screencast 不支持 config.region', {
+        reason: 'screencast-mode-conflict', field: 'config.region', previewPreserved: true,
+      });
+    }
+    if (config.scale !== 1) {
+      throw new BrowserError('DYNAMIC_SOURCE_UNAVAILABLE', '共享 screencast 首版只接受 scale:1', {
+        reason: 'screencast-mode-conflict', field: 'config.scale', value: config.scale, previewPreserved: true,
+      });
+    }
+    if (raw.sampleIntervalMs !== undefined) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'sampleIntervalMs 只对 screenshot-loop 适用', { field: 'config.sampleIntervalMs' });
+    }
+  } else {
+    if (requestedEncoding === 'jpeg') {
+      throw new BrowserError('DYNAMIC_SOURCE_UNAVAILABLE', 'screenshot-loop 只提供 png 编码', {
+        reason: 'encoding-conflict', requestedEncoding: 'jpeg', activeEncoding: 'png', supported: ['png'],
+      });
+    }
+    config.encoding = 'png';
+    if (raw.sampleIntervalMs === undefined) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'screenshot-loop 必须给 sampleIntervalMs', { field: 'config.sampleIntervalMs' });
+    }
+    config.sampleIntervalMs = dynamicInteger(raw.sampleIntervalMs, 'config.sampleIntervalMs', DYNAMIC_LIMITS.sampleIntervalMsMin, DYNAMIC_LIMITS.sampleIntervalMsMax);
+  }
+  return config;
+}
+
+/** Stable comparison key for the documented idempotent `start` (same name + same config). */
+function dynamicConfigKey(config) {
+  return JSON.stringify([
+    config.captureVisual, config.networkSessionId, config.source, config.encoding,
+    config.durationMs, config.maxFrames, config.maxBytes, config.region, config.scale, config.sampleIntervalMs,
+  ]);
+}
+
+/** Assertion validation (closed shapes, §7.2). Runs before any store read. */
+function normalizeDynamicAssertions(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'assertions 必须是 1–' + DYNAMIC_LIMITS.maxAssertions + ' 条数组', { field: 'assertions' });
+  }
+  if (value.length > DYNAMIC_LIMITS.maxAssertions) {
+    throw new BrowserError('DYNAMIC_LIMIT_EXCEEDED', 'assertions 数量超过上限', { field: 'assertions', count: value.length, max: DYNAMIC_LIMITS.maxAssertions });
+  }
+  const seen = new Set();
+  return value.map((item, index) => {
+    const label = 'assertions[' + index + ']';
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + ' 必须是对象', { field: label });
+    }
+    assertDynamicKeys(item, DYNAMIC_ASSERTION_FIELDS, label);
+    const id = item.id;
+    if (typeof id !== 'string' || id === '' || Buffer.byteLength(id, 'utf8') > 64) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.id 必须是 ≤64 字节的非空字符串', { field: label + '.id' });
+    }
+    if (seen.has(id)) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'assertion id 重复: ' + id, { field: label + '.id' });
+    seen.add(id);
+    if (!DYNAMIC_ASSERTION_TYPES.includes(item.type)) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.type 不合法', { field: label + '.type', allowed: [...DYNAMIC_ASSERTION_TYPES] });
+    }
+    const allowed = DYNAMIC_ASSERTION_THRESHOLDS[item.type];
+    const assertion = { id, type: item.type };
+    if (item.region !== undefined) assertion.region = dynamicRect(item.region, label + '.region', { integer: true });
+    if (item.masks !== undefined) {
+      if (!Array.isArray(item.masks) || item.masks.length > DYNAMIC_LIMITS.maxMasks) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.masks 必须是 ≤' + DYNAMIC_LIMITS.maxMasks + ' 的数组', { field: label + '.masks' });
+      }
+      assertion.masks = item.masks.map((mask, maskIndex) => {
+        const maskLabel = label + '.masks[' + maskIndex + ']';
+        if (!mask || typeof mask !== 'object' || Array.isArray(mask)) {
+          throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', maskLabel + ' 必须是对象', { field: maskLabel });
+        }
+        assertDynamicKeys(mask, ['id', 'region'], maskLabel);
+        if (typeof mask.id !== 'string' || mask.id === '') {
+          throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', maskLabel + '.id 必须是非空字符串', { field: maskLabel + '.id' });
+        }
+        return { id: mask.id, region: dynamicRect(mask.region, maskLabel + '.region', { integer: true }) };
+      });
+    }
+    if (item.thresholds !== undefined) {
+      assertDynamicKeys(item.thresholds, allowed, label + '.thresholds');
+      assertion.thresholds = { ...item.thresholds };
+      for (const [key, raw] of Object.entries(assertion.thresholds)) {
+        dynamicFinite(raw, label + '.thresholds.' + key);
+        const ratio = ['pixelThreshold', 'changeRatio', 'stableRatio'].includes(key);
+        if (ratio && (raw < 0 || raw > 1)) {
+          throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.thresholds.' + key + ' 必须在 [0,1]', { field: label + '.thresholds.' + key });
+        }
+        if (key === 'brightnessDelta' && (raw < 0 || raw > 255)) {
+          throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.thresholds.brightnessDelta 必须在 [0,255]', { field: label + '.thresholds.brightnessDelta' });
+        }
+        if (['maxDurationMs', 'minDurationMs'].includes(key) && (raw < 0 || raw > 10000)) {
+          throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.thresholds.' + key + ' 必须在 [0,10000]', { field: label + '.thresholds.' + key });
+        }
+        if (key === 'minArea' && (!Number.isInteger(raw) || raw <= 0)) {
+          throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.thresholds.minArea 必须是正整数', { field: label + '.thresholds.minArea' });
+        }
+        if (key === 'intervalFactor' && (raw < 1 || raw > 10)) {
+          throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.thresholds.intervalFactor 必须在 [1,10]', { field: label + '.thresholds.intervalFactor' });
+        }
+        if (key === 'stableSamples' && (!Number.isInteger(raw) || raw < 2 || raw > 20)) {
+          throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.thresholds.stableSamples 必须在 [2,20]', { field: label + '.thresholds.stableSamples' });
+        }
+        if (key === 'maxStep' && raw <= 0) {
+          throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.thresholds.maxStep 必须是正数', { field: label + '.thresholds.maxStep' });
+        }
+      }
+    }
+    if (item.expectedIntervalMs !== undefined) {
+      if (item.type !== 'jank') throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.expectedIntervalMs 只对 jank 适用', { field: label + '.expectedIntervalMs' });
+      dynamicFinite(item.expectedIntervalMs, label + '.expectedIntervalMs');
+      if (item.expectedIntervalMs <= 0 || item.expectedIntervalMs > 10000) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.expectedIntervalMs 必须在 (0,10000]', { field: label + '.expectedIntervalMs', value: item.expectedIntervalMs });
+      }
+      assertion.expectedIntervalMs = item.expectedIntervalMs;
+    } else if (item.type === 'jank') {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.expectedIntervalMs 对 jank 必填', { field: label + '.expectedIntervalMs' });
+    }
+    if (item.query !== undefined) {
+      if (item.type !== 'trajectory') throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.query 只对 trajectory 适用', { field: label + '.query' });
+      const query = item.query;
+      if (!query || typeof query !== 'object' || Array.isArray(query)) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.query 必须是对象', { field: label + '.query' });
+      }
+      const allowedQuery = query.method === 'template' ? ['method', 'productId', 'minScore', 'stride', 'maxResults'] : ['method', 'color', 'tolerance', 'minArea', 'maxResults'];
+      assertDynamicKeys(query, allowedQuery, label + '.query');
+      if (!['color', 'template'].includes(query.method)) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.query.method 不合法', { field: label + '.query.method', allowed: ['color', 'template'] });
+      }
+      assertion.query = { ...query };
+    } else if (item.type === 'trajectory') {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.query 对 trajectory 必填', { field: label + '.query' });
+    }
+    if (item.expectation !== undefined) {
+      if (item.type !== 'freeze') throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.expectation 只对 freeze 适用', { field: label + '.expectation' });
+      const expectation = item.expectation;
+      if (!expectation || typeof expectation !== 'object' || Array.isArray(expectation)) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.expectation 必须是对象', { field: label + '.expectation' });
+      }
+      assertDynamicKeys(expectation, ['motionExpected', 'sourceEventId', 'referenceEventIds'], label + '.expectation');
+      if (expectation.motionExpected !== true) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.expectation.motionExpected 必须为 true', { field: label + '.expectation.motionExpected' });
+      }
+      if (typeof expectation.sourceEventId !== 'string' || expectation.sourceEventId === '') {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.expectation.sourceEventId 必须是非空字符串', { field: label + '.expectation.sourceEventId' });
+      }
+      const refs = dynamicIdList(expectation.referenceEventIds, label + '.expectation.referenceEventIds', 50);
+      if (!refs || refs.length === 0) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.expectation.referenceEventIds 至少 1 条', { field: label + '.expectation.referenceEventIds' });
+      }
+      assertion.expectation = { motionExpected: true, sourceEventId: expectation.sourceEventId, referenceEventIds: refs };
+    } else if (item.type === 'freeze') {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', label + '.expectation 对 freeze 必填', { field: label + '.expectation' });
+    }
+    return assertion;
+  });
+}
+
+/**
+ * Raw CDP source timestamp. The implementation contract (§6.2) fixes `sourceTimestamp` in the
+ * frame store as **seconds**: the value is preserved as CDP reports it (`metadata.timestamp`,
+ * epoch seconds), never converted, never filled with receive time. A value that is implausibly
+ * large to be epoch seconds is normalized to seconds and the unit stays documented as seconds.
+ */
+function dynamicSourceTimestamp(metadata) {
+  const raw = metadata && metadata.timestamp;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value >= 1e12 ? value / 1000 : value;
+}
+
+/**
+ * Control adapter script (Host-owned page adapter, not CDP hand-wiring): lists WAAPI animations,
+ * reads their real state, applies one control action and reads the state back. Only documented
+ * fields cross the boundary; no page text, no free-form objects, no eval of caller input.
+ */
+const DYNAMIC_CONTROL_ADAPTER_FN = `(function (payload) {
+  const action = String(payload.action || '');
+  const ids = Array.isArray(payload.targetIds) ? payload.targetIds : null;
+  const all = document.getAnimations();
+  const uniqueSelector = (element) => {
+    if (!element || element.nodeType !== 1) return null;
+    if (element.id) {
+      const matches = document.querySelectorAll('#' + CSS.escape(element.id));
+      if (matches.length === 1) return '#' + element.id;
+    }
+    return null;
+  };
+  const describe = (animation, index, requestedId) => {
+    let durationMs = null;
+    try {
+      const timing = animation.effect && animation.effect.getComputedTiming ? animation.effect.getComputedTiming() : null;
+      if (timing && Number.isFinite(Number(timing.duration))) durationMs = Number(timing.duration);
+    } catch (error) { durationMs = null; }
+    const target = animation.effect && animation.effect.target ? animation.effect.target : null;
+    return {
+      targetId: requestedId === undefined || requestedId === null ? 'waapi-' + index : String(requestedId),
+      animationId: animation.id === undefined || animation.id === '' ? null : String(animation.id),
+      animationName: animation.animationName === undefined ? null : String(animation.animationName),
+      selector: uniqueSelector(target),
+      playState: String(animation.playState || 'idle'),
+      currentTimeMs: Number.isFinite(Number(animation.currentTime)) ? Number(animation.currentTime) : null,
+      playbackRate: Number.isFinite(Number(animation.playbackRate)) ? Number(animation.playbackRate) : null,
+      durationMs,
+    };
+  };
+  const resolve = (targetId) => {
+    const wanted = String(targetId);
+    const byIndex = /^waapi-(\\d+)$/.exec(wanted);
+    if (byIndex) {
+      const index = Number(byIndex[1]);
+      return Number.isInteger(index) && index >= 0 && index < all.length ? [index] : null;
+    }
+    const byAnimation = [];
+    for (let index = 0; index < all.length; index += 1) {
+      const animation = all[index];
+      const animationId = animation.id === undefined || animation.id === '' ? null : String(animation.id);
+      const animationName = animation.animationName === undefined ? null : String(animation.animationName);
+      if (animationId === wanted || animationName === wanted) byAnimation.push(index);
+    }
+    if (byAnimation.length) return byAnimation;
+    let element = null;
+    try { element = document.querySelector(wanted); } catch (error) { return null; }
+    if (!element) return null;
+    const owned = [];
+    for (let index = 0; index < all.length; index += 1) {
+      const animation = all[index];
+      if (animation.effect && animation.effect.target === element) owned.push(index);
+    }
+    return owned.length ? owned : null;
+  };
+  if (action === 'list') return { ok: true, targets: all.map((animation, index) => describe(animation, index)) };
+  if (!ids || ids.length === 0) return { ok: false, code: 'TARGET_NOT_FOUND', missing: [] };
+  const resolved = [];
+  const missing = [];
+  const ambiguous = [];
+  for (const id of ids) {
+    const indices = resolve(id);
+    if (!indices) { missing.push(id); continue; }
+    if (indices.length > 1) { ambiguous.push({ targetId: id, count: indices.length }); continue; }
+    resolved.push({ targetId: String(id), index: indices[0] });
+  }
+  if (missing.length) return { ok: false, code: 'TARGET_NOT_FOUND', missing };
+  if (ambiguous.length) return { ok: false, code: 'TARGET_AMBIGUOUS', ambiguous };
+  const before = resolved.map((entry) => describe(all[entry.index], entry.index, entry.targetId));
+  const applied = [];
+  let failedIndex = null;
+  for (let position = 0; position < resolved.length; position += 1) {
+    const entry = resolved[position];
+    const animation = all[entry.index];
+    const original = payload.originals && payload.originals[position] ? payload.originals[position] : null;
+    try {
+      if (action === 'pause') animation.pause();
+      else if (action === 'resume') animation.play();
+      else if (action === 'seek') { animation.pause(); animation.currentTime = payload.timeMs; }
+      else if (action === 'rate') animation.playbackRate = payload.rate;
+      else if (action === 'restore') {
+        if (!original) throw new Error('missing original');
+        if (original.currentTimeMs !== null) animation.currentTime = original.currentTimeMs;
+        if (original.playbackRate !== null) animation.playbackRate = original.playbackRate;
+        if (original.playState === 'paused') animation.pause();
+        else if (original.playState === 'running') animation.play();
+      } else throw new Error('unsupported action');
+      applied.push(entry.targetId);
+    } catch (error) {
+      failedIndex = position;
+      break;
+    }
+  }
+  return {
+    ok: true,
+    before,
+    after: resolved.map((entry) => describe(all[entry.index], entry.index, entry.targetId)),
+    applied,
+    failedIndex,
+  };
+})`;
+
+/** The page identity a Host action targeted: a selector/ref when the tool has one, else the URL. */
+function dynamicActionTarget(args, fallback) {
+  if (!args || typeof args !== 'object') return fallback;
+  for (const key of ['selector', 'ref']) {
+    if (typeof args[key] === 'string' && args[key] !== '') return args[key];
+  }
+  if (args.target && typeof args.target === 'object' && typeof args.target.selector === 'string') return args.target.selector;
+  return fallback;
+}
+
+/** `Window` on the dynamic timeline (contract §1): finite, fromMs ≤ toMs. */
+function normalizeDynamicWindow(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'window 必须是 {fromMs,toMs}', { field: 'window' });
+  }
+  assertDynamicKeys(value, ['fromMs', 'toMs'], 'window');
+  const fromMs = dynamicFinite(value.fromMs, 'window.fromMs');
+  const toMs = dynamicFinite(value.toMs, 'window.toMs');
+  if (fromMs > toMs) {
+    throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'window.fromMs 不能大于 toMs', { field: 'window' });
+  }
+  return { fromMs, toMs };
+}
+
+/** Opaque, Host-owned observe cursor. It only carries a positional bound, never a query. */
+function encodeDynamicCursor(payload) {
+  return 'dcur.' + Buffer.from(JSON.stringify({ v: 1, ...payload }), 'utf8').toString('base64url');
+}
+
+function decodeDynamicCursor(cursor) {
+  try {
+    const text = String(cursor);
+    if (!text.startsWith('dcur.')) return null;
+    const parsed = JSON.parse(Buffer.from(text.slice(5), 'base64url').toString('utf8'));
+    if (!parsed || parsed.v !== 1 || typeof parsed.d !== 'string' || typeof parsed.m !== 'string' || !Number.isInteger(parsed.s)) return null;
+    return parsed;
+  } catch { return null; }
+}
+
+const DYNAMIC_STATUSES = Object.freeze(['PASS', 'WARN', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
+const DYNAMIC_STATUS_RANK = Object.freeze({ PASS: 0, WARN: 1, INCONCLUSIVE: 2, BLOCKED: 3, FAIL: 4 });
+
+function normalizeDynamicVerdict(value, results) {
+  if (typeof value === 'string' && DYNAMIC_STATUSES.includes(value)) return value;
+  if (Array.isArray(results) && results.length) {
+    let worst = 'PASS';
+    for (const item of results) {
+      const status = item && (item.verdict || item.status);
+      if (typeof status === 'string' && DYNAMIC_STATUSES.includes(status)
+        && DYNAMIC_STATUS_RANK[status] > DYNAMIC_STATUS_RANK[worst]) worst = status;
+    }
+    return worst;
+  }
+  return 'INCONCLUSIVE';
+}
+
+function normalizeDynamicSummary(value, results) {
+  const counts = { pass: 0, warn: 0, fail: 0, inconclusive: 0, blocked: 0 };
+  if (value && typeof value === 'object') {
+    for (const key of Object.keys(counts)) if (Number.isInteger(value[key])) counts[key] = value[key];
+    return counts;
+  }
+  if (Array.isArray(results)) {
+    for (const item of results) {
+      const status = item && (item.verdict || item.status);
+      if (status === 'PASS') counts.pass += 1;
+      else if (status === 'WARN') counts.warn += 1;
+      else if (status === 'FAIL') counts.fail += 1;
+      else if (status === 'BLOCKED') counts.blocked += 1;
+      else counts.inconclusive += 1;
+    }
+  }
+  return counts;
+}
+
 export class Runtime {
   /**
    * @param log logger
@@ -2675,6 +3334,28 @@ export class Runtime {
     // Tool-surface evidence: last real network tool call (projected into capabilities.network).
     this.net.observed = null;
     this.lastNetSessionId = null;
+    // Web T4 dynamic behaviour (docs/t4-dynamic-behavior.md, docs/t4-implementation-contract.md):
+    // one active session per scope, up to four retained summaries, one screencast sink, and the
+    // last real T4 call projected into browser_capabilities.dynamic.observed. The core module
+    // (dynamic-t4.js) is imported lazily: a T4 call is the only thing that loads it, so page
+    // preview/T1/T2/T3/P0 never depend on it.
+    this.dynamic = {
+      version: DYNAMIC_VERSION,
+      session: null,
+      records: [],
+      sink: null,
+      core: null,
+      corePromise: null,
+      conflicts: [],
+      controlAdapters: [
+        { id: 'waapi', version: '1', available: true, actions: ['pause', 'resume', 'seek', 'rate', 'restore'], restorable: true, reason: null },
+        { id: 'media', version: null, available: false, actions: [], restorable: false, reason: 'media adapter not implemented in M2' },
+      ],
+      observed: null,
+      lastOperation: null,
+      started: 0,
+      restored: null,
+    };
     this.viewerTtlMs = Number.isFinite(options.viewerTtlMs) ? options.viewerTtlMs : VIEWER_TTL_MS;
   }
 
@@ -3038,6 +3719,11 @@ export class Runtime {
     if (message.method === 'Page.screencastFrame') {
       const params = message.params;
       this.screencastFrames += 1;
+      // Web T4: tap the raw CDP frame BEFORE the preview latest-frame is overwritten. The sink only
+      // enqueues (bounded); its own failures are counted and can never block the preview or ACK.
+      // `receivedMonoMs` is the Host receive instant, never used as sourceTimestamp.
+      const receivedMonoMs = dynamicMonoNow();
+      try { this.#dynamicSinkAccept(params, receivedMonoMs); } catch { this.dynamic.conflicts.push('sink-accept'); }
       const metadata = params.metadata || {};
       const scale = metadata.pageScaleFactor || 1;
       const width = Number(metadata.deviceWidth) || this.viewport.width;
@@ -3059,9 +3745,14 @@ export class Runtime {
       });
       // ACK immediately after the frame is cached: Chromium will not emit the next frame
       // until it is acknowledged. A lost ACK surfaces as stopped frames, so count failures.
+      // This is the ONLY screencast ACK in the Host — the T4 sink never sends one.
       if (this.cdp) {
-        this.cdp.send('Page.screencastFrameAck', { sessionId: params.sessionId }).then(() => { this.screencastAcks += 1; }).catch((error) => {
+        this.cdp.send('Page.screencastFrameAck', { sessionId: params.sessionId }).then(() => {
+          this.screencastAcks += 1;
+          this.#dynamicNoteAck(true);
+        }).catch((error) => {
           this.ackFailures += 1;
+          this.#dynamicNoteAck(false);
           this.log('screencast ack failed: ' + String((error && error.message) || error));
         });
       }
@@ -3083,6 +3774,13 @@ export class Runtime {
       // refs — the nodes are still there, and identity is re-verified per action.
       this.#t2BumpDocumentEpoch();
       this.frames.markNavigation(redactUrl(this.url));
+      const dynamicSession = this.dynamic.session;
+      if (dynamicSession && dynamicSession.captureVisual && dynamicSession.state === 'running') {
+        this.#dynamicAppendEvent(dynamicSession, {
+          domain: 'visual', kind: 'document.change', phase: 'end',
+          payload: { reason: 'main-frame-commit' },
+        });
+      }
       // A new document has no canvas residual: O=0 (docs/canvas-viewport.md §3). C then follows the
       // browser's final scroll S through the normal coalesced readback below.
       this.#resetCanvasOnNavigation();
@@ -5789,6 +6487,2621 @@ export class Runtime {
     return { ...listed, evidence: network.evidenceBlock(this.net, 'subscribe.list') };
   }
 
+  /* ---- Web T4 dynamic behaviour (M1: session / observe / analyze) ------------------------- */
+
+  /**
+   * Lazily load the pure core. Nothing else in the Host imports it: T1/T2/T3/P0 and the page
+   * preview must keep working even when dynamic-t4.js is absent or broken, and a T4 call must
+   * fail by name instead of surfacing INTERNAL.
+   */
+  async #dynamicLoadCore() {
+    const state = this.dynamic;
+    if (state.core) return state.core;
+    if (!state.corePromise) {
+      state.corePromise = import('./dynamic-t4.js').then((module) => {
+        const required = ['DynamicFrameStore', 'DynamicEventLog', 'runMotionAssertions', 'normalizeDynamicEvent'];
+        const missing = required.filter((name) => typeof module[name] !== 'function');
+        if (missing.length) {
+          throw new BrowserError('DYNAMIC_SOURCE_UNAVAILABLE', '动态核心 dynamic-t4.js 导出不完整', {
+            reason: 'core-incomplete', missing,
+          });
+        }
+        state.core = module;
+        return module;
+      }).catch((error) => {
+        state.corePromise = null;
+        if (error instanceof BrowserError) throw error;
+        throw new BrowserError('DYNAMIC_SOURCE_UNAVAILABLE', '动态核心 dynamic-t4.js 不可用', { reason: 'core-unavailable' });
+      });
+    }
+    return state.corePromise;
+  }
+
+  /** Capability report is pure: it may say "core not loaded" but never imports/triggers it. */
+  #dynamicCoreLoaded() { return this.dynamic.core !== null; }
+
+  #dynamicTouch(operation, extra = {}) {
+    const state = this.dynamic;
+    const session = state.session;
+    state.lastOperation = operation;
+    state.observed = {
+      observedAt: Date.now(),
+      operation,
+      dynamicSessionId: session ? session.dynamicSessionId : null,
+      motionSessionId: session ? session.motionSessionId : null,
+      source: session ? session.config.source : null,
+      encoding: session ? session.config.encoding : null,
+      frames: session ? session.counters.frames : 0,
+      highWater: this.#dynamicHighWater(session),
+      verdict: extra.verdict === undefined ? null : extra.verdict,
+      integrity: session ? this.#dynamicIntegrity(session) : null,
+      restoreStatus: session ? session.restoreStatus : null,
+    };
+  }
+
+  #dynamicHighWater(session) {
+    const frameHigh = session && session.frames && Number.isFinite(session.frames.highWater)
+      ? session.frames.highWater
+      : (session ? session.counters.frames : 0);
+    const eventHigh = session && session.events && Number.isFinite(session.events.highWater)
+      ? session.events.highWater
+      : (session ? session.counters.events : 0);
+    return {
+      operation: eventHigh,
+      visual: session && session.captureVisual ? frameHigh : null,
+      network: session && session.networkSessionId ? (this.net.session && this.net.session.id === session.networkSessionId ? this.net.status().session.counters.seq : null) : null,
+    };
+  }
+
+  #dynamicEvent(session, { domain, kind, phase = null, payload = {}, ts = null }) {
+    const nowMono = dynamicMonoNow();
+    const sourceTimestamp = ts && Number.isFinite(ts.sourceTimestamp) ? ts.sourceTimestamp : null;
+    return {
+      version: 1,
+      dynamicSessionId: session.dynamicSessionId,
+      domain, kind, phase,
+      scopeId: this.scope.id,
+      runtimeId: this.runtimeId,
+      pageGeneration: this.page ? this.page.generation : null,
+      documentEpoch: this.t2.documentEpoch,
+      runGeneration: null,
+      targetId: this.page ? this.page.targetId : null,
+      cdpSessionId: null,
+      documentFrameId: null,
+      ts: {
+        timelineMs: Math.max(0, Math.round((nowMono - session.startedMonoMs) * 1000) / 1000),
+        sourceTimestamp,
+        sourceClock: sourceTimestamp === null ? 'host-monotonic' : 'cdp-screencast-epoch-ms',
+        receivedMonoMs: nowMono,
+        wallMs: Date.now(),
+        logicalMs: null,
+        anchorId: null,
+        uncertaintyMs: null,
+        resolutionMs: null,
+      },
+      ids: { actionId: null, opId: null, frameId: null, traceIdHash: null, requestKey: null },
+      sourceRef: {
+        networkSessionId: session.networkSessionId, networkSeq: null,
+        visualSessionId: session.motionSessionId, frameSeq: null,
+      },
+      provenance: {
+        producer: 'host', sourceKind: 'runtime', adapterId: null, adapterVersion: null,
+        trust: 'host-observed', evidenceIds: [], rawHash: null,
+      },
+      payload,
+      incomplete: [],
+      truncated: false,
+    };
+  }
+
+  async #dynamicAppendEvent(session, spec) {
+    if (!session.events) return null;
+    try {
+      const event = session.events.append(this.#dynamicEvent(session, spec));
+      if (event && Number.isInteger(event.seq)) session.counters.events = Math.max(session.counters.events, event.seq);
+      else session.counters.events += 1;
+      return event || null;
+    } catch {
+      session.counters.sinkErrors += 1;
+      return null;
+    }
+  }
+
+  #dynamicMapping(metadata) {
+    const meta = metadata && typeof metadata === 'object' ? metadata : {};
+    const view = this.view;
+    const outputWidth = Number.isFinite(Number(meta.deviceWidth)) && Number(meta.deviceWidth) > 0
+      ? Number(meta.deviceWidth) : view.width;
+    const outputHeight = Number.isFinite(Number(meta.deviceHeight)) && Number(meta.deviceHeight) > 0
+      ? Number(meta.deviceHeight) : view.height;
+    const scrollX = Number.isFinite(Number(meta.scrollOffsetX)) ? Number(meta.scrollOffsetX) : view.x;
+    const scrollY = Number.isFinite(Number(meta.scrollOffsetY)) ? Number(meta.scrollOffsetY) : view.y;
+    const pageScale = Number.isFinite(Number(meta.pageScaleFactor)) && Number(meta.pageScaleFactor) > 0
+      ? Number(meta.pageScaleFactor) : 1;
+    const cssPerPixel = 1 / pageScale;
+    const cssWidth = Math.round(outputWidth * cssPerPixel);
+    const cssHeight = Math.round(outputHeight * cssPerPixel);
+    return {
+      version: 1,
+      space: 'canvas-css-px',
+      // T4 geometry (contract §4.9): frozen per frame, never reconstructed at read time.
+      viewport: { x: view.canvasX, y: view.canvasY, width: view.width, height: view.height },
+      scroll: { x: scrollX, y: scrollY },
+      canvasOffset: { x: view.canvasX - view.x, y: view.canvasY - view.y },
+      deviceScaleFactor: 1,
+      pageScaleFactor: pageScale,
+      viewScale: view.scale,
+      viewRevision: view.revision,
+      documentEpoch: this.t2.documentEpoch,
+      dimensions: { width: Math.round(outputWidth), height: Math.round(outputHeight) },
+      offsetTop: Number.isFinite(Number(meta.offsetTop)) ? Number(meta.offsetTop) : 0,
+      // T3-compatible projection so the shared pixel primitives can prove frame comparability
+      // (vision-t3 `mappingCompatible`). originCss is the captured viewport's document origin;
+      // cssPerPixel folds page zoom (deviceScaleFactor is fixed at 1 by the shared viewport).
+      coordinateSpace: 'document-css-px',
+      originCss: { x: scrollX, y: scrollY },
+      cssPerPixel: { x: cssPerPixel, y: cssPerPixel },
+      capturedCssRect: { x: scrollX, y: scrollY, width: cssWidth, height: cssHeight },
+      imagePixels: { width: Math.round(outputWidth), height: Math.round(outputHeight) },
+      visualViewport: { width: view.width, height: view.height, scale: pageScale },
+    };
+  }
+
+  /**
+   * Geometry/document segments (contract §4.9): a new segment starts when viewport size, scroll,
+   * canvas offset, view revision or document epoch move. Segmentation is bounded (64); beyond that
+   * the last segment keeps collecting and the truncation is reported, never silently dropped.
+   */
+  #dynamicSegmentFor(session, mapping) {
+    const sig = [
+      mapping.viewRevision, mapping.dimensions.width, mapping.dimensions.height,
+      Math.round(mapping.scroll.x), Math.round(mapping.scroll.y),
+      Math.round(mapping.canvasOffset.x), Math.round(mapping.canvasOffset.y),
+      mapping.documentEpoch,
+    ].join('|');
+    const last = session.segments[session.segments.length - 1];
+    if (last && last.signature === sig) return last.segmentId;
+    if (session.segments.length >= 64) {
+      session.segmentsTruncated = true;
+      if (!session.issues.includes('segment-limit')) session.issues.push('segment-limit');
+      last.toSeq = session.counters.frames;
+      return last.segmentId;
+    }
+    session.segmentSeq += 1;
+    const segment = {
+      segmentId: 'seg_' + session.segmentSeq,
+      fromSeq: session.counters.frames + 1,
+      toSeq: null,
+      frames: 0,
+      signature: sig,
+      viewRevision: mapping.viewRevision,
+      documentEpoch: mapping.documentEpoch,
+      scroll: { ...mapping.scroll },
+      dimensions: { ...mapping.dimensions },
+    };
+    session.segments.push(segment);
+    session.segmentById.set(segment.segmentId, segment);
+    session.segmentId = segment.segmentId;
+    return segment.segmentId;
+  }
+
+  /**
+   * Screenshot-loop source (contract §4.5): one internal P0 PNG capture per tick, single-flight,
+   * no backlog. A missed tick increments samplingFailures/gaps; begin/end monotonic instants are
+   * recorded as the sampling interval and sourceTimestamp stays null (never receive-time-as-source).
+   */
+  #dynamicStartLoop(session) {
+    const cdp = this.cdp;
+    if (!cdp || cdp.closed) throw new BrowserError('DYNAMIC_SOURCE_UNAVAILABLE', 'screenshot-loop 需要已启动的页面', { reason: 'no-page' });
+    const loop = {
+      active: true,
+      timer: null,
+      inflight: false,
+      missed: 0,
+      intervalMs: session.config.sampleIntervalMs,
+      cdp,
+    };
+    const tick = async () => {
+      if (!loop.active || session.state !== 'running') return;
+      if (this.cdp !== loop.cdp || loop.cdp.closed) {
+        loop.active = false;
+        if (loop.timer) clearInterval(loop.timer);
+        return;
+      }
+      if (loop.inflight) {
+        loop.missed += 1;
+        session.counters.samplingFailures += 1;
+        try { session.frames?.markSamplingFailure?.(); } catch { /* evidence only */ }
+        return;
+      }
+      loop.inflight = true;
+      const beginMonoMs = dynamicMonoNow();
+      try {
+        const shot = await loop.cdp.send('Page.captureScreenshot', { format: 'png' }, { timeoutMs: 5000 });
+        const endMonoMs = dynamicMonoNow();
+        const bytes = Buffer.from(String(shot.data || ''), 'base64');
+        const info = inspectPng(bytes);
+        if (!info || info.ok !== true) {
+          session.counters.samplingFailures += 1;
+          try { session.frames?.markSamplingFailure?.(); } catch { /* evidence only */ }
+          return;
+        }
+        if (bytes.length > T4_LIMITS.maxFrameBytes || info.width * info.height > T4_LIMITS.maxFramePixels) {
+          session.counters.dropped += 1;
+          if (!session.issues.includes('frame-budget')) session.issues.push('frame-budget');
+          return;
+        }
+        const mapping = this.#dynamicMapping({ deviceWidth: info.width, deviceHeight: info.height });
+        const segmentId = this.#dynamicSegmentFor(session, mapping);
+        const record = {
+          sourceTimestamp: null,
+          sourceClock: 'host-monotonic',
+          receivedMonoMs: beginMonoMs,
+          timelineMs: Math.max(0, Math.round((beginMonoMs - session.startedMonoMs) * 1000) / 1000),
+          encoding: 'png',
+          bytes,
+          sha256: dynamicSha256(bytes),
+          dimensions: { width: info.width, height: info.height },
+          mapping,
+          documentEpoch: this.t2.documentEpoch,
+          segmentId,
+          provenance: {
+            producer: 'host', sourceKind: 'cdp-page-capture-screenshot', adapterId: null,
+            adapterVersion: null, trust: 'cdp-observed', evidenceIds: [], rawHash: null,
+          },
+          incomplete: ['source-timestamp-missing'],
+        };
+        const sessionFrameSeq = ++session.counters.frames;
+        void sessionFrameSeq;
+        session.counters.bytes += bytes.length;
+        const result = session.frames.addFrame(record) || {};
+        if (result.ok === false) {
+          session.counters.dropped += 1;
+        } else {
+          session.counters.framesStored += 1;
+          if (Array.isArray(result.evicted)) session.counters.evicted += result.evicted.length;
+          if (session.samples && result.frameId) {
+            session.samples.set(result.frameId, { beginMonoMs, endMonoMs });
+            if (session.samples.size > 32) {
+              const oldest = session.samples.keys().next().value;
+              session.samples.delete(oldest);
+            }
+          }
+          const segment = session.segmentById.get(segmentId);
+          if (segment && Number.isInteger(result.seq)) {
+            segment.toSeq = result.seq;
+            segment.frames = (segment.frames || 0) + 1;
+          }
+        }
+      } catch (error) {
+        session.counters.samplingFailures += 1;
+        try { session.frames?.markSamplingFailure?.(); } catch { /* evidence only */ }
+      } finally {
+        loop.inflight = false;
+      }
+    };
+    loop.timer = setInterval(() => { tick().catch(() => {}); }, session.config.sampleIntervalMs);
+    if (loop.timer && typeof loop.timer.unref === 'function') loop.timer.unref();
+    session.loop = loop;
+  }
+
+  /**
+   * Called by the ONE screencast event branch, before `this.frames.accept()` overwrites the
+   * preview latest-frame. It only copies the raw params into a bounded queue; decoding happens in
+   * the core store (drained on a later turn), so the preview and the ACK never wait for it.
+   */
+  #dynamicSinkAccept(params, receivedMonoMs) {
+    const sink = this.dynamic.sink;
+    if (!sink || !sink.session || sink.session.state !== 'running') return;
+    const session = sink.session;
+    try {
+      const metadata = params && params.metadata ? params.metadata : {};
+      const base64 = typeof params?.data === 'string' ? params.data : '';
+      const sourceTimestamp = dynamicSourceTimestamp(metadata);
+      const bytes = Buffer.from(base64, 'base64');
+      const mapping = this.#dynamicMapping(metadata);
+      const segmentId = this.#dynamicSegmentFor(session, mapping);
+      const width = mapping.dimensions.width;
+      const height = mapping.dimensions.height;
+      sink.frameSeq += 1;
+      const reason = bytes.length === 0 ? 'empty-data'
+        : bytes.length > T4_LIMITS.maxFrameBytes ? 'oversize'
+        : width * height > T4_LIMITS.maxFramePixels ? 'pixels'
+        : (sink.queue.length >= session.config.maxFrames || sink.queuedBytes + bytes.length > session.config.maxBytes) ? 'queue-full'
+        : null;
+      if (reason) {
+        session.counters.dropped += 1;
+        session.counters.frames += 1;
+        sink.dropped += 1;
+        if (!session.issues.includes(reason)) session.issues.push(reason);
+        return;
+      }
+      if (sourceTimestamp === null) session.counters.missingSourceTimestamps += 1;
+      const record = {
+        // Exactly the fields the pure core accepts (`DynamicFrameStore.addFrame`): anything else is
+        // rejected as DYNAMIC_INVALID_ARGUMENT and would silently become a sink error.
+        sourceTimestamp,
+        sourceClock: sourceTimestamp === null ? 'host-monotonic' : 'cdp-screencast-epoch-ms',
+        receivedMonoMs,
+        timelineMs: Math.max(0, Math.round((receivedMonoMs - session.startedMonoMs) * 1000) / 1000),
+        encoding: 'jpeg',
+        bytes,
+        sha256: dynamicSha256(bytes),
+        dimensions: { width, height },
+        mapping,
+        documentEpoch: this.t2.documentEpoch,
+        segmentId,
+        provenance: {
+          producer: 'host', sourceKind: 'cdp-screencast', adapterId: null, adapterVersion: null,
+          trust: 'cdp-observed', evidenceIds: [], rawHash: null,
+        },
+        incomplete: sourceTimestamp === null ? ['source-timestamp-missing'] : [],
+      };
+      sink.queue.push(record);
+      sink.queuedBytes += bytes.length;
+      this.#dynamicSinkSchedule(sink);
+    } catch {
+      session.counters.sinkErrors += 1;
+    }
+  }
+
+  #dynamicSinkSchedule(sink) {
+    if (sink.scheduled) return;
+    sink.scheduled = true;
+    setImmediate(() => {
+      sink.scheduled = false;
+      this.#dynamicSinkDrain(sink);
+    });
+  }
+
+  /** Drain with a bounded per-turn budget: one slow JPEG decode must not stall the page queue. */
+  #dynamicSinkDrain(sink, { all = false } = {}) {
+    if (!sink || !sink.session) return;
+    const session = sink.session;
+    const startedAt = dynamicMonoNow();
+    while (sink.queue.length > 0) {
+      const record = sink.queue.shift();
+      sink.queuedBytes = Math.max(0, sink.queuedBytes - record.bytes.length);
+      session.counters.frames += 1;
+      session.counters.bytes += record.bytes.length;
+      if (!session.frames) { session.counters.sinkErrors += 1; continue; }
+      try {
+        const result = session.frames.addFrame(record) || {};
+        if (result.ok === false) {
+          session.counters.dropped += 1;
+          const reason = result.reason || 'store-refused';
+          if (!session.issues.includes(reason)) session.issues.push(reason);
+        } else {
+          session.counters.framesStored += 1;
+          const evicted = Array.isArray(result.evicted) ? result.evicted : (Number.isFinite(result.evicted) ? result.evicted : 0);
+          if (Array.isArray(result.evicted)) session.counters.evicted += result.evicted.length;
+          else if (typeof evicted === 'number' && evicted > 0) session.counters.evicted += evicted;
+          if (Number.isInteger(result.seq)) {
+            const segment = session.segmentById.get(record.segmentId);
+            if (segment) {
+              segment.toSeq = result.seq;
+              segment.frames = (segment.frames || 0) + 1;
+            }
+          }
+        }
+      } catch (error) {
+        session.counters.sinkErrors += 1;
+        if (!session.issues.includes('sink-error')) session.issues.push('sink-error');
+      }
+      if (!all && dynamicMonoNow() - startedAt > 8) break;
+    }
+    if (sink.queue.length > 0) this.#dynamicSinkSchedule(sink);
+    else if (sink.drainedResolve) { const resolve = sink.drainedResolve; sink.drainedResolve = null; resolve(); }
+  }
+
+  #dynamicSinkFlush(sink) {
+    if (!sink) return Promise.resolve();
+    if (sink.queue.length === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      sink.drainedResolve = resolve;
+      this.#dynamicSinkDrain(sink, { all: true });
+      if (sink.queue.length === 0 && sink.drainedResolve) { const done = sink.drainedResolve; sink.drainedResolve = null; done(); }
+    });
+  }
+
+  /** The single ACK branch notifies the sink's store; T4 never sends a screencast ACK itself. */
+  #dynamicNoteAck(ok) {
+    const session = (this.dynamic.sink && this.dynamic.sink.session) || this.dynamic.session || this.dynamic.records[0] || null;
+    if (!session) return;
+    session.counters.ackAttempts += 1;
+    if (ok === false) session.counters.ackFailures += 1;
+    try { if (session.frames && typeof session.frames.recordAck === 'function') session.frames.recordAck(ok === true); } catch { /* evidence only */ }
+  }
+
+  #dynamicCreateRecord(name, config) {
+    let motionSessionId = null;
+    if (config.captureVisual) motionSessionId = newMotionSessionId();
+    const record = {
+      dynamicSessionId: newDynamicSessionId(),
+      motionSessionId,
+      name,
+      networkSessionId: config.networkSessionId,
+      captureVisual: config.captureVisual,
+      config,
+      state: 'running',
+      startedAt: Date.now(),
+      startedMonoMs: dynamicMonoNow(),
+      deadlineMs: 0,
+      cumulativeMs: config.durationMs,
+      stoppedAt: null,
+      stoppedMonoMs: null,
+      stopReason: null,
+      documentEpoch: this.t2.documentEpoch,
+      pageGeneration: this.page ? this.page.generation : null,
+      runtimeId: this.runtimeId,
+      frames: null,
+      events: null,
+      counters: {
+        frames: 0, framesStored: 0, events: 0, bytes: 0, dropped: 0, evicted: 0,
+        ackAttempts: 0, ackFailures: 0, gaps: 0, sinkErrors: 0, decodeFailures: 0,
+        // observe(region) crop-on-delivery accounting (0 on the encoded-only path).
+        cropDecodes: 0, cropFailures: 0,
+      },
+      issues: [],
+      segments: [],
+      segmentById: new Map(),
+      segmentsTruncated: false,
+      segmentId: 'seg_1',
+      segmentSeq: 0,
+      imageCache: new Map(),
+      imageBytes: 0,
+      samples: new Map(),
+      // Host-observed page action records for the actionId -> page opId bridge (bounded).
+      hostActions: [],
+      // Page-declared snapshots are read-only; every projection is tagged page-declared.
+      pageBridge: { anchors: [], lastAt: null, sourceUnavailable: 0, domVerified: 0 },
+      retained: true,
+      restoreStatus: { status: 'not-needed', attempted: [], restored: [], failed: [], conflicts: [], lastObserved: [] },
+      timer: null,
+      highWater: { operation: null, visual: null, network: null },
+    };
+    record.deadlineMs = record.startedAt + config.durationMs;
+    return record;
+  }
+
+  #dynamicSessionView(session) {
+    if (!session) return null;
+    const config = session.config;
+    return {
+      dynamicSessionId: session.dynamicSessionId,
+      motionSessionId: session.motionSessionId,
+      networkSessionId: session.networkSessionId,
+      name: session.name,
+      state: session.state,
+      startedAt: session.startedAt,
+      stoppedAt: session.stoppedAt,
+      stopReason: session.stopReason,
+      deadlineMs: Number.isFinite(session.deadlineMs) ? session.deadlineMs : null,
+      cumulativeMs: Number.isFinite(session.cumulativeMs) ? session.cumulativeMs : null,
+      config: {
+        captureVisual: config.captureVisual,
+        source: config.source,
+        encoding: config.encoding,
+        durationMs: config.durationMs,
+        maxFrames: config.maxFrames,
+        maxBytes: config.maxBytes,
+        region: config.region,
+        scale: config.scale,
+        sampleIntervalMs: config.sampleIntervalMs,
+        resolvedViewScale: config.resolvedViewScale,
+      },
+      highWater: this.#dynamicHighWater(session),
+      counters: {
+        frames: session.counters.frames,
+        events: session.counters.events,
+        bytes: session.counters.bytes,
+        dropped: session.counters.dropped,
+        evicted: session.counters.evicted,
+        ackFailures: session.counters.ackFailures,
+      },
+      retained: session.retained,
+    };
+  }
+
+  #dynamicSummary(session) {
+    const view = this.#dynamicSessionView(session);
+    if (!view) return null;
+    return {
+      dynamicSessionId: view.dynamicSessionId,
+      motionSessionId: view.motionSessionId,
+      networkSessionId: view.networkSessionId,
+      name: view.name,
+      state: view.state,
+      startedAt: view.startedAt,
+      stoppedAt: view.stoppedAt,
+      retained: view.retained,
+      counters: view.counters,
+    };
+  }
+
+  #dynamicIntegrity(session) {
+    if (!session) {
+      return {
+        complete: false, captured: 0, retained: 0, dropped: 0, evicted: 0, truncated: false,
+        ackFailures: 0, gaps: 0, issues: ['no-session'],
+        coverage: {
+          source: null, segments: 0, maxAdjacentIntervalMs: null, missingSourceTimestamps: 0,
+          samplingFailures: 0, decodeFailures: 0, adapters: 0, unknownSourceDrops: null,
+        },
+      };
+    }
+    let storeIntegrity = null;
+    try { if (session.frames && typeof session.frames.integrity === 'function') storeIntegrity = session.frames.integrity(); } catch { storeIntegrity = null; }
+    const base = storeIntegrity && typeof storeIntegrity === 'object' ? storeIntegrity : {};
+    const captured = Number.isFinite(base.captured) ? base.captured : session.counters.framesStored;
+    const dropped = Number.isFinite(base.dropped) ? base.dropped : session.counters.dropped;
+    const evicted = Number.isFinite(base.evicted) ? base.evicted : session.counters.evicted;
+    const ackFailures = Number.isFinite(base.ackFailures) ? base.ackFailures : session.counters.ackFailures;
+    const gaps = Number.isFinite(base.gaps) ? base.gaps : session.counters.gaps;
+    const coreCoverage = base.coverage && typeof base.coverage === 'object' ? base.coverage : {};
+    const coverage = {
+      source: session.config.source,
+      segments: Array.isArray(coreCoverage.segments) ? coreCoverage.segments.length : session.segments.length,
+      maxAdjacentIntervalMs: Number.isFinite(coreCoverage.maxAdjacentIntervalMs) ? coreCoverage.maxAdjacentIntervalMs : null,
+      missingSourceTimestamps: Number.isFinite(coreCoverage.missingSourceTimestamps) ? coreCoverage.missingSourceTimestamps : (session.counters.missingSourceTimestamps || 0),
+      samplingFailures: Number.isFinite(coreCoverage.samplingFailures) ? coreCoverage.samplingFailures : (session.counters.samplingFailures || 0),
+      decodeFailures: Number.isFinite(coreCoverage.decodeFailures) ? coreCoverage.decodeFailures : session.counters.decodeFailures,
+      adapters: Array.isArray(coreCoverage.adapters) ? coreCoverage.adapters.length : 0,
+      unknownSourceDrops: null,
+    };
+    // Conditional hint: only while the window is still empty AND either stopped or >500ms old.
+    // Once any frame is captured the hint must disappear (no sticky false signal).
+    const emptyWindow = captured === 0
+      && session.config && session.config.source === 'screencast'
+      && (session.state !== 'running' || (Date.now() - session.startedAt) >= 500);
+    if (emptyWindow) {
+      coverage.note = 'no-damage-frames';
+      if (!session.issues.includes('no-damage-frames')) session.issues.push('no-damage-frames');
+    } else {
+      delete coverage.note;
+      const index = session.issues.indexOf('no-damage-frames');
+      if (index !== -1) session.issues.splice(index, 1);
+    }
+    return {
+      complete: session.state !== 'running' && base.complete === true && session.counters.sinkErrors === 0,
+      captured,
+      retained: Number.isFinite(base.retained) ? base.retained : captured,
+      dropped,
+      evicted,
+      truncated: base.truncated === true,
+      ackFailures,
+      gaps,
+      issues: Array.isArray(base.issues) && base.issues.length ? [...base.issues, ...session.issues] : [...session.issues],
+      coverage,
+    };
+  }
+
+  #dynamicControlEvidence(session) {
+    if (!session) return null;
+    return {
+      requested: null,
+      applied: [],
+      failedIndex: null,
+      fields: [],
+      restoreStatus: session.restoreStatus,
+    };
+  }
+
+  #dynamicEvidence(operation, session, { verdict = null, incomplete = [] } = {}) {
+    return {
+      dynamic: {
+        version: 1,
+        operation,
+        provenance: {
+          actionId: null,
+          scopeId: this.scope.id,
+          runtimeId: this.runtimeId,
+          pageGeneration: this.page ? this.page.generation : null,
+          documentEpoch: this.t2.documentEpoch,
+          algorithmVersion: DYNAMIC_ALGORITHM_VERSION,
+        },
+        sessionIds: {
+          dynamicSessionId: session ? session.dynamicSessionId : null,
+          motionSessionId: session ? session.motionSessionId : null,
+          networkSessionId: session ? session.networkSessionId : null,
+        },
+        highWater: this.#dynamicHighWater(session),
+        clockAnchors: [],
+        integrity: this.#dynamicIntegrity(session),
+        control: this.#dynamicControlEvidence(session),
+        redaction: { applied: ['payload:pixels'], rules: [] },
+        incomplete: [...incomplete],
+        truncated: false,
+        ...(verdict ? { verdict } : {}),
+      },
+    };
+  }
+
+  /** Error-path evidence (contract §3): details.evidence.dynamic, never a second error shape. */
+  dynamicErrorEvidence(operation) {
+    const block = this.#dynamicEvidence(operation, this.dynamic.session);
+    return block.dynamic;
+  }
+
+  async #dynamicStart(sessionRecord, signal) {
+    // Visual start is a page operation (the caller already entered the Runtime queue); the page is
+    // ensured here so `start` returns immediately once the sink is attached.
+    await this.ensure(signal);
+    const core = await this.#dynamicLoadCore();
+    const limits = { ...T4_LIMITS, maxFrames: sessionRecord.config.maxFrames, maxBytes: sessionRecord.config.maxBytes };
+    const now = () => dynamicMonoNow();
+    sessionRecord.frames = new core.DynamicFrameStore({
+      scopeId: this.scope.id, dynamicSessionId: sessionRecord.dynamicSessionId, now, limits,
+    });
+    sessionRecord.events = new core.DynamicEventLog({
+      scopeId: this.scope.id, dynamicSessionId: sessionRecord.dynamicSessionId, now, limits,
+    });
+    sessionRecord.documentEpoch = this.t2.documentEpoch;
+    sessionRecord.pageGeneration = this.page ? this.page.generation : null;
+    if (sessionRecord.config.source === 'screenshot-loop') {
+      // PNG precise source: a single-flight bounded screenshot loop. No screencast sink is attached
+      // (the preview stream stays exactly as it was); every sample carries begin/end monotonic
+      // instants and sourceTimestamp=null (captureScreenshot exposes no presentation time).
+      this.#dynamicStartLoop(sessionRecord);
+    } else {
+      const sink = {
+        applied: true, session: sessionRecord, queue: [], queuedBytes: 0, scheduled: false,
+        frameSeq: 0, dropped: 0, drainedResolve: null,
+      };
+      sessionRecord.sink = sink;
+      this.dynamic.sink = sink;
+    }
+    this.dynamic.session = sessionRecord;
+    this.dynamic.records = [sessionRecord, ...this.dynamic.records].slice(0, T4_LIMITS.retainedSessions);
+    sessionRecord.timer = setTimeout(() => { this.#dynamicAutoStop(sessionRecord, 'duration'); }, sessionRecord.config.durationMs);
+    if (sessionRecord.timer && typeof sessionRecord.timer.unref === 'function') sessionRecord.timer.unref();
+    await this.#dynamicAppendEvent(sessionRecord, {
+      domain: 'operation', kind: 'session.start', phase: 'end',
+      payload: {
+        source: sessionRecord.config.source, encoding: sessionRecord.config.encoding,
+        durationMs: sessionRecord.config.durationMs, maxFrames: sessionRecord.config.maxFrames,
+        previewScreencastReused: true,
+      },
+    });
+    return sessionRecord;
+  }
+
+  async #dynamicAutoStop(session, reason) {
+    if (!session || session.state !== 'running') return;
+    try { await this.dynamicAutoStop({ reason }); } catch { /* best effort */ }
+  }
+
+  /**
+   * Host-memory stop used by the duration timer: it only detaches the sink and flushes what was
+   * already accepted. It never enters the page queue and never stops the preview screencast.
+   */
+  async dynamicAutoStop({ reason = 'duration' } = {}) {
+    const session = this.dynamic.session;
+    if (!session || session.state !== 'running') return null;
+    await this.#dynamicFinalRestore(session, reason);
+    if (session.dynamicSessionId) await this.#dynamicDetachSink(session, reason);
+    this.dynamic.session = null;
+    return session;
+  }
+
+  async #dynamicDetachSink(session, reason) {
+    if (!session) return;
+    if (session.loop) {
+      session.loop.active = false;
+      if (session.loop.timer) clearInterval(session.loop.timer);
+      session.loop = null;
+    }
+    const sink = session.sink;
+    if (sink) {
+      try { await this.#dynamicSinkFlush(sink); } catch { /* evidence only */ }
+      session.sink = null;
+      if (this.dynamic.sink === sink) this.dynamic.sink = null;
+    }
+    if (session.timer) { clearTimeout(session.timer); session.timer = null; }
+    session.state = 'stopped';
+    session.stoppedAt = Date.now();
+    session.stoppedMonoMs = dynamicMonoNow();
+    session.stopReason = reason;
+    if (session.frames && session.frames.integrity) {
+      try {
+        const integrity = session.frames.integrity();
+        if (Number.isFinite(integrity?.coverage?.decodeFailures)) session.counters.decodeFailures = integrity.coverage.decodeFailures;
+      } catch { /* evidence only */ }
+    }
+    await this.#dynamicAppendEvent(session, {
+      domain: 'operation', kind: 'session.stop', phase: 'end',
+      payload: {
+        reason,
+        cumulativeMs: session.cumulativeMs,
+        deadlineMs: session.deadlineMs,
+        frames: session.counters.framesStored,
+        dropped: session.counters.dropped,
+        evicted: session.counters.evicted,
+        ackFailures: session.counters.ackFailures,
+        restoreStatus: session.restoreStatus,
+      },
+    });
+  }
+
+  /** `browser_dynamic_session` (contract §2.1 / §3.1). */
+  async dynamicSession(args, exec, signal) {
+    assertDynamicKeys(args, ['action', 'name', 'config', 'durationMs'], 'dynamic_session');
+    const action = String(args.action || '');
+    if (!DYNAMIC_SESSION_ACTIONS.includes(action)) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'session.action 不合法', { field: 'action', allowed: [...DYNAMIC_SESSION_ACTIONS] });
+    }
+    if (args.name !== undefined && args.name !== null
+      && (typeof args.name !== 'string' || args.name === '' || Buffer.byteLength(args.name, 'utf8') > 64)) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'name 必须是 1–64 字节的字符串', { field: 'name' });
+    }
+    if (action !== 'start' && args.name !== undefined) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'name 只在 start 生效', { field: 'name' });
+    }
+    if (action !== 'start' && args.config !== undefined) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'config 只在 start 生效', { field: 'config' });
+    }
+    if (action !== 'extend' && args.durationMs !== undefined) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'durationMs 只在 extend 生效', { field: 'durationMs' });
+    }
+    this.#dynamicTouch('session.' + action);
+    if (action === 'start') {
+      const config = normalizeDynamicConfig(args.config || {}, {
+        viewScale: this.view.scale,
+        activeEncoding: 'jpeg',
+      });
+      const name = args.name || 'default';
+      const active = this.dynamic.session;
+      if (active && active.state === 'running') {
+        if (active.name === name && dynamicConfigKey(active.config) === dynamicConfigKey(config)) {
+          return {
+            ok: true, changed: false, idempotent: true,
+            session: this.#dynamicSessionView(active),
+            sessions: this.dynamic.records.map((record) => this.#dynamicSummary(record)).filter(Boolean),
+            limits: { ...T4_LIMITS },
+            integrity: this.#dynamicIntegrity(active),
+            restoreStatus: active.restoreStatus,
+            evidence: this.#dynamicEvidence('session.start', active),
+          };
+        }
+        throw new BrowserError('DYNAMIC_SESSION_ACTIVE', '本 scope 已有活动的动态会话', {
+          activeDynamicSessionId: active.dynamicSessionId, activeName: active.name,
+        });
+      }
+      if (!config.captureVisual) {
+        // Pure network correlation view: Host memory only — no page, no lease, no P0 start/stop.
+        const networkSession = this.net.session;
+        if (!networkSession || networkSession.id !== config.networkSessionId) {
+          throw new BrowserError('DYNAMIC_SESSION_NOT_FOUND', 'networkSessionId 不是本 scope 已有的 P0 会话', {
+            networkSessionId: config.networkSessionId,
+          });
+        }
+        const record = this.#dynamicCreateRecord(name, config);
+        record.state = 'running';
+        record.frames = null;
+        record.events = null;
+        this.dynamic.session = record;
+        this.dynamic.records = [record, ...this.dynamic.records].slice(0, T4_LIMITS.retainedSessions);
+        record.timer = setTimeout(() => { this.#dynamicAutoStop(record, 'duration'); }, config.durationMs);
+        if (record.timer && typeof record.timer.unref === 'function') record.timer.unref();
+        return {
+          ok: true, changed: true,
+          session: this.#dynamicSessionView(record),
+          sessions: this.dynamic.records.map((item) => this.#dynamicSummary(item)).filter(Boolean),
+          limits: { ...T4_LIMITS },
+          integrity: this.#dynamicIntegrity(record),
+          restoreStatus: record.restoreStatus,
+          evidence: this.#dynamicEvidence('session.start', record),
+        };
+      }
+      if (config.networkSessionId) {
+        const networkSession = this.net.session;
+        if (!networkSession || networkSession.id !== config.networkSessionId) {
+          throw new BrowserError('DYNAMIC_SESSION_NOT_FOUND', 'networkSessionId 不是本 scope 已有的 P0 会话', {
+            networkSessionId: config.networkSessionId,
+          });
+        }
+      }
+      const record = this.#dynamicCreateRecord(name, config);
+      const started = await this.#dynamicStart(record, signal);
+      return {
+        ok: true, changed: true,
+        session: this.#dynamicSessionView(started),
+        sessions: this.dynamic.records.map((item) => this.#dynamicSummary(item)).filter(Boolean),
+        limits: { ...T4_LIMITS },
+        integrity: this.#dynamicIntegrity(started),
+        restoreStatus: started.restoreStatus,
+        evidence: this.#dynamicEvidence('session.start', started),
+      };
+    }
+    if (action === 'extend') {
+      // Pure Host-memory renewal: no ensure, no CDP, no page action, no sink re-attach, no lease.
+      const session = this.dynamic.session;
+      if (!session || session.state !== 'running') {
+        throw new BrowserError('DYNAMIC_SESSION_NOT_ACTIVE', '当前会话不在活动窗口，无法续约', {
+          reason: 'not-running',
+          state: session ? session.state : null,
+          dynamicSessionId: session ? session.dynamicSessionId : null,
+        });
+      }
+      if (args.durationMs === undefined) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'extend 必须给 durationMs', { field: 'durationMs' });
+      }
+      const extendMs = dynamicInteger(args.durationMs, 'durationMs', 1, T4_LIMITS.maxSessionExtendMs);
+      const cumulativeMs = session.cumulativeMs + extendMs;
+      if (cumulativeMs > T4_LIMITS.sessionCapMs) {
+        throw new BrowserError('DYNAMIC_LIMIT_EXCEEDED', '会话累计时长超过上限', {
+          limit: 'sessionCapMs', max: T4_LIMITS.sessionCapMs, actual: cumulativeMs,
+        });
+      }
+      const previousDeadlineMs = session.deadlineMs;
+      if (session.timer) { clearTimeout(session.timer); session.timer = null; }
+      session.cumulativeMs = cumulativeMs;
+      session.deadlineMs = previousDeadlineMs + extendMs;
+      const delayMs = Math.max(0, session.deadlineMs - Date.now());
+      session.timer = setTimeout(() => { this.#dynamicAutoStop(session, 'duration'); }, delayMs);
+      if (session.timer && typeof session.timer.unref === 'function') session.timer.unref();
+      await this.#dynamicAppendEvent(session, {
+        domain: 'operation', kind: 'session.extend', phase: 'end',
+        payload: {
+          extendMs,
+          previousDeadlineMs,
+          newDeadlineMs: session.deadlineMs,
+          cumulativeMs,
+        },
+      });
+      this.#dynamicTouch('session.extend');
+      return {
+        ok: true, changed: true, extended: true,
+        session: this.#dynamicSessionView(session),
+        sessions: this.dynamic.records.map((item) => this.#dynamicSummary(item)).filter(Boolean),
+        limits: { ...T4_LIMITS },
+        integrity: this.#dynamicIntegrity(session),
+        restoreStatus: session.restoreStatus,
+        evidence: this.#dynamicEvidence('session.extend', session),
+      };
+    }
+    if (action === 'status') {
+      const session = this.dynamic.session;
+      const latest = session || this.dynamic.records[0] || null;
+      return {
+        ok: true, changed: false,
+        session: session ? this.#dynamicSessionView(session) : null,
+        sessions: this.dynamic.records.map((item) => this.#dynamicSummary(item)).filter(Boolean),
+        limits: { ...T4_LIMITS },
+        integrity: session ? this.#dynamicIntegrity(session) : null,
+        restoreStatus: latest ? latest.restoreStatus : { status: 'not-needed', attempted: [], restored: [], failed: [], conflicts: [], lastObserved: [] },
+        evidence: this.#dynamicEvidence('session.status', session),
+      };
+    }
+    if (action === 'stop') {
+      const session = this.dynamic.session;
+      // Explicit stop covers EVERY unfinished control in this scope (retained included) — not only
+      // the active session, and never skipped just because a session's state is already stopped.
+      const restores = await this.#dynamicRestoreAll('stop');
+      const restoreStatus = this.#dynamicAggregateRestore(restores);
+      if (!session) {
+        return {
+          ok: true, changed: false, session: null,
+          sessions: this.dynamic.records.map((item) => this.#dynamicSummary(item)).filter(Boolean),
+          limits: { ...T4_LIMITS }, integrity: null, restores,
+          restoreStatus,
+          evidence: this.#dynamicEvidence('session.stop', null),
+        };
+      }
+      await this.#dynamicDetachSink(session, 'stop');
+      this.dynamic.session = null;
+      return {
+        ok: true, changed: true,
+        session: this.#dynamicSessionView(session),
+        sessions: this.dynamic.records.map((item) => this.#dynamicSummary(item)).filter(Boolean),
+        limits: { ...T4_LIMITS },
+        integrity: this.#dynamicIntegrity(session),
+        restores,
+        restoreStatus,
+        evidence: this.#dynamicEvidence('session.stop', session),
+      };
+    }
+    // reset: BEST-EFFORT restore every unfinished control obligation in this scope BEFORE clearing
+    // any record. A failed/partial restore aborts the cleanup and preserves identity/before/
+    // lastWritten/token; conflicts alone are reported, never overwritten.
+    const restores = await this.#dynamicRestoreAll('reset');
+    const restoreStatus = this.#dynamicAggregateRestore(restores);
+    const failedRestore = restoreStatus.status === 'failed' || restoreStatus.status === 'partial';
+    if (failedRestore || (restoreStatus.status === 'conflict')) {
+      const code = failedRestore ? 'DYNAMIC_RESTORE_FAILED' : 'DYNAMIC_CONTROL_CONFLICT';
+      const error = new BrowserError(code, failedRestore
+        ? 'reset 前控制恢复失败，已保留未结会话与控制身份'
+        : 'reset 前控制恢复遇到外部改动冲突，未覆盖新状态', {
+        restoreStatus, restores, cleared: 0, resetCompleted: false,
+        evidence: { dynamic: this.dynamicErrorEvidence('session.reset') },
+      });
+      throw error;
+    }
+    const active = this.dynamic.session;
+    if (active) await this.#dynamicDetachSink(active, 'reset');
+    for (const record of this.dynamic.records) {
+      record.retained = false;
+      record.state = 'stopped';
+      try { if (record.frames) record.frames.dispose(); } catch { /* best effort */ }
+      try { if (record.events) record.events.dispose(); } catch { /* best effort */ }
+      record.frames = null;
+      record.events = null;
+      record.imageCache.clear();
+      record.imageBytes = 0;
+    }
+    const cleared = this.dynamic.records.length;
+    this.dynamic.session = null;
+    this.dynamic.records = [];
+    this.dynamic.conflicts = [];
+    return {
+      ok: true, changed: cleared > 0, reset: true, cleared, resetCompleted: true,
+      session: null, sessions: [], limits: { ...T4_LIMITS }, integrity: null,
+      restores, restoreStatus,
+      evidence: this.#dynamicEvidence('session.reset', null, { incomplete: cleared > 0 ? ['records-dropped'] : [] }),
+    };
+  }
+
+  #dynamicSessionFor(motionSessionId) {
+    const id = String(motionSessionId);
+    const candidates = [this.dynamic.session, ...this.dynamic.records].filter(Boolean);
+    for (const record of candidates) {
+      if (record.motionSessionId && record.motionSessionId === id && record.retained) return record;
+    }
+    return null;
+  }
+
+  /**
+   * Bounded frame read. `DynamicFrameStore.listFrames` caps one page at 200 rows, so analysis pages
+   * by seq itself (never an unbounded read). Direct `frameIds` reads surface NOT_FOUND unchanged.
+   */
+  #dynamicFramesOf(session, { frameIds = null, window = null, sinceSeq = null, limit = null } = {}) {
+    const store = session.frames;
+    if (!store) return [];
+    try {
+      if (frameIds) return store.listFrames({ frameIds }).frames;
+      const maxFrames = Math.min(limit || T4_LIMITS.maxFramesHard, T4_LIMITS.maxFramesHard);
+      const out = [];
+      let after = Number.isInteger(sinceSeq) ? sinceSeq : 0;
+      let guard = 0;
+      while (out.length < maxFrames && guard < 6) {
+        const wanted = Math.min(200, maxFrames - out.length);
+        if (wanted <= 0) break;
+        const page = store.listFrames({ sinceSeq: after, window, limit: wanted });
+        const frames = Array.isArray(page.frames) ? page.frames : [];
+        out.push(...frames);
+        if (!page.truncated || frames.length === 0) break;
+        const lastSeq = frames[frames.length - 1].seq;
+        if (!Number.isInteger(lastSeq) || lastSeq <= after) break;
+        after = lastSeq;
+        guard += 1;
+      }
+      const seen = new Set();
+      return out.filter((frame) => {
+        if (seen.has(frame.frameId)) return false;
+        seen.add(frame.frameId);
+        return true;
+      });
+    } catch (error) {
+      // The core already speaks the DYNAMIC_* taxonomy (input/scope/budget). Never rewrite an
+      // argument refusal into NOT_FOUND: that would hide a real caller mistake as a missing frame.
+      throw asBrowserError(error);
+    }
+  }
+
+  #dynamicFrameMeta(session, frame) {
+    // The core's `frameMeta` is the canonical pure-JSON projection (no Buffer, no rgba). The Host
+    // only adds delivery facts (`imageRef`, `image`, `sample`, `incomplete`) and the real source
+    // name; it never re-derives hashes/dimensions on its own.
+    const core = this.dynamic.core;
+    if (core && typeof core.frameMeta === 'function') {
+      try {
+        const meta = core.frameMeta(frame);
+        return {
+          ...meta,
+          source: session.config.source,
+          dimensions: meta.dimensions || { width: null, height: null },
+          imageRef: { frameId: meta.frameId, sha256: meta.sha256 },
+          image: null,
+          sample: frame.sample || (session.samples ? session.samples.get(frame.frameId) : null) || null,
+          incomplete: Array.isArray(frame.incomplete) ? [...frame.incomplete] : [],
+          decodeFailed: meta.decode?.failed === true,
+        };
+      } catch { /* fall through to the defensive Host projection */ }
+    }
+    const encoding = frame.encoding === 'png' || frame.encoding === 'jpeg' ? frame.encoding : session.config.encoding;
+    const dimensions = frame.dimensions && Number.isFinite(frame.dimensions.width)
+      ? { width: frame.dimensions.width, height: frame.dimensions.height }
+      : { width: null, height: null };
+    return {
+      frameId: frame.frameId,
+      seq: frame.seq,
+      segmentId: frame.segmentId === undefined ? null : frame.segmentId,
+      source: frame.source || session.config.source,
+      sourceTimestamp: frame.sourceTimestamp === undefined ? null : frame.sourceTimestamp,
+      receivedMonoMs: frame.receivedMonoMs,
+      encoding,
+      sha256: frame.sha256 || null,
+      rgbaSha256: frame.rgbaSha256 || null,
+      dimensions,
+      bytes: Number.isFinite(frame.bytesLength) ? frame.bytesLength
+        : (Number.isFinite(frame.bytes) ? frame.bytes : (Number.isFinite(frame.encodedBytes) ? frame.encodedBytes : null)),
+      mapping: frame.mapping || null,
+      provenance: frame.provenance || null,
+      sample: frame.sample || null,
+      imageRef: { frameId: frame.frameId, sha256: frame.sha256 || null },
+      image: null,
+      incomplete: Array.isArray(frame.incomplete) ? [...frame.incomplete] : [],
+      decodeFailed: frame.decodeFailed === true || frame.decode?.failed === true,
+    };
+  }
+
+  #dynamicFrameBytes(session, frame) {
+    if (frame && frame.bytes instanceof Uint8Array) return Buffer.from(frame.bytes);
+    if (frame && typeof frame.bytes === 'string') {
+      const cached = session.imageCache.get(frame.frameId);
+      if (cached) return Buffer.from(cached.base64, 'base64');
+    }
+    const cached = session.imageCache.get(frame.frameId);
+    return cached ? Buffer.from(cached.base64, 'base64') : null;
+  }
+
+  /**
+   * Crop-on-delivery. Why: an Agent asked to "understand the animation" used to receive a whole-page
+   * screenshot that literally contains the panel title and the answer text (`t=233ms tx=93.32
+   * opacity=0.855`). Cropping to the animation body removes that leak and is far smaller (measured:
+   * 61,824 B full JPEG vs 4,198 B PNG for a 243x139 ROI, 14.7x). This path decodes ONLY when an
+   * explicit `region` is requested; the encoded-only path stays decode-free.
+   */
+  async #dynamicCropFrame(session, frame, region) {
+    const core = this.dynamic.core;
+    if (!core) return { ok: false, code: 'crop-unavailable' };
+    const dimensions = frame.dimensions || {};
+    const width = Number(dimensions.width) || 0;
+    const height = Number(dimensions.height) || 0;
+    if (!(width > 0 && height > 0)) return { ok: false, code: 'crop-dimensions-unavailable' };
+    if (region.x + region.width > width || region.y + region.height > height) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'region 超出帧图像范围', {
+        field: 'region', region, frame: { width, height },
+      });
+    }
+    session.counters.cropDecodes += 1;
+    let decoded = null;
+    try {
+      if (typeof core.cropFrameRoi === 'function') {
+        // Core-provided crop (preferred once available): it may return PNG bytes directly.
+        decoded = core.cropFrameRoi(frame, region);
+        if (decoded && decoded.ok === true && typeof decoded.pngBase64 === 'string') {
+          return {
+            ok: true,
+            image: decoded.pngBase64,
+            bytes: decoded.bytes || Buffer.byteLength(decoded.pngBase64, 'base64'),
+            roiSha256: decoded.roiSha256 || null,
+            width: region.width,
+            height: region.height,
+            encodedSha256: decoded.sha256 || null,
+          };
+        }
+      }
+      let source = null;
+      if (typeof core.materializeFrameImage === 'function') source = core.materializeFrameImage(frame);
+      else if (typeof core.decodeFrameRgba === 'function' && frame.bytes) source = core.decodeFrameRgba({ encoding: frame.encoding, bytes: frame.bytes });
+      if (!source || source.ok !== true) {
+        session.counters.cropFailures += 1;
+        return { ok: false, code: source && source.code ? source.code : 'crop-unavailable' };
+      }
+      const image = source.image || source;
+      const rgba = image.rgba;
+      if (!rgba || image.width < region.x + region.width || image.height < region.y + region.height) {
+        session.counters.cropFailures += 1;
+        return { ok: false, code: 'crop-bounds-mismatch' };
+      }
+      const stride = image.width * 4;
+      const roi = Buffer.allocUnsafe(region.width * region.height * 4);
+      for (let row = 0; row < region.height; row += 1) {
+        const from = (region.y + row) * stride + region.x * 4;
+        rgba.subarray(from, from + region.width * 4).forEach((value, index) => { roi[row * region.width * 4 + index] = value; });
+      }
+      const roiSha256 = dynamicSha256(roi);
+      const png = encodePngRgba({ width: region.width, height: region.height, rgba: roi });
+      return {
+        ok: true,
+        image: Buffer.from(png).toString('base64'),
+        bytes: png.length,
+        roiSha256,
+        width: region.width,
+        height: region.height,
+        encodedSha256: dynamicSha256(png),
+      };
+    } catch (error) {
+      session.counters.cropFailures += 1;
+      if (error instanceof BrowserError) throw error;
+      return { ok: false, code: 'crop-failed' };
+    }
+  }
+
+  /** `browser_motion_observe` (contract §2.2 / §3.2). Stored reads never ensure or take a lease. */
+  async dynamicObserve(args, exec, signal) {
+    assertDynamicKeys(args, ['motionSessionId', 'fresh', 'sinceSeq', 'cursor', 'limit', 'window', 'frameIds', 'includeImages', 'region'], 'motion_observe');
+    const motionSessionId = args.motionSessionId;
+    if (typeof motionSessionId !== 'string' || motionSessionId === '') {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'motionSessionId 必须是非空字符串', { field: 'motionSessionId' });
+    }
+    const session = this.#dynamicSessionFor(motionSessionId);
+    if (!session) throw new BrowserError('DYNAMIC_SESSION_NOT_FOUND', '视觉会话不存在或不属于本 scope', { motionSessionId });
+    const fresh = args.fresh === undefined ? false : args.fresh;
+    if (typeof fresh !== 'boolean') throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'fresh 必须是布尔值', { field: 'fresh' });
+    const includeImages = args.includeImages === undefined ? false : args.includeImages;
+    if (typeof includeImages !== 'boolean') throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'includeImages 必须是布尔值', { field: 'includeImages' });
+    let region = null;
+    if (args.region !== undefined) {
+      region = dynamicRect(args.region, 'region', { integer: true });
+      if (includeImages !== true) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'region 只能与 includeImages:true 同用', { field: 'region' });
+      }
+    }
+    if (args.sinceSeq !== undefined) {
+      if (!Number.isInteger(args.sinceSeq) || args.sinceSeq < 0) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'sinceSeq 必须是 ≥0 的整数', { field: 'sinceSeq' });
+      }
+    }
+    if (args.cursor !== undefined) {
+      if (typeof args.cursor !== 'string' || args.cursor === '' || Buffer.byteLength(args.cursor, 'utf8') > 2048) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'cursor 必须是 ≤2048 字节的非空字符串', { field: 'cursor' });
+      }
+    }
+    if (args.sinceSeq !== undefined && args.cursor !== undefined) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'cursor 与 sinceSeq 互斥', { fields: ['cursor', 'sinceSeq'] });
+    }
+    let limit = DYNAMIC_INTERNAL.observeLimit;
+    if (args.limit !== undefined) limit = dynamicInteger(args.limit, 'limit', 1, DYNAMIC_INTERNAL.observeLimitMax);
+    let window = null;
+    if (args.window !== undefined) window = normalizeDynamicWindow(args.window);
+    const frameIds = dynamicIdList(args.frameIds, 'frameIds', DYNAMIC_LIMITS.maxIds);
+    if (frameIds && (window || args.cursor !== undefined || args.sinceSeq !== undefined)) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'frameIds 与 window/cursor/sinceSeq 互斥', { fields: ['frameIds'] });
+    }
+    if (fresh) {
+      if (args.sinceSeq !== undefined || args.cursor !== undefined || window || frameIds) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'fresh 禁止 sinceSeq/cursor/window/frameIds', { fields: ['fresh'] });
+      }
+      if (!session.captureVisual || session.state !== 'running') {
+        throw new BrowserError('DYNAMIC_SESSION_NOT_FOUND', 'fresh 只允许当前活动的视觉会话', { reason: 'not-active' });
+      }
+      // Explicit page action: the caller took the page queue, so ensure is allowed here (and only
+      // here for observe). Stored reads never reach this branch.
+      await this.ensure(signal);
+      const sample = await this.#dynamicFreshSample(session, signal);
+      let freshFrame = sample.frame;
+      if (region) {
+        const raw = { dimensions: freshFrame.dimensions, encoding: freshFrame.encoding, bytes: freshFrame.__bytes, sha256: freshFrame.sha256 };
+        const cropped = await this.#dynamicCropFrame(session, raw, region);
+        if (cropped.ok) {
+          freshFrame = { ...freshFrame,
+            image: { image: cropped.image, bytes: cropped.bytes, sha256: cropped.encodedSha256, width: cropped.width, height: cropped.height, mediaType: 'image/png', delivery: { mode: 'inline-base64', persisted: false } },
+            crop: { region, sourceSha256: raw.sha256, sourceDimensions: raw.dimensions, sourceEncoding: raw.encoding, roiSha256: cropped.roiSha256, outputBytes: cropped.bytes } };
+        } else {
+          freshFrame = { ...freshFrame, image: null, crop: { failed: true, code: cropped.code, region }, incomplete: [...new Set([...(freshFrame.incomplete || []), 'crop-unavailable'])] };
+        }
+      }
+      this.#dynamicTouch('motion.observe', {});
+      return {
+        ok: true, frames: [freshFrame], events: [], fromSeq: null, toSeq: null,
+        cursor: { next: null }, integrity: this.#dynamicIntegrity(session), sample: sample.sample,
+        cropStats: { decodes: session.counters.cropDecodes, failures: session.counters.cropFailures },
+        evidence: this.#dynamicEvidence('motion.observe', session),
+      };
+    }
+    if (!session.frames) {
+      return {
+        ok: true, frames: [], events: [], fromSeq: null, toSeq: null,
+        cursor: { next: null }, integrity: this.#dynamicIntegrity(session), sample: null,
+        evidence: this.#dynamicEvidence('motion.observe', session, { incomplete: ['no-frame-store'] }),
+      };
+    }
+    let sinceSeq = args.sinceSeq === undefined ? null : args.sinceSeq;
+    if (args.cursor !== undefined) {
+      const decoded = decodeDynamicCursor(args.cursor);
+      if (!decoded || decoded.d !== session.dynamicSessionId || decoded.m !== session.motionSessionId) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'cursor 不属于本视觉会话', { field: 'cursor' });
+      }
+      sinceSeq = decoded.s;
+    }
+    const rawFrames = this.#dynamicFramesOf(session, { frameIds, window, sinceSeq, limit });
+    let frames = rawFrames.map((frame) => this.#dynamicFrameMeta(session, frame));
+    if (frameIds) {
+      const found = new Set(frames.map((frame) => frame.frameId));
+      const missing = frameIds.filter((id) => !found.has(id));
+      if (missing.length) throw new BrowserError('DYNAMIC_EVENT_NOT_FOUND', '帧不存在或已被淘汰', { idKind: 'frame', ids: missing });
+    }
+    const fromSeq = frames.length ? Math.min(...frames.map((frame) => frame.seq)) : null;
+    const toSeq = frames.length ? Math.max(...frames.map((frame) => frame.seq)) : null;
+    let nextCursor = null;
+    if (frames.length >= limit && toSeq !== null && session.frames.highWater > toSeq) {
+      nextCursor = encodeDynamicCursor({ d: session.dynamicSessionId, m: session.motionSessionId, s: toSeq + 1 });
+    }
+    if (includeImages) {
+      const candidates = frameIds
+        ? rawFrames
+        : rawFrames.slice(0, limit);
+      if (candidates.length > T4_LIMITS.maxImagesPerObserve) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'includeImages 选中帧超过 3 帧，请缩小 frameIds/limit', {
+          field: 'includeImages', selected: candidates.length, max: T4_LIMITS.maxImagesPerObserve,
+        });
+      }
+      let totalBytes = 0;
+      for (const [index, raw] of candidates.entries()) {
+        const meta = frames[index];
+        if (region) {
+          const cropped = await this.#dynamicCropFrame(session, raw, region);
+          if (!cropped.ok) {
+            meta.image = null;
+            meta.crop = { failed: true, code: cropped.code, region };
+            meta.incomplete = [...new Set([...(meta.incomplete || []), 'crop-unavailable'])];
+            continue;
+          }
+          if (totalBytes + cropped.bytes > T4_LIMITS.maxEvidenceBytes) {
+            meta.image = null;
+            meta.crop = { failed: true, code: 'evidence-budget', region };
+            meta.incomplete = [...new Set([...(meta.incomplete || []), 'crop-unavailable'])];
+            continue;
+          }
+          totalBytes += cropped.bytes;
+          meta.image = {
+            image: cropped.image, bytes: cropped.bytes, sha256: cropped.encodedSha256,
+            width: cropped.width, height: cropped.height, mediaType: 'image/png',
+            attachment: null, attachmentId: null, imageDelivery: 'inline-base64',
+            attachmentError: null, file: null, delivery: { mode: 'inline-base64', persisted: false },
+          };
+          meta.crop = {
+            region,
+            sourceSha256: raw.sha256 || meta.sha256,
+            sourceDimensions: raw.dimensions || meta.dimensions,
+            sourceEncoding: raw.encoding || meta.encoding,
+            roiSha256: cropped.roiSha256,
+            outputBytes: cropped.bytes,
+          };
+          continue;
+        }
+        const bytes = this.#dynamicFrameBytes(session, raw);
+        if (!bytes) {
+          meta.image = null;
+          meta.imageRef = { frameId: meta.frameId, sha256: meta.sha256 };
+          meta.imageUnavailableReason = 'bytes-unavailable';
+          continue;
+        }
+        if (bytes.length > DYNAMIC_INTERNAL.imageBytes || totalBytes + bytes.length > DYNAMIC_INTERNAL.imageBytesTotal) {
+          meta.image = null;
+          meta.imageUnavailableReason = 'image-budget';
+          continue;
+        }
+        totalBytes += bytes.length;
+        meta.image = {
+          image: bytes.toString('base64'), bytes: bytes.length, sha256: meta.sha256,
+          width: meta.dimensions.width, height: meta.dimensions.height,
+          mediaType: meta.encoding === 'png' ? 'image/png' : 'image/jpeg',
+          attachment: null, attachmentId: null, imageDelivery: 'inline-base64',
+          attachmentError: null, file: null, delivery: { mode: 'inline-base64', persisted: false },
+        };
+      }
+    }
+    const events = this.#dynamicQueryEvents(session, {}) || [];
+    this.#dynamicTouch('motion.observe', {});
+    return {
+      ok: true, frames, events, fromSeq, toSeq, cursor: { next: nextCursor },
+      integrity: this.#dynamicIntegrity(session), sample: null,
+      cropStats: { decodes: session.counters.cropDecodes, failures: session.counters.cropFailures },
+      evidence: this.#dynamicEvidence('motion.observe', session),
+    };
+  }
+
+  #dynamicQueryEvents(session, query) {
+    if (!session.events) return [];
+    try {
+      const listed = session.events.query(query || {});
+      if (Array.isArray(listed)) return listed;
+      if (listed && Array.isArray(listed.events)) return listed.events;
+      return [];
+    } catch { return []; }
+  }
+
+  async #dynamicFreshSample(session, signal) {
+    // Explicit page action: one real screenshot sample with a measured begin/end interval. It is
+    // NOT stored as screencast evidence (different source, no sourceTimestamp) and never claims a
+    // render time: `sample.fromMs/toMs` stay null (the begin/end interval is the uncertainty).
+    const beginMonoMs = dynamicMonoNow();
+    const captured = await this.cdp.send('Page.captureScreenshot', { format: 'jpeg', quality: 72 }, { signal, timeoutMs: 5000 });
+    const endMonoMs = dynamicMonoNow();
+    const bytes = Buffer.from(captured.data || '', 'base64');
+    const meta = this.#dynamicMapping({});
+    const frame = {
+      frameId: 'frm_' + randomUUID().replace(/-/gu, '').slice(0, 24),
+      seq: null, segmentId: null, source: 'captureScreenshot', sourceTimestamp: null,
+      receivedMonoMs: beginMonoMs, encoding: 'jpeg', sha256: dynamicSha256(bytes),
+      rgbaSha256: null, dimensions: { width: meta.dimensions.width, height: meta.dimensions.height },
+      bytes: bytes.length, mapping: meta,
+      provenance: {
+        producer: 'host', sourceKind: 'cdp-page-capture-screenshot', adapterId: null,
+        adapterVersion: null, trust: 'cdp-observed', evidenceIds: [], rawHash: dynamicSha256(bytes),
+      },
+      sample: { beginMonoMs, endMonoMs },
+      imageRef: null, image: null, incomplete: ['source-timestamp-missing'],
+    };
+    session.counters.samplingFailures += 0;
+    Object.defineProperty(frame, '__bytes', { value: bytes, enumerable: false });
+    return {
+      frame,
+      sample: {
+        beginMonoMs, endMonoMs,
+        fromMs: null, toMs: null,
+        durationMs: Math.round((endMonoMs - beginMonoMs) * 1000) / 1000,
+        source: 'captureScreenshot',
+      },
+    };
+  }
+
+  /** `browser_motion_analyze` (contract §2.4 / §3.4). Offline: never captures a new frame. */
+  async dynamicAnalyze(args) {
+    assertDynamicKeys(args, ['motionSessionId', 'window', 'frameIds', 'assertions'], 'motion_analyze');
+    const motionSessionId = args.motionSessionId;
+    if (typeof motionSessionId !== 'string' || motionSessionId === '') {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'motionSessionId 必须是非空字符串', { field: 'motionSessionId' });
+    }
+    const session = this.#dynamicSessionFor(motionSessionId);
+    if (!session) throw new BrowserError('DYNAMIC_SESSION_NOT_FOUND', '视觉会话不存在或不属于本 scope', { motionSessionId });
+    const window = args.window === undefined ? null : normalizeDynamicWindow(args.window);
+    const frameIds = dynamicIdList(args.frameIds, 'frameIds', DYNAMIC_LIMITS.maxIds);
+    if ((window && frameIds) || (!window && !frameIds)) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'window/frameIds 恰好给一个', { fields: ['window', 'frameIds'] });
+    }
+    const assertions = normalizeDynamicAssertions(args.assertions);
+    if (!session.frames) {
+      return {
+        ok: true, results: [], summary: { pass: 0, warn: 0, fail: 0, inconclusive: 0, blocked: assertions.length },
+        verdict: 'BLOCKED', exitCode: 2, integrity: this.#dynamicIntegrity(session), algorithmVersion: DYNAMIC_ALGORITHM_VERSION,
+        evidence: this.#dynamicEvidence('motion.analyze', session, { incomplete: ['no-frame-store'] }),
+      };
+    }
+    const core = await this.#dynamicLoadCore();
+    // Split assertions: interval-only jank never needs pixels, so it must not pay materialization
+    // for the whole capture (real-host 180-frame case). Pixel assertions run in a second bounded
+    // core call; both budgets are reported separately and summed as budgetUsedMs.
+    const startedAt = Date.now();
+    const fastAssertions = assertions.filter((assertion) => assertion.type === 'jank');
+    const pixelAssertions = assertions.filter((assertion) => assertion.type !== 'jank');
+    const rawFrames = this.#dynamicFramesOf(session, { frameIds, window, limit: T4_LIMITS.maxFramesHard });
+    const metadataFrames = rawFrames.map((frame) => ({
+      frameId: frame.frameId,
+      seq: Number.isInteger(frame.seq) ? frame.seq : null,
+      timelineMs: Number.isFinite(frame.timelineMs) ? frame.timelineMs : null,
+      receivedMonoMs: Number.isFinite(frame.receivedMonoMs) ? frame.receivedMonoMs : null,
+      sourceTimestamp: Number.isFinite(frame.sourceTimestamp) ? frame.sourceTimestamp : null,
+      sourceClock: frame.sourceClock || null,
+      mapping: frame.mapping || null,
+      encoding: frame.encoding || session.config.encoding,
+      segmentId: frame.segmentId || null,
+      incomplete: Array.isArray(frame.incomplete) ? [...frame.incomplete] : [],
+      // Deliberately NO bytes/image: the core must not decode for a jank-only assertion.
+    }));
+    const runGroup = async (groupAssertions, frames) => {
+      if (groupAssertions.length === 0) return null;
+      const started = Date.now();
+      const value = await core.runMotionAssertions({
+        frames,
+        assertions: groupAssertions,
+        window,
+        frameIds,
+        events: this.#dynamicQueryEvents(session, {}),
+        integrity: this.#dynamicIntegrity(session),
+      });
+      return { value, elapsedMs: Date.now() - started };
+    };
+    const fastRun = await runGroup(fastAssertions, metadataFrames);
+    const pixelRun = await runGroup(pixelAssertions, rawFrames);
+    const byId = new Map();
+    for (const run of [fastRun, pixelRun]) {
+      if (!run) continue;
+      for (const result of run.value.results || []) byId.set(result.id, result);
+    }
+    const mergedResults = assertions.map((assertion) => byId.get(assertion.id)).filter(Boolean);
+    const summary = normalizeDynamicSummary(null, mergedResults);
+    const verdict = normalizeDynamicVerdict(null, mergedResults);
+    const exitCode = verdict === 'FAIL' ? 1 : (['BLOCKED', 'INCONCLUSIVE'].includes(verdict) ? 2 : 0);
+    const budgetUsedMs = (fastRun ? fastRun.elapsedMs : 0) + (pixelRun ? pixelRun.elapsedMs : 0);
+    const result = {
+      results: mergedResults,
+      summary,
+      verdict,
+      exitCode,
+      integrity: this.#dynamicIntegrity(session),
+      algorithmVersion: DYNAMIC_ALGORITHM_VERSION,
+      budgetUsedMs,
+      budgetSplitMs: { jank: fastRun ? fastRun.elapsedMs : 0, pixel: pixelRun ? pixelRun.elapsedMs : 0 },
+      decodedForJank: false,
+    };
+    this.#dynamicTouch('motion.analyze', { verdict });
+    return {
+      ok: true,
+      results: Array.isArray(result && result.results) ? result.results : [],
+      summary, verdict, exitCode,
+      integrity: this.#dynamicIntegrity(session),
+      algorithmVersion: DYNAMIC_ALGORITHM_VERSION,
+      budgetUsedMs: result.budgetUsedMs,
+      budgetSplitMs: result.budgetSplitMs,
+      evidence: this.#dynamicEvidence('motion.analyze', session, { verdict }),
+    };
+  }
+
+  /* ---- T4 motion control (M2): WAAPI adapter, readback, restore ---- */
+
+  async #dynamicAdapterCall(payload, signal) {
+    const expression = '(' + DYNAMIC_CONTROL_ADAPTER_FN + ')(' + JSON.stringify(payload) + ')';
+    const result = await this.evaluate(expression, true, signal);
+    if (!result || result.ok !== true) {
+      throw new BrowserError('DYNAMIC_CONTROL_CONFLICT', '控制适配器调用失败', { reason: 'adapter-eval-failed' });
+    }
+    const value = result.value;
+    if (!value || value.ok !== true) {
+      if (value && value.code === 'TARGET_NOT_FOUND') {
+        throw new BrowserError('DYNAMIC_EVENT_NOT_FOUND', '控制目标不存在', { idKind: 'target', ids: value.missing || [] });
+      }
+      if (value && value.code === 'TARGET_AMBIGUOUS') {
+        throw new BrowserError('DYNAMIC_CONTROL_CONFLICT', '控制目标不唯一', { reason: 'target-ambiguous', ambiguous: value.ambiguous || [] });
+      }
+      throw new BrowserError('DYNAMIC_CONTROL_CONFLICT', '控制适配器拒绝执行', { reason: 'adapter-refused' });
+    }
+    return value;
+  }
+
+  #dynamicResolveListed(targets, targetId) {
+    const wanted = String(targetId);
+    const direct = targets.find((item) => item.targetId === wanted);
+    if (direct) return direct;
+    return targets.find((item) => item.animationId === wanted || item.animationName === wanted || item.selector === wanted) || null;
+  }
+
+  #dynamicControlState(session) {
+    if (!session.control) {
+      session.control = {
+        restoreToken: 'rst_' + randomUUID().replace(/-/gu, ''),
+        adapterId: null,
+        documentEpoch: this.t2.documentEpoch,
+        targets: [],
+        sideEffects: [],
+        restoreStatus: { status: 'not-needed', attempted: [], restored: [], failed: [], conflicts: [], lastObserved: [] },
+      };
+    }
+    session.restoreStatus = session.control.restoreStatus;
+    return session.control;
+  }
+
+  #dynamicTargetState(entry) {
+    return {
+      targetId: entry.targetId,
+      documentEpoch: this.t2.documentEpoch,
+      playState: entry.state ? entry.state.playState : null,
+      currentTimeMs: entry.state && Number.isFinite(entry.state.currentTimeMs) ? entry.state.currentTimeMs : null,
+      playbackRate: entry.state && Number.isFinite(entry.state.playbackRate) ? entry.state.playbackRate : null,
+      observedAtMonoMs: dynamicMonoNow(),
+    };
+  }
+
+  #dynamicControlFields(control, applied, failedIndex, afterById) {
+    const fields = [];
+    const order = ['playState', 'currentTimeMs', 'playbackRate'];
+    control.targets.forEach((entry, index) => {
+      const after = afterById.get(entry.targetId);
+      const status = failedIndex !== null && index >= failedIndex ? 'failed' : (applied.includes(entry.targetId) ? 'applied' : 'failed');
+      for (const field of order) {
+        fields.push({
+          index,
+          targetId: entry.targetId,
+          field,
+          status,
+          errorCode: status === 'failed' ? 'DYNAMIC_CONTROL_CONFLICT' : null,
+          before: entry.original ? entry.original[field] : null,
+          after: after ? after[field] : null,
+        });
+      }
+    });
+    return fields;
+  }
+
+  /** Best-effort restore of every field this session wrote; never overwrites an external change. */
+  async #dynamicRestoreControl(session, reason = 'stop') {
+    if (!session || !session.control || session.control.targets.length === 0) return session ? session.restoreStatus : null;
+    const control = session.control;
+    const status = control.restoreStatus;
+    if (!this.cdp || this.cdp.closed) {
+      status.status = 'failed';
+      status.failed = control.targets.map((entry) => ({ targetId: entry.targetId, code: 'DYNAMIC_RESTORE_FAILED', reason: 'cdp-unavailable:' + reason }));
+      return status;
+    }
+    let listed;
+    try { listed = await this.#dynamicAdapterCall({ action: 'list' }); } catch { listed = null; }
+    if (!listed) {
+      status.status = 'failed';
+      status.failed = control.targets.map((entry) => ({ targetId: entry.targetId, code: 'DYNAMIC_RESTORE_FAILED', reason: 'list-failed:' + reason }));
+      return status;
+    }
+    const currentById = new Map();
+    for (const entry of control.targets) {
+      const found = this.#dynamicResolveListed(listed.targets, entry.targetId);
+      if (found) currentById.set(entry.targetId, found);
+    }
+    const conflicts = [];
+    const restoreTargets = [];
+    for (const entry of control.targets) {
+      const current = currentById.get(entry.targetId);
+      if (!current) {
+        status.failed.push({ targetId: entry.targetId, code: 'DYNAMIC_EVENT_NOT_FOUND', reason: 'target-gone' });
+        continue;
+      }
+      const written = entry.lastWritten || {};
+      let externalField = null;
+      for (const field of ['playState', 'currentTimeMs', 'playbackRate']) {
+        if (written[field] === undefined || written[field] === null) continue;
+        if (field === 'playState') {
+          if (current.playState !== written.playState) externalField = field;
+        } else if (field === 'playbackRate') {
+          if (Math.abs(Number(current.playbackRate) - Number(written.playbackRate)) > 0.01) externalField = field;
+        }
+        // currentTimeMs is deliberately NOT an identity signal: a running animation advances it and
+        // a paused page can still seek; conflict is decided by playState + playbackRate only.
+        if (externalField) break;
+      }
+      if (externalField) { conflicts.push({ targetId: entry.targetId, field: externalField }); continue; }
+      restoreTargets.push({ entry, current });
+    }
+    status.conflicts = conflicts;
+    status.lastObserved = restoreTargets.map(({ current }) => ({
+      targetId: current.targetId, documentEpoch: this.t2.documentEpoch,
+      playState: current.playState, currentTimeMs: current.currentTimeMs,
+      playbackRate: current.playbackRate, observedAtMonoMs: dynamicMonoNow(),
+    }));
+    if (restoreTargets.length === 0) {
+      status.status = conflicts.length ? 'conflict' : 'not-needed';
+      return status;
+    }
+    try {
+      const payload = {
+        action: 'restore',
+        targetIds: restoreTargets.map(({ entry }) => entry.targetId),
+        originals: restoreTargets.map(({ entry }) => entry.original),
+      };
+      const result = await this.#dynamicAdapterCall(payload);
+      status.attempted = restoreTargets.map(({ entry }) => entry.targetId);
+      const appliedSet = new Set(result.applied || []);
+      status.restored = status.attempted.filter((id) => appliedSet.has(id));
+      if (result.failedIndex !== null && result.failedIndex !== undefined) {
+        const failed = restoreTargets[result.failedIndex];
+        status.failed.push({ targetId: failed ? failed.entry.targetId : 'unknown', code: 'DYNAMIC_RESTORE_FAILED', reason: 'apply-failed' });
+      }
+      status.status = status.failed.length ? 'partial' : (conflicts.length ? 'partial' : 'restored');
+    } catch (error) {
+      status.status = 'failed';
+      status.failed.push({ targetId: '*', code: 'DYNAMIC_RESTORE_FAILED', reason: String((error && error.message) || error) });
+    }
+    return status;
+  }
+
+  /** `browser_motion_control` (contract §2.3 / §3.3). Page operation; explicit caller action only. */
+  async dynamicControl(args, exec, signal) {
+    assertDynamicKeys(args, ['motionSessionId', 'action', 'adapterId', 'targetIds', 'timeMs', 'rate', 'restoreToken'], 'motion_control');
+    const action = String(args.action || '');
+    const actions = ['pause', 'resume', 'seek', 'rate', 'restore'];
+    if (!actions.includes(action)) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'control.action 不合法', { field: 'action', allowed: actions });
+    }
+    const motionSessionId = args.motionSessionId;
+    if (typeof motionSessionId !== 'string' || motionSessionId === '') {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'motionSessionId 必须是非空字符串', { field: 'motionSessionId' });
+    }
+    const session = this.#dynamicSessionFor(motionSessionId);
+    if (!session || !session.captureVisual) {
+      throw new BrowserError('DYNAMIC_SESSION_NOT_FOUND', '视觉会话不存在或不属于本 scope', { motionSessionId });
+    }
+    // A retained session may still control the same page/document after stop (contract §3.5:
+    // stop/cancel/disconnect/dispose restore and late restore must stay reachable).
+    if (session.pageGeneration !== null && session.pageGeneration !== undefined && this.page
+      && session.pageGeneration !== this.page.generation) {
+      throw new BrowserError('DYNAMIC_CONTROL_CONFLICT', '页面代次已变化，拒绝控制', {
+        expectedPageGeneration: session.pageGeneration, actualPageGeneration: this.page.generation,
+      });
+    }
+    const restore = action === 'restore';
+    let targetIds = null;
+    let adapterId = null;
+    if (restore) {
+      const forbidden = ['adapterId', 'targetIds', 'timeMs', 'rate'].filter((key) => args[key] !== undefined);
+      if (forbidden.length) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'restore 禁止字段 ' + forbidden.join(','), { fields: forbidden });
+      if (typeof args.restoreToken !== 'string' || args.restoreToken === '') {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'restore 必须给 restoreToken', { field: 'restoreToken' });
+      }
+      adapterId = session.control ? session.control.adapterId : 'waapi';
+    } else {
+      if (args.restoreToken !== undefined) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', '非 restore 禁止 restoreToken', { field: 'restoreToken' });
+      if (typeof args.adapterId !== 'string' || args.adapterId === '') {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', '非 restore 必须给 adapterId', { field: 'adapterId' });
+      }
+      adapterId = args.adapterId;
+      if (adapterId !== 'waapi') {
+        throw new BrowserError('DYNAMIC_SOURCE_UNAVAILABLE', '控制适配器不可用', { adapterId, supported: ['waapi'] });
+      }
+      targetIds = dynamicIdList(args.targetIds, 'targetIds', T4_LIMITS.maxControlTargets);
+      if (!targetIds || targetIds.length === 0) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', '非 restore 必须给 1–20 个 targetIds', { field: 'targetIds' });
+      }
+      if (action === 'seek') {
+        if (args.timeMs === undefined) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'seek 必须给 timeMs', { field: 'timeMs' });
+        dynamicFinite(args.timeMs, 'timeMs');
+        if (args.timeMs < 0 || args.timeMs > 10000) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'timeMs 必须在 [0,10000]', { field: 'timeMs' });
+        if (args.rate !== undefined) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'seek 禁止 rate', { field: 'rate' });
+      } else if (action === 'rate') {
+        if (args.rate === undefined) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'rate 必须给 rate', { field: 'rate' });
+        dynamicFinite(args.rate, 'rate');
+        if (args.rate < 0.1 || args.rate > 4) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'rate 必须在 [0.1,4]', { field: 'rate' });
+        if (args.timeMs !== undefined) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'rate 禁止 timeMs', { field: 'timeMs' });
+      } else if (args.timeMs !== undefined || args.rate !== undefined) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', action + ' 禁止 timeMs/rate', { fields: ['timeMs', 'rate'] });
+      }
+    }
+    if (restore) {
+      if (!session.control || args.restoreToken !== session.control.restoreToken) {
+        throw new BrowserError('DYNAMIC_EVENT_NOT_FOUND', 'restoreToken 不存在或不属于本会话', { idKind: 'restoreToken' });
+      }
+    }
+    // Page/document identity: a document change invalidates every target identity.
+    const control = session.control || this.#dynamicControlState(session);
+    if (this.t2.documentEpoch !== control.documentEpoch && this.t2.documentEpoch !== session.documentEpoch) {
+      throw new BrowserError('DYNAMIC_CONTROL_CONFLICT', '文档代次已变化，拒绝控制', {
+        expectedDocumentEpoch: control.documentEpoch, actualDocumentEpoch: this.t2.documentEpoch,
+      });
+    }
+    const listed = await this.#dynamicAdapterCall({ action: 'list' }, signal);
+    const currentById = new Map();
+    for (const targetId of (restore
+      ? (session.control ? session.control.targets.map((entry) => entry.targetId) : [])
+      : (targetIds || []))) {
+      const found = this.#dynamicResolveListed(listed.targets, targetId);
+      if (found) currentById.set(targetId, found);
+    }
+    if (restore) {
+      const status = await this.#dynamicRestoreControl(session, 'restore');
+      if (status.status === 'restored' && session.control) session.control.targets = [];
+      const requested = { action, adapterId, targetIds: status.attempted || [], timeMs: null, rate: null };
+      return {
+        ok: true, requested,
+        applied: status.restored, failedIndex: null,
+        fields: [],
+        targets: requested.targetIds,
+        before: session.control ? session.control.targets.map((entry) => this.#dynamicTargetState({ ...entry, state: currentById.get(entry.targetId) })) : [],
+        after: [], restoreToken: null,
+        restoreStatus: status,
+        sideEffects: ['no-page-rollback'],
+        evidence: this.#dynamicEvidence('motion.control', session),
+      };
+    }
+    const missing = targetIds.filter((id) => !currentById.has(id));
+    if (missing.length) {
+      throw new BrowserError('DYNAMIC_EVENT_NOT_FOUND', '控制目标不存在', { idKind: 'target', ids: missing });
+    }
+    // Save the original state once per target; never overwrite the first observed original.
+    const targets = control.targets;
+    for (const targetId of targetIds) {
+      if (!targets.some((entry) => entry.targetId === targetId)) {
+        const current = currentById.get(targetId);
+        targets.push({ targetId, original: { playState: current.playState, currentTimeMs: current.currentTimeMs, playbackRate: current.playbackRate }, lastWritten: null });
+      }
+    }
+    targets.sort((left, right) => targetIds.indexOf(left.targetId) - targetIds.indexOf(right.targetId));
+    const before = targetIds.map((targetId) => this.#dynamicTargetState({ targetId, state: currentById.get(targetId) }));
+    let result;
+    try {
+      result = await this.#dynamicAdapterCall({
+        action,
+        targetIds,
+        timeMs: action === 'seek' ? args.timeMs : undefined,
+        rate: action === 'rate' ? args.rate : undefined,
+      }, signal);
+    } catch (error) {
+      const classified = asBrowserError(error);
+      const status = await this.#dynamicRestoreControl(session, 'control-failed');
+      classified.details = {
+        ...(classified.details || {}),
+        requested: { action, adapterId, targetIds, timeMs: action === 'seek' ? args.timeMs : null, rate: action === 'rate' ? args.rate : null },
+        applied: [], failedIndex: 0, fields: [], before, after: [],
+        restoreToken: control.restoreToken, restoreStatus: status, sideEffects: [action + ':attempted'],
+      };
+      throw classified;
+    }
+    const afterById = new Map(result.after.map((item) => [item.targetId, item]));
+    const after = targetIds.map((targetId) => this.#dynamicTargetState({ targetId, state: afterById.get(targetId) }));
+    for (const targetId of result.applied) {
+      const state = afterById.get(targetId);
+      const entry = targets.find((item) => item.targetId === targetId);
+      if (entry && state) {
+        entry.lastWritten = {
+          playState: state.playState, currentTimeMs: state.currentTimeMs, playbackRate: state.playbackRate,
+        };
+        entry.lastWrittenAtMonoMs = dynamicMonoNow();
+      }
+    }
+    control.adapterId = adapterId;
+    control.sideEffects = [...new Set([...control.sideEffects, action + ':waapi'])];
+    const fields = this.#dynamicControlFields(control, result.applied, result.failedIndex, afterById);
+    if (result.failedIndex !== null && result.failedIndex !== undefined) {
+      const status = await this.#dynamicRestoreControl(session, 'partial-control');
+      const error = new BrowserError('DYNAMIC_CONTROL_CONFLICT', '控制部分失败，已尽力恢复', {
+        requested: { action, adapterId, targetIds, timeMs: action === 'seek' ? args.timeMs : null, rate: action === 'rate' ? args.rate : null },
+        applied: result.applied, failedIndex: result.failedIndex, fields, before, after,
+        restoreToken: control.restoreToken, restoreStatus: status, sideEffects: [action + ':partial'],
+      });
+      throw error;
+    }
+    return {
+      ok: true,
+      requested: { action, adapterId, targetIds, timeMs: action === 'seek' ? args.timeMs : null, rate: action === 'rate' ? args.rate : null },
+      applied: result.applied,
+      failedIndex: null,
+      fields,
+      targets: targetIds,
+      before,
+      after,
+      restoreToken: control.restoreToken,
+      restoreStatus: control.restoreStatus,
+      sideEffects: [action + ':waapi'],
+      evidence: this.#dynamicEvidence('motion.control', session),
+    };
+  }
+
+  /* ---- T4 dynamic correlation (M3) ---- */
+
+  /** Called by the tool dispatcher after a successful page operation (T4 bridge input). */
+  noteDynamicAction(action) {
+    const session = this.dynamic.session;
+    if (!session || session.state !== 'running' || !session.captureVisual) return;
+    session.hostActions.push({
+      actionId: action.actionId, tool: action.tool, target: action.target,
+      atWallMs: action.atWallMs, atMonoMs: action.atMonoMs,
+    });
+    if (session.hostActions.length > 100) session.hostActions.shift();
+  }
+
+  /**
+   * Authorized page-ledger snapshot (Lead 2026-11-04): read ONLY the documented truth ledgers.
+   * `__t4.visual.anomalies` and every expectation field are deliberately excluded — the engine
+   * never sees the oracle. Returns sourceUnavailable when the page exposes no `__t4`.
+   */
+  async #dynamicPageSnapshot(session) {
+    const sendMonoMs = dynamicMonoNow();
+    const attempt = async () => this.evaluate(`(function () {
+      const out = { version: 1, wallNowMs: Date.now(), visual: null, net: null, dom: null };
+      const v = window.__t4 && window.__t4.visual;
+      if (v) {
+        out.visual = {
+          ops: Array.isArray(v.ops) ? v.ops : [],
+          events: Array.isArray(v.events) ? v.events : [],
+          clock: v.clock && typeof v.clock === 'object' ? v.clock : null,
+        };
+      }
+      const n = window.__t4 && window.__t4.net;
+      if (n) {
+        out.net = {
+          ops: Array.isArray(n.ops) ? n.ops : [],
+          requests: Array.isArray(n.requests) ? n.requests : [],
+          responses: Array.isArray(n.responses) ? n.responses : [],
+          ui: Array.isArray(n.ui) ? n.ui : [],
+          ws: n.ws && typeof n.ws === 'object' ? { state: n.ws.state, frames: Array.isArray(n.ws.frames) ? n.ws.frames : [] } : null,
+          sse: n.sse && typeof n.sse === 'object' ? { state: n.sse.state, events: Array.isArray(n.sse.events) ? n.sse.events : [] } : null,
+          polls: Array.isArray(n.polls) ? n.polls : [],
+          errors: Array.isArray(n.errors) ? n.errors : [],
+        };
+      }
+      if (v || n) {
+        const errorEl = document.querySelector('#t4n-error');
+        const cartEl = document.querySelector('#t4n-cart-count');
+        const orderEl = document.querySelector('#t4n-order-status');
+        const body = document.body;
+        out.dom = {
+          error: errorEl ? { hidden: errorEl.hidden === true, text: String(errorEl.textContent || '').slice(0, 120) } : null,
+          cartCount: cartEl ? String(cartEl.textContent || '').trim() : null,
+          orderStatus: orderEl ? String(orderEl.textContent || '').trim() : null,
+          stage: body ? String(body.getAttribute('data-t4n-stage') || '') : null,
+        };
+      }
+      return out;
+    })()`, true, undefined);
+    let result = await attempt();
+    // One bounded retry: a real host can race an execution-context swap right after start.
+    if (!result || result.ok !== true || !result.value || (!result.value.visual && !result.value.net)) {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      result = await attempt();
+    }
+    const receiveMonoMs = dynamicMonoNow();
+    if (!result || result.ok !== true || !result.value || (!result.value.visual && !result.value.net)) {
+      session.pageBridge.sourceUnavailable += 1;
+      if (result && result.ok === false && result.error) {
+        session.pageBridge.lastError = {
+          code: result.error.code || null,
+          message: String(result.error.message || '').slice(0, 300),
+          exception: result.error.details ? JSON.parse(JSON.stringify(result.error.details)).exceptionDetails || null : null,
+        };
+      } else if (result && result.ok === true && result.value && !result.value.visual && !result.value.net) {
+        session.pageBridge.lastError = { code: 'page-ledger-missing', message: 'main-world page exposes neither __t4.visual nor __t4.net' };
+      } else {
+        session.pageBridge.lastError = { code: 'page-ledger-no-result', message: 'Runtime.evaluate returned no value' };
+      }
+      return null;
+    }
+    const snapshot = result.value;
+    const anchor = {
+      clockId: 'page-wall',
+      anchorId: 'pa_' + randomUUID().replace(/-/gu, '').slice(0, 12),
+      offsetMs: ((sendMonoMs + receiveMonoMs) / 2) - Number(snapshot.wallNowMs),
+      uncertaintyMs: Math.max(0.5, (receiveMonoMs - sendMonoMs) / 2),
+      resolutionMs: 1,
+      calibratedAtMonoMs: (sendMonoMs + receiveMonoMs) / 2,
+      samples: 1,
+      maxDeviationMs: 0,
+    };
+    session.pageBridge.anchors.push(anchor);
+    if (session.pageBridge.anchors.length > T4_LIMITS.maxCalibrationSamples) session.pageBridge.anchors.shift();
+    // Keep the lowest-uncertainty anchor for projection; a newer one replaces only when better.
+    session.pageBridge.anchor = session.pageBridge.anchors.reduce(
+      (best, item) => (!best || item.uncertaintyMs < best.uncertaintyMs ? item : best), null,
+    );
+    session.pageBridge.dom = snapshot.dom || null;
+    session.pageBridge.lastAt = Date.now();
+    return { snapshot, anchor: session.pageBridge.anchor };
+  }
+
+  #dynamicPageTime(session, atWallMs, atMs) {
+    const anchor = session.pageBridge.anchor;
+    const wall = Number(atWallMs);
+    if (!anchor || !Number.isFinite(wall)) {
+      return { timelineMs: null, logicalMs: Number.isFinite(Number(atMs)) ? Number(atMs) : null, wallMs: Number.isFinite(wall) ? wall : null, uncertaintyMs: null, anchorId: anchor ? anchor.anchorId : null };
+    }
+    return {
+      timelineMs: Math.max(0, (wall + anchor.offsetMs) - session.startedMonoMs),
+      logicalMs: Number.isFinite(Number(atMs)) ? Number(atMs) : null,
+      wallMs: wall,
+      uncertaintyMs: anchor.uncertaintyMs,
+      anchorId: anchor.anchorId,
+    };
+  }
+
+  #dynamicMatchHostAction(session, op) {
+    const target = typeof op.target === 'string' ? op.target : '';
+    const atWall = Number(op.atWallMs);
+    if (!target) return null;
+    const candidates = session.hostActions.filter((action) => {
+      if (!Number.isFinite(atWall)) return true;
+      return Math.abs(action.atWallMs - atWall) <= 1500
+        && (action.target === target || String(action.target || '').includes(target.replace(/^#/, '')));
+    });
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  #dynamicPageEvents(session, page) {
+    const events = [];
+    const dom = page.dom || {};
+    const push = (input) => { try { events.push(this.#dynamicCorrelationEvent(session, input)); } catch { /* one bad row must not kill the snapshot */ } };
+    const visual = page.visual;
+    if (visual) {
+      for (const op of visual.ops || []) {
+        const time = this.#dynamicPageTime(session, op.atWallMs, op.atMs);
+        const host = this.#dynamicMatchHostAction(session, op);
+        push({
+          domain: 'operation', kind: 'page-op', phase: 'end',
+          ts: {
+            timelineMs: time.timelineMs, sourceTimestamp: null, sourceClock: 'page-wall',
+            receivedMonoMs: null, wallMs: time.wallMs, logicalMs: time.logicalMs,
+            anchorId: time.anchorId, uncertaintyMs: time.uncertaintyMs, resolutionMs: 1,
+          },
+          ids: { actionId: host ? host.actionId : null, opId: op.opId || null, frameId: null, traceIdHash: null, requestKey: null },
+          sourceRef: { networkSessionId: session.networkSessionId, networkSeq: null, visualSessionId: session.motionSessionId, frameSeq: null },
+          provenance: {
+            producer: 'page-declared', sourceKind: 'page-ledger', adapterId: null, adapterVersion: null,
+            trust: host ? 'host-observed' : 'page-declared', evidenceIds: host ? [host.actionId] : [], rawHash: null,
+          },
+          payload: { opId: op.opId || null, opKind: op.kind || null, target: op.target || null, hostActionId: host ? host.actionId : null, hostTool: host ? host.tool : null },
+        });
+      }
+      for (const item of visual.events || []) {
+        const time = this.#dynamicPageTime(session, item.atWallMs, item.atMs);
+        const hostOp = item.causeOpId ? (visual.ops || []).find((op) => op.opId === item.causeOpId) : null;
+        const host = hostOp ? this.#dynamicMatchHostAction(session, hostOp) : null;
+        push({
+          domain: 'visual', kind: item.kind || 'visual-event', phase: 'end',
+          ts: {
+            timelineMs: time.timelineMs, sourceTimestamp: null, sourceClock: 'page-wall',
+            receivedMonoMs: null, wallMs: time.wallMs, logicalMs: time.logicalMs,
+            anchorId: time.anchorId, uncertaintyMs: time.uncertaintyMs, resolutionMs: 1,
+          },
+          ids: { actionId: null, opId: item.causeOpId || null, frameId: null, traceIdHash: null, requestKey: null },
+          sourceRef: { networkSessionId: session.networkSessionId, networkSeq: null, visualSessionId: session.motionSessionId, frameSeq: null },
+          provenance: {
+            producer: 'page-declared', sourceKind: 'page-ledger', adapterId: null, adapterVersion: null,
+            trust: 'page-declared', evidenceIds: host ? [host.actionId] : [], rawHash: null,
+          },
+          payload: {
+            causeOpId: item.causeOpId || null,
+            // Explicit only with a unique Host-dispatched action + page receive record.
+            causeVerified: Boolean(host && item.causeOpId),
+            panel: item.panel || null, kind: item.kind || null,
+            clockId: visual.clock && Number.isFinite(Number(visual.clock.startedAtWallMs))
+              ? 'visual-clock-' + String(visual.clock.startedAtWallMs) : null,
+          },
+        });
+      }
+    }
+    const net = page.net;
+    if (net) {
+      for (const op of net.ops || []) {
+        const time = this.#dynamicPageTime(session, op.atWallMs, op.atMs);
+        const host = this.#dynamicMatchHostAction(session, op);
+        push({
+          domain: 'operation', kind: 'page-op', phase: 'end',
+          ts: {
+            timelineMs: time.timelineMs, sourceTimestamp: null, sourceClock: 'page-wall',
+            receivedMonoMs: null, wallMs: time.wallMs, logicalMs: time.logicalMs,
+            anchorId: time.anchorId, uncertaintyMs: time.uncertaintyMs, resolutionMs: 1,
+          },
+          ids: { actionId: host ? host.actionId : null, opId: op.opId || null, frameId: null, traceIdHash: null, requestKey: null },
+          sourceRef: { networkSessionId: session.networkSessionId, networkSeq: null, visualSessionId: null, frameSeq: null },
+          provenance: {
+            producer: 'page-declared', sourceKind: 'page-ledger', adapterId: null, adapterVersion: null,
+            trust: host ? 'host-observed' : 'page-declared', evidenceIds: host ? [host.actionId] : [], rawHash: null,
+          },
+          payload: {
+            opId: op.opId || null, opKind: op.kind || null, target: op.target || null,
+            requestIds: Array.isArray(op.requestIds) ? [...op.requestIds] : [],
+            appRequestIds: Array.isArray(op.requestIds) ? [...op.requestIds] : [],
+          },
+        });
+      }
+      for (const transition of net.ui || []) {
+        const time = this.#dynamicPageTime(session, transition.atWallMs, transition.atMs);
+        const cause = transition.cause && typeof transition.cause === 'object'
+          ? { kind: transition.cause.kind || null, id: transition.cause.id || null }
+          : null;
+        // Independent DOM readback for the most common UI transitions (never the oracle).
+        let causeVerified = false;
+        if (cause && ['request', 'response', 'ws', 'sse', 'poll'].includes(cause.kind)) {
+          if (transition.key === 'error') {
+            causeVerified = Boolean(dom.error && dom.error.hidden === false && dom.error.text.length > 0);
+          } else if (transition.key === 'cart.count') {
+            causeVerified = dom.cartCount !== null && String(transition.to) === String(dom.cartCount);
+          } else if (transition.key === 'order.status') {
+            const label = { pending: '待支付', paid: '已支付', fulfilled: '已完成', cancelled: '已取消' }[String(transition.to)];
+            causeVerified = Boolean(label && dom.orderStatus && dom.orderStatus.includes(label));
+          }
+        }
+        if (causeVerified) session.pageBridge.domVerified += 1;
+        push({
+          domain: 'visual', kind: 'ui-transition', phase: 'end',
+          ts: {
+            timelineMs: time.timelineMs, sourceTimestamp: null, sourceClock: 'page-wall',
+            receivedMonoMs: null, wallMs: time.wallMs, logicalMs: time.logicalMs,
+            anchorId: time.anchorId, uncertaintyMs: time.uncertaintyMs, resolutionMs: 1,
+          },
+          ids: { actionId: null, opId: null, frameId: null, traceIdHash: null, requestKey: null },
+          sourceRef: { networkSessionId: session.networkSessionId, networkSeq: null, visualSessionId: session.motionSessionId, frameSeq: null },
+          provenance: {
+            producer: 'page-declared', sourceKind: 'page-ledger', adapterId: null, adapterVersion: null,
+            trust: 'page-declared', evidenceIds: [], rawHash: null,
+          },
+          payload: {
+            key: transition.key || null, from: transition.from === undefined ? null : transition.from,
+            to: transition.to === undefined ? null : transition.to,
+            uiTransition: true, cause, causeVerified,
+            causeEventId: null,
+          },
+        });
+      }
+    }
+    return events;
+  }
+
+  /**
+   * Bridge page app request ids (`t4-req-*`) to P0 events. P0 sanitizes correlation headers, so
+   * this is a ledger + method/url/status/time MATCH, never a header cross-check: the result is
+   * marked `appRequestIdSource='page-ledger-match'` and `headerVerified=false`, so the core can
+   * only reach `observed`, never `explicit`.
+   */
+  #dynamicBridgeAppRequests(session, networkEvents, pageNet) {
+    const map = new Map();
+    if (!pageNet || !Array.isArray(pageNet.requests) || networkEvents.length === 0) return map;
+    // Group P0 events per request (request/response/finished are separate immutable events).
+    const groups = new Map();
+    for (const event of networkEvents) {
+      const key = [event.payload?.targetId ?? '', event.payload?.cdpSessionId ?? '', event.payload?.requestId ?? '', event.payload?.hopId ?? 0].join('\u0000');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(event);
+    }
+    const requestGroups = [...groups.values()];
+    for (const request of pageNet.requests) {
+      const method = String(request.method || '').toUpperCase();
+      const url = String(request.url || '');
+      const wall = Number(request.atWallMs);
+      if (!method || !url) continue;
+      const pagePath = url.startsWith('/') ? url : null;
+      const sameUrl = (eventUrl) => {
+        if (!eventUrl) return false;
+        if (eventUrl === url) return true;
+        if (!pagePath) return false;
+        try {
+          const parsed = new URL(eventUrl);
+          return parsed.pathname === pagePath.split('?')[0]
+            && (!pagePath.includes('?') || (parsed.search || '') === '?' + pagePath.split('?').slice(1).join('?'));
+        } catch { return String(eventUrl).endsWith(url); }
+      };
+      const matches = [];
+      for (const group of requestGroups) {
+        const sample = group.find((event) => String(event.payload?.method || '').toUpperCase() === method
+          && sameUrl(String(event.payload?.url || '')));
+        if (!sample) continue;
+        let distance = 0;
+        if (Number.isFinite(wall)) {
+          const groupWall = Math.min(...group.map((event) => Number(event.ts?.wallMs)).filter((value) => Number.isFinite(value)));
+          if (!Number.isFinite(groupWall)) continue;
+          distance = Math.abs(groupWall - wall);
+          if (distance > 5000) continue;
+        }
+        matches.push({ group, distance });
+      }
+      if (matches.length === 0) continue;
+      // Repeated scenarios reuse the same URL: keep the CLOSEST group, and refuse a tie.
+      matches.sort((left, right) => left.distance - right.distance);
+      if (matches.length > 1 && matches[1].distance - matches[0].distance < 250) continue;
+      const group = matches[0].group;
+      const appRequestId = String(request.requestId || '');
+      if (!appRequestId) continue;
+      const preference = ['finished', 'failed', 'response', 'request', 'redirect', 'ws-handshake', 'ws-created'];
+      let representative = group[0];
+      for (const event of group) {
+        const rank = preference.indexOf(event.payload?.phase);
+        if (rank !== -1 && (preference.indexOf(representative.payload?.phase) === -1
+          || rank < preference.indexOf(representative.payload?.phase))) representative = event;
+      }
+      for (const event of group) {
+        const payload = event.payload || (event.payload = {});
+        payload.appRequestId = appRequestId;
+        payload.appRequestIds = [appRequestId];
+        payload.appRequestIdSource = 'page-ledger-match';
+        payload.headerVerified = false;
+      }
+      map.set(appRequestId, representative);
+    }
+    return map;
+  }
+
+  #dynamicSessionById(dynamicSessionId) {
+    const id = String(dynamicSessionId);
+    const candidates = [this.dynamic.session, ...this.dynamic.records].filter(Boolean);
+    return candidates.find((record) => record.retained && record.dynamicSessionId === id) || null;
+  }
+
+  #dynamicCorrelationEvent(session, input) {
+    const core = this.dynamic.core;
+    const event = {
+      version: 1,
+      dynamicSessionId: session.dynamicSessionId,
+      domain: input.domain,
+      kind: input.kind,
+      phase: input.phase === undefined ? null : input.phase,
+      scopeId: this.scope.id,
+      runtimeId: this.runtimeId,
+      pageGeneration: session.pageGeneration,
+      documentEpoch: input.documentEpoch === undefined ? session.documentEpoch : input.documentEpoch,
+      targetId: this.page ? this.page.targetId : null,
+      cdpSessionId: null,
+      documentFrameId: null,
+      ts: input.ts || {},
+      ids: input.ids || {},
+      sourceRef: input.sourceRef || {},
+      provenance: input.provenance || {
+        producer: 'host', sourceKind: 'runtime', adapterId: null, adapterVersion: null,
+        trust: 'host-observed', evidenceIds: [], rawHash: null,
+      },
+      payload: input.payload || {},
+      incomplete: Array.isArray(input.incomplete) ? input.incomplete : [],
+      truncated: false,
+    };
+    return core ? core.normalizeDynamicEvent(event, {
+      dynamicSessionId: session.dynamicSessionId, scopeId: this.scope.id, now: () => dynamicMonoNow(),
+    }) : event;
+  }
+
+  #dynamicVisualEvents(session, limit = 200) {
+    const frames = this.#dynamicFramesOf(session, { limit });
+    const events = [];
+    for (const frame of frames) {
+      events.push(this.#dynamicCorrelationEvent(session, {
+        domain: 'visual',
+        kind: 'frame',
+        phase: 'sample',
+        ts: {
+          timelineMs: Number.isFinite(frame.timelineMs) ? frame.timelineMs : null,
+          sourceTimestamp: Number.isFinite(frame.sourceTimestamp) ? frame.sourceTimestamp : null,
+          sourceClock: frame.sourceClock || session.config.source,
+          receivedMonoMs: frame.receivedMonoMs,
+          wallMs: null,
+          logicalMs: null,
+          anchorId: null,
+          uncertaintyMs: frame.sourceTimestamp === null ? null : null,
+          resolutionMs: null,
+        },
+        ids: { actionId: null, opId: null, frameId: frame.frameId, traceIdHash: null, requestKey: null },
+        sourceRef: { networkSessionId: session.networkSessionId, networkSeq: null, visualSessionId: session.motionSessionId, frameSeq: frame.seq },
+        payload: { frameId: frame.frameId, encoding: frame.encoding, sha256: frame.sha256, bytes: frame.bytesLength === undefined ? null : frame.bytesLength },
+        incomplete: Array.isArray(frame.incomplete) ? frame.incomplete : [],
+      }));
+    }
+    return events;
+  }
+
+  #dynamicOperationEvents(session, limit = 200) {
+    const listed = this.#dynamicQueryEvents(session, { domains: ['operation'], limit });
+    const list = Array.isArray(listed) ? listed : [];
+    return list.map((event) => this.#dynamicCorrelationEvent(session, {
+      domain: 'operation',
+      kind: event.kind,
+      phase: event.phase,
+      ts: event.ts || {},
+      ids: event.ids || {},
+      sourceRef: event.sourceRef || {},
+      payload: event.payload || {},
+      incomplete: event.incomplete || [],
+    }));
+  }
+
+  #dynamicNetworkEvents(session, limit = 200) {
+    if (!session.networkSessionId) return null;
+    const current = this.net.session;
+    if (!current || current.id !== session.networkSessionId) return null;
+    let queried;
+    try {
+      // Take the NEWEST 200 events explicitly: `order` alone is not a guarantee that the page
+      // selection starts at the high-water mark, and a long-lived P0 session can hold thousands.
+      const pageLimit = Math.min(limit, 200);
+      const highWater = Number.isInteger(this.net.seq) ? this.net.seq : 0;
+      const sinceSeq = Math.max(0, highWater - (pageLimit - 1));
+      queried = network.queryEvents(this.net, { sinceSeq, limit: pageLimit, view: 'full' });
+    } catch { return null; }
+    const list = queried && Array.isArray(queried.events) ? queried.events : [];
+    return list.map((event) => {
+      const wallMs = event.ts && Number.isFinite(event.ts.wallMs) ? event.ts.wallMs : null;
+      const timelineMs = wallMs === null ? null : Math.max(0, wallMs - session.startedAt);
+      return this.#dynamicCorrelationEvent(session, {
+        domain: 'network',
+        kind: event.kind || 'http',
+        phase: event.phase || null,
+        ts: {
+          timelineMs,
+          sourceTimestamp: event.ts && Number.isFinite(event.ts.cdpSeconds) ? event.ts.cdpSeconds : null,
+          sourceClock: 'cdp-network',
+          receivedMonoMs: null,
+          wallMs,
+          logicalMs: null,
+          anchorId: null,
+          uncertaintyMs: null,
+          resolutionMs: null,
+        },
+        ids: {
+          actionId: null, opId: null, frameId: null,
+          traceIdHash: event.correlation && event.correlation.traceIdHash ? event.correlation.traceIdHash : null,
+          requestKey: event.requestId ? {
+            networkSessionId: session.networkSessionId,
+            targetId: event.targetId === undefined ? null : event.targetId,
+            cdpSessionId: event.cdpSessionId === undefined ? null : event.cdpSessionId,
+            requestId: String(event.requestId),
+            hopId: Number.isInteger(event.hopId) ? event.hopId : 0,
+          } : null,
+        },
+        sourceRef: { networkSessionId: session.networkSessionId, networkSeq: event.seq, visualSessionId: null, frameSeq: null },
+        payload: {
+          kind: event.kind, phase: event.phase, method: event.method || null, url: event.url || null,
+          status: event.status === undefined ? null : event.status,
+          seq: Number.isInteger(event.seq) ? event.seq : null,
+          targetId: event.targetId === undefined ? null : event.targetId,
+          cdpSessionId: event.cdpSessionId === undefined ? null : event.cdpSessionId,
+          requestId: event.requestId === undefined ? null : event.requestId,
+          hopId: Number.isInteger(event.hopId) ? event.hopId : 0,
+          durationMs: event.timing && Number.isFinite(event.timing.totalMs) ? event.timing.totalMs : null,
+          // WS/SSE payload fragments so a page-declared `cause.id` (e.g. ws-frame-1) can be matched.
+          text: event.text === undefined ? null : event.text,
+          data: event.data === undefined ? null : event.data,
+          message: event.message === undefined ? null : event.message,
+          redirect: event.redirect && typeof event.redirect === 'object' ? {
+            from: event.redirect.from === undefined ? null : event.redirect.from,
+            to: event.redirect.to === undefined ? null : event.redirect.to,
+            status: event.redirect.status === undefined ? null : event.redirect.status,
+            fromSeq: Number.isInteger(event.redirect.fromSeq) ? event.redirect.fromSeq : null,
+            toSeq: Number.isInteger(event.redirect.toSeq) ? event.redirect.toSeq : null,
+          } : null,
+        },
+        provenance: {
+          producer: 'p0-network', sourceKind: 'cdp-network', adapterId: null, adapterVersion: null,
+          trust: 'cdp-observed', evidenceIds: [], rawHash: null,
+        },
+      });
+    });
+  }
+
+  /** `browser_dynamic_correlate` (contract §2.5 / §3.5). Pure query: no ensure, no lease. */
+  async dynamicCorrelate(args) {
+    const correlateStartedAt = Date.now();
+    assertDynamicKeys(args, ['dynamicSessionId', 'motionSessionId', 'networkSessionId', 'window', 'directions',
+      'eventIds', 'includeTemporal', 'beforeMs', 'afterMs', 'limit', 'cursor'], 'dynamic_correlate');
+    if (typeof args.dynamicSessionId !== 'string' || args.dynamicSessionId === '') {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'dynamicSessionId 必须是非空字符串', { field: 'dynamicSessionId' });
+    }
+    const session = this.#dynamicSessionById(args.dynamicSessionId);
+    if (!session) throw new BrowserError('DYNAMIC_SESSION_NOT_FOUND', '动态会话不存在或不属于本 scope', { dynamicSessionId: args.dynamicSessionId });
+    const motionSessionId = args.motionSessionId === undefined ? null : args.motionSessionId;
+    const networkSessionId = args.networkSessionId === undefined ? null : args.networkSessionId;
+    if (!motionSessionId && !networkSessionId) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', '首次查询必须显式给 motionSessionId 或 networkSessionId', { fields: ['motionSessionId', 'networkSessionId'] });
+    }
+    if (motionSessionId !== null && motionSessionId !== session.motionSessionId) {
+      throw new BrowserError('DYNAMIC_SESSION_NOT_FOUND', 'motionSessionId 不属于该动态会话', { motionSessionId });
+    }
+    if (networkSessionId !== null && networkSessionId !== session.networkSessionId) {
+      throw new BrowserError('DYNAMIC_SESSION_NOT_FOUND', 'networkSessionId 不属于该动态会话', { networkSessionId });
+    }
+    const window = args.window === undefined ? null : normalizeDynamicWindow(args.window);
+    let directions = null;
+    if (args.directions !== undefined) {
+      if (!Array.isArray(args.directions) || args.directions.length === 0) {
+        throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'directions 必须是非空数组', { field: 'directions' });
+      }
+      directions = [];
+      for (const direction of args.directions) {
+        if (!DYNAMIC_DIRECTIONS.includes(direction)) {
+          throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'direction 不合法', { field: 'directions', allowed: [...DYNAMIC_DIRECTIONS] });
+        }
+        if (!directions.includes(direction)) directions.push(direction);
+      }
+    }
+    const eventIds = dynamicIdList(args.eventIds, 'eventIds', T4_LIMITS.maxIds);
+    const includeTemporal = args.includeTemporal === undefined ? false : args.includeTemporal;
+    if (typeof includeTemporal !== 'boolean') throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'includeTemporal 必须是布尔值', { field: 'includeTemporal' });
+    let beforeMs = T4_LIMITS.correlationBeforeMs;
+    let afterMs = T4_LIMITS.correlationAfterMs;
+    if (args.beforeMs !== undefined) {
+      beforeMs = dynamicFinite(args.beforeMs, 'beforeMs');
+      if (beforeMs < 0 || beforeMs > T4_LIMITS.maxCorrelationBeforeMs) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'beforeMs 越界', { field: 'beforeMs' });
+    }
+    if (args.afterMs !== undefined) {
+      afterMs = dynamicFinite(args.afterMs, 'afterMs');
+      if (afterMs < 0 || afterMs > T4_LIMITS.maxCorrelationAfterMs) throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'afterMs 越界', { field: 'afterMs' });
+    }
+    let limit = 50;
+    if (args.limit !== undefined) limit = dynamicInteger(args.limit, 'limit', 1, 200);
+    if (args.cursor !== undefined && (typeof args.cursor !== 'string' || args.cursor === '' || Buffer.byteLength(args.cursor, 'utf8') > 2048)) {
+      throw new BrowserError('DYNAMIC_INVALID_ARGUMENT', 'cursor 必须是 ≤2048 字节的非空字符串', { field: 'cursor' });
+    }
+    const core = await this.#dynamicLoadCore();
+    // Authorized page-ledger snapshot (read-only, documented fields only). A page without `__t4`
+    // is reported as sourceUnavailable; it is never turned into a fake empty ledger.
+    let page = null;
+    // Read the page ledger whenever THIS runtime still owns the SAME page/document as the session,
+    // including a retained (stopped/duration-expired) session: stored correlation must stay usable
+    // after stop. The evaluate goes to the MAIN world (no isolated contextId), so `window.__t4` is
+    // the same object `browser_eval` sees.
+    const pageIdentityMatches = Boolean(this.page)
+      && (session.pageGeneration === null || session.pageGeneration === undefined || session.pageGeneration === this.page.generation)
+      && (session.documentEpoch === null || session.documentEpoch === undefined || session.documentEpoch === this.t2.documentEpoch);
+    if ((session.captureVisual || session.networkSessionId) && this.page && pageIdentityMatches) {
+      try { page = await this.#dynamicPageSnapshot(session); } catch { page = null; }
+    } else if ((session.captureVisual || session.networkSessionId) && this.page) {
+      session.pageBridge.lastError = { code: 'page-identity-changed', message: 'documentEpoch/pageGeneration differs from the session' };
+    }
+    const epochMismatch = page !== null && session.documentEpoch !== this.t2.documentEpoch;
+    if (epochMismatch && !session.issues.includes('document-changed-since-start')) {
+      session.issues.push('document-changed-since-start');
+    }
+    const pageEvents = page ? this.#dynamicPageEvents(session, page.snapshot) : [];
+    const pageOperations = pageEvents.filter((event) => event.domain === 'operation');
+    const pageVisuals = pageEvents.filter((event) => event.domain === 'visual');
+    const networkEvents = this.#dynamicNetworkEvents(session);
+    const appRequestMap = networkEvents ? this.#dynamicBridgeAppRequests(session, networkEvents, page && page.snapshot.net) : new Map();
+    // DC05: project P0 redirect parent endpoints into the RequestKey form the core joins on.
+    if (networkEvents) {
+      const bySeq = new Map();
+      for (const event of networkEvents) {
+        if (Number.isInteger(event.payload?.seq)) bySeq.set(event.payload.seq, event);
+      }
+      for (const event of networkEvents) {
+        const redirect = event.payload?.redirect;
+        if (!redirect || !Number.isInteger(redirect.fromSeq)) continue;
+        const parent = bySeq.get(redirect.fromSeq);
+        const key = parent && parent.ids && parent.ids.requestKey;
+        if (!key) continue;
+        event.payload.redirectFromRequestKey = [
+          key.networkSessionId ?? '', key.targetId ?? '', key.cdpSessionId ?? '',
+          key.requestId, Number.isInteger(key.hopId) ? key.hopId : 0,
+        ].join('\u0000');
+      }
+    }
+    // DC04: the fixture has no retryFrom parent edge. Link a retry POST that happens AFTER the
+    // visible error transition to that page-declared error event; the core can then only reach
+    // observed (causeVerified stays false), never confirmed-causal.
+    const errorVisual = pageVisuals
+      .filter((event) => event.payload && event.payload.key === 'error')
+      .sort((left, right) => (left.ts.timelineMs ?? 0) - (right.ts.timelineMs ?? 0))
+      .pop() || null;
+    if (errorVisual && networkEvents) {
+      for (const event of networkEvents) {
+        const payload = event.payload || {};
+        if (String(payload.method || '').toUpperCase() !== 'POST') continue;
+        if (!String(payload.url || '').includes('/api/t4/orders')) continue;
+        if (payload.phase !== 'request') continue;
+        if (!Number.isFinite(event.ts.timelineMs) || !Number.isFinite(errorVisual.ts.timelineMs)) continue;
+        if (event.ts.timelineMs > errorVisual.ts.timelineMs) {
+          payload.causeEventId = errorVisual.eventId;
+          payload.causeVerified = false;
+        }
+      }
+    }
+    // Resolve page-declared UI causes to the P0 endpoint by the same ledger match; verification
+    // still requires the DOM readback recorded above.
+    for (const visualEvent of pageVisuals) {
+      const cause = visualEvent.payload && visualEvent.payload.cause;
+      if (!cause || !cause.id) continue;
+      let endpoint = null;
+      if (cause.kind === 'request' || cause.kind === 'response') {
+        endpoint = appRequestMap.get(String(cause.id)) || null;
+      } else if (networkEvents) {
+        // WS frame / SSE event / poll endpoint: match the page-declared id or the closest event
+        // of the same kind; a non-unique match stays unresolved instead of guessing.
+        const kind = cause.kind;
+        const wanted = String(cause.id);
+        const candidates = networkEvents.filter((event) => {
+          const payload = event.payload || {};
+          if (kind === 'ws') return payload.kind === 'ws' || event.kind === 'ws';
+          if (kind === 'sse') return payload.kind === 'sse' || event.kind === 'sse';
+          if (kind === 'poll') return String(payload.method || '').toUpperCase() === 'GET'
+            && String(payload.url || '').includes('/api/t4/orders/');
+          return false;
+        });
+        const byId = candidates.filter((event) => {
+          const payload = event.payload || {};
+          const text = JSON.stringify(payload);
+          return text.includes(wanted) || String(payload.requestId || '').includes(wanted)
+            || String(payload.url || '').includes(wanted);
+        });
+        const pool = byId.length === 1 ? byId : candidates;
+        if (pool.length === 1) endpoint = pool[0];
+        else if (pool.length > 1) {
+          const visualTime = visualEvent.ts.timelineMs;
+          const timed = pool
+            .filter((event) => Number.isFinite(event.ts.timelineMs) && Number.isFinite(visualTime))
+            .map((event) => ({ event, distance: Math.abs(event.ts.timelineMs - visualTime) }))
+            .sort((left, right) => left.distance - right.distance);
+          if (timed.length && (timed.length === 1 || timed[1].distance - timed[0].distance > 50)) endpoint = timed[0].event;
+        }
+      }
+      if (endpoint) {
+        visualEvent.payload.causeEventId = endpoint.eventId;
+        visualEvent.payload.causeVerified = visualEvent.payload.causeVerified === true && Boolean(endpoint);
+      }
+    }
+    const operationEvents = [...this.#dynamicOperationEvents(session), ...pageOperations];
+    const frameEvents = session.captureVisual ? this.#dynamicVisualEvents(session) : [];
+    const visualEvents = [...frameEvents, ...pageVisuals];
+    const operationIntegrity = (() => { try { return session.events ? session.events.integrity() : null; } catch { return null; } })();
+    const visualIntegrity = session.frames ? this.#dynamicIntegrity(session) : null;
+    const networkIntegrity = (() => { try { return this.net ? network.integrityView?.(this.net) ?? null : null; } catch { return null; } })();
+    const pageSource = page
+      ? {
+        available: true, provenance: 'page-declared',
+        anchorId: page.anchor ? page.anchor.anchorId : null,
+        uncertaintyMs: page.anchor ? page.anchor.uncertaintyMs : null,
+        documentEpoch: this.t2.documentEpoch,
+        epochMatchesSession: !epochMismatch,
+      }
+      : {
+        available: false, reason: 'page-ledger-unavailable',
+        error: session.pageBridge.lastError || null,
+      };
+    if (!page && session.captureVisual && visualIntegrity && !visualIntegrity.issues.includes('page-ledger-unavailable')) {
+      visualIntegrity.issues.push('page-ledger-unavailable');
+    }
+    const input = {
+      dynamicSessionId: session.dynamicSessionId,
+      scopeId: this.scope.id,
+      sources: {
+        operation: {
+          events: operationEvents,
+          integrity: { ...(operationIntegrity || {}), pageSource },
+          highWater: Math.max(session.events ? session.events.highWater : 0, pageOperations.length),
+        },
+        visual: session.captureVisual ? {
+          events: visualEvents,
+          integrity: { ...(visualIntegrity || {}), pageSource },
+          highWater: Math.max(session.frames ? session.frames.highWater : 0, pageVisuals.length),
+        } : null,
+        network: networkEvents ? {
+          events: networkEvents,
+          integrity: { ...(networkIntegrity || {}), pageSource: page && page.snapshot.net ? { available: true, provenance: 'page-declared' } : { available: false, reason: 'page-ledger-unavailable' } },
+          highWater: this.net.seq,
+        } : null,
+      },
+      includeTemporal,
+      beforeMs,
+      afterMs,
+      limit,
+    };
+    if (window) input.window = window;
+    if (directions) input.directions = directions;
+    if (eventIds) input.eventIds = eventIds;
+    if (args.cursor !== undefined) input.cursor = args.cursor;
+    let result;
+    try {
+      result = core.correlateDynamic(input);
+    } catch (error) {
+      throw asBrowserError(error);
+    }
+    this.#dynamicTouch('dynamic.correlate', { verdict: result && result.verdict ? result.verdict.status : null });
+    // Core diagnostics are authoritative (same-domain prefilter + real compare counts). The Host
+    // keeps its own upper-bound estimate only under an explicitly named field, never as `estimated`.
+    const coreDiagnostics = result && result.diagnostics && typeof result.diagnostics === 'object'
+      ? result.diagnostics : null;
+    const hostUpperBoundPairComparisons =
+      operationEvents.length * operationEvents.length
+      + visualEvents.length * visualEvents.length
+      + (networkEvents ? networkEvents.length * networkEvents.length : 0)
+      + operationEvents.length * visualEvents.length
+      + visualEvents.length * (networkEvents ? networkEvents.length : 0)
+      + operationEvents.length * (networkEvents ? networkEvents.length : 0);
+    const diagnostics = {
+      sources: {
+        operation: operationEvents.length,
+        visual: visualEvents.length,
+        network: networkEvents ? networkEvents.length : 0,
+        frames: session.frames ? session.frames.highWater : 0,
+      },
+      directions: (directions || DYNAMIC_DIRECTIONS).length,
+      limit,
+      window,
+      beforeMs,
+      afterMs,
+      elapsedMs: Date.now() - correlateStartedAt,
+      // Actual comparisons reported by the pure core (after the same-domain time-window prefilter).
+      estimatedPairComparisons: coreDiagnostics ? coreDiagnostics.estimatedPairComparisons : null,
+      pairComparisons: coreDiagnostics ? coreDiagnostics.pairComparisons : null,
+      upperBoundPairComparisons: coreDiagnostics ? coreDiagnostics.upperBoundPairComparisons : null,
+      directionComparisons: coreDiagnostics ? coreDiagnostics.directionComparisons : null,
+      sameDomainPrefilter: coreDiagnostics ? coreDiagnostics.sameDomainPrefilter : null,
+      candidateBudgetExhausted: coreDiagnostics ? coreDiagnostics.candidateBudgetExhausted : null,
+      // Host-only upper bound, explicitly labelled; never presented as the core's actual count.
+      hostUpperBoundPairComparisons,
+      maxCandidateCompares: coreDiagnostics ? coreDiagnostics.maxCandidateCompares : T4_LIMITS.maxCandidateCompares,
+      // Never hard-coded: the value actually enforced by the loaded core.
+      enforcedMaxCandidateCompares: coreDiagnostics
+        ? coreDiagnostics.maxCandidateCompares
+        : (this.dynamic.core && this.dynamic.core.T4_LIMITS ? this.dynamic.core.T4_LIMITS.maxCandidateCompares : null),
+      pairCount: Array.isArray(result && result.pairs) ? result.pairs.length : null,
+      truncated: result && result.truncated === true,
+      incomplete: result && Array.isArray(result.incomplete) ? [...result.incomplete] : [],
+    };
+    return {
+      ok: true,
+      ...result,
+      pageSource: pageSource,
+      diagnostics,
+      evidence: this.#dynamicEvidence('dynamic.correlate', session),
+    };
+  }
+
+  #dynamicEmptyRestoreStatus() {
+    return { status: 'not-needed', attempted: [], restored: [], failed: [], conflicts: [], lastObserved: [] };
+  }
+
+  /** Sessions of this scope that still hold a control obligation (any target written). */
+  #dynamicControlObligations() {
+    const seen = new Set();
+    const list = [];
+    for (const session of [this.dynamic.session, ...this.dynamic.records]) {
+      if (!session || !session.control || session.control.targets.length === 0) continue;
+      if (seen.has(session.dynamicSessionId)) continue;
+      seen.add(session.dynamicSessionId);
+      list.push(session);
+    }
+    // Unwind the provable Host control chain newest-write-first across sessions.
+    list.sort((left, right) => {
+      const lastWrite = (session) => Math.max(0, ...session.control.targets.map((entry) => Number(entry.lastWrittenAtMonoMs) || 0));
+      return lastWrite(right) - lastWrite(left);
+    });
+    return list;
+  }
+
+  #dynamicAggregateRestore(restores) {
+    if (!restores.length) return this.#dynamicEmptyRestoreStatus();
+    const status = {
+      status: 'restored', attempted: [], restored: [], failed: [], conflicts: [], lastObserved: [],
+    };
+    for (const entry of restores) {
+      status.attempted.push(...(entry.attempted || []));
+      status.restored.push(...(entry.restored || []));
+      status.failed.push(...(entry.failed || []));
+      status.conflicts.push(...(entry.conflicts || []));
+      status.lastObserved.push(...(entry.lastObserved || []));
+    }
+    if (status.failed.length > 0) status.status = 'failed';
+    else if (status.conflicts.length > 0 && status.restored.length === 0) status.status = 'conflict';
+    else if (status.restored.length === 0) status.status = 'not-needed';
+    else status.status = status.conflicts.length ? 'partial' : 'restored';
+    return status;
+  }
+
+  /** Restore EVERY unfinished control obligation in this scope (running/stopped/retained). */
+  async #dynamicRestoreAll(reason) {
+    const sessions = this.#dynamicControlObligations();
+    const restores = [];
+    for (const session of sessions) {
+      let status = null;
+      try { status = await this.#dynamicRestoreControl(session, reason); } catch (error) {
+        status = {
+          status: 'failed', attempted: [], restored: [],
+          failed: [{ targetId: '*', code: 'DYNAMIC_RESTORE_FAILED', reason: String((error && error.message) || error) }],
+          conflicts: [], lastObserved: [],
+        };
+      }
+      restores.push({
+        dynamicSessionId: session.dynamicSessionId,
+        motionSessionId: session.motionSessionId,
+        attempted: Array.isArray(status?.attempted) ? status.attempted : [],
+        restored: Array.isArray(status?.restored) ? status.restored : [],
+        failed: Array.isArray(status?.failed) ? status.failed : [],
+        conflicts: Array.isArray(status?.conflicts) ? status.conflicts : [],
+        lastObserved: Array.isArray(status?.lastObserved) ? status.lastObserved : [],
+        status: status?.status || 'failed',
+      });
+    }
+    return restores;
+  }
+
+  /** Best-effort restore of this session's control fields, reusable on stop/duration/close. */
+  async #dynamicFinalRestore(session, reason) {
+    if (!session || !session.control || session.control.targets.length === 0) return null;
+    let status = null;
+    try { status = await this.#dynamicRestoreControl(session, reason); } catch { status = null; }
+    // Keep the targets so a later explicit restore on the retained session is still reachable and
+    // idempotent: the last-written state becomes the restored original.
+    if (status && status.status === 'restored') {
+      for (const entry of session.control.targets) {
+        if (entry.original) entry.lastWritten = { ...entry.original };
+      }
+    }
+    return status;
+  }
+
+  /** Plugin unload: stop the sink and release every frame/event store of this scope. */
+  async disposeDynamic() {
+    const restores = await this.#dynamicRestoreAll('dispose');
+    this.dynamic.disposeRestore = { restores, restoreStatus: this.#dynamicAggregateRestore(restores) };
+    await this.#dynamicTeardown('dispose');
+  }
+
+  /** Best-effort teardown used by close/dispose: stop the visual sink and restore nothing here. */
+  async #dynamicTeardown(reason) {
+    const session = this.dynamic.session;
+    try { if (session) await this.#dynamicDetachSink(session, reason); } catch { /* best effort */ }
+    this.dynamic.session = null;
+    this.dynamic.sink = null;
+    for (const record of this.dynamic.records) {
+      try { if (record.frames) record.frames.dispose(); } catch { /* best effort */ }
+      try { if (record.events) record.events.dispose(); } catch { /* best effort */ }
+      record.frames = null;
+      record.events = null;
+      record.imageCache.clear();
+    }
+    this.dynamic.records = [];
+  }
+
   /** Pushes the combined throttle/offline state to the page (§7.4 + R1-13). */
   async #netApplyConditions(signal) {
     const params = this.netCtl.conditions();
@@ -7649,6 +10962,11 @@ export class Runtime {
       try { await this.starting; } catch { /* start failure already cleaned up */ }
     }
     try { if (this.frameTransport) this.frameTransport.closeClients(); } catch { /* ignore */ }
+    // T4: restore EVERY unfinished control (retained included) while the page is still alive.
+    try {
+      const restores = await this.#dynamicRestoreAll('page-closed');
+      this.dynamic.closeRestore = { restores, restoreStatus: this.#dynamicAggregateRestore(restores) };
+    } catch { /* best effort */ }
     try { if (this.cdp && !this.cdp.closed) await this.cdp.send('Page.stopScreencast', {}, { timeoutMs: 200 }); } catch { /* ignore */ }
     try { if (this.cdpOff) this.cdpOff(); } catch { /* ignore */ }
     this.cdpOff = undefined;
@@ -7662,6 +10980,15 @@ export class Runtime {
     // pages and the temporary profile belong to the BrowserHost.
     try { await this.host.closePage(this, closedPage?.targetId); } catch { /* ignore */ }
 
+    // Web T4: the page close ends the screencast correlation but NOT the stored evidence. The sink
+    // is detached/flushed and the session becomes stopped; frame stores stay readable (observe is a
+    // pure query and must not require a page). Only plugin teardown releases them.
+    try {
+      const dynamicSession = this.dynamic.session;
+      if (dynamicSession) await this.#dynamicDetachSink(dynamicSession, 'page-closed');
+      this.dynamic.session = null;
+      this.dynamic.sink = null;
+    } catch { /* evidence only */ }
     this.frames.stop();
     // Network collector teardown: release held requests (never leave a paused request behind),
     // stop collecting, drop child-session bookkeeping. Exported evidence files stay on disk.
@@ -8157,6 +11484,7 @@ export class RuntimeRegistry {
       try { this.onRetire?.(runtime); } catch { /* ignore */ }
       try { runtime.frameTransport?.dispose?.(); } catch { /* ignore */ }
       try { runtime.disposeVision?.(); } catch { /* ignore */ }
+      try { await runtime.disposeDynamic?.(); } catch { /* ignore */ }
     }
     if (this.host) { try { await this.host.close(); } catch { /* ignore */ } }
   }
@@ -9198,9 +12526,6 @@ export function apply(ctx) {
       // subscribe) are scope-local reads: they resolve the workspace runtime but never take the page
       // queue, the lease, or lazily start Chromium (docs/network-p0.md §2, R1-5).
       const isNetworkRead = definition.networkRead === true;
-      // The independent HTTP tool must not enter the page queue, the lease, activity or
-      // lastError; only real page/network operations participate in the error projection.
-      const pageOperation = !readOnly && !diagnostic && !isHttpRequest && !isNetworkRead;
       // Resolve the workspace scope from the exec identity only (never from a client-supplied
       // path). No exec identity at all is the old protocol and maps to legacy:default.
       let entry;
@@ -9226,6 +12551,12 @@ export function apply(ctx) {
         // never gate or fail the request.
         meta.scope = { id: null, kind: 'unknown', workspaceId: null, degraded: true };
       }
+      // Host-memory-only dynamic actions (status/reset, pure-network session start/stop) must not
+      // take the page queue, the lease or ensure a page (docs/t4-implementation-contract.md §1/§2.1).
+      const hostOnly = typeof definition.hostOnly === 'function' && definition.hostOnly(args, runtime) === true;
+      // The independent HTTP tool must not enter the page queue, the lease, activity or lastError;
+      // only real page/network operations participate in the error projection.
+      const pageOperation = !readOnly && !hostOnly && !diagnostic && !isHttpRequest && !isNetworkRead;
       const actionTarget = definition.name === 'browser_navigate'
         ? redactUrl(String((args && args.url) || ''))
         : (runtime && runtime.url ? redactUrl(runtime.url) : null);
@@ -9255,8 +12586,8 @@ export function apply(ctx) {
         // (not even the queue's Page.bringToFront) and must not touch owner/error state
         // (docs/viewport-control.md §7.1). Validation is pure: no browser, no file, no lease.
         if (typeof definition.preflight === 'function') definition.preflight(args);
-        if (readOnly) {
-          // Cache-only diagnostic: deliberately outside run() so it cannot activate the page,
+        if (readOnly || hostOnly) {
+          // Cache-only diagnostic / host-memory-only action: deliberately outside run() so it cannot activate the page,
           // wait behind the queue, claim the lease or mark the entry recent.
           meta.target = runtime.url ? redactUrl(runtime.url) : '';
           const value = await execute(args, { ...exec, meta, sessionId, runtime, httpClient });
@@ -9289,6 +12620,10 @@ export function apply(ctx) {
         if (pageOperation) {
           registry.touch(entry);
           registry.markRecent(entry);
+          // T4 page-action bridge (Lead-authorized): a successful Host-dispatched page action is
+          // recorded so the page ledger's opId can be matched to this actionId. Only identity and
+          // a bounded timestamp are kept; no page value is read here.
+          try { runtime.noteDynamicAction({ actionId: meta.actionId, tool: definition.name, target: dynamicActionTarget(args, actionTarget), atWallMs: Date.now(), atMonoMs: dynamicMonoNow() }); } catch { /* evidence only */ }
           // Any successful page operation may have moved the page (scrollIntoView, click, drag,
           // navigation, a script): refresh the view cache once, coalesced/throttled.
           // `browser_viewport set` is excluded — applyView already did its own bounded readback, and
@@ -9725,7 +13060,7 @@ export function apply(ctx) {
         attachment,
         attachmentId: attachment ? (attachment.attachmentId || attachment.id) : null,
         imageDelivery,
-        attachmentError,
+        ...(attachmentError === undefined ? {} : { attachmentError }),
         capture: {
           ...baseCapture,
           sizeCheck: {
@@ -10008,6 +13343,191 @@ export function apply(ctx) {
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
       return exec.runtime.netSubscribe(args || {}, exec.meta.sessionId);
+    },
+  });
+
+  register({
+    name: 'browser_dynamic_session',
+    description: '启停/查询/重置本 scope 的 T4 动态会话（Web T4 M1）：start/stop/status/reset。'
+      + 'captureVisual:true（默认）必须显式给 config.source=screencast|screenshot-loop；screencast 复用 T1 预览的唯一 CDP 流（jpeg，只挂 sink，不停/不重启预览，显式 png/region/非 1 scale 以 DYNAMIC_SOURCE_UNAVAILABLE 拒绝）。'
+      + 'captureVisual:false 只建纯网络关联视图：networkSessionId 必给且须是已有本 scope P0 会话，不启动浏览器/P0、不采帧、motionSessionId=null。'
+      + '同 scope 1 个活动会话；start 立即返回，采集由内部有界任务计时（durationMs 到界自动 stopped）。status/reset 只读缓存不启动浏览器。',
+    hostOnly: (args, runtime) => {
+      if (!args) return false;
+      if (args.action === 'start') return Boolean(args.config && args.config.captureVisual === false);
+      if (args.action === 'stop' || args.action === 'reset') {
+        const state = runtime && runtime.dynamic;
+        const sessions = state ? [state.session, ...state.records].filter(Boolean) : [];
+        const hasObligation = sessions.some((session) => session.control && session.control.targets.length > 0);
+        return !hasObligation;
+      }
+      return args.action === 'status' || args.action === 'extend';
+    },
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['start', 'stop', 'status', 'reset', 'extend'] },
+        name: { type: 'string', description: '≤64 字节，仅 start，默认 default' },
+        config: {
+          type: 'object',
+          description: '仅 start：captureVisual/networkSessionId/source/encoding/durationMs/maxFrames/maxBytes/region/scale/sampleIntervalMs',
+        },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      try {
+        return await exec.runtime.dynamicSession(args || {}, exec, exec.signal);
+      } catch (error) {
+        const classified = asBrowserError(error);
+        const operation = 'session.' + String((args && args.action) || 'unknown');
+        classified.details = { ...(classified.details || {}), evidence: { dynamic: exec.runtime.dynamicErrorEvidence(operation) } };
+        throw classified;
+      }
+    },
+  });
+
+  register({
+    readOnly: (args) => !args || args.fresh !== true,
+    name: 'browser_motion_observe',
+    description: '只读查询 T4 动态会话的帧元数据与事件（不 ensure、不续租、不启动浏览器）：motionSessionId 必填，支持 cursor/sinceSeq/window/frameIds/limit；'
+      + 'fresh=true 是显式页面动作，只允许当前活动视觉会话，返回一次该会话采样规格的真实采样区间（beginMonoMs/endMonoMs）。'
+      + 'includeImages=true 最多命中 3 帧，附原图 hash/尺寸与 inline base64 交付事实，不自动落盘、不生成 T3 product。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['motionSessionId'],
+      properties: {
+        motionSessionId: { type: 'string' },
+        fresh: { type: 'boolean', default: false },
+        sinceSeq: { type: 'integer' },
+        cursor: { type: 'string' },
+        limit: { type: 'integer', default: 50, description: '1–200' },
+        window: {
+          type: 'object',
+          properties: { fromMs: { type: 'number' }, toMs: { type: 'number' } },
+          required: ['fromMs', 'toMs'],
+        },
+        frameIds: { type: 'array', items: { type: 'string' } },
+        includeImages: { type: 'boolean', default: false },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      try {
+        return await exec.runtime.dynamicObserve(args || {}, exec, exec.signal);
+      } catch (error) {
+        const classified = asBrowserError(error);
+        classified.details = { ...(classified.details || {}), evidence: { dynamic: exec.runtime.dynamicErrorEvidence('motion.observe') } };
+        throw classified;
+      }
+    },
+  });
+
+  register({
+    readOnly: true,
+    name: 'browser_motion_analyze',
+    description: '离线分析已存 T4 帧（不采新帧、不 ensure、不续租）：motionSessionId + 1–20 条断言，window/frameIds 恰好一个。'
+      + '七类断言 frame-diff/region-change/flicker/freeze/jank/trajectory/transition 由纯核心 dynamic-t4.js 执行；'
+      + '返回 results/summary/verdict/exitCode（FAIL>BLOCKED>INCONCLUSIVE>WARN>PASS）与 integrity，缺证据为 INCONCLUSIVE/BLOCKED 而非 PASS。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['motionSessionId', 'assertions'],
+      properties: {
+        motionSessionId: { type: 'string' },
+        window: {
+          type: 'object',
+          properties: { fromMs: { type: 'number' }, toMs: { type: 'number' } },
+          required: ['fromMs', 'toMs'],
+        },
+        frameIds: { type: 'array', items: { type: 'string' } },
+        assertions: { type: 'array', items: { type: 'object' } },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      try {
+        return await exec.runtime.dynamicAnalyze(args || {}, exec);
+      } catch (error) {
+        const classified = asBrowserError(error);
+        classified.details = { ...(classified.details || {}), evidence: { dynamic: exec.runtime.dynamicErrorEvidence('motion.analyze') } };
+        throw classified;
+      }
+    },
+  });
+
+  register({
+    name: 'browser_motion_control',
+    description: '对已声明适配器目标做真实时间轴控制（M2，WAAPI adapterId="waapi"）：pause/resume/seek/rate/restore。'
+      + '非 restore 必给 adapterId/targetIds(1–20)；seek 只给 timeMs、rate 只给 rate；整批预检通过才派发，逐目标 before/after 回读，'
+      + '失败/部分应用返回 applied/failedIndex/restoreStatus 并尽力恢复；restore 用本会话 restoreToken 恢复原状态，外部已改则 conflict 不覆盖。'
+      + '不提供“冻结整个浏览器”承诺，像素证据仍走 browser_motion_observe。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['motionSessionId', 'action'],
+      properties: {
+        motionSessionId: { type: 'string' },
+        action: { type: 'string', enum: ['pause', 'resume', 'seek', 'rate', 'restore'] },
+        adapterId: { type: 'string' },
+        targetIds: { type: 'array', items: { type: 'string' } },
+        timeMs: { type: 'number' },
+        rate: { type: 'number' },
+        restoreToken: { type: 'string' },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      try {
+        return await exec.runtime.dynamicControl(args || {}, exec, exec.signal);
+      } catch (error) {
+        const classified = asBrowserError(error);
+        classified.details = { ...(classified.details || {}), evidence: { dynamic: exec.runtime.dynamicErrorEvidence('motion.control') } };
+        throw classified;
+      }
+    },
+  });
+
+  register({
+    readOnly: true,
+    name: 'browser_dynamic_correlate',
+    description: 'T4 动态事件关联查询（M3，只读不启动浏览器）：dynamicSessionId + motionSessionId/networkSessionId（首次至少一个，须属于该动态会话）。'
+      + '六向 directions、basis/grade、includeTemporal 默认 false（只回时间邻近不混入因果）、beforeMs/afterMs 默认 250/1000、limit/cursor。'
+      + '网络侧复用 P0 已采集事件/RequestKey，不新建第二套抓包；无共同 ID 或协议父端点只进 observed/temporal/unresolved，查询固定 verdict=INCONCLUSIVE(no-assertion)。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['dynamicSessionId'],
+      properties: {
+        dynamicSessionId: { type: 'string' },
+        motionSessionId: { type: 'string' },
+        networkSessionId: { type: 'string' },
+        window: {
+          type: 'object',
+          properties: { fromMs: { type: 'number' }, toMs: { type: 'number' } },
+          required: ['fromMs', 'toMs'],
+        },
+        directions: { type: 'array', items: { type: 'string', enum: [...DYNAMIC_DIRECTIONS] } },
+        eventIds: { type: 'array', items: { type: 'string' } },
+        includeTemporal: { type: 'boolean', default: false },
+        beforeMs: { type: 'number' },
+        afterMs: { type: 'number' },
+        limit: { type: 'integer' },
+        cursor: { type: 'string' },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      try {
+        return await exec.runtime.dynamicCorrelate(args || {}, exec);
+      } catch (error) {
+        const classified = asBrowserError(error);
+        classified.details = { ...(classified.details || {}), evidence: { dynamic: exec.runtime.dynamicErrorEvidence('dynamic.correlate') } };
+        throw classified;
+      }
     },
   });
 
@@ -13440,7 +16960,8 @@ export function apply(ctx) {
     description: '查询 Web T1/T2/T3/P0 工具、运行态、隔离模式及证据限制；不会启动浏览器（不 ensure、不建目录、不生成 product、不申请租约）。'
       + 'viewport 段报告共享视口 get/set 边界、预设、比例范围与 limits.viewport（observed 只来自真实读回）；'
       + 'vision 段报告 T3 算法版本/工具/源类型/预算与最近一次真实视觉调用（observed），六个 web.t3.* 与聚合 web.t3.static-vision 按 BUSY 状态报告；'
-      + 'network 段报告 7 个 browser_network_* 工具、会话计数器/完整性与 limits.network（含 responseModification 是否受 CDP 支持）；T4 仍 unsupported。',
+      + 'network 段报告 7 个 browser_network_* 工具、会话计数器/完整性与 limits.network（含 responseModification 是否受 CDP 支持）；'
+      + 'dynamic 段报告 T4 动态行为（M1 起）：实际注册的 browser_dynamic_session/browser_motion_* 工具、帧源/编码/算法/适配器、DC 枚举与 limits.dynamic，observed 只来自真实 T4 调用、未启动不算 unsupported。',
     parameters: { type: 'object', properties: {}, required: [] },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
@@ -13481,7 +17002,7 @@ export function apply(ctx) {
         'products are per workspace scope (16 images, 128 MiB total); page navigation keeps images readable but invalidates act',
         'one delivered PNG per call under the P0 output rules (staging by default, 0600, no-clobber); evidence.vision.version=1',
         'offline baseline list/get/delete and product sources never start Chromium; live sources and act do',
-        'T4 dynamic vision (frame sequences/animation timing) stays unsupported',
+        'T4 dynamic behaviour is implemented separately: see capabilities.dynamic (frames, analysis, correlation)',
       ];
       const diagnosticConstraints = ['diagnostic call; never starts Chromium or takes ownership'];
       const viewportConstraints = [
@@ -13594,8 +17115,108 @@ export function apply(ctx) {
               'partial: iframe/OOPIF/dedicated worker only; shared/service worker refused when attribution is unprovable',
               'HTTPS capture is mechanism-identical (same Network domain) but NOT independently verified (no local TLS target)',
             ] },
-          ...['t4.dynamic-vision', 't1.browser-extras'].map((id) => ({ id: 'web.' + id, status: 'unsupported', reason: 'Not implemented' })),
+          // Web T4 dynamic behaviour (docs/t4-implementation-contract.md §8): one entry per REAL
+          // registered tool, plus one aggregate alias. M1 registers exactly three tools; a name that
+          // is not registered yet cannot be reported as available.
+          ...['dynamic-session', 'motion-observe', 'motion-analyze', 'motion-control', 'correlate']
+            .map((name) => ({
+              name,
+              toolName: {
+                'dynamic-session': 'browser_dynamic_session',
+                'motion-observe': 'browser_motion_observe',
+                'motion-analyze': 'browser_motion_analyze',
+                'motion-control': 'browser_motion_control',
+                'correlate': 'browser_dynamic_correlate',
+              }[name],
+            }))
+            .filter(({ toolName }) => DYNAMIC_REGISTERED_TOOLS.includes(toolName))
+            .map(({ name, toolName }) => {
+              const registered = DYNAMIC_REGISTERED_TOOLS.includes(toolName);
+              const mutating = name === 'dynamic-session' || name === 'motion-control';
+              const blocked = registered && mutating && busy;
+              return {
+                id: 'web.t4.' + name,
+                tool: toolName,
+                status: !registered ? 'unsupported' : (blocked ? 'unavailable' : 'available'),
+                ...(!registered ? { reason: 'not-registered' } : (blocked ? { reason: 'BUSY: browser owned by another session' } : {})),
+                constraints: dynamicCapabilityConstraints(name),
+              };
+            }),
+          { id: 'web.t4.dynamic-behavior', status: 'available', tool: null,
+            constraints: [
+              'aggregate of the T4 group; this is NOT a tool and does not add to the tool count',
+              'registered tools: ' + DYNAMIC_REGISTERED_TOOLS.join(', '),
+              ...(DYNAMIC_TOOL_NAMES.some((name) => !DYNAMIC_REGISTERED_TOOLS.includes(name))
+                ? ['not implemented yet: ' + DYNAMIC_TOOL_NAMES.filter((name) => !DYNAMIC_REGISTERED_TOOLS.includes(name)).join(', ')]
+                : []),
+              'DV/DN/DC acceptance is tracked separately; a fixture pass is not a T4 implementation pass',
+            ] },
+          { id: 'web.t4.dynamic-vision', status: 'available', aliasOf: 'web.t4.dynamic-behavior',
+            constraints: ['legacy alias of web.t4.dynamic-behavior; not an independent tool', 'tool count unchanged'] },
+          { id: 'web.t1.browser-extras', status: 'unsupported', reason: 'Not implemented' },
         ],
+        // Web T4 dynamic behaviour (docs/t4-implementation-contract.md §8). Pure declaration: reading
+        // this never imports the core, starts a page, samples a frame or creates a session.
+        dynamic: (() => {
+          const observed = runtime.dynamic.observed;
+          return {
+            version: 1,
+            milestone: DYNAMIC_MILESTONE,
+            tools: [...DYNAMIC_REGISTERED_TOOLS],
+            toolNames: [...DYNAMIC_TOOL_NAMES],
+            visual: {
+              sources: [...DYNAMIC_SOURCES],
+              screencast: { available: true, encoding: 'jpeg', precisePixelAnalysis: false, sharedWithPreview: true },
+              screenshotLoop: {
+                available: true, encoding: 'png',
+                sampleIntervalMs: [DYNAMIC_LIMITS.sampleIntervalMsMin, DYNAMIC_LIMITS.sampleIntervalMsMax],
+                precisePixelAnalysis: true, sourceTimestamp: null, singleFlight: true,
+              },
+              precisePixelAnalysis: 'screenshot-loop-only',
+              // Contract §8: the capability report must say that observe can crop on delivery.
+              observationDelivery: {
+                region: true,
+                regionSpace: 'image-px',
+                cropOnDelivery: true,
+                cropFormat: 'png',
+                requiresIncludeImages: true,
+                fullFrameDeliveryDecode: false,
+                maxImages: T4_LIMITS.maxImagesPerObserve,
+                masks: false,
+              },
+              adapters: runtime.dynamic.controlAdapters ? [...runtime.dynamic.controlAdapters] : [],
+              algorithms: [...DYNAMIC_ASSERTION_TYPES],
+              limitations: runtime.dynamic.conflicts.length ? [...runtime.dynamic.conflicts] : [],
+            },
+            networkReuse: {
+              tools: ['browser_network_session', 'browser_network_events', 'browser_network_detail',
+                'browser_network_trace', 'browser_network_control', 'browser_network_evidence',
+                'browser_network_subscribe'],
+              startsNetwork: false, resetsNetwork: false, subTargets: 'partial',
+            },
+            correlation: {
+              algorithmVersion: 'dc-draft-v1',
+              directions: [...DYNAMIC_DIRECTIONS],
+              basis: [...DYNAMIC_BASES],
+              gradeMap: {
+                explicit: 'confirmed-causal', redirect: 'confirmed-causal', initiator: 'confirmed-causal',
+                observed: 'observed-association', temporal: 'temporal-proximity',
+              },
+              confidence: ['direct', 'supported', 'weak', 'unknown'],
+              includeTemporalDefault: false,
+            },
+            limits: { ...DYNAMIC_LIMITS },
+            observed: observed && typeof observed === 'object'
+              ? {
+                observedAt: observed.observedAt, operation: observed.operation,
+                dynamicSessionId: observed.dynamicSessionId, motionSessionId: observed.motionSessionId,
+                source: observed.source, encoding: observed.encoding, frames: observed.frames,
+                highWater: observed.highWater, verdict: observed.verdict,
+                integrity: observed.integrity, restoreStatus: observed.restoreStatus,
+              }
+              : null,
+          };
+        })(),
         // P0 capture infrastructure (docs/capture-p0.md). Declared, not probed: reading this must
         // never start Chromium, create a page or take the lease. `observed` is the last real
         // browser_screenshot of this Runtime (null until one succeeded).
@@ -13830,6 +17451,9 @@ export function apply(ctx) {
             env: 'DSH_UI_TESTING_CAPTURE_DIR',
             warnings: [...CAPTURE_WARNING_VOCABULARY],
           },
+          // Web T4 dynamic limits: the frozen T4_LIMITS object, projected verbatim
+          // (docs/t4-implementation-contract.md §1/§8).
+          dynamic: { ...DYNAMIC_LIMITS },
           vision: {
             algorithmVersion: T3_ALGORITHM_VERSION,
             coordinateSpaces: { image: 'image-px', document: 'document-css-px', input: 'viewport-css-px' },
@@ -13858,7 +17482,7 @@ export function apply(ctx) {
                 lastVerdict: typeof visionObservation.lastVerdict === 'string' ? visionObservation.lastVerdict : null,
               }
               : null,
-            notImplemented: ['T4 dynamic vision: frame sequences, animation timing, continuous visual reasoning'],
+            notImplemented: ['T4 dynamic vision lives in capabilities.dynamic; this static-vision block does not implement frame sequences'],
           },
           navigation: 'Document URLs and DNS checked; subresources are not a network sandbox',
           structuredGui: {
@@ -13892,7 +17516,7 @@ export function apply(ctx) {
             formControls: 'textbox/checkbox/radio via CDP input; combobox/slider via native setters (dom-control, never isTrusted)',
             noForce: 'no force/JS-click/selector-retry escape hatch; occlusion or instability is a reported failure',
             evidence: 'version=1; editable values and input text are never echoed (value null + valueRedacted)',
-            visual: 'no pixel/visual analysis in this tier: T3 static vision and T4 dynamic vision stay unsupported',
+            visual: 'no pixel/visual analysis in this tier: T3 static vision and T4 dynamic behaviour are separate tool groups',
             cookies: 'shared with the single Chromium profile (not a security boundary)',
           },
           httpRequest: {

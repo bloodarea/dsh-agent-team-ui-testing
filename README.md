@@ -6,7 +6,7 @@ Let AI agents operate, inspect, test and verify real user interfaces — with ev
 
 **English** | [简体中文](README_zh.md)
 
-> **Status: pre-release.** The Web/Chromium channel is implemented: 30 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, network capture, shared viewport control, a hybrid canvas and client-side annotations. Other environments are planned and stay disabled in the runtime picker. The plugin is linked locally during development; there is no published package yet. Verification details live in [docs/status.md](docs/status.md).
+> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 35 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, shared viewport control, a hybrid canvas and client-side annotations. Other environments are planned and stay disabled in the runtime picker. The plugin is linked locally during development; there is no published package yet. Verification details live in [docs/status.md](docs/status.md).
 
 ## What is this?
 
@@ -31,7 +31,8 @@ This project focuses on:
 ## What works today
 
 - **Shared browser runtime** — one headless Chromium per host; each DSH workspace gets its own page, URL, viewport, history, network buffer and lease. Cookies and storage are shared by the Chromium profile.
-- **30 agent tools** across programmatic, structured GUI, static vision and network debugging.
+- **35 agent tools** across programmatic, structured GUI, static vision, dynamic behavior and network debugging.
+- **Dynamic behavior (T4)** — real CDP screencast plus a screenshot-loop path, a bounded frame store with integrity counters, seven deterministic motion analyses, WAAPI motion control with restore, region-only frame delivery, and six-direction frame↔network event correlation.
 - **Debug panel** — live preview, responsive size controls, shared viewport state, a hybrid canvas, and a client-side annotation layer that agents can read back.
 - **Evidence and safety** — typed errors, structured action evidence, validated PNG capture, managed visual baselines, network evidence and optimistic concurrency for shared state.
 
@@ -42,6 +43,7 @@ This project focuses on:
 | **Programmatic** (10) | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_viewport` `browser_state` `browser_capabilities` | Navigation, JavaScript, console/network inspection, independent HTTP requests, computed styles, screenshots, raw mouse/wheel/keyboard input, shared viewport state and capability reporting |
 | **Structured GUI** (7) | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | Snapshot → ref targeting, trusted input, forms, node state and waits, with structured evidence and typed errors |
 | **Static vision** (6) | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | Crop/zoom/preprocess/annotate PNGs, deterministic colour/component/edge/template finders, YIQ diff, coordinate input, managed baselines and visual assertions |
+| **Dynamic** (5) | `browser_dynamic_session` `browser_motion_observe` `browser_motion_analyze` `browser_motion_control` `browser_dynamic_correlate` | Bounded frame capture with integrity counters, region-only frame delivery, seven motion/transition analyses, WAAPI pause/seek/rate/restore, and six-direction frame↔network correlation |
 | **Network** (7) | `browser_network_session` `browser_network_events` `browser_network_detail` `browser_network_trace` `browser_network_control` `browser_network_evidence` `browser_network_subscribe` | Capture, timeline, analysis, business-step traces, interception/throttling/replay/mock, JSONL/HAR evidence and per-agent subscriptions |
 
 ### Debug panel
@@ -60,6 +62,7 @@ The panel is the human window into the same runtime the agent uses.
 - Screenshots are validated PNGs with explicit scale and canvas-space regions; capture can be staged or persisted under a controlled root.
 - Visual baselines are immutable revisions with compare-and-swap HEAD updates and tombstones.
 - Network evidence supports JSONL (lossless) and HAR 1.2 export with default redaction and explicit truncation counters.
+- Frame evidence keeps the original `sourceTimestamp`, separate encoded and RGBA hashes, and dropped/evicted/gap counters; motion analyses are deterministic and report budget exhaustion or timeout as `BLOCKED` instead of pretending to pass.
 - Runtime access is scoped to a DSH workspace; mutating page work is serialized through a lease and a serial queue.
 - Navigation is restricted to approved targets (loopback by default; private ranges blocked unless explicitly enabled), with DNS, redirect and popup checks.
 
@@ -72,7 +75,7 @@ DSH Agent / Agent Team
 UI testing plugin runtime
   ├─ shared headless Chromium
   ├─ one page per DSH workspace (URL, viewport, history, network, lease)
-  ├─ agent tool surface (30 tools)
+  ├─ agent tool surface (35 tools)
   └─ debug panel (preview, size bar, canvas, annotations)
         │
         ▼
@@ -90,7 +93,7 @@ The tool surface is organized as **selection and fallback levels**, not a mandat
 | **T1** Programmatic | CDP, HTTP, JavaScript, network, console | API checks, network faults, page state, performance data |
 | **T2** Structured GUI | DOM, accessibility tree, snapshot/ref, trusted input | Buttons, forms, navigation, interaction tests |
 | **T3** Static vision | Screenshots, deterministic pixel analysis, coordinate actions | Layout, colour, occlusion, canvas, chart and style defects |
-| **T4** Dynamic vision | Frame sequences, timing, motion reasoning | Animation, transitions, dragging and time-dependent behavior — planned, not implemented |
+| **T4** Dynamic vision | Frame sequences, timing, motion reasoning | Animation, transitions, dragging and time-dependent behavior — escalates from T3 when a single image cannot prove motion |
 
 A successful T1 call is never treated as a visual pass. UI-specific acceptance criteria still require UI-level observations.
 
@@ -107,12 +110,13 @@ The plugin is currently used as a local link into a DSH profile; there is no pub
 
 Integration notes and known pitfalls are in [docs/dsh-integration.md](docs/dsh-integration.md).
 
-A typical agent flow is: navigate to the target, inspect state with `browser_state`/`browser_eval`, perform structured actions with the T2 tools, capture screenshots or run T3 checks, inspect network traffic with the network tools, and use the shared viewport/canvas/annotation state when the task involves layout, framing or visual feedback.
+A typical agent flow is: navigate to the target, inspect state with `browser_state`/`browser_eval`, perform structured actions with the T2 tools, capture screenshots or run T3 checks, inspect network traffic with the network tools, escalate to the dynamic tools (`browser_dynamic_session` → `browser_motion_observe` → `browser_motion_analyze`/`browser_dynamic_correlate`) when the question is about motion, timing or a frame sequence, and use the shared viewport/canvas/annotation state when the task involves layout, framing or visual feedback.
 
 ## Current limits
 
 - **Web only.** Windows, Linux, macOS desktop, Android, TUI, HarmonyOS, games and 3D are planned and disabled in the runtime picker.
-- **Static vision only.** T3 judges single PNGs with deterministic algorithms; it has no VLM/OCR or semantic naming and cannot prove animation or intermediate frames. T4 is not implemented.
+- **Vision is deterministic, not semantic.** T3 judges single PNGs and T4 judges frame sequences with deterministic algorithms: no VLM/OCR, no semantic naming, so "what does this text mean" and "looks right to a human" stay out of scope.
+- **T4 verification is partial.** Of the 40 dynamic-behavior criteria, 8 pass, 20 are partial, 0 fail and 12 were not run — the suite exits non-zero only because required checks were not run, not because they failed. Main real-host paths were re-verified after DSH restarts with the defects they exposed fixed; close/dispose restore, WebGPU rendering, media seeking/stalling, header-verified identity, 16 ms flicker coverage and long-lived connections remain unverified.
 - **Shared browser profile.** Cookies and storage are shared by the Chromium profile; only page, URL, viewport, history, network buffer and leases are isolated per workspace.
 - **Screenshots are not redacted.** Review their content before sharing.
 - **Attachments are not provider visibility.** A returned image attachment does not prove the model received it at full resolution.
@@ -122,7 +126,7 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 
 ## Roadmap
 
-- Harden the Web channel and finish T4 dynamic visual verification.
+- Harden the Web channel and close the remaining dynamic-behavior criteria (12 not run, 20 partial).
 - Add the cross-environment test core: typed sessions, observations, assertions and reports.
 - Validate desktop (Windows/Linux/macOS), Android, TUI, HarmonyOS, game and 3D adapters by demand and platform feasibility.
 - Add multi-agent scheduling, human takeover and release hardening.
@@ -141,6 +145,8 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 | [docs/capture-p0.md](docs/capture-p0.md) | Screenshot and evidence-file contract |
 | [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | Structured GUI contract and ref protocol |
 | [docs/t3-vision.md](docs/t3-vision.md) | Static vision contract, algorithms and verdict rules |
+| [docs/t4-dynamic-behavior.md](docs/t4-dynamic-behavior.md) | Dynamic behavior contract: frame sources, timeline, motion analyses, correlation rules and the 40 criteria |
+| [docs/t4-implementation-contract.md](docs/t4-implementation-contract.md) | Frozen T4 implementation contract: tool schemas, error taxonomy, core APIs and capability mapping |
 | [docs/dsh-integration.md](docs/dsh-integration.md) | DSH integration notes and pitfalls |
 | [docs/verification.md](docs/verification.md) | How the project is verified (isolated DSH + headless Chromium) |
 

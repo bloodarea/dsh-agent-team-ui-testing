@@ -95,9 +95,11 @@ async function main() {
     'browser_network_session', 'browser_network_events', 'browser_network_detail',
     'browser_network_trace', 'browser_network_control', 'browser_network_evidence',
     'browser_network_subscribe',
+    'browser_dynamic_session', 'browser_motion_observe', 'browser_motion_analyze',
+    'browser_motion_control', 'browser_dynamic_correlate',
   ];
-  record('index.js 中可解析出 30 个实际注册的 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network）',
-    actualTools.size === 30 && expectedTools.every((name) => actualTools.has(name))
+  record(`index.js 中可解析出 ${expectedTools.length} 个实际注册的 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4）`,
+    actualTools.size === expectedTools.length && expectedTools.every((name) => actualTools.has(name))
       && [...actualTools].every((name) => expectedTools.includes(name)), [...actualTools]);
 
   // 2. Frontmatter.
@@ -122,7 +124,7 @@ async function main() {
   // 4. Tool names in SKILL.md are all real (no invented/Playwright names).
   const mentionedTools = new Set([...body.matchAll(/browser_[a-z0-9_]+/g)].map((match) => match[0]));
   const inventedTools = [...mentionedTools].filter((name) => !actualTools.has(name));
-  record('SKILL.md 中出现的每个 browser_* 工具名都是 index.js 实际注册的 30 个之一', inventedTools.length === 0, { mentioned: [...mentionedTools], invented: inventedTools });
+  record(`SKILL.md 中出现的每个 browser_* 工具名都是 index.js 实际注册的 ${expectedTools.length} 个之一`, inventedTools.length === 0, { mentioned: [...mentionedTools], invented: inventedTools });
 
   // 5. Ledger.
   record('knowledge/web/t1-capability-ledger.md 存在', existsSync(LEDGER_FILE), relative(REPO_ROOT, LEDGER_FILE));
@@ -166,14 +168,14 @@ async function main() {
     record('declared-capabilities.json 是合法 JSON', true);
     record('manifest.platform === web', String(manifest.platform).toLowerCase() === 'web', manifest.platform);
     const tier = String(manifest.tier || '').toUpperCase();
-    record('manifest.tier 是 T1 / T1+T2 / T1+T2+T3（T2、T3 已实现）',
-      tier === 'T1' || tier === 'T1+T2' || tier === 'T1+T2+T3', manifest.tier);
+    record('manifest.tier 已声明 T4（T1+T2+T3+T4；T2/T3/T4 均已实现）',
+      tier === 'T1+T2+T3+T4', manifest.tier);
     record('manifest.notice 非空（说明工具注册表才是权威）', typeof manifest.notice === 'string' && manifest.notice.length > 10, manifest.notice);
     record('manifest 所有 operation 使用已知状态且无 planned', Array.isArray(manifest.operations) && manifest.operations.every((op) => ALLOWED_STATUSES.has(op.status)), manifest.operations);
     const discovery = manifest.operations?.find((op) => op.id === 'web.t1.capability-discovery');
     record('manifest 能力发现声明 browser_capabilities', discovery?.tool === 'browser_capabilities' && discovery.status !== 'unsupported', discovery);
-    record('manifest 的 unsupported_tiers 只留 T4（T3 已实现并声明）',
-      JSON.stringify([...(manifest.unsupported_tiers || [])].sort()) === JSON.stringify(['T4']) && tier.includes('T3'),
+    record('manifest 的 unsupported_tiers 为空（T3/T4 均已实现并声明，未实现项另在 evidence 逐条记 NOT_RUN）',
+      Array.isArray(manifest.unsupported_tiers) && manifest.unsupported_tiers.length === 0 && tier.includes('T3') && tier.includes('T4'),
       { tier: manifest.tier, unsupported_tiers: manifest.unsupported_tiers });
     // T2 half of the manifest: only enforced once the skill owner flips tier to T1+T2 (contract
     // §8/§9.38). Never faked here: until then it is reported as INFO, not PASS.

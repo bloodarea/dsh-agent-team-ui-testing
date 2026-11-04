@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH T4 动态网络靶机</title>
+<!--
+  WEB-T4 dynamic-network fixture page (task-3). Served by tests/ui_test_fixture/t4-network-route.mjs
+  at GET /web-t4-network.html. Truth table: tests/ui_test_fixture/t4-network.md (frozen contract:
+  tests/ui_test_fixture/t4-prep-contract.md §2).
+
+  Single page, no navigation: 商品 → 加入购物车 → GET 刷新 → 结算 → 订单更新.
+  Page-side truth API: window.__t4.net (implemented in /t4/network/t4-network-ledger.js).
+  Every business request carries x-request-id / x-trace-id / x-op-id / x-idempotency-key.
+-->
+<style>
+  :root {
+    --t4n-border: #c9d3e0;
+    --t4n-ink: #16202c;
+    --t4n-muted: #5b6b7f;
+    --t4n-accent: #1f5fbf;
+    --t4n-danger: #a52121;
+    --t4n-bg: #f6f8fb;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--t4n-bg);
+    color: var(--t4n-ink);
+    font: 14px/1.45 -apple-system, "Segoe UI", "Noto Sans CJK SC", Arial, sans-serif;
+    padding: 16px 20px 12px;
+  }
+  .t4n-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--t4n-border);
+  }
+  #t4n-title { margin: 0; font-size: 22px; letter-spacing: 0.2px; }
+  #t4n-subtitle { margin: 4px 0 0; color: var(--t4n-muted); font-size: 13px; }
+  .t4n-statusbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(140px, auto));
+    gap: 2px 18px;
+    font-size: 12px;
+    color: var(--t4n-muted);
+    text-align: left;
+  }
+  .t4n-statusbar strong { color: var(--t4n-ink); font-weight: 600; }
+  #t4n-error {
+    margin: 10px 0 0;
+    padding: 8px 12px;
+    border: 1px solid var(--t4n-danger);
+    border-left-width: 6px;
+    background: #fdecec;
+    color: var(--t4n-danger);
+    font-weight: 600;
+    min-height: 38px;
+  }
+  #t4n-error[hidden] { display: block; visibility: hidden; }
+  .t4n-grid {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr 1.1fr;
+    gap: 14px;
+    margin-top: 12px;
+  }
+  .t4n-card {
+    background: #fff;
+    border: 1px solid var(--t4n-border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    min-height: 300px;
+  }
+  .t4n-card h2 { margin: 0 0 10px; font-size: 15px; }
+  .t4n-product { margin: 0 0 10px; font-size: 16px; }
+  #t4n-product-price { color: var(--t4n-accent); font-weight: 700; }
+  .t4n-qty { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+  .t4n-qty button { width: 30px; height: 30px; font-size: 16px; }
+  #t4n-qty { width: 62px; height: 30px; text-align: center; }
+  .t4n-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  button {
+    font: inherit;
+    padding: 6px 12px;
+    border: 1px solid var(--t4n-border);
+    border-radius: 4px;
+    background: #fff;
+    color: var(--t4n-ink);
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--t4n-accent); color: var(--t4n-accent); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  #t4n-add-cart { background: var(--t4n-accent); border-color: var(--t4n-accent); color: #fff; font-weight: 600; }
+  #t4n-checkout { font-weight: 600; }
+  .t4n-metric { margin: 0 0 6px; color: var(--t4n-muted); font-size: 13px; }
+  .t4n-metric strong { color: var(--t4n-ink); font-size: 15px; }
+  #t4n-cart-list { list-style: none; margin: 10px 0 0; padding: 0; font-size: 13px; }
+  #t4n-cart-list li { padding: 5px 0; border-bottom: 1px dashed var(--t4n-border); }
+  #t4n-cart-list li[data-empty="true"] { color: var(--t4n-muted); border-bottom: 0; }
+  #t4n-order-banner {
+    margin: 12px 0 0;
+    padding: 8px 10px;
+    background: #eef3fa;
+    border: 1px solid var(--t4n-border);
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  body[data-t4n-stage="error"] #t4n-order-banner { background: #fdecec; border-color: var(--t4n-danger); }
+</style>
+</head>
+<body data-t4n-scenario="normal" data-t4n-stage="boot">
+  <header class="t4n-header">
+    <div>
+      <h1 id="t4n-title">DSH T4 动态网络靶机</h1>
+      <p id="t4n-subtitle">单页购买链路：商品 → 加入购物车 → GET 刷新 → 结算 → 订单更新（WS / SSE / 轮询三条异步通道）</p>
+    </div>
+    <div class="t4n-statusbar">
+      <span>状态 <strong id="t4n-status">boot</strong></span>
+      <span id="t4n-scenario">scenario: normal</span>
+      <span>WS <strong id="t4n-ws-state">closed</strong></span>
+      <span>SSE <strong id="t4n-sse-state">closed</strong></span>
+      <span>轮询 <strong id="t4n-poll-count">0</strong></span>
+    </div>
+  </header>
+
+  <div id="t4n-error" role="alert" hidden></div>
+
+  <main class="t4n-grid">
+    <section class="t4n-card" id="t4n-card-product">
+      <h2>商品</h2>
+      <p class="t4n-product"><strong id="t4n-product-name">T4 Widget</strong> <span id="t4n-product-price">¥ 42.00</span></p>
+      <div class="t4n-qty">
+        <button id="t4n-qty-dec" type="button" aria-label="减少数量">−</button>
+        <input id="t4n-qty" type="number" min="1" max="9" step="1" value="1" aria-label="数量">
+        <button id="t4n-qty-inc" type="button" aria-label="增加数量">+</button>
+      </div>
+      <div class="t4n-actions">
+        <button id="t4n-add-cart" type="button">加入购物车</button>
+        <button id="t4n-checkout" type="button">结算</button>
+      </div>
+    </section>
+
+    <section class="t4n-card" id="t4n-card-cart">
+      <h2>购物车</h2>
+      <p class="t4n-metric">件数 <strong id="t4n-cart-count">0</strong></p>
+      <p class="t4n-metric">版本 <strong id="t4n-cart-revision">revision 0</strong></p>
+      <ul id="t4n-cart-list"><li data-empty="true">购物车为空</li></ul>
+    </section>
+
+    <section class="t4n-card" id="t4n-card-order">
+      <h2>订单</h2>
+      <p class="t4n-metric">订单号 <strong id="t4n-order-id">—</strong></p>
+      <p class="t4n-metric">状态 <strong id="t4n-order-status">未创建</strong></p>
+      <p id="t4n-order-banner">尚未创建订单</p>
+      <div class="t4n-actions">
+        <button id="t4n-cancel-order" type="button" disabled>取消订单</button>
+        <button id="t4n-retry" type="button" hidden>重试</button>
+        <button id="t4n-reset" type="button">重置</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/t4/network/t4-network-ledger.js"></script>
+</body>
+</html>

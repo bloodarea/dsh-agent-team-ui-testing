@@ -109,11 +109,11 @@ browser_wait_for { "selector": "#t2-async-result", "state": { "visible": true, "
 
 | 场景 | 工具返回 | 报告 |
 | --- | --- | --- |
-| `#t2-hidden-btn`（父级 `display:none`） | `NOT_INTERACTABLE`，`details.reason:"hidden"`，`details.escalation:"T3"`，零派发 | 交互 `FAIL`；需要解释遮挡/可读性时 `BLOCKED`（T3 未实现） |
+| `#t2-hidden-btn`（父级 `display:none`） | `NOT_INTERACTABLE`，`details.reason:"hidden"`，`details.escalation:"T3"`，零派发 | 交互 `FAIL`；需要解释遮挡/可读性时用 T3（`browser_vision_image`/`compare`）给出成因证据 |
 | `#t2-covered`（被 `#t2-overlay` 全覆盖） | `NOT_INTERACTABLE`，`reason:"covered"`，`escalation:"T3"` | 同上；**不得改坐标硬点** |
 | 两个同名 Save 按钮 | `TARGET_NOT_UNIQUE`（含隐藏副本也计数） | 改用 ref 或更精确 selector，不改判“点了第一个所以通过” |
 | 复用旧 ref 但页面已跨文档导航 | `REF_STALE` | 重新 `browser_snapshot` 后再动作 |
-| 持续移动的元素 | `NOT_INTERACTABLE`，`reason:"unstable"` | 交互 `FAIL`；动画/时序判断 `BLOCKED`（T4 未实现） |
+| 持续移动的元素 | `NOT_INTERACTABLE`，`reason:"unstable"` | 交互 `FAIL`；动画/时序判断走 T4（`browser_dynamic_session` + `motion_analyze`） |
 | `contenteditable` 富文本 | `UNSUPPORTED` | 回落 T1（`browser_input` + 页面读回），并注明证据强度不同 |
 
 ## 7. 记录模板（T2）
