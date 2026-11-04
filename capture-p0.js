@@ -19,7 +19,7 @@
  *  - `Page.captureScreenshot` 的 `clip` 是文档 CSS 坐标；输出像素 = round(css * scale * dsf)。
  *  - `clip.scale` 是重新光栅化，不是位图放大；本插件固定 dsf=1，只用 clip.scale。
  *  - 因此 CAPTURE_UPSCALED 只证明“输出尺寸大于期望尺寸”，不单独证明发生了位图放大。
- *  - scale 允许 0.1–4（Lead 冻结，见 docs/viewport-control.md §6.1）；实测 clip.scale=0.1/0.5/
+ *  - scale 允许 0.1–4（Lead 冻结，见 docs/viewport-control.md）；实测 clip.scale=0.1/0.5/
  *    0.65/1.11 时 PNG 尺寸都精确等于 round(css×scale)（取整发生在 clip 的 CSS 尺寸上，不是
  *    scale 上），所以 0 容差公式不变，只需额外拒绝两轴 <1 的空输出（hasPositiveOutputSize）。
  */
@@ -52,7 +52,7 @@ export const CAPTURE_LIMITS = Object.freeze({
   /**
    * 显式 scale 允许范围（闭区间）。
    *
-   * 2026-11-01（docs/viewport-control.md §6.1，Lead 冻结）：下界从 1 扩到 0.1，因为共享
+   * 2026-11-01（docs/viewport-control.md，Lead 冻结）：下界从 1 扩到 0.1，因为共享
    * `view.scale` 可以是 10%（0.1）而默认截图比例跟随它。上界仍是 4。默认值**不是** scaleMin：
    * 省略 scale 时由 Host 在调用内解析为当前 `view.scale`（cold 时为 1）。
    */
@@ -265,7 +265,7 @@ export function decodePng(bytes) {
  * 编码一张 8-bit RGBA、非交错、filter 0 的 PNG（合成截图用；纯逻辑、无第三方依赖）。
  *
  * 只接受逐像素 RGBA（channels=4）缓冲。输出是可被 inspectPng / decodePng 重新读回的合法 PNG；
- * 合成路径必然重编码，调用方必须在证据里披露 `composite:true`（docs/canvas-viewport.md §6.1）。
+ * 合成路径必然重编码，调用方必须在证据里披露 `composite:true`（docs/viewport-control.md）。
  *
  * @param {{width:number,height:number,rgba:Uint8Array|Buffer}} image
  * @param {{level?:number}} [options]
@@ -333,7 +333,7 @@ export function intersectRects(left, right) {
 }
 
 /**
- * Canvas 合成（docs/canvas-viewport.md §6.1）：白底 RGBA 输出矩形，把页面截图按 canvas CSS 位置贴入。
+ * Canvas 合成（docs/viewport-control.md）：白底 RGBA 输出矩形，把页面截图按 canvas CSS 位置贴入。
  *
  * 坐标空间是 **canvas CSS px**（canvas 坐标 == document 坐标：content 在 (0,0)）。`pageRect` 是
  * 实际截取的页面区域（canvas 与内容的交集），`outputRect` 是要交付的 canvas 取景框；二者都用
@@ -581,7 +581,7 @@ export function checkPixelSize(actual, expected, { tolerance = 0 } = {}) {
  * Canvas / 文档 CSS 坐标 -> 图像像素的映射（含可逆函数；进工具结果前必须用 projectCaptureMapping 投影）。
  *
  * `coordinateSpace` 默认 `document-css-px`（旧行为）；画布合成截图传 `canvas-css-px`
- * （docs/canvas-viewport.md §6）。`canvas`/`contentRect`/`blank` 是画布证据的可选附加字段，
+ * （docs/viewport-control.md）。`canvas`/`contentRect`/`blank` 是画布证据的可选附加字段，
  * 不影响旧调用方。
  *
  * @param {{region:{x:number,y:number,width:number,height:number},

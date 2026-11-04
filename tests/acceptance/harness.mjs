@@ -33,11 +33,11 @@ import { apply } from '../../index.js';
 
 /**
  * The tool surface implemented by index.js, 35 tools:
- *   10 T1 (docs/runtime-t1.md + docs/viewport-control.md §7 `browser_viewport`)
+ *   10 T1 (docs/architecture.md + docs/viewport-control.md §7 `browser_viewport`)
  * + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
  * + 7 network P0 (docs/network-p0.md §2)
  * + 5 Web T4 dynamic behavior (contract docs/t4-dynamic-behavior.md §7, implementation contract
- *   docs/t4-implementation-contract.md §2: dynamic_session / motion_observe / motion_analyze /
+ *   docs/t4-dynamic-behavior.md §2: dynamic_session / motion_observe / motion_analyze /
  *   motion_control / dynamic_correlate).
  *
  * `required` is the *registered JSON schema* required array only. The contract's runtime
@@ -46,7 +46,7 @@ import { apply } from '../../index.js';
  * execution time - so `required: []` here never means "no arguments allowed".
  */
 export const EXPECTED_TOOLS = Object.freeze([
-  // --- T1 (docs/runtime-t1.md) -------------------------------------------------------------
+  // --- T1 (docs/architecture.md) -------------------------------------------------------------
   Object.freeze({ name: 'browser_navigate', required: ['url'] }),
   Object.freeze({ name: 'browser_eval', required: ['expression'] }),
   Object.freeze({ name: 'browser_screenshot', required: [] }),

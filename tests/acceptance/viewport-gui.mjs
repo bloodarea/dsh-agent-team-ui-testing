@@ -22,12 +22,12 @@
  *   - A fixed-coordinate element is hit at fit<100% and at scale>100%: the target page counter
  *     increases exactly once and `window.__t2` records `isTrusted:true` at the mapped point.
  *   - Frame wheel deltas are scaled by W/Pw, H/Ph (two scales measured).
- *   - P0-C v2 (V13, docs/canvas-viewport.md §5.2–§5.3): the Host `ui.canvas` handshake, signed
+ *   - P0-C v2 (V13, docs/viewport-control.md §5.2–§5.3): the Host `ui.canvas` handshake, signed
  *     canvasX/canvasY input/wheel, pure-white blank pixels and the -(C-frame.scroll)*displayScale
  *     frame displacement, q -> p=q+O hit mapping, blank zero dispatch, fail-closed scroll/geometry
  *     barrier (CDP-rewritten /state evidence), drag that writes a negative C, and the simulated
  *     no-canvas / no-shared-view fallbacks (X/Y disabled or back to document scroll).
- *   - GUI screenshots are written under tests/acceptance/evidence/viewport-gui-<stamp>/.
+ *   - GUI screenshots are written under 本地验证记录（不随仓库分发）/viewport-gui-<stamp>/.
  *
  * NOT covered here (reported, never implied as verified):
  *   - A real old Host binary: this suite only starts a Host that exposes `ui.view`; the old-Host
@@ -566,7 +566,7 @@ async function panelState() {
       panLayerCursor: panLayer ? getComputedStyle(panLayer).cursor : null,
       frameCursor: img ? getComputedStyle(img).cursor : null,
       framePanAttr: img ? img.getAttribute('data-utb-pan') : null,
-      // P0-C v2 canvas compositing facts (docs/canvas-viewport.md §5.2): the clipping box is the
+      // P0-C v2 canvas compositing facts (docs/viewport-control.md §5.2): the clipping box is the
       // measurement surface (the <img> itself is translated inside it), plus its readiness barrier.
       canvasOn: box ? box.getAttribute('data-utb-canvas') : null,
       canvasReady: box ? box.getAttribute('data-utb-canvas-ready') : null,
@@ -609,7 +609,7 @@ async function panelState() {
       stageTop: panel.querySelector('.utb-stage') ? panel.querySelector('.utb-stage').getBoundingClientRect().top : null,
       address: panel.querySelector('.utb-addr') ? panel.querySelector('.utb-addr').value : null,
       activeLabel: document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute('aria-label') : null,
-      // P0-D annotation mode (docs/annotation-p0d.md §2/§6).
+      // P0-D annotation mode (docs/viewport-control.md §2/§6).
       annot: (() => {
         const entry = panel.querySelector('button[aria-label="标注"]');
         const bar = panel.querySelector('.utb-annot-bar');
@@ -1356,7 +1356,7 @@ function guiPointFor(painted, viewWidth, viewHeight, viewportX, viewportY) {
 }
 
 /* ------------------------------------------------------------------------------------------------
- * P0-C v2 canvas probes (docs/canvas-viewport.md §5.2–§5.3).
+ * P0-C v2 canvas probes (docs/viewport-control.md §5.2–§5.3).
  * ---------------------------------------------------------------------------------------------- */
 
 /** Host-side canvas truth through the authenticated /state projection. */
@@ -1867,7 +1867,7 @@ async function clickThroughPanel(selector, viewWidth, viewHeight) {
 }
 
 /* ------------------------------------------------------------------------------------------------
- * P0-D annotation probes (docs/annotation-p0d.md).
+ * P0-D annotation probes (docs/viewport-control.md).
  * ---------------------------------------------------------------------------------------------- */
 
 async function annotEntryRect() {
@@ -2095,7 +2095,7 @@ async function annotTypeText(text, { enter = false, escape = false, blur = false
 }
 
 /* ------------------------------------------------------------------------------------------------
- * P0-D v2 探针（docs/annotation-p0d.md §11）：清除画布 / 橡皮擦 / 上报协议与同步状态。
+ * P0-D v2 探针（docs/viewport-control.md §11）：清除画布 / 橡皮擦 / 上报协议与同步状态。
  * ---------------------------------------------------------------------------------------------- */
 
 /** Annotation v2 facts: seven tools with icons, clear button, layer sync attributes, status hint. */
@@ -2382,7 +2382,7 @@ async function hostScreenshotPng() {
 }
 
 /* ------------------------------------------------------------------------------------------------
- * P0-D v3 probes (docs/annotation-p0d.md §12): workspace retention, hydration, remount, adoption.
+ * P0-D v3 probes (docs/viewport-control.md §12): workspace retention, hydration, remount, adoption.
  * ---------------------------------------------------------------------------------------------- */
 
 /** Panel POSTs to /annotations (test-side requests carry utbViewportAcceptance=1 and are excluded). */
@@ -6236,7 +6236,7 @@ async function main() {
     });
 
     await scenario('V17 annotation workspace retention (P0-D v3)', async () => {
-      // The v3 contract (docs/annotation-p0d.md §12): a panel unmount/tab switch/scope change only
+      // The v3 contract (docs/viewport-control.md §12): a panel unmount/tab switch/scope change only
       // retracts the local view; the workspace document is hydrated back, never erased by an empty
       // release. Every probe below is real CDP input; scope isolation without a second workspace is
       // exercised through a CDP /state projection (honest limitation recorded in each detail).
@@ -6656,7 +6656,7 @@ async function main() {
           await sleep(600);
           const afterCommit = await panelState();
           // Commit wins as a whole document (LWW): the local set is rect+text, B's pending candidate
-          // is not silently merged (docs/annotation-p0d.md §12.3).
+          // is not silently merged (docs/viewport-control.md §12.3).
           const hostAfterCommit = await waitHostAnnotations((doc) => doc.shapes.length === 2, { timeoutMs: 14000 });
           // Cancel path.
           await annotResetCanvas({ timeoutMs: 9000 });

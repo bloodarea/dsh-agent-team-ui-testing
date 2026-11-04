@@ -836,7 +836,7 @@ async function main() {
     };
   });
 
-  // ---- C15: canvas-space composite (P0-C v2, docs/canvas-viewport.md §6.1) --------------------
+  // ---- C15: canvas-space composite (P0-C v2, docs/viewport-control.md §6.1) --------------------
   await runProbe('C15-canvas-composite', 'Canvas 空间截图：O=0 原路径 / O≠0 白底合成（mapping/blank/16M）',
     'O=0 保持单次 CDP PNG 不合成；O≠0 默认与负 region 都按 canvas CSS 合成：四边 blank 纯白、内容按 -O 平移、capture.canvas/mapping.canvas/contentRect/blank/composite:true 齐全；全 blank region 全白且 pageCapture=null；16M 按最终合成图拒绝；截图后复位', async () => {
       const setView = (patch) => harness.invoke('browser_viewport', { action: 'set', ...patch });
@@ -913,7 +913,7 @@ async function main() {
           && safePixel(230, 80)?.r === 0 && safePixel(230, 80)?.g === 128 && safePixel(230, 80)?.b === 255,
         { red: safePixel(130, 80), blue: safePixel(230, 80) }, { red: [255, 0, 0], blue: [0, 128, 255] });
       // scale 2 on the same composite geometry: output=round(800×2)×round(600×2), content/blank
-      // scaled by the same factor (docs/canvas-viewport.md §6.1 step 2).
+      // scaled by the same factor (docs/viewport-control.md §6.1 step 2).
       const scaled = await capture({ scale: 2 }, 'c15-canvas-scale2.png');
       const scaledCap = scaled.value.capture || {};
       const scaledDecoded = decodePng(scaled.bytes);

@@ -2,7 +2,7 @@
 /**
  * Real-GUI acceptance for workspace-scoped debug panels on the isolated 3081 DSH host.
  *
- * What this proves (when run against a Host that implements docs/workspace-isolation.md):
+ * What this proves (when run against a Host that implements docs/architecture.md):
  *   - Two REAL registered workspaces (/tmp/dsh-utb-ws-a, /tmp/dsh-utb-ws-b) and two REAL
  *     Session Controller sessions are created through the GUI (workspace directory picker +
  *     the workspace row's "new session" action). No workspace.json editing.

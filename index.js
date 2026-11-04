@@ -20,7 +20,7 @@ import {
   encodePngRgba, expectedPixelSize, hasPositiveOutputSize, inspectPng, intersectRects,
   projectCaptureMapping, publishCapture, resolveCapturePath,
 } from './capture-p0.js';
-// Web T3 static vision (docs/t3-vision.md, docs/t3-implementation-plan.md §2). The Host layer never
+// Web T3 static vision (docs/t3-vision.md). The Host layer never
 // re-implements the pixel algorithms: it validates arguments, resolves sources, owns the product
 // store per scope, delivers the single PNG and implements the act/check decision rules on top of
 // the pure module API.
@@ -359,7 +359,7 @@ function addCaptureWarning(warnings, code) {
 }
 
 /* ---------------------------------------------------------------------------------------------
- * Shared viewport (docs/viewport-control.md §3, Lead freeze 2026-11-01)
+ * Shared viewport (docs/viewport-control.md, Lead freeze 2026-11-01)
  *
  * One authoritative `view` per Runtime: `{x,y,width,height,scale,source,revision}` in document CSS
  * px. The GUI (authenticated same-origin) and the Agent tool read/write the same object; the top
@@ -374,7 +374,7 @@ function addCaptureWarning(warnings, code) {
  * NOT device emulation: `deviceScaleFactor` stays 1 and no page zoom is ever sent.
  * ------------------------------------------------------------------------------------------- */
 
-/** The four GUI presets (docs/viewport-control.md §3.1); 1280×800 derives `custom`. */
+/** The four GUI presets (docs/viewport-control.md); 1280×800 derives `custom`. */
 const VIEW_PRESETS = Object.freeze({
   wide: Object.freeze({ width: 1920, height: 1080 }),
   landscape: Object.freeze({ width: 1024, height: 768 }),
@@ -386,10 +386,10 @@ const VIEW_LIMITS = Object.freeze({
   width: Object.freeze([200, 4096]),
   height: Object.freeze([200, 4096]),
   scroll: Object.freeze([0, 10000000]),
-  /** Canvas coordinates may be negative and may leave the content box (docs/canvas-viewport.md §2). */
+  /** Canvas coordinates may be negative and may leave the content box (docs/viewport-control.md). */
   canvas: Object.freeze([-10000000, 10000000]),
   scale: Object.freeze([0.1, 2]),
-  /** ui.canvas / capture provenance advertise the composited blank colour (docs/canvas-viewport.md §2). */
+  /** ui.canvas / capture provenance advertise the composited blank colour (docs/viewport-control.md). */
   canvasBlankColor: '#ffffff',
   default: Object.freeze({ width: 1280, height: 800, x: 0, y: 0, scale: 1 }),
   /** Contract §3.2: at most one metrics read every 200ms while a viewer is attached. */
@@ -412,7 +412,7 @@ function viewModeFor(width, height) {
 }
 
 /**
- * Pure pre-flight for `browser_viewport` (docs/viewport-control.md §7): no browser, no CDP, no file.
+ * Pure pre-flight for `browser_viewport` (docs/viewport-control.md): no browser, no CDP, no file.
  *
  * Rejects unknown fields, an illegal action, `get` with any other field, an empty patch, a
  * `mode`+width/height conflict, non-finite/non-integer/out-of-range numbers. A rejected call must
@@ -465,7 +465,7 @@ function normalizeViewportRequest(args) {
     }
     patch[key] = value;
   }
-  // Canvas coordinates (docs/canvas-viewport.md §2/§3): C = viewport origin on the canvas, can be
+  // Canvas coordinates (docs/viewport-control.md): C = viewport origin on the canvas, can be
   // negative or outside the content box. They are a different coordinate space from x/y (document
   // scroll), so one patch must never carry both — the caller has to choose which one it means.
   for (const key of ['canvasX', 'canvasY']) {
@@ -628,7 +628,7 @@ function normalizeCaptureRequest(args) {
 /** Pixel budget, judged before any CDP screenshot: Chrome must never be asked for more. */
 function assertCaptureBudget(rect, scale) {
   const expected = expectedPixelSize({ width: rect.width, height: rect.height, scale, deviceScaleFactor: 1 });
-  // A small region at a low scale can round to 0 px on an axis (docs/viewport-control.md §6.2):
+  // A small region at a low scale can round to 0 px on an axis (docs/viewport-control.md):
   // refuse before dispatch instead of asking Chrome for an impossible clip.
   if (!hasPositiveOutputSize(expected)) {
     throw new BrowserError('INVALID_ARGUMENT', '截图输出尺寸会舍入到 0 像素（请提高 scale 或 region 尺寸）', {
@@ -652,7 +652,7 @@ function assertCaptureBudget(rect, scale) {
  * Capture output root: `DSH_UI_TESTING_CAPTURE_DIR` (absolute) wins, otherwise the calling
  * session's own workspace directory. Never `process.cwd()` and never an exec-meta guess.
  */
-/** Reject unknown tool fields (docs/network-p0.md §2: `additionalProperties:false`). */
+/** Reject unknown tool fields (docs/network-p0.md: `additionalProperties:false`). */
 function assertKnownKeys(value, allowed, label) {
   if (value === undefined || value === null) return {};
   if (typeof value !== 'object' || Array.isArray(value)) throw new BrowserError('NET_INVALID_ARGUMENT', label + ' 必须是对象');
@@ -780,7 +780,7 @@ function sha256Short(value, length = 16) {
 
 /* ---------------------------------------------------------------------------------------------
  * P0-D annotations — the human panel's annotation document as the Agent sees it
- * (docs/annotation-p0d.md §11).
+ * (docs/viewport-control.md).
  *
  * The Host stores exactly one "last accepted" document per Runtime and exposes it through
  * `Runtime.state()` (→ `browser_state.annotations`) and the authenticated `ui.annotations`. The
@@ -1112,7 +1112,7 @@ function normalizeAnnotationPublish(body) {
   };
 }
 
-/** The soft limits, applied to an already normalized shape list (docs/annotation-p0d.md §11.2). */
+/** The soft limits, applied to an already normalized shape list (docs/viewport-control.md). */
 function applyAnnotationLimits(shapes, clientTruncation, shortenedText) {
   const truncation = {
     droppedShapes: clientTruncation.droppedShapes,
@@ -1150,7 +1150,7 @@ function annotationDigest(request) {
 }
 
 /**
- * Bounded body read for the annotation route only (docs/annotation-p0d.md §11.2): the hard limit
+ * Bounded body read for the annotation route only (docs/viewport-control.md): the hard limit
  * is 262144 bytes and every other route keeps its historical 8MiB `readJson`.
  */
 function readAnnotationBody(req, maxBytes) {
@@ -2515,7 +2515,7 @@ function sessionAliases(status) {
 }
 
 /* ---------------------------------------------------------------------------------------------
- * Web T4 dynamic behaviour — Host side (docs/t4-dynamic-behavior.md §2/§3/§7).
+ * Web T4 dynamic behaviour — Host side (docs/t4-dynamic-behavior.md).
  *
  * Division of labour: this Host layer owns the *real* frame intake (the one shared CDP
  * screencast), the bounded enqueue/ACK accounting, the session state machine, the mapping
@@ -2536,7 +2536,7 @@ function sessionAliases(status) {
 const DYNAMIC_VERSION = 1;
 const DYNAMIC_ALGORITHM_VERSION = 't4-draft-v1';
 /**
- * The five frozen T4 tool names (docs/t4-dynamic-behavior.md §7 / implementation contract §2).
+ * The five frozen T4 tool names (docs/t4-dynamic-behavior.md / implementation contract §2).
  * `DYNAMIC_REGISTERED_TOOLS` is the subset actually registered at this build; it is the ONLY
  * source for the capability report (never a manifest expectation).
  */
@@ -2585,7 +2585,7 @@ const DYNAMIC_ASSERTION_TYPES = Object.freeze([
 const DYNAMIC_BASES = Object.freeze(['explicit', 'redirect', 'initiator', 'observed', 'temporal']);
 const DYNAMIC_GRADES = Object.freeze(['confirmed-causal', 'observed-association', 'temporal-proximity']);
 /**
- * T4_LIMITS names are fixed by docs/t4-implementation-contract.md §1 and are projected verbatim
+ * T4_LIMITS names are fixed by docs/t4-dynamic-behavior.md and are projected verbatim
  * into `limits.dynamic`; defaults and hard caps stay separate so a default is never reported as a
  * hard limit. Values below are the frozen contract numbers.
  */
@@ -3202,13 +3202,13 @@ export class Runtime {
     this.requests = new Map();
     this.url = '';
     this.title = '';
-    // Shared viewport authority (docs/viewport-control.md §3.1). `viewport` below is a read-only
+    // Shared viewport authority (docs/viewport-control.md). `viewport` below is a read-only
     // alias so the historical `{width,height}` field can never drift from `view`.
     this.view = {
       version: 1,
       x: VIEW_LIMITS.default.x,
       y: VIEW_LIMITS.default.y,
-      // Canvas origin C (docs/canvas-viewport.md §2): the viewport's top-left on the document canvas,
+      // Canvas origin C (docs/viewport-control.md): the viewport's top-left on the document canvas,
       // allowed to be negative / outside the content box. O = C - S is always derived, never stored.
       canvasX: 0,
       canvasY: 0,
@@ -3220,7 +3220,7 @@ export class Runtime {
     };
     /** Last real `Page.getLayoutMetrics` readback (null until the page was actually observed). */
     this.observed = null;
-    // Merged background observation of the layout viewport (docs/viewport-control.md §3.2): set by
+    // Merged background observation of the layout viewport (docs/viewport-control.md): set by
     // request/action triggers only — there is deliberately no standing 5Hz timer.
     this.viewObserveTimer = 0;
     this.viewObserveDue = [];
@@ -3228,7 +3228,7 @@ export class Runtime {
     this.viewObserveAt = 0;
     /** Last GUI originId that wrote the view (Agent writes keep it null); diagnostics only. */
     this.viewOriginId = null;
-    // P0-D annotations (docs/annotation-p0d.md §11.2): the last *accepted* human-panel document of
+    // P0-D annotations (docs/viewport-control.md): the last *accepted* human-panel document of
     // this Runtime. `documentKey` is the opaque navigation token the panel must echo back; it is
     // rotated (and the document dropped) on a main-document commit, main-context loss, same-document
     // URL/hash/history change, close and CDP disconnect. `panels` is the 16-slot per-key watermark
@@ -3280,7 +3280,7 @@ export class Runtime {
     this.captureObservation = null;
     // Cached Browser.getVersion projection ({ product, headless }); set on first capture.
     this.productInfo = undefined;
-    // Web T3 (docs/t3-vision.md §1.1): one product store per workspace scope, owned by the plugin
+    // Web T3 (docs/t3-vision.md): one product store per workspace scope, owned by the plugin
     // instance and independent of the page lifecycle — a page navigation/close keeps the stored
     // images analysable offline (their actionable资格 is invalidated separately). Only dispose
     // (plugin unload / runtime retire) clears it.
@@ -3291,7 +3291,7 @@ export class Runtime {
     // Last real vision call of this Runtime, projected into browser_capabilities.vision.observed
     // (numbers/status only — never an image, an absolute path or page text).
     this.visionObservation = null;
-    // Web T2 runtime state (docs/t2-structured-gui.md §3.2, §5).
+    // Web T2 runtime state (docs/t2-structured-gui.md, §5).
     //
     // `snapshot` is the single published ref table of this Runtime: `browser_snapshot` replaces it
     // atomically, and it is dropped on a main-frame document commit, on main-context loss and on
@@ -3316,7 +3316,7 @@ export class Runtime {
       networkEntries: [],
       networkEvicted: [],
     };
-    // Web P0 network collection (docs/network-p0.md §3/§4). One NetworkStore per Runtime (= per
+    // Web P0 network collection (docs/network-p0.md). One NetworkStore per Runtime (= per
     // workspace scope): the ring buffer, bodies, steps, links, artifacts and subscriptions are all
     // scope-local. `netControl` is the interception/throttle/hold state machine; `netTargets` maps
     // an auto-attached child CDP session to its target so every event can be attributed.
@@ -3334,7 +3334,7 @@ export class Runtime {
     // Tool-surface evidence: last real network tool call (projected into capabilities.network).
     this.net.observed = null;
     this.lastNetSessionId = null;
-    // Web T4 dynamic behaviour (docs/t4-dynamic-behavior.md, docs/t4-implementation-contract.md):
+    // Web T4 dynamic behaviour (docs/t4-dynamic-behavior.md, docs/t4-dynamic-behavior.md):
     // one active session per scope, up to four retained summaries, one screencast sink, and the
     // last real T4 call projected into browser_capabilities.dynamic.observed. The core module
     // (dynamic-t4.js) is imported lazily: a T4 call is the only thing that loads it, so page
@@ -3368,7 +3368,7 @@ export class Runtime {
   get running() { return Boolean(this.cdp && !this.cdp.closed); }
   get viewers() { return this.viewerUntil > Date.now() ? this.viewerSockets : 0; }
   /**
-   * Historical top-level alias `viewport={width,height}` (docs/viewport-control.md §3.1 keeps it):
+   * Historical top-level alias `viewport={width,height}` (docs/viewport-control.md keeps it):
    * it is a getter over `view` so the two can never disagree. Callers that need x/y/scale read
    * `viewProjection()` instead.
    */
@@ -3455,7 +3455,7 @@ export class Runtime {
     } catch (error) {
       const classified = asBrowserError(error);
       // VIEWPORT_CONFLICT is an optimistic-concurrency answer, not a page failure: like an
-      // invalid argument it must not overwrite the owner's lastError (docs/viewport-control.md §7.1).
+      // invalid argument it must not overwrite the owner's lastError (docs/viewport-control.md).
       if (entered && action && !['INVALID_ARGUMENT', 'UNSUPPORTED', 'BUSY', 'VIEWPORT_CONFLICT'].includes(classified.code)) {
         this.setError(classified.message, action);
       }
@@ -3636,7 +3636,7 @@ export class Runtime {
       await this.send('Network.enable', { maxTotalBufferSize: 5000000 }, signal);
       // One merged Fetch configuration: the Document navigation guard plus any active interception
       // rule. A second Fetch.enable would silently replace this one and kill the guard
-      // (docs/network-p0.md §7.3 / R1-8).
+      // (docs/network-p0.md / R1-8).
       this.netFetchKey = '';
       await this.#netSyncFetch(signal);
       if (this.net.running && this.netCtl.needsArm) {
@@ -3728,7 +3728,7 @@ export class Runtime {
       const scale = metadata.pageScaleFactor || 1;
       const width = Number(metadata.deviceWidth) || this.viewport.width;
       const height = Number(metadata.deviceHeight) || this.viewport.height;
-      // Capture-time top-level scroll (docs/canvas-viewport.md §5.1): prefer the CDP metadata, fall
+      // Capture-time top-level scroll (docs/viewport-control.md): prefer the CDP metadata, fall
       // back to the last measured S. The value is a finite non-negative number; 0 is legal.
       const scrollX = Number.isFinite(metadata.scrollOffsetX) ? metadata.scrollOffsetX : this.view.x;
       const scrollY = Number.isFinite(metadata.scrollOffsetY) ? metadata.scrollOffsetY : this.view.y;
@@ -3781,10 +3781,10 @@ export class Runtime {
           payload: { reason: 'main-frame-commit' },
         });
       }
-      // A new document has no canvas residual: O=0 (docs/canvas-viewport.md §3). C then follows the
+      // A new document has no canvas residual: O=0 (docs/viewport-control.md). C then follows the
       // browser's final scroll S through the normal coalesced readback below.
       this.#resetCanvasOnNavigation();
-      // Page-state ↔ network correlation (docs/network-p0.md §3.3 / G2.6): one state mark per
+      // Page-state ↔ network correlation (docs/network-p0.md / G2.6): one state mark per
       // committed main-frame navigation, so the timeline can show which page the traffic belongs to.
       this.netMark({ kind: 'state', text: 'navigate', url: this.url });
       this.refreshMetadataSoon();
@@ -3801,7 +3801,7 @@ export class Runtime {
         this.netMark({ kind: 'state', text: 'history', url: this.url });
         this.refreshMetadataSoon();
         // A same-document URL/hash/history change is still a different address for the panel's
-        // annotations (docs/annotation-p0d.md §11.2): rotate the token and drop the document. Refs
+        // annotations (docs/viewport-control.md): rotate the token and drop the document. Refs
         // deliberately keep their epoch — same-document nodes are still the same objects.
         this.#annotationRotate('history');
       }
@@ -3854,7 +3854,7 @@ export class Runtime {
   }
 
   /* -------------------------------------------------------------------------------------------
-   * Web P0 network collection (docs/network-p0.md §3/§4/§7 §13).
+   * Web P0 network collection (docs/network-p0.md).
    *
    * The Runtime is the only place that talks CDP for this tier. Everything below maps one CDP
    * event to one immutable normalized event in `this.net` (a per-scope NetworkStore) and keeps the
@@ -4638,7 +4638,7 @@ export class Runtime {
   }
 
   /**
-   * `ui.canvas` (docs/canvas-viewport.md §2): the viewport origin on the canvas plus the derived
+   * `ui.canvas` (docs/viewport-control.md): the viewport origin on the canvas plus the derived
    * residual O = C - S. Safe numbers only; blank is the documented compositing colour and never a
    * page fact (the blank area does not exist in the DOM).
    */
@@ -4659,7 +4659,7 @@ export class Runtime {
   }
 
   /**
-   * Derived canvas residual O = C - S from the authoritative view (docs/canvas-viewport.md §1).
+   * Derived canvas residual O = C - S from the authoritative view (docs/viewport-control.md).
    * Never stored separately; capture/T3 use it to decide whether a page-frame composite is needed.
    */
   canvasOffset() {
@@ -4690,7 +4690,7 @@ export class Runtime {
     };
   }
 
-  /** Freshness/identity companions for the cached view (docs/viewport-control.md §3.1). */
+  /** Freshness/identity companions for the cached view (docs/viewport-control.md). */
   viewMeta() {
     const observed = this.observed;
     return {
@@ -4720,7 +4720,7 @@ export class Runtime {
    * One real `Page.getLayoutMetrics` read (plus the page DPR as evidence).
    *
    * `cssLayoutViewport.pageX/pageY` is the authoritative document scroll position and
-   * `clientWidth/clientHeight` the CSS viewport size (docs/viewport-control.md §3.2). A Chromium
+   * `clientWidth/clientHeight` the CSS viewport size (docs/viewport-control.md). A Chromium
    * without the `css*` fields cannot prove CSS coordinates, so it is reported as UNSUPPORTED
    * instead of mixing device pixels into CSS fields.
    */
@@ -4791,7 +4791,7 @@ export class Runtime {
   }
 
   /**
-   * Bounded stable readback (docs/viewport-control.md §4.1 step 5): two frames, then at most
+   * Bounded stable readback (docs/viewport-control.md step 5): two frames, then at most
    * `settleMaxMs` of samples; two consecutive samples within 0.01 CSS px count as settled.
    * Settling is best effort — `settled:false` is a legal answer, never an error.
    */
@@ -4817,7 +4817,7 @@ export class Runtime {
    * Commit one observation: x/y/width/height come from the real metrics, `scale` from the patch.
    * `revision` only moves when the content actually changed; `source` records who changed it.
    *
-   * Canvas coordinate rule (docs/canvas-viewport.md §3): O = C - S is preserved unless the caller
+   * Canvas coordinate rule (docs/viewport-control.md): O = C - S is preserved unless the caller
    * supplies the offset it just applied. With `offset` the residual is authoritative (a canvas patch
    * computes it from the requested C and the target S), otherwise the old O is kept and
    * `C = S_observed + O` — that is what makes a pure x/y set or a resize keep the canvas framing.
@@ -4867,7 +4867,7 @@ export class Runtime {
   }
 
   /**
-   * Coalesced, single-flight, throttled view observation (docs/viewport-control.md §3.2).
+   * Coalesced, single-flight, throttled view observation (docs/viewport-control.md).
    *
    * The page can move without any `browser_viewport set`: the page's own scripts, `scrollIntoView`,
    * a wheel/scroll from the panel, smooth scrolling or scroll snap. Without a readback the cached
@@ -4944,7 +4944,7 @@ export class Runtime {
    * Commit a background reading: refresh `observed`/`observedAt`, and echo a *position* change into
    * `view.x/y` with `source:'page'` and `revision+1`. Width/height/scale are owned by set (which has
    * its own bounded readback), so a background sample never rewrites them; a same-value sample never
-   * bumps the revision. The canvas residual O is preserved: `C = S_new + O` (docs/canvas-viewport.md
+   * bumps the revision. The canvas residual O is preserved: `C = S_new + O` (docs/viewport-control.md
    * §3, invariant 4) — the page may scroll itself without the canvas framing moving.
    */
   #commitObservedPosition(observed) {
@@ -4975,7 +4975,7 @@ export class Runtime {
 
   /**
    * A committed main-frame navigation / reload starts a new document: the canvas residual is dropped
-   * (O=0, docs/canvas-viewport.md §3 invariant 5). The origin C is anchored to the last measured S,
+   * (O=0, docs/viewport-control.md invariant 5). The origin C is anchored to the last measured S,
    * and the coalesced readback that follows moves both to the browser's final scroll position.
    */
   #resetCanvasOnNavigation() {
@@ -4990,7 +4990,7 @@ export class Runtime {
   /* ---- shared view: set -------------------------------------------------------------------- */
 
   /**
-   * Apply one validated view patch **inside** the serial queue (docs/viewport-control.md §4.1).
+   * Apply one validated view patch **inside** the serial queue (docs/viewport-control.md).
    *
    * The caller does the pure pre-flight and enters `run()`; the `expectedRevision` recheck happens
    * here so two concurrent patches cannot both pass it (CAS in the queue). Only a width/height
@@ -5020,7 +5020,7 @@ export class Runtime {
     const needsOverride = targetWidth !== this.view.width || targetHeight !== this.view.height;
     const appliedFields = [];
     let overrideApplied = false;
-    // Derived residual O = C - S at call time (docs/canvas-viewport.md §3). The axis rules:
+    // Derived residual O = C - S at call time (docs/viewport-control.md). The axis rules:
     //   canvasX/Y given : O = C_requested - S_target (browser may clamp S_target)
     //   only x/y given  : keep O, so C_new = S_target + O_old
     //   neither (resize): keep O, so C_new = S_actual + O_old
@@ -5081,7 +5081,7 @@ export class Runtime {
         requested,
         before,
         view,
-        // Additive top-level canvas facts (docs/canvas-viewport.md §3 step 7): the same numbers as
+        // Additive top-level canvas facts (docs/viewport-control.md step 7): the same numbers as
         // the `view` projection plus the derived offset and measured content box.
         canvasX: view.canvasX,
         canvasY: view.canvasY,
@@ -5154,7 +5154,7 @@ export class Runtime {
   }
 
   /**
-   * Legacy `POST /viewport {width,height}` (docs/viewport-control.md §4.2): Number/round/clamp to
+   * Legacy `POST /viewport {width,height}` (docs/viewport-control.md): Number/round/clamp to
    * 200–4096, keep x/y (the browser constrains them) and scale. It always returns the clamped
    * request so an old client sees exactly the historical answer.
    */
@@ -5224,11 +5224,11 @@ export class Runtime {
       title: this.title,
       viewport: this.viewport,
       // Safe view projection (no page text, no path): browser_state and the authenticated
-      // `ui.view` serve the same data (docs/viewport-control.md §4.2). `canvas` is the safe
-      // canvas-space projection (docs/canvas-viewport.md §2).
+      // `ui.view` serve the same data (docs/viewport-control.md). `canvas` is the safe
+      // canvas-space projection (docs/viewport-control.md).
       view: this.viewProjection(),
       canvas: this.canvasProjection(),
-      // Human panel annotations (docs/annotation-p0d.md §11.2): untrusted problem hints the Agent
+      // Human panel annotations (docs/viewport-control.md): untrusted problem hints the Agent
       // reads through `browser_state`. Pure JSON, no page text, no absolute path; reading it never
       // starts a page and never takes the lease. `uiState()` passes the projection it already
       // computed so the hot /state /frame path builds this document exactly once per request.
@@ -5264,12 +5264,12 @@ export class Runtime {
         scope: this.scope,
         address: running ? this.url : '',
         history: { ...(running ? this.history : emptyHistory()) },
-        // Shared viewport projection (docs/viewport-control.md §4.2): the same `view` the Agent
+        // Shared viewport projection (docs/viewport-control.md): the same `view` the Agent
         // tool reads, plus the observation and its freshness. Additive only.
         view: this.viewProjection(),
-        // Canvas-space projection (docs/canvas-viewport.md §2): C/O/content/blank for the panel.
+        // Canvas-space projection (docs/viewport-control.md): C/O/content/blank for the panel.
         canvas: this.canvasProjection(),
-        // P0-D annotations (docs/annotation-p0d.md §11.2): the document the panel publishes to and
+        // P0-D annotations (docs/viewport-control.md): the document the panel publishes to and
         // the navigation token it must echo back. Additive only.
         annotations,
         annotationContext: this.annotationContext(),
@@ -5280,7 +5280,7 @@ export class Runtime {
   }
 
   /* -------------------------------------------------------------------------------------------
-   * P0-D annotations — Agent-visible human notes (docs/annotation-p0d.md §11.2/§11.3).
+   * P0-D annotations — Agent-visible human notes (docs/viewport-control.md).
    *
    * One "last accepted" document per Runtime, one write surface (`POST /annotations`, scoped and
    * peer-authenticated only), one navigation token. Nothing here starts a page, takes the lease or
@@ -5374,7 +5374,7 @@ export class Runtime {
   }
 
   /**
-   * `/metrics` heartbeat (docs/annotation-p0d.md §11.3): only a heartbeat naming the current source
+   * `/metrics` heartbeat (docs/viewport-control.md): only a heartbeat naming the current source
    * and the accepted clientRevision (and, when given, the current documentKey) refreshes
    * `lastSeenAt`. It never touches shapes, the Host revision, `lastError`, the view or who may write.
    */
@@ -5500,7 +5500,7 @@ export class Runtime {
       height: latest.height,
       pageWidth: latest.pageWidth,
       pageHeight: latest.pageHeight,
-      // Capture-time top-level scroll (docs/canvas-viewport.md §5.1): the client needs it to place
+      // Capture-time top-level scroll (docs/viewport-control.md): the client needs it to place
       // the frame at the right canvas position; 0 is a legal value.
       scrollX: latest.scrollX,
       scrollY: latest.scrollY,
@@ -5722,7 +5722,7 @@ export class Runtime {
       }
     }
     // A wheel/click/drag can move the page (momentum/smooth scroll/snap): two coalesced settling
-    // samples, 50ms and 250ms after the dispatch (docs/viewport-control.md §3.2).
+    // samples, 50ms and 250ms after the dispatch (docs/viewport-control.md).
     this.refreshViewObservationSoon({ delayMs: 50 });
     this.refreshViewObservationSoon({ delayMs: 250 });
     return events.length;
@@ -5758,7 +5758,7 @@ export class Runtime {
    * Old call shape (no arguments) is byte-identical to the historical behaviour: one raw
    * `Page.captureScreenshot` of the live page viewport, no clip, no re-encoding.
    *
-   * `screenshot({canvas:true})` is the P0-C v2 seed route (docs/canvas-viewport.md §6.1): it goes
+   * `screenshot({canvas:true})` is the P0-C v2 seed route (docs/viewport-control.md): it goes
    * through `capture({scale:1})`, so O = 0 still dispatches exactly one raw CDP PNG and O ≠ 0
    * returns the white-composited canvas viewport. The reply adds a safe `view` projection and the
    * capture provenance (canvas/composite/contentRect/request/scroll) so a client can bind a seed
@@ -5822,7 +5822,7 @@ export class Runtime {
   async capture({ scale = 1, region, scaleSource = 'explicit' } = {}, signal) {
     const capturedAt = Date.now();
     // The resolved density source travels with the capture so evidence can say whether the caller
-    // asked for this scale or the shared view.scale supplied it (docs/viewport-control.md §6.2).
+    // asked for this scale or the shared view.scale supplied it (docs/viewport-control.md).
     const resolvedScaleSource = scaleSource === 'view' ? 'view' : 'explicit';
     const viewRevisionAtCapture = this.view.revision;
     await this.ensure(signal);
@@ -5868,7 +5868,7 @@ export class Runtime {
       pageDevicePixelRatio = null;
     }
 
-    // Canvas framing (docs/canvas-viewport.md §6.1): O = C - S is derived from the authority view,
+    // Canvas framing (docs/viewport-control.md): O = C - S is derived from the authority view,
     // S is the live measured scroll. The canvas coordinates equal document coordinates (content is
     // anchored at (0,0)), so a canvas rect can be intersected with the content box and captured by
     // CDP clip as long as it is non-negative.
@@ -5976,7 +5976,7 @@ export class Runtime {
       };
     }
 
-    // O ≠ 0 must be composited (docs/canvas-viewport.md §6.1 + the 2026-11-02 negative-clip spike):
+    // O ≠ 0 must be composited (docs/viewport-control.md + the 2026-11-02 negative-clip spike):
     // capture the page pixels of the content intersection, then paste them into a white canvas
     // viewport at -O and let the output size be the final canvas size (16M budget applies to it).
     let pageCapture = null;
@@ -6060,7 +6060,7 @@ export class Runtime {
   }
 
   /**
-   * Live layout facts for a T3 source/act re-check (docs/t3-vision.md §3.1, §6 step 1).
+   * Live layout facts for a T3 source/act re-check (docs/t3-vision.md, §6 step 1).
    *
    * Read-only: no viewport/scroll/DPR change, no retry, no second capture. `cssContentSize` is the
    * document CSS content box a `Source.live` region must stay inside; `visualViewportScale` is the
@@ -6194,7 +6194,7 @@ export class Runtime {
   }
 
   /* -------------------------------------------------------------------------------------------
-   * Web P0 network tool support (docs/network-p0.md §2/§7/§8). Every method is a thin wrapper over
+   * Web P0 network tool support (docs/network-p0.md). Every method is a thin wrapper over
    * the pure `network` module: the Runtime only resolves scope/page/lease concerns and the durable
    * evidence root.
    * ----------------------------------------------------------------------------------------- */
@@ -9449,7 +9449,7 @@ export class Runtime {
   #t2BumpDocumentEpoch() {
     this.t2.documentEpoch += 1;
     this.#t2ClearRefs();
-    // The panel's annotations belong to the document that was just replaced (docs/annotation-p0d.md
+    // The panel's annotations belong to the document that was just replaced (docs/viewport-control.md
     // §11.2): rotate the navigation token and drop the stored document with it, so a late publish
     // can only be refused as `annotation-context-stale`.
     this.#annotationRotate('document');
@@ -11013,7 +11013,7 @@ export class Runtime {
     this.metadataStartedAt = 0;
     this.navigationError = undefined;
     // A closed page keeps its width/height/scale configuration but loses its page-bound position
-    // (docs/viewport-control.md §3.1, docs/canvas-viewport.md §3): x/y and the canvas origin reset
+    // (docs/viewport-control.md, docs/viewport-control.md): x/y and the canvas origin reset
     // to 0 (C=S=0, O=0), the observation is dropped, and the revision moves because that *is* a
     // content change (never silently reuse the old position).
     if (this.viewObserveTimer) { clearTimeout(this.viewObserveTimer); this.viewObserveTimer = 0; }
@@ -11122,7 +11122,7 @@ function parseScopeQuery(rawUrl) {
 /** Status for the workspace-isolation error taxonomy (everything else stays 500 for compat). */
 function scopeHttpStatus(code) {
   switch (code) {
-    // Optimistic-concurrency loss on the shared viewport (docs/viewport-control.md §7.1).
+    // Optimistic-concurrency loss on the shared viewport (docs/viewport-control.md).
     case 'VIEWPORT_CONFLICT': return 409;
     case 'SCOPE_INVALID': return 400;
     case 'SCOPE_FORBIDDEN': return 403;
@@ -11543,7 +11543,7 @@ function sendJson(res, status, value) {
  * Independent HTTP(S) client — `browser_http_request` / `web.t1.http-request`.
  *
  * Deliberately shares nothing with the page runtime: no Chromium, no CDP, no page queue, no
- * owner lease, no cookie jar, no page lastError. Contract: docs/t1-http-request.md.
+ * owner lease, no cookie jar, no page lastError. Contract: docs/tools.md.
  *
  * `node:http` / `node:https` are default-imported and called as `http.request(...)` so a probe
  * can wrap the module property to count dispatches (zero-dispatch assertions).
@@ -12270,7 +12270,7 @@ export function apply(ctx) {
         return;
       }
       if (action === '/annotations') {
-        // P0-D annotations (docs/annotation-p0d.md §11.2/§11.3): the ONLY write surface of the
+        // P0-D annotations (docs/viewport-control.md): the ONLY write surface of the
         // human panel's annotation document — not a tool (the surface stays 30 tools).
         //   * scoped only: a legacy/unscoped request would have to guess a workspace, so it is
         //     refused instead of being mapped to `legacy:default`;
@@ -12306,7 +12306,7 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         entry.runtime.recordClientMetrics(body);
-        // Optional annotation heartbeat (docs/annotation-p0d.md §11.3): only a heartbeat naming the
+        // Optional annotation heartbeat (docs/viewport-control.md): only a heartbeat naming the
         // current source + accepted clientRevision (and, when given, the current documentKey)
         // refreshes lastSeenAt. It never rewrites shapes, the Host revision or lastError.
         entry.runtime.noteAnnotationHeartbeat(body);
@@ -12367,7 +12367,7 @@ export function apply(ctx) {
         return;
       }
       if (action === '/viewport') {
-        // Two shapes (docs/viewport-control.md §4.2):
+        // Two shapes (docs/viewport-control.md):
         //   legacy {width,height}                 -> historical Number/round/clamp, same reply
         //   v1 {version:1, ...patch, expectedRevision?, originId?} -> strict, same validation as
         //                                            the tool; replies also carry ui.view/observed.
@@ -12416,7 +12416,7 @@ export function apply(ctx) {
           ok: true,
           viewport: { width: result.view.width, height: result.view.height },
           view: result.view,
-          // Additive canvas-space facts (docs/canvas-viewport.md §3 step 7 / §4).
+          // Additive canvas-space facts (docs/viewport-control.md step 7 / §4).
           canvasX: result.canvasX,
           canvasY: result.canvasY,
           offset: result.offset,
@@ -12517,14 +12517,14 @@ export function apply(ctx) {
             : { type: typeof value }])),
       };
       const diagnostic = ['browser_state', 'browser_capabilities'].includes(definition.name);
-      // Per-action read-only branch (docs/viewport-control.md §7): `browser_viewport get` is a
+      // Per-action read-only branch (docs/viewport-control.md): `browser_viewport get` is a
       // *cache* diagnostic — no ensure, no CDP (not even Page.bringToFront), no queue, no lease,
       // no recent/error bookkeeping. It may still read another owner's cached view.
       const readOnly = typeof definition.readOnly === 'function' && definition.readOnly(args) === true;
       const isHttpRequest = definition.name === 'browser_http_request';
       // Web P0 network read-only tools (session.status/reset, events, detail, trace query, evidence,
       // subscribe) are scope-local reads: they resolve the workspace runtime but never take the page
-      // queue, the lease, or lazily start Chromium (docs/network-p0.md §2, R1-5).
+      // queue, the lease, or lazily start Chromium (docs/network-p0.md, R1-5).
       const isNetworkRead = definition.networkRead === true;
       // Resolve the workspace scope from the exec identity only (never from a client-supplied
       // path). No exec identity at all is the old protocol and maps to legacy:default.
@@ -12552,7 +12552,7 @@ export function apply(ctx) {
         meta.scope = { id: null, kind: 'unknown', workspaceId: null, degraded: true };
       }
       // Host-memory-only dynamic actions (status/reset, pure-network session start/stop) must not
-      // take the page queue, the lease or ensure a page (docs/t4-implementation-contract.md §1/§2.1).
+      // take the page queue, the lease or ensure a page (docs/t4-dynamic-behavior.md).
       const hostOnly = typeof definition.hostOnly === 'function' && definition.hostOnly(args, runtime) === true;
       // The independent HTTP tool must not enter the page queue, the lease, activity or lastError;
       // only real page/network operations participate in the error projection.
@@ -12562,7 +12562,7 @@ export function apply(ctx) {
         : (runtime && runtime.url ? redactUrl(runtime.url) : null);
       // Every tool value leaves through this single lossless-JSON boundary.
       const finish = (value, target) => {
-        // Envelope ordering matters per tool family (docs/network-p0.md §2):
+        // Envelope ordering matters per tool family (docs/network-p0.md):
         //  - the 7 network tools own `sessionId` (采集会话 id 或 null); the agent session moves to
         //    `agentSessionId` so the envelope can never overwrite the contract field.
         //  - the legacy 22 tools keep their historical `{...value, ...meta}` order untouched.
@@ -12584,7 +12584,7 @@ export function apply(ctx) {
         }
         // Optional pure pre-flight, outside the queue: an invalid argument must cost zero CDP
         // (not even the queue's Page.bringToFront) and must not touch owner/error state
-        // (docs/viewport-control.md §7.1). Validation is pure: no browser, no file, no lease.
+        // (docs/viewport-control.md). Validation is pure: no browser, no file, no lease.
         if (typeof definition.preflight === 'function') definition.preflight(args);
         if (readOnly || hostOnly) {
           // Cache-only diagnostic / host-memory-only action: deliberately outside run() so it cannot activate the page,
@@ -12606,7 +12606,7 @@ export function apply(ctx) {
             browser_vision_compare: '视觉差异比较', browser_vision_act: '按截图坐标输入',
             browser_vision_baseline: '管理视觉基线', browser_vision_check: '视觉回归检查',
           }[definition.name]));
-          // GUI↔network correlation (docs/network-p0.md §3.3 / G2.5): a temporal mark before and
+          // GUI↔network correlation (docs/network-p0.md / G2.5): a temporal mark before and
           // after every page tool, so event queries can associate traffic with an actionId without
           // ever claiming causality.
           runtime.netMark({ tool: definition.name, actionId: meta.actionId, kind: 'tool', text: 'begin' });
@@ -12627,7 +12627,7 @@ export function apply(ctx) {
           // Any successful page operation may have moved the page (scrollIntoView, click, drag,
           // navigation, a script): refresh the view cache once, coalesced/throttled.
           // `browser_viewport set` is excluded — applyView already did its own bounded readback, and
-          // a scale-only set must not cost an extra metrics read (docs/viewport-control.md §3.2).
+          // a scale-only set must not cost an extra metrics read (docs/viewport-control.md).
           if (definition.name !== 'browser_viewport') runtime.refreshViewObservationSoon();
         }
         // An operation-level failure (eval/style return {ok:false,error}) is a real failure, not
@@ -12728,12 +12728,12 @@ export function apply(ctx) {
       const runtime = exec.runtime;
       // 1) Pure pre-flight: an invalid argument must cost neither a browser nor a file.
       // The network window is measured against wall-clock + the session high-water mark taken
-      // *before* the capture starts (docs/network-p0.md §3.3 / R1-16); it never starts collection.
+      // *before* the capture starts (docs/network-p0.md / R1-16); it never starts collection.
       const networkStart = { frameTimeMs: Date.now(), highWater: runtime.net ? runtime.net.seq : 0 };
       const request = normalizeCaptureRequest(args);
       // The default density is the shared `view.scale`, resolved ONCE here inside the call (cold
       // view default is 1) — an omitted scale must never be frozen to 1 by the validator
-      // (docs/viewport-control.md §6.1). An explicit scale overrides it for this capture only: it
+      // (docs/viewport-control.md). An explicit scale overrides it for this capture only: it
       // never writes view/DPR/scroll/viewport.
       const scale = request.scale === null ? runtime.view.scale : request.scale;
       const scaleSource = request.scale === null ? 'view' : 'explicit';
@@ -12781,7 +12781,7 @@ export function apply(ctx) {
         region: request.region
           ? { x: request.region.x, y: request.region.y, width: request.region.width, height: request.region.height }
           : null,
-        // Canvas space is the default capture space (docs/canvas-viewport.md §6.1). O = 0 keeps the
+        // Canvas space is the default capture space (docs/viewport-control.md). O = 0 keeps the
         // historical document-css-px coordinate space for old consumers; O ≠ 0 is canvas space.
         space: 'canvas-css-px',
         coordinateSpace: captured.composite ? 'canvas-css-px' : 'document-css-px',
@@ -12827,7 +12827,7 @@ export function apply(ctx) {
           height: expected.height,
           pixelsPerCssPixel: expected.pixelsPerCssPixel,
         },
-        // Canvas provenance (docs/canvas-viewport.md §6.1): C/S/O/content + explicit `composite`.
+        // Canvas provenance (docs/viewport-control.md): C/S/O/content + explicit `composite`.
         // `composite:false` is the old single-CDP-PNG path (no re-encoding); `composite:true` means
         // the delivered PNG was composited on a white canvas and is therefore re-encoded.
         canvas: captured.canvas,
@@ -12865,7 +12865,7 @@ export function apply(ctx) {
         contentRect: captured.contentRect,
         blank: 'outside-content',
       }));
-      // Per-axis mapping from the REAL PNG size (docs/viewport-control.md §6.2): the nominal
+      // Per-axis mapping from the REAL PNG size (docs/viewport-control.md): the nominal
       // `pixelsPerCssPixel` stays for old consumers, these two fields are the actual sampling.
       // Coordinates: canvasX = region.x + imageX * region.width / png.width (canvas == document).
       mapping.cssPerPixel = {
@@ -13149,7 +13149,7 @@ export function apply(ctx) {
     },
   });
 
-  // ---- Web P0 network surface (docs/network-p0.md §2): 7 tools, 22 → 29. ---------------------
+  // ---- Web P0 network surface (docs/network-p0.md): 7 tools, 22 → 29. ---------------------
   // Every one of them is `networkRead`: the read-only actions must resolve the workspace scope but
   // never start Chromium or take the page lease. `session.start` and the page-requiring `control`
   // actions call `runtime.run()` themselves, so BUSY/ABORTED/CDP_* keep their platform semantics.
@@ -13829,7 +13829,7 @@ export function apply(ctx) {
   /* -------------------------------------------------------------------------------------------
    * Web T3 static vision (docs/t3-vision.md)
    *
-   * Host responsibilities (docs/t3-implementation-plan.md §2.4): pure argument pre-checks (before
+   * Host responsibilities (docs/t3-vision.md): pure argument pre-checks (before
    * ensure/mkdir/CDP), source resolution + pin/release, the per-scope product store, the single
    * delivered PNG (P0 output rules + attachment), the unified `evidence.vision` v1 projection, and
    * the decision rules of `act` (§6) and `check` (§7). Pixel algorithms stay in vision-t3.js and
@@ -13930,7 +13930,7 @@ export function apply(ctx) {
     // Canvas == document coordinates (content is anchored at (0,0)); what changes is the framing.
     // O ≠ 0 is a composited canvas capture and its mapping must say canvas-css-px so an old
     // document baseline is rejected as mapping-incompatible instead of being silently misread
-    // (docs/canvas-viewport.md §6.2).
+    // (docs/viewport-control.md).
     const canvas = captured.canvas && typeof captured.canvas === 'object' ? captured.canvas : null;
     const canvasSpace = Boolean(canvas && canvas.composite);
     const mapping = {
@@ -14037,7 +14037,7 @@ export function apply(ctx) {
     if (source.kind === 'live') {
       // `scale` is forwarded only when the caller actually gave one: the validator keeps the
       // "omitted" state so the Host can resolve the shared view.scale inside this call
-      // (docs/viewport-control.md §6.1). Defaulting to 1 here would freeze the old behaviour.
+      // (docs/viewport-control.md). Defaulting to 1 here would freeze the old behaviour.
       return vision.validateSource({
         kind: 'live',
         ...(source.scale !== undefined ? { scale: source.scale } : {}),
@@ -14132,7 +14132,7 @@ export function apply(ctx) {
           scaleSource: shot.capture.scaleSource ?? scaleSource,
           viewRevision: Number.isFinite(shot.capture.viewRevision) ? shot.capture.viewRevision : null,
           region: normalized.region ? { ...normalized.region } : null,
-          // The live source is a canvas rect once O ≠ 0 (docs/canvas-viewport.md §6.2); O = 0 keeps
+          // The live source is a canvas rect once O ≠ 0 (docs/viewport-control.md); O = 0 keeps
           // the historical document coordinate space.
           space: 'canvas-css-px',
           coordinateSpace: mapping.coordinateSpace === 'canvas-css-px' ? 'canvas-css-px' : 'document-css-px',
@@ -14829,7 +14829,7 @@ export function apply(ctx) {
           id: candidate.id,
           region: candidate.region,
           // Canvas and document coordinates coincide; blank candidates keep the canvas rect but
-          // must not be treated as document points (docs/canvas-viewport.md §6.2).
+          // must not be treated as document points (docs/viewport-control.md).
           canvas: mapped,
           documentCss: blank ? null : mapped,
           centroid: candidate.centroid,
@@ -14966,7 +14966,7 @@ export function apply(ctx) {
       let resolved = null;
       try {
         const request = t3ImageRequest(args && typeof args === 'object' ? args : {});
-        // One frozen default scale per call (docs/viewport-control.md §6.1).
+        // One frozen default scale per call (docs/viewport-control.md).
         const liveScale = runtime.view.scale;
         resolved = await t3ResolveSource(runtime, exec, request.source, 'source', pins, budget, liveScale);
         let image = resolved.image;
@@ -16978,7 +16978,7 @@ export function apply(ctx) {
       const t3Tools = ['vision_image', 'vision_find', 'vision_compare', 'vision_act', 'vision_baseline', 'vision_check'];
       const t3CapabilityIds = ['web.t3.image', 'web.t3.find', 'web.t3.compare', 'web.t3.act', 'web.t3.baseline', 'web.t3.check'];
       const diagnosticTools = ['state', 'capabilities'];
-      // Web P0 network surface (docs/network-p0.md §8.8). Read-only actions stay available even when
+      // Web P0 network surface (docs/network-p0.md). Read-only actions stay available even when
       // another session owns the page; `session` mutations and page-bound `control` actions report
       // unavailable(BUSY) like every other page operation.
       const networkTools = ['session', 'events', 'detail', 'trace', 'control', 'evidence', 'subscribe'];
@@ -17062,7 +17062,7 @@ export function apply(ctx) {
             ...(busy ? { reason: 'BUSY: browser owned by another session' } : {}),
             constraints: t3Constraints })),
           ...diagnosticTools.map((name) => ({ id: 'web.t1.' + name, tool: 'browser_' + name, status: 'available', constraints: diagnosticConstraints })),
-          // Shared viewport (docs/viewport-control.md §7.2): get stays readable even when another
+          // Shared viewport (docs/viewport-control.md): get stays readable even when another
           // session owns the page; set is a page operation and reports BUSY like every other one.
           { id: 'web.t1.viewport', tool: 'browser_viewport',
             status: busy ? 'unavailable' : 'available',
@@ -17115,7 +17115,7 @@ export function apply(ctx) {
               'partial: iframe/OOPIF/dedicated worker only; shared/service worker refused when attribution is unprovable',
               'HTTPS capture is mechanism-identical (same Network domain) but NOT independently verified (no local TLS target)',
             ] },
-          // Web T4 dynamic behaviour (docs/t4-implementation-contract.md §8): one entry per REAL
+          // Web T4 dynamic behaviour (docs/t4-dynamic-behavior.md): one entry per REAL
           // registered tool, plus one aggregate alias. M1 registers exactly three tools; a name that
           // is not registered yet cannot be reported as available.
           ...['dynamic-session', 'motion-observe', 'motion-analyze', 'motion-control', 'correlate']
@@ -17155,7 +17155,7 @@ export function apply(ctx) {
             constraints: ['legacy alias of web.t4.dynamic-behavior; not an independent tool', 'tool count unchanged'] },
           { id: 'web.t1.browser-extras', status: 'unsupported', reason: 'Not implemented' },
         ],
-        // Web T4 dynamic behaviour (docs/t4-implementation-contract.md §8). Pure declaration: reading
+        // Web T4 dynamic behaviour (docs/t4-dynamic-behavior.md). Pure declaration: reading
         // this never imports the core, starts a page, samples a frame or creates a session.
         dynamic: (() => {
           const observed = runtime.dynamic.observed;
@@ -17256,7 +17256,7 @@ export function apply(ctx) {
           limits: { maxRegionPixels: CAPTURE_LIMITS.maxOutputPixels },
           observed: observedCapture,
         },
-        // Shared viewport (docs/viewport-control.md §7.2). Declared, never probed: reading this
+        // Shared viewport (docs/viewport-control.md). Declared, never probed: reading this
         // starts nothing and takes no lease. `observed` only comes from a real Page.getLayoutMetrics
         // readback (numbers only, no page text, no absolute path).
         viewport: {
@@ -17270,7 +17270,7 @@ export function apply(ctx) {
           presets: Object.fromEntries(Object.entries(VIEW_PRESETS).map(([mode, size]) => [mode, { ...size }])),
           default: { ...VIEW_LIMITS.default },
           scaleRange: [...VIEW_LIMITS.scale],
-          // Canvas space (docs/canvas-viewport.md §2): C may be negative / outside the content box;
+          // Canvas space (docs/viewport-control.md): C may be negative / outside the content box;
           // blank is composited by Host/Client and does not exist in the page DOM.
           canvas: {
             version: 1,
@@ -17289,7 +17289,7 @@ export function apply(ctx) {
             };
           })(),
         },
-        // Web T3 static vision (docs/t3-vision.md §11). Declared, never probed: reading this must
+        // Web T3 static vision (docs/t3-vision.md). Declared, never probed: reading this must
         // not start Chromium, create the baseline root or add a product. `observed` is the last real
         // vision call of this Runtime and never contains an image, an absolute path or page text.
         vision: {
@@ -17325,7 +17325,7 @@ export function apply(ctx) {
             }
             : null,
         },
-        // P0-D annotations (docs/annotation-p0d.md §11.1). Declared, never probed: reading this
+        // P0-D annotations (docs/viewport-control.md). Declared, never probed: reading this
         // starts nothing. This is NOT a tool — the Agent reads the document through
         // `browser_state.annotations`, and only the authenticated scoped HTTP surface writes it, so
         // the registered tool surface stays at 30.
@@ -17359,7 +17359,7 @@ export function apply(ctx) {
             };
           })(),
         },
-        // Web P0 network (docs/network-p0.md §8.8). Declared, never probed.
+        // Web P0 network (docs/network-p0.md). Declared, never probed.
         network: (() => {
           const caps = network.networkCapabilities(runtime.net, { control: runtime.netCtl, subTargets: NETWORK_SUBTARGETS });
           return {
@@ -17392,7 +17392,7 @@ export function apply(ctx) {
             deviceScaleFactor: 1,
             pageZoomChanged: false,
           },
-          // P0-D annotations (docs/annotation-p0d.md §11.2): the soft limits the Host enforces and
+          // P0-D annotations (docs/viewport-control.md): the soft limits the Host enforces and
           // the client applies to the same normalized set.
           annotations: annotationLimits(),
           networkEntries: NETWORK_LIMIT,
@@ -17452,7 +17452,7 @@ export function apply(ctx) {
             warnings: [...CAPTURE_WARNING_VOCABULARY],
           },
           // Web T4 dynamic limits: the frozen T4_LIMITS object, projected verbatim
-          // (docs/t4-implementation-contract.md §1/§8).
+          // (docs/t4-dynamic-behavior.md).
           dynamic: { ...DYNAMIC_LIMITS },
           vision: {
             algorithmVersion: T3_ALGORITHM_VERSION,

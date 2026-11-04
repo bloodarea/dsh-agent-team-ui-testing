@@ -6,10 +6,10 @@ const TAXONOMY = {
   CDP_DISCONNECTED: ['disconnected', true], TARGET_NOT_FOUND: ['action', false],
   EVAL_ERROR: ['app', false], INVALID_ARGUMENT: ['input', false], BUSY: ['concurrency', true],
   UNSUPPORTED: ['capability', false], INTERNAL: ['internal', false], ABORTED: ['cancelled', true],
-  // Independent HTTP client (docs/t1-http-request.md §6): HTTP timeouts are not CDP timeouts
+  // Independent HTTP client (docs/tools.md): HTTP timeouts are not CDP timeouts
   // (they must never trigger the page "close the browser before releasing the queue" path).
   HTTP_TIMEOUT: ['timeout', true], HTTP_FAILED: ['network', true], HTTP_REDIRECT_LIMIT: ['network', false],
-  // Workspace isolation (docs/workspace-isolation.md): these must never fall back to INTERNAL.
+  // Workspace isolation (docs/architecture.md): these must never fall back to INTERNAL.
   SCOPE_INVALID: ['input', false], SCOPE_NOT_FOUND: ['scope', false],
   SCOPE_UNAVAILABLE: ['scope', true], SCOPE_FORBIDDEN: ['authorization', false],
   RUNTIME_LIMIT: ['resource', true],
@@ -19,7 +19,7 @@ const TAXONOMY = {
   // snapshot, not a replay.
   REF_STALE: ['action', false], TARGET_NOT_UNIQUE: ['action', false],
   NOT_INTERACTABLE: ['action', false], WAIT_TIMEOUT: ['timeout', true],
-  // Shared viewport (docs/viewport-control.md §7.1, Lead freeze 2026-11-01): an optimistic
+  // Shared viewport (docs/viewport-control.md, Lead freeze 2026-11-01): an optimistic
   // concurrency failure, not a bad argument and not a page failure. `state` + retryable=true means
   // "read the current view and decide again"; the patch was NOT applied and page lastError is kept.
   VIEWPORT_CONFLICT: ['state', true],
@@ -31,7 +31,7 @@ const TAXONOMY = {
   CAPTURE_SIZE_MISMATCH: ['capture', false], CAPTURE_UPSCALED: ['capture', false],
   CAPTURE_TOO_LARGE: ['resource', false], OUTPUT_PATH_INVALID: ['input', false],
   OUTPUT_EXISTS: ['output', false], OUTPUT_WRITE_FAILED: ['output', true],
-  // Web T3 (static vision, docs/t3-vision.md §3.3). Every code below is fixed by the contract:
+  // Web T3 (static vision, docs/t3-vision.md). Every code below is fixed by the contract:
   // a vision refusal must never degrade into INTERNAL, and a product/baseline that cannot be
   // read must never be reported as a visual FAIL. `vision` marks "the image/source side said no",
   // `action` marks "the live page no longer matches the screenshot", `output` marks the managed
@@ -44,7 +44,7 @@ const TAXONOMY = {
   VISION_BASELINE_NOT_FOUND: ['vision', false], VISION_BASELINE_EXISTS: ['output', false],
   VISION_BASELINE_CONFLICT: ['concurrency', false],
   VISION_BASELINE_READ_FAILED: ['output', true], VISION_BASELINE_WRITE_FAILED: ['output', true],
-  // Web P0 network collection (docs/network-p0.md §2.9). Codes, categories and retryability are
+  // Web P0 network collection (docs/network-p0.md). Codes, categories and retryability are
   // fixed by the contract table: `scope` = the session/store is not there, `action` = the cited
   // event is gone, `resource` = a declared budget, `concurrency` = the page/session is owned
   // elsewhere or an id/step name collides, `capability` = no CDP/page or an unsupported CDP call,
@@ -59,11 +59,11 @@ const TAXONOMY = {
   NET_HAR_INVALID: ['input', false], NET_SUBSCRIPTION_NOT_FOUND: ['scope', false],
   NET_SUBSCRIPTION_FORBIDDEN: ['authorization', false], NET_INTEGRITY_FAILED: ['integrity', false],
   NET_SCOPE_FORBIDDEN: ['authorization', false],
-  // R1-5（docs/network-p0.md §13）：新 7 工具的参数/路径/根/写盘错误一律 NET_*，
+  // R1-5（docs/network-p0.md）：新 7 工具的参数/路径/根/写盘错误一律 NET_*，
   // 只有 BUSY/ABORTED/CDP_*/RUNTIME_LIMIT 这些平台码可以透传。
   NET_INVALID_ARGUMENT: ['input', false], NET_OUTPUT_ROOT_UNKNOWN: ['output', false],
   NET_OUTPUT_PATH_INVALID: ['input', false], NET_OUTPUT_WRITE_FAILED: ['output', true],
-  // Web T4 (docs/t4-dynamic-behavior.md §7.3): the DYNAMIC_* surface is its own taxonomy — a
+  // Web T4 (docs/t4-dynamic-behavior.md): the DYNAMIC_* surface is its own taxonomy — a
   // dynamic refusal must never degrade into INTERNAL, and missing frame/clock evidence is an
   // evidence problem, not a page failure. `scope` = the session/event is gone or belongs to
   // another scope, `input` = pure pre-check (zero start/control), `capability` = the requested

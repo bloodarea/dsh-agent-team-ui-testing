@@ -1,5 +1,5 @@
 /**
- * P22 — `browser_http_request` (docs/t1-http-request.md §2–§8).
+ * P22 — `browser_http_request` (docs/tools.md §2–§8).
  *
  * Everything goes through the registered tool wrapper on a fake Cordis context. Temporary
  * loopback servers (port 0, bounded, closed in `finally`) provide redirect chains, method rules,

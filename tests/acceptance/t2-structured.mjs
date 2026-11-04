@@ -474,7 +474,7 @@ async function probeC1({ check, finding }) {
   try {
     const names = harness.toolNames();
     const expected = EXPECTED_TOOLS.map((tool) => tool.name);
-    // 30 = 10 T1 (docs/runtime-t1.md + docs/viewport-control.md §7 browser_viewport) + 7 T2
+    // 30 = 10 T1 (docs/architecture.md + docs/viewport-control.md §7 browser_viewport) + 7 T2
     //    + 6 T3 (docs/t3-vision.md §2.1) + 7 network (docs/network-p0.md §2);
     // compared against harness EXPECTED_TOOLS so no group can drift silently.
     check('实际注册恰好 30 个工具', names.length === expected.length && JSON.stringify([...names].sort()) === JSON.stringify([...expected].sort()), {

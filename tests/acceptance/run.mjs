@@ -351,17 +351,17 @@ async function probe1ToolSurface({ harness, check, finding }) {
   const expectedNames = EXPECTED_TOOLS.map((tool) => tool.name);
   const actualNames = harness.toolNames();
 
-  // 35 = 10 T1 (docs/runtime-t1.md + docs/viewport-control.md §7 browser_viewport)
+  // 35 = 10 T1 (docs/architecture.md + docs/viewport-control.md §7 browser_viewport)
   //      + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
   //      + 7 network (docs/network-p0.md §2)
-  //      + 5 T4 (docs/t4-dynamic-behavior.md §7 / docs/t4-implementation-contract.md §2).
+  //      + 5 T4 (docs/t4-dynamic-behavior.md §7 / docs/t4-dynamic-behavior.md §2).
   //      Counted against EXPECTED_TOOLS so a group surface cannot drift silently; the "same
   //      names" assertion below still proves nothing extra.
   check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4）`, actualNames.length === EXPECTED_TOOLS.length, {
     expected: { count: EXPECTED_TOOLS.length, names: expectedNames },
     actual: { count: actualNames.length, names: actualNames },
   });
-  check('工具名与 docs/runtime-t1.md + t2/t3/network 契约完全一致（无缺失、无多余）', JSON.stringify([...actualNames].sort()) === JSON.stringify([...expectedNames].sort()), {
+  check('工具名与 docs/architecture.md + t2/t3/network 契约完全一致（无缺失、无多余）', JSON.stringify([...actualNames].sort()) === JSON.stringify([...expectedNames].sort()), {
     expected: [...expectedNames].sort(),
     actual: [...actualNames].sort(),
   });
@@ -1743,7 +1743,7 @@ async function main() {
     helpers: harnessModule,
   };
 
-  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 30 个 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network），名称/参数 schema 与 docs/runtime-t1.md + docs/viewport-control.md §7 + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 + docs/network-p0.md §2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
+  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 30 个 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network），名称/参数 schema 与 docs/architecture.md + docs/viewport-control.md §7 + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 + docs/network-p0.md §2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
   await runProbe({
     id: 'P23-network-surface',
     title: 'network P0 工具面（注册/schema/离线诊断/owner/BUSY/旧工具不变）',

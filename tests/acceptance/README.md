@@ -52,7 +52,7 @@ Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DS
 
 | ID | 必需行为 |
 | --- | --- |
-| P1 | 恰好 29 工具（9 T1 + 7 T2 + 6 T3 + 7 network）、required 与 `docs/runtime-t1.md` + `docs/t2-structured-gui.md` §2.2 + `docs/t3-vision.md` §2.1 + `docs/network-p0.md` §2 一致、schema、HTTP 路由、owner 诊断、未启动时 capability 可用。 |
+| P1 | 恰好 29 工具（9 T1 + 7 T2 + 6 T3 + 7 network）、required 与 `docs/architecture.md` + `docs/t2-structured-gui.md` §2.2 + `docs/t3-vision.md` §2.1 + `docs/network-p0.md` §2 一致、schema、HTTP 路由、owner 诊断、未启动时 capability 可用。 |
 | P2 | loopback 导航成功；state URL/title 与页面一致；SPA 改标题可读；file 拒绝、不可达 `NAV_FAILED`、失败恢复。 |
 | P3 | 按值 JS/Promise/undefined；页面异常返回 `EVAL_ERROR` 对象及消息、stack、details。 |
 | P4 | CSS 精确值、全集；缺失元素返回 `TARGET_NOT_FOUND` 操作失败。 |

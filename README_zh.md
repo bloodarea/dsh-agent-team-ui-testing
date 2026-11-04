@@ -6,7 +6,7 @@
 
 [English](README.md) | **简体中文**
 
-> **状态：预发布。** Web / Chromium 通道四个层级均已实现：35 个 Agent 工具 + 调试面板，覆盖程序化检查、结构化 GUI 操作、静态视觉分析、动态帧/时序分析、网络抓包、共享视口控制、混合画布与客户端标注。其他运行环境仍在规划中，运行时选择器保持禁用。插件目前以本地链接方式接入，尚未发布安装包。验证状态与已知缺口见 [docs/status.md](docs/status.md)。
+> **状态：预发布。** Web / Chromium 通道四个层级均已实现：35 个 Agent 工具 + 调试面板，覆盖程序化检查、结构化 GUI 操作、静态视觉分析、动态帧/时序分析、网络抓包、共享视口控制、混合画布与客户端标注。其他运行环境仍在规划中，运行时选择器保持禁用。插件目前以本地链接方式接入，尚未发布安装包。能力、限制与验证方式见 [docs/capability-tiers.md](docs/capability-tiers.md) 与 [docs/verification.md](docs/verification.md)。
 
 ## 这是什么项目？
 
@@ -108,7 +108,7 @@ T1 调用成功不能被当成视觉验收通过。涉及界面的验收标准�
 3. 从 **更多 → 调试视图** 打开调试面板，或从右侧边栏的插件卡片进入。
 4. 只改 `client.js` 时刷新面板即可；改 `index.js`、工具面或内置 Skill 需要重启 DSH。
 
-接入细节与已知坑见 [docs/dsh-integration.md](docs/dsh-integration.md)。
+安装要求、接入步骤与面板用法见 [docs/getting-started.md](docs/getting-started.md)。
 
 典型的 Agent 流程是：导航到目标页面，用 `browser_state`/`browser_eval` 检查状态，用 T2 工具执行结构化操作，截图或运行 T3 检查，用网络工具分析请求；当问题涉及运动、时序或一段帧序列时升级到动态工具（`browser_dynamic_session` → `browser_motion_observe` → `browser_motion_analyze`/`browser_dynamic_correlate`）；涉及布局、取景或视觉反馈时使用共享视口/画布/标注状态。
 
@@ -135,20 +135,19 @@ T1 调用成功不能被当成视觉验收通过。涉及界面的验收标准�
 
 | 文件 | 内容 |
 | --- | --- |
-| [docs/index.md](docs/index.md) | 项目文档索引 |
-| [docs/status.md](docs/status.md) | 当前实现状态、验证证据与已知缺口 |
-| [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 分层模型、完成门槛与回退规则 |
-| [docs/viewport-control.md](docs/viewport-control.md) | 共享视口契约：view 模型、CAS、面板映射与截图比例 |
-| [docs/canvas-viewport.md](docs/canvas-viewport.md) | 混合画布契约：带符号原点、空白、拖拽/缩放、输入映射与画布空间截图 |
-| [docs/annotation-p0d.md](docs/annotation-p0d.md) | 标注契约：工具、画布锚定、Agent 可见文档与保留策略 |
-| [docs/network-p0.md](docs/network-p0.md) | 网络抓包契约：工具、事件、配额、证据与错误 |
-| [docs/capture-p0.md](docs/capture-p0.md) | 截图与证据文件契约 |
-| [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | 结构化 GUI 契约与 ref 协议 |
-| [docs/t3-vision.md](docs/t3-vision.md) | 静态视觉契约、算法与结论规则 |
-| [docs/t4-dynamic-behavior.md](docs/t4-dynamic-behavior.md) | 动态行为契约：帧源、时间轴、运动分析、关联规则与 40 条门槛 |
-| [docs/t4-implementation-contract.md](docs/t4-implementation-contract.md) | T4 实施契约（已冻结）：工具 schema、错误分类、纯核心 API 与能力映射 |
-| [docs/dsh-integration.md](docs/dsh-integration.md) | DSH 接入要点与已踩的坑 |
-| [docs/verification.md](docs/verification.md) | 如何验证（隔离 DSH + 无头 Chromium） |
+| [docs/index.md](docs/index.md) | 文档索引 |
+| [docs/getting-started.md](docs/getting-started.md) | 安装要求、接入、调试面板与首次调用 |
+| [docs/tools.md](docs/tools.md) | 35 个工具、参数与错误分类 |
+| [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 选路模型、P0 基础设施与已知限制 |
+| [docs/viewport-control.md](docs/viewport-control.md) | 共享视口、混合画布与标注 |
+| [docs/capture-p0.md](docs/capture-p0.md) | 截图、图片交付与文件生命周期 |
+| [docs/network-p0.md](docs/network-p0.md) | 网络采集、链路、控制与证据 |
+| [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | snapshot/ref、可信输入与表单 |
+| [docs/t3-vision.md](docs/t3-vision.md) | 静态视觉算法、基线与结论规则 |
+| [docs/t4-dynamic-behavior.md](docs/t4-dynamic-behavior.md) | 帧采集、运动分析、控制与关联 |
+| [docs/architecture.md](docs/architecture.md) | 运行时、模块职责与扩展点 |
+| [docs/verification.md](docs/verification.md) | 可复现测试、结果判读与贡献方式 |
+
 
 ## 与配套项目的关系
 

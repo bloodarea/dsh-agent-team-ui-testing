@@ -6,7 +6,7 @@ Let AI agents operate, inspect, test and verify real user interfaces — with ev
 
 **English** | [简体中文](README_zh.md)
 
-> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 35 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, shared viewport control, a hybrid canvas and client-side annotations. Other environments are planned and stay disabled in the runtime picker. The plugin is linked locally during development; there is no published package yet. Verification details live in [docs/status.md](docs/status.md).
+> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 35 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, shared viewport control, a hybrid canvas and client-side annotations. Other environments are planned and stay disabled in the runtime picker. The plugin is linked locally during development; there is no published package yet. Capabilities, limits and verification are documented in [docs/capability-tiers.md](docs/capability-tiers.md) and [docs/verification.md](docs/verification.md).
 
 ## What is this?
 
@@ -108,7 +108,7 @@ The plugin is currently used as a local link into a DSH profile; there is no pub
 3. Open the debug view from **更多 → 调试视图**, or from the plugin card in the right sidebar.
 4. Changes to `client.js` only need a panel refresh; changes to `index.js`, the tool surface or bundled skills need a DSH restart.
 
-Integration notes and known pitfalls are in [docs/dsh-integration.md](docs/dsh-integration.md).
+Requirements, install steps and panel usage are in [docs/getting-started.md](docs/getting-started.md).
 
 A typical agent flow is: navigate to the target, inspect state with `browser_state`/`browser_eval`, perform structured actions with the T2 tools, capture screenshots or run T3 checks, inspect network traffic with the network tools, escalate to the dynamic tools (`browser_dynamic_session` → `browser_motion_observe` → `browser_motion_analyze`/`browser_dynamic_correlate`) when the question is about motion, timing or a frame sequence, and use the shared viewport/canvas/annotation state when the task involves layout, framing or visual feedback.
 
@@ -135,20 +135,19 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 
 | File | Contents |
 | --- | --- |
-| [docs/index.md](docs/index.md) | Project documentation index |
-| [docs/status.md](docs/status.md) | Current implementation state, verification evidence and open gaps |
-| [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 tier model, completion bars and fallback rules |
-| [docs/viewport-control.md](docs/viewport-control.md) | Shared viewport contract: view model, CAS, panel mapping and screenshot scale |
-| [docs/canvas-viewport.md](docs/canvas-viewport.md) | Hybrid canvas contract: signed origin, blank, drag/zoom, input mapping and canvas-space capture |
-| [docs/annotation-p0d.md](docs/annotation-p0d.md) | Annotation contract: tools, canvas anchoring, agent-visible document and retention |
-| [docs/network-p0.md](docs/network-p0.md) | Network capture contract: tools, events, quotas, evidence and errors |
-| [docs/capture-p0.md](docs/capture-p0.md) | Screenshot and evidence-file contract |
-| [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | Structured GUI contract and ref protocol |
-| [docs/t3-vision.md](docs/t3-vision.md) | Static vision contract, algorithms and verdict rules |
-| [docs/t4-dynamic-behavior.md](docs/t4-dynamic-behavior.md) | Dynamic behavior contract: frame sources, timeline, motion analyses, correlation rules and the 40 criteria |
-| [docs/t4-implementation-contract.md](docs/t4-implementation-contract.md) | Frozen T4 implementation contract: tool schemas, error taxonomy, core APIs and capability mapping |
-| [docs/dsh-integration.md](docs/dsh-integration.md) | DSH integration notes and pitfalls |
-| [docs/verification.md](docs/verification.md) | How the project is verified (isolated DSH + headless Chromium) |
+| [docs/index.md](docs/index.md) | Documentation index |
+| [docs/getting-started.md](docs/getting-started.md) | Requirements, install, debug panel and first calls |
+| [docs/tools.md](docs/tools.md) | All 35 tools, parameters and error classes |
+| [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 selection model, P0 infrastructure and known limits |
+| [docs/viewport-control.md](docs/viewport-control.md) | Shared viewport, hybrid canvas and annotations |
+| [docs/capture-p0.md](docs/capture-p0.md) | Screenshots, image delivery and file lifecycle |
+| [docs/network-p0.md](docs/network-p0.md) | Network capture, tracing, control and evidence |
+| [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | Snapshot/ref, trusted input and form filling |
+| [docs/t3-vision.md](docs/t3-vision.md) | Static vision algorithms, baselines and verdicts |
+| [docs/t4-dynamic-behavior.md](docs/t4-dynamic-behavior.md) | Frame capture, motion analysis, control and correlation |
+| [docs/architecture.md](docs/architecture.md) | Runtime, module responsibilities and extension points |
+| [docs/verification.md](docs/verification.md) | Reproducible tests, result interpretation and contributing |
+
 
 ## Relationship to other projects
 

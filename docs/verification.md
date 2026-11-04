@@ -1,98 +1,89 @@
-# 怎么验证（不要靠肉眼猜）
+# 验证与贡献
 
-> 索引：[docs/index.md](index.md)
+本页说明如何复现验证、如何判读结果，以及提交改动前必须做到什么。
 
-优先用**无头 Chrome + CDP 读 DOM / computedStyle / 网络事件**来证明改动生效；CUA 的后台点击在 Chrome 窗口上落点不稳，不作为主通道。
+## 环境
 
-## 本轮 M0–M2 验收边界
+- Node.js 22 及以上。
+- 本地 Chrome / Chromium（可用 `DSH_UI_TESTING_CHROME` 指定）。
+- 验收套件**自己启动**无头 Chromium 与本地靶机（只监听 `127.0.0.1`），不会驱动你正在使用的 DSH 实例。
 
-真实宿主验证使用用户指定的 **3081 隔离实例**；主 3080 不重启、不操作。下文 3096/临时目录仅是历史隔离搭建示例，不是本轮指定目标。新增检查与当前状态见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md) 与 [t1-http-request.md](t1-http-request.md)：9 工具/运行态 capabilities、分类错误与标题、15s 租约与 anonymous/disposed、跨 session network BUSY、面板队列、abort 关闭再放锁、Document 导航/DNS/最终 URL、脱敏/失败请求/有界资源、action render、截图附件与无服务 fallback、**返回值 lossless JSON 投影与 `output.schema` 白名单**、**N2 输入事件与页面真值**、**P22 独立 HTTP**。provider 图像可见性必须在真实 Agent 中单独确认。本轮主验收 **22/22 组、303/303 必需项、0 failed/skip、exit=0**（P22 95/95），报告 `runs/2026-10-31T13-08-56-816Z-277736/run-report.json`；故障注入单测 16/16、exit=0；隔离宿主 `verify-3081` **22/22**（`runs/host-3081-1793452433416/report.json`），3081 终版已由 **Lead 独立终验** 通过：pid <pid>（18:36:21 启动；index.js `fe870ee1…a38b3`/18:19:00、client.js `f03a1c2d…681edf`/18:01:07；报告 `environment.build.loadedBuildMatchesWorkspace=true`、`editedAfterStart={}`）：`verify-3081.mjs` **22/22 PASS、exit=0**（runs/host-3081-1793445523902/report.json，`observations.navigateResponseHistory={available:true,index:1,length:2,canGoForward:false}`），`address-history-3081.mjs` **276/276 PASS、exit=0**（runs/address-history-2026-10-31T11-18-49-001Z-243848/report.json）。执行者 2 硬化脚本后另有**连续 3 次 276/276**（11:11:06 / 11:11:49 / 11:12:31）与 B1/G1 专项各 12/12（runs/address-history-2026-10-31T11-13-57-368Z-237117、runs/address-history-2026-10-31T11-15-23-028Z-240144）。 此前 GUI 脚本偶发（Lead 复跑 255/260：B1 首次面板提交用了旧地址、G1 blur 未取消草稿）的根因是**环境/脚本，不是实现缺陷**：隔离实例 DSH Web shell 的账号登录/onboarding 对话框异步挂载时，Modal 的 `autoFocus` 关闭按钮抢走面板地址栏焦点（终验报告 `environment.dialogsDismissed=2`）。脚本硬化：交互前清理 shell 对话框、强制 blur→focus 循环、草稿稳定性门 + 提交恢复链（`focusStealRetries`/`enterFallback` 计数）、B1 navigate 统计窗口边界、G1 失败自证；未放宽断言、未改实现；硬化后无未解释项。 Lead 主验收（同一代码，docs 改动前）：`run.mjs` **21/21 组、196/196、0 finding、exit=0**（runs/2026-10-31T10-45-41-877Z-211748）；`runtime-faults.test.mjs` 16/16；`check-skill.mjs` 23/23；`check-skill-registry.mjs` 17/17。 真实 Agent 会话内 8 工具已在 3080 真实调用（由此发现并修复宿主 lossless 阻断），但 provider 可见性仍 NOT_RUN。
-
-**两条踩坑提醒**：① `verify-3081.mjs` 顶层直接执行，不要用 `import()` 做"语法检查"，否则会真实驱动 3081（现已加 import 守卫）；② fake-ctx 验收不经过宿主的 lossless JSON 校验，真实会话里截图/网络/eval 曾因此整体失败——新增工具或改返回体必须过 P21。
-
-## 0. 共享视口验收（第 9 轮，2026-11-01）
+## 主机侧套件
 
 ```bash
-node tests/acceptance/viewport.mjs      # Host 共享视口：注册/冷启动诊断/预设与 patch/scale-only/滚动/CAS/BUSY/HTTP/截图比例/T3 live/投影（11 probes、107 required）
-node tests/acceptance/viewport-gui.mjs  # 隔离 DSH GUI：尺寸栏 X/Y/滚轮/fit/坐标映射/滚轮缩放/窄面板（126 checks，5 条 NOT_RUN）
+node tests/acceptance/run.mjs                  # 主验收：工具面、能力报告、渲染与 lossless 投影
+node tests/acceptance/viewport.mjs             # 共享视口与画布
+node tests/acceptance/capture-p0.mjs           # 截图采集
+node tests/acceptance/t2-structured.mjs        # 结构化 GUI
+node tests/acceptance/t3-vision.mjs            # 静态视觉
+node tests/acceptance/t4-dynamic.mjs           # 动态行为 40 条门槛
+node tests/acceptance/t4-visual-fixtures.mjs   # 动态视觉靶机
+node tests/acceptance/t4-network-fixtures.mjs  # 动态网络靶机
+node tests/acceptance/network-p0.mjs           # 网络 P0
+node tests/acceptance/network-chain.mjs        # 电商链路场景
+node tests/acceptance/workspace-isolation.test.mjs
+node --test tests/acceptance/runtime-faults.test.mjs
+node --test tests/dynamic-t4.test.mjs          # T4 纯核心单测
+node --test tests/network-p0.test.mjs          # 网络纯核心单测
+node tests/acceptance/check-skill.mjs          # Skill 结构、引用、工具名与清单一致性
+node tests/acceptance/check-skill-registry.mjs # 真实 SkillRegistry 注册与加载
 ```
 
-- **`viewport.mjs`** 用 fake Cordis ctx 驱动真实 `index.js` + 真实 Chromium + 仓库 loopback 靶机；断言全部落在页面真值（`innerWidth/innerHeight`、`devicePixelRatio`、`visualViewport.scale`、`scrollX/Y`、固定元素 rect）、解码后的 PNG 事实、**计数过的 CDP 命令**（"没有发 override" 是测出来的，不是推断）或纯 JSON 形状，不采信"工具说成功了"。报告写入 `tests/acceptance/runs/viewport-<ISO>-<pid>/`。
-- **`viewport-gui.mjs`** 自己起一个**私有隔离 DSH 实例**（临时 `DSH_HOME`、复制 web profile、`node_modules` 软链、随机端口，示例端口 40219/42413），用无头 Chrome 打开 `更多 → 调试视图` 面板做真实 DOM/事件断言；报告记录隔离端口、`clientJs`/`indexJs` 指纹、`loadedBuildMatchesWorkspace` 与"是否读取过 3080/3081"（`environment.isolatedDsh`/`build`/`servedClient`），截图落到 `tests/acceptance/evidence/viewport-gui-<ISO>/`（标注轮起为 18 PNG + `SUMMARY.md`：原 13 张 + 标注 5 张）。它**不需要也不允许**重启或驱动 3080/3081。
-- **串行、单驱动者**：两个套件各起自己的 Chromium/DSH，但仍要求一次只跑一个验收（不要与 T1/T2/T3/P0/网络套件并行），否则端口、profile 与 CPU 抢占会让计数不可信。跑 GUI 套件期间不要动用户的 3080/3081 面板。
-- **推荐顺序（终验实测可用）**：`viewport.mjs` → `viewport-gui.mjs` → `capture-p0.mjs` → `t2-structured.mjs` → `t3-vision.mjs` → `network-p0.mjs` → `network-chain.mjs` → `run.mjs` → `workspace-isolation.test.mjs` → `runtime-faults.test.mjs` → `check-skill.mjs` → `check-skill-registry.mjs`，每条跑完再跑下一条；报告按 `tests/acceptance/runs/<时间>-<pid>/` 与 `tests/acceptance/evidence/` 归档，数字以当次报告为准。
-- **P0-D 混合画布（2026-11-02，独立验收）**：`viewport.mjs` 画布探针 14/14、166/166（V11–V13；标注 v2 起整包 **19/19、206/206**）；`viewport-gui.mjs`（画布轮）**142/142 PASS、5 NOT_RUN、exit 0**（V12 拖拽 / V13 画布 / V14 滚轮缩放；标注 v1 轮 198/198、**v2 起 222/222、14 NOT_RUN**，见下两条）；`capture-p0.mjs` 15/15、162/162（C15）；`t3-vision.mjs` 56/56、415/415（C57）。真实 3080（11:15 重启）Host 画布语义已实测，面板交互仍 NOT_RUN。契约 [canvas-viewport.md](canvas-viewport.md)。
-- **P0-D 标注模式 v1（2026-11-02，独立验收；含 17:21 圆形修正）**：只改 `client.js`，因此验收在隔离 DSH GUI 的 V15 场景：**198/198 PASS、0 FAIL、14 NOT_RUN、exit 0**（Lead [09-31-43](../tests/acceptance/runs/viewport-gui-2026-11-02T09-31-43-758Z-120373/run-report.json)，证据 [09-31-43](../tests/acceptance/evidence/viewport-gui-2026-11-02T09-31-43-758Z/SUMMARY.md)；v2 见上条）。覆盖零派发、矩形/椭圆/线几何三方一致（V15.4b/b2）、箭头/画笔、颜色/粗细/填充、文字/IME 合成、负 C/空白锚定与裁剪、帧刷新与生命周期、窄屏双栏、Host 截图前后像素一致。契约 [annotation-p0d.md](annotation-p0d.md) §1–§10。
-- **P0-D 标注 v2（2026-11-02 第二轮：Agent 可见 + 清除画布 + 橡皮擦）**：Host `node tests/acceptance/viewport.mjs` → **19/19 probes、206/206 required、0 FAIL、exit 0**（原 14/166 保留 + A1–A5 40 条；Lead [11-04-54](../tests/acceptance/runs/viewport-2026-11-02T11-04-54-275Z-161260/report.json)）；GUI `DSH_VIEWPORT_GUI_TIMEOUT_MS=900000 node tests/acceptance/viewport-gui.mjs` → **222/222 PASS、0 FAIL、14 NOT_RUN、exit 0**（原 198 保留 + V16.1–V16.24；Lead [11-09-12](../tests/acceptance/runs/viewport-gui-2026-11-02T11-09-12-517Z-165556/run-report.json)，证据 [11-09-12](../tests/acceptance/evidence/viewport-gui-2026-11-02T11-09-12-517Z/SUMMARY.md)）；`run.mjs` **23/23、349/349**（[11-07-27](../tests/acceptance/runs/2026-11-02T11-07-27-989Z-163632/run-report.json)；首跑复现既有 P21 flake）；`capture-p0.mjs` **15/162**、`t3-vision.mjs` **56/56、415/415** 证明截图/T3 未变。Agent 通过 `browser_state.annotations` 读取结构化标注（工具面仍 30），**不叠加截图/T3**。契约 [annotation-p0d.md](annotation-p0d.md) §11。**真实宿主读取路径已于 2026-11-02 21:56 实测**（用户重启 3080 后绘制，Lead 用 `browser_state` 读到 `revision 11`、11 个图形、`stale:false`、来源 `human-panel/sidebar`；[证据](../tests/acceptance/evidence/annotation-realhost-2026-11-02.md)）；**受控发布→读回、`p=d−S` 非零换算、导航清空/409 stale、多 panel/限额仍未在真宿主复跑**；真实旧 Host、真实 OS IME、原生色盘、provider、长笔画/高频轮询性能、真实 socket 抖动均 NOT_RUN。
-- **P0-D 标注 v3（2026-11-02 第三轮：跨分页/会话保留 + 工作区隔离）**：只改 `client.js`（Host 未改），`index.js` sha256 与 v2 验收同一份。Host 回归 `node tests/acceptance/viewport.mjs` → **19/19 probes、206/206 required、0 FAIL、exit 0**（Lead [17-34-54](../tests/acceptance/runs/viewport-2026-11-02T17-34-54-691Z-251969/report.json)）；GUI `DSH_VIEWPORT_GUI_TIMEOUT_MS=900000 node tests/acceptance/viewport-gui.mjs` → **242/242 PASS、0 FAIL、12 NOT_RUN、exit 0**（原 222 保留 + V17.1–V17.20；Lead [17-35-20](../tests/acceptance/runs/viewport-gui-2026-11-02T17-35-20-549Z-252325/run-report.json)，证据 [17-35-20](../tests/acceptance/evidence/viewport-gui-2026-11-02T17-35-20-549Z/SUMMARY.md)；执行者 [17-19-13](../tests/acceptance/runs/viewport-gui-2026-11-02T17-19-13-155Z-248576/run-report.json)）。V15.11d/11e 的“丢失是预期”NOT_RUN 由 V17 覆盖，剩 12 条 NOT_RUN；**真实右栏 seat、真实会话切换、真实双 workspace 绑定链仍 NOT_RUN**（V17.4–V17.6 只证明客户端投影保留/隔离，detail 已写明 limitation）。契约 [annotation-p0d.md](annotation-p0d.md) §12；**只刷新面板即可生效，无需重启 DSH**。
-- **P0-D 标注 v4 面板交互细节（2026-11-03 用户 6 条）**：只改 `client.js` + GUI 套件（Host/index.js 未改，工具面仍 30）。`DSH_VIEWPORT_GUI_TIMEOUT_MS=900000 node tests/acceptance/viewport-gui.mjs` → **258/258 PASS、0 FAIL、12 NOT_RUN、exit 0**（原 242 条按需求变更逐条修正 + 新增 V18.1–V18.15；Lead 独立复跑 [05-34-26](../tests/acceptance/runs/viewport-gui-2026-11-03T05-34-26-811Z-79819/run-report.json)，证据 [05-34-26](../tests/acceptance/evidence/viewport-gui-2026-11-03T05-34-26-811Z/)；执行者 [03-50-18](../tests/acceptance/runs/viewport-gui-2026-11-03T03-50-18-871Z-61245/run-report.json)）。覆盖：填充/外框分段单选与 no-op、尺寸栏→标注入口禁用（含程序化闸）、环境默认尺寸与 first-bind 只发一次、`拖拽|适应窗口|默认` 三选一互斥与零发布、手动改 % 落「默认」、拖拽中改 % 仍「拖拽」、粗细滚轮步长/clamp/不滚页面、两组分页选择器选中项左侧 8×8 绿色小球（仅选中可见/占位不抖动/窄屏不溢出）。契约 [annotation-p0d.md](annotation-p0d.md) §13、[ui-spec.md](ui-spec.md) 第 3/4 项、[viewport-control.md](viewport-control.md) §5.5。**已知 flake 候选（未定位）**：`V6.5/V6.6`（Y-commit 时序）、`V15.12c/V16/V17`（CDP Fetch response rewriting unavailable）与 `V17.17`/`V15.*`（“等待标注图形数 N” 绘图步骤超时）；本轮执行者与 Lead 合计 9 轮整包中出现 5 次单点失败，**每次重跑即绿、断言一条未改**。
-- **P0-D 尺寸预设归零（2026-11-03 用户报 bug）**：只改 `client.js` + GUI 套件（Host/index.js 未改、工具面仍 30）。`applySizePreset` 点预设先回「默认」，宽高 + X/Y=0 进入同一 120ms v1 patch（画布 Host → `canvasX/canvasY`；共享 view 无画布 → `x/y`；legacy → 只写宽高），不改 `scale`、带 `expectedRevision`。GUI `DSH_VIEWPORT_GUI_TIMEOUT_MS=900000 node tests/acceptance/viewport-gui.mjs` → **260/260 PASS、0 FAIL、12 NOT_RUN、exit 0**（258 + V18.16/V18.17；Lead 独立复跑 [08-55-20](../tests/acceptance/runs/viewport-gui-2026-11-03T08-55-20-744Z-112359/run-report.json)，证据 [08-55-20](../tests/acceptance/evidence/viewport-gui-2026-11-03T08-55-20-744Z/)；独立复核 [08-39-37](../tests/acceptance/runs/viewport-gui-2026-11-03T08-39-37-426Z-109227/run-report.json) 260/260，其首跑 [08-27-05](../tests/acceptance/runs/viewport-gui-2026-11-03T08-27-05-811Z-106505/run-report.json) 258/260 仅 V17.19/V17.20 既有标注绘图超时 flake，复跑即绿）。覆盖：四个预设逐一从 C=(100,80) 真实点击，Host 宽高/派生 mode、canvasX/Y=0、view.x/y=0、页面 innerWidth/Height 与 scrollX/Y=0、面板 X/Y=0、scale 保留、panfit default、恰好一条合并 patch 无 scale；fit-on/pan-on 下点预设回默认且模式切换零写入。**未验证**：无画布共享 view 的 `x/y` 分支、真实 legacy Host（V10.4 仍 NOT_RUN）、点击时 dirty 草稿/平移写入在途时序。
-- **P0-D 尺寸预设分页选择器 + 拖拽互斥（2026-11-03 第 2 轮用户要求）**：只改 `client.js` + GUI 套件（Host/index.js 未改、工具面仍 30）。左侧四项改为 `div.utb-seg[data-utb-preset][role=group][aria-label=分辨率预设]` + 四个 `data-utb-preset-opt` 按钮 + 选中项 8×8 绿色小球；选中态派生 `!panMode && 宽高精确匹配`（零或一项），拖拽时四项全取消/绿点隐藏，拖拽中点预设先退拖拽再选中；旧 `.utb-preset` CSS 移除。GUI `DSH_VIEWPORT_GUI_TIMEOUT_MS=900000 node tests/acceptance/viewport-gui.mjs` → **262/262 PASS、0 FAIL、12 NOT_RUN、exit 0**（260 + V18.18/V18.19；Lead 独立复跑 [10-26-20](../tests/acceptance/runs/viewport-gui-2026-11-03T10-26-20-346Z-130353/run-report.json)，证据 [10-26-20](../tests/acceptance/evidence/viewport-gui-2026-11-03T10-26-20-346Z/)；Lead 首跑 [09-59-58](../tests/acceptance/runs/viewport-gui-2026-11-03T09-59-58-463Z-124824/run-report.json) 261/262 仅 V5.3 Alt+wheel 1px 既有噪声，复跑即绿；执行者 [09-36-01](../tests/acceptance/runs/viewport-gui-2026-11-03T09-36-01-848Z-120760/run-report.json) 262/262）。覆盖：分页选择器 DOM/顺序/声明 inline-flex 与实际 flex/单行/窄屏不溢出、按尺寸选中、真实点平板移动选中态与绿点、自定义尺寸零选中、拖拽→四项全取消+绿点隐藏、拖拽中点手机→拖拽关闭且仅手机选中、X/Y/页面滚动归零、一条合并 patch。**未验证**：真实 3080 面板、无画布共享 view 的 `x/y` 分支、真实 legacy Host（V10.4 仍 NOT_RUN）、dirty 草稿/平移写入在途；离开拖拽后按尺寸派生会重新选中匹配预设（有意语义，未人工确认）。
-- **P0-D 预设点击与「适应窗口」联动修正（2026-11-03 第 3 轮用户报 bug）**：只改 `client.js` + GUI 套件（Host/index.js 未改、工具面仍 30）。`applySizePreset` 从无条件 `pressPanFitDefault()` 改为 `if (panModeRef.current) changePanMode(false)`：只退拖拽、不动 fit；拖拽→默认、适应窗口→保持适应窗口、默认→保持默认；X/Y 归零/一次合并 patch/无 scale 不变。V18.17 更新为 fit-on 保持 fit（panFit=fit、唯一选中 fit、fitChecked=true、panChecked=false、本地适应比例 57%、共享 scale 0.65 未发布）与 pan-on 落默认（fit=false/pan=false/%65）；新增证据 `shot-32-v18-preset-fit-preserved`。GUI `DSH_VIEWPORT_GUI_TIMEOUT_MS=900000 node tests/acceptance/viewport-gui.mjs` → **262/262 PASS、0 FAIL、12 NOT_RUN、exit 0**（Lead [15-14-07](../tests/acceptance/runs/viewport-gui-2026-11-03T15-14-07-828Z-169822/run-report.json)，证据 [15-14-07](../tests/acceptance/evidence/viewport-gui-2026-11-03T15-14-07-828Z/)；执行者 [11-07-36](../tests/acceptance/runs/viewport-gui-2026-11-03T11-07-36-119Z-137406/run-report.json) 262/262）。**未验证**：真实 3080 面板、无画布共享 view 的 `x/y` 分支、真实 legacy Host（V10.4 仍 NOT_RUN）、dirty 草稿/平移写入在途；显式「默认」按钮仍会关 fit（与预设点击不同）。
-- **P0-D 标注的 Agent 读取流程内置为 bundled skill（2026-11-03）**：新增 `skills/ui-testing/references/scenarios/annotations.md` 与 SKILL.md「读取面板标注（P0-D annotations）」小节。验收：`node tests/acceptance/check-skill.mjs` → **30/30、exit 0**；`node tests/acceptance/check-skill-registry.mjs` → **19/19、exit 0**（含“正文引用的 references/*.md 均可从 resourceBase 读取”，即新参考文档已被资源层读到）。Skill 文件数 27→31 已在 [runtime-t1.md](runtime-t1.md) 与 [skill-authoring.md](skill-authoring.md) 同步。**未验证**：已运行 DSH 会话是否加载到新正文（需重启 DSH 重新注册；本次未重启）。
-- **当前结果（终版代码，Lead 独立终验 2026-11-01 16:19–16:45）**：`viewport.mjs` **11/11 probes、107/107 requiredChecks、0 failed、exit 0**（Lead `runs/viewport-2026-11-01T16-19-36-641Z-564516`；执行者连跑两次 `...16-13-39-758Z-559039`、`...16-13-53-771Z-559488`）；`viewport-gui.mjs` **73/73 PASS、0 FAIL、5 NOT_RUN、exit 0**（Lead `runs/viewport-gui-2026-11-01T16-25-59-658Z-576275`，证据 `tests/acceptance/evidence/viewport-gui-2026-11-01T16-25-59-658Z/`；执行者两次 `...16-09-04-966Z-554236`、`...16-10-07-443Z-555424`）。同一轮非回归：`run.mjs` 23/23、349/349；`capture-p0.mjs` 14/14、142/142；`t2-structured.mjs` 37/38+1 NOT_RUN、261/261；`t3-vision.mjs` 56/56、391/391（notApplicable 3）；`network-p0.mjs` 52/52、266/266（8 NOT_RUN）；`network-chain.mjs` 12/12、49（1 NOT_RUN）；`workspace-isolation` 77/77；`runtime-faults` 16/16；`check-skill` 30/30、`check-skill-registry` 19/19——全部 exit 0。**逐项报告路径见 [status.md](status.md)「Lead 独立终验」**（本节不重复维护计数，避免漂移）。**2026-11-02 画布 v2（当前）**：`viewport.mjs` **14/14 probes、166/166 required、0 failed、findings 1(info)、exit 0**（`runs/viewport-2026-11-01T20-18-41-148Z-769923`）；`viewport-gui.mjs` **142/142 PASS、0 FAIL、5 NOT_RUN、exit 0**（Lead `runs/viewport-gui-2026-11-01T20-07-15-023Z-753710`，证据 9 PNG）；`capture-p0.mjs` **15/15、162/162、exit 0**（`runs/capture-p0-2026-11-01T20-18-32-415Z-768943`）；`t3-vision.mjs` **56/56 criteria、415/415 required、exit 0**（`runs/2026-11-01T20-18-56-169Z-770336`）；`run.mjs`/t2/network/workspace/faults/check-skill 的最终回归见 [status.md](status.md)「Lead 独立终验」。此前拖拽轮 `viewport-gui.mjs` 85/85（`...18-11-12-661Z-654115`）保留为历史。
-- **14 条 GUI NOT_RUN 的原因**（不算通过）：原 5 条——agent 归因（GUI 只能走 HTTP v1，Host 记 `source=gui`；归因由 Host H2 覆盖）、letterbox 零派发（实测帧无 band）、旧 Host 降级（套件只起带 `ui.view` 的新 Host）、GUI 侧 `expectedRevision` 冲突（Host H5 覆盖）、宽高变更后几何屏障只到 best-effort（帧协议未扩展）；标注轮新增 9 条——真实 3080 面板（隔离实例不触碰 3080）、provider 图像可见性、letterbox（无 band）、原生色盘系统交互、真实 OS IME、scope/runtime 拆除、组件卸载、真实旧 Host、T3 专项（标注不进截图/T3）。
-- **真实宿主（2026-11-02）**：3080 于 01:28:05 重启后复验了画布前 Agent 侧（[证据](../tests/acceptance/evidence/viewport-real-host-2026-11-02.md)）；用户于 **11:15:21** 再重启（`dsh web` pid <pid>）后，**画布 v2 Host 面已实测**：canvasX/Y 写入（x/y 仍 0）、O=0 不重编码 / O≠0 白底合成、blank 纯白、T3 canvas mapping、blank act 零派发、导航复位、页面自主滚动保留 O（[证据](../tests/acceptance/evidence/canvas-realhost-2026-11-02.md)）。**面板画布交互（X/Y 负值、滚轮、拖拽/空白 overlay、seed）与需 GUI 认证的路由（`POST /screenshot {canvas:true}`、`/frame` scrollX/Y、`POST /viewport`）仍 NOT_RUN**；隔离 DSH GUI 不能冒充真实面板。H9 screencast 时序与 provider 图像可见性仍 NOT_RUN。
+**串行执行**：这些套件各自启动 Chromium 与靶机，并行会让端口、profile 与 CPU 互相干扰，计数不可信。
 
-## 1. 主机侧验收（不启动 DSH）
+## 判读结果
+
+每个套件把报告写到 `tests/acceptance/runs/<时间>-<pid>/`，包含 `run-report.json` 与日志。判读规则：
+
+| 字段 | 含义 |
+| --- | --- |
+| `criteria` | 验收条目通过数 / 总数 |
+| `requiredChecks` | 必需检查通过数 / 总数 |
+| `failedChecks` | 必须为 0；非 0 即失败 |
+| `notRunChecks` | 未运行项，**不算通过** |
+| `exit 0` | 通过 |
+| `exit 2` | 有必需项未运行（不是失败） |
+| `exit 1` | 存在失败项 |
+
+注意事项：
+
+- `notRun` 必须原样报告，不能写成「已验证」。
+- 截图成功、识别到候选、输入已派发，都不等于验收通过；看 `verdict`。
+- 报告中的 `observed` 只代表那一次运行，不是长期保证。
+
+## 真实验证（可选）
+
+需要验证真实宿主行为时，建议起一个**隔离实例**（独立 `DSH_HOME`、独立端口、复制 profile、软链 `node_modules`），不要用你日常使用的实例。相关脚本：
 
 ```bash
-node tests/acceptance/run.mjs                    # 主验收：23 组 / 349 项必需检查（含 P22 独立 HTTP 95 项；工具面 35）
-node tests/acceptance/viewport.mjs                # 共享视口 Host 套件：11 probes / 107 项必需检查
-node tests/acceptance/workspace-isolation.test.mjs # 按工作区 page 隔离：77 项（真实 Chromium + fake ctx；含 scope/lease/frame/idle/上限/身份矩阵）
-node --test tests/acceptance/runtime-faults.test.mjs  # CDP 故障注入与 Runtime 边界（16 项；rm 竞态已修，DNS 用注入 resolve 固定）
-node tests/acceptance/check-skill.mjs            # Skill 结构/引用/工具名/清单一致性（30 项）
-node tests/acceptance/check-skill-registry.mjs   # 真实 DSH SkillRegistry 注册/发现/加载（19 项，含 35 工具面）
-node tests/acceptance/verify-3081.mjs            # 真实隔离宿主 legacy HTTP 集成（22 项，含认证/UI 投影与输入回归）
-DSH_3081_HOME=/tmp/dsh-utb-home node tests/acceptance/workspace-isolation-3081.mjs # 真实 3081：17 项 scope/WS/frame/close
-DSH_3081_HOME=/tmp/dsh-utb-home node tests/acceptance/gui-workspace-3081.mjs       # 真实 3081 GUI：两个注册工作区/会话、main/右栏 scope、WS、隐藏停播
-DSH_3081_HOME=/tmp/dsh-utb-home node tests/acceptance/address-history-3081.mjs   # 真实 3081 GUI：地址栏/刷新/后退前进（scope 头取自 main 面板，只连 3081）
+node tests/acceptance/viewport-gui.mjs   # 隔离 DSH + 无头 Chrome 的面板断言
+node tests/acceptance/verify-3081.mjs    # 隔离宿主 HTTP 集成
 ```
 
-- 3081 脚本都**不会自己重启实例**，也不会启动替代 DSH：必须先重启 3081 让新 `index.js`/`client.js` 生效，再用它们取证。`workspace-isolation-3081`/`gui-workspace`/`address-history` 都要显式 `DSH_3081_HOME=/tmp/dsh-utb-home`，不要继承调用者的 `DSH_HOME=<local-path>/.dsh`；否则会读真实 3080 的 workspace/session store。
-- `verify-3081.mjs` 现在先交换一次 launch token → 内存 cookie，之后所有请求带 cookie（原 14 项断言不变并追加 authenticated `ui.version=1`、停止态空地址、未认证无 `ui`/无 raw、`/reload` `/history` 未认证 401/403）。`address-history-3081.mjs` 用独立无头 Chrome 从 `about:blank` 启动，token 只经内存读取与 `Page.navigate` 传入。
-- 3081 重启（第 5 轮实测）：`/tmp/dsh-iso` 的 `profiles/web` 曾指向真实 `~/.dsh/profiles/web`（symlink，写入会 EACCES），不要再用。用复制 profile 的隔离 home：`/tmp/dsh-utb-home/profiles/web`（复制 package.json/cordis.patch.yml/compatibility.json/pnpm-lock.yaml/cordis.yml，`node_modules` 软链真实依赖；home 下复制 credentials/presets/storages/sessions）。启动：`env -u DISPLAY -u WAYLAND_DISPLAY DSH_HOME=/tmp/dsh-utb-home DSH_PROFILE=web DSH_WEB_URL=http://127.0.0.1:3081 DSH_UI_TESTING_CHROME=tests/acceptance/chrome-wrapper.sh dsh web --port 3081 --no-open > /tmp/dsh-3081.log`；`-u DISPLAY` 让 directory picker 走 browse（native zenity 不在 DOM）。只对该 PID `kill -TERM`，禁止 `pkill dsh/node`；token URL 只由脚本内存读取，不要 cat/回显。
+这些脚本不会自己重启实例；改了 `index.js` 或 `client.js` 后必须先重启隔离实例再取证。
 
-`run.mjs` 用 fake Cordis ctx 调真实 `apply()`，启动真实无头 Chromium 与自建靶机；每次写入独立 `tests/acceptance/runs/<时间>-<pid>/`，不覆盖历史 `evidence/`；进程归属按 `/proc/<pid>/stat` 的父 PID 绑定本次测试 Node，避免把并行的其他 Chromium 算入本次或误清理。帧推送探针会另起一个真实 `node:http` server 并挂上插件的 upgrade handler，用 Node 22 原生 WebSocket 客 户端验证握手/鉴权/二进制帧/close。
+## 本地生成物
 
-## 2. 真实浏览器回归（隔离 DSH + 无头 Chrome）
+以下内容属于本地产物，不纳入版本控制：
 
 ```text
-# DSH_HOME 独立；在 DSH 文件沙箱内不能直接写 ~/.dsh/profiles/web/cordis.yml，
-# 所以复制 profile 文件、只软链 node_modules：
-/tmp/dsh-real/profiles/web/{package.json,cordis.patch.yml,compatibility.json,pnpm-lock.yaml,cordis.yml}
-/tmp/dsh-real/profiles/web/node_modules -> ~/.dsh/profiles/web/node_modules
-DSH_HOME=/tmp/dsh-real dsh web --port 3096 --no-open
-# 日志里有带 token 的 URL；脚本自行读取，不要把 token 写进命令行/仓库
-
-# 无头 Chrome（DSH 文件沙箱内需要 --no-sandbox/--disable-dev-shm-usage/--disable-crash-reporter，
-# 用 tests/acceptance/chrome-wrapper.sh；Chrome 端口用 DevToolsActivePort 自取）
-chrome --headless=new --remote-debugging-port=0 --user-data-dir=/tmp/chrome-real about:blank
+tests/acceptance/runs/       验收报告与日志
+tests/acceptance/evidence/   人工留存的证据与截图
+docs/internal/               开发过程记录
+output/                      插件运行输出
+reference/                   本地参考资料
 ```
 
-然后用 CDP（Node 内置 WebSocket）依次：
+## 提交前检查
 
-1. `Page.navigate` 到 token URL；
-2. 点 `aria-label="更多"`，再点文本为 `调试视图` 的行（面板出现 `.utb`）；
-3. `POST /plugins/ui-testing/navigate` 指向 `tests/ui_test_fixture` 的 URL（不需要 GUI 输入）；
-4. 断言 `.utb-frame` 的 `img.src` 是 `blob:`、`naturalWidth = 1280`、`.utb-perf` 有 `N FPS M ms`；
-5. 点工具栏 `aria-label="尺寸调整"`，断言 `.utb-zoom` 显示自动百分比且「适应窗口」勾选；把 `.utb-zoom` 改成 60，断言勾选自动取消、`.utb-box` 宽高 = 视口 × 0.6；再点勾选框，断言恢复自动百分比与自动宽高；
-6. `Network.webSocketCreated` 里应出现 `/plugins/ui-testing/frames`；
-7. `GET /plugins/ui-testing/metrics` 应有 `host.captured/pushed/clients` 与 `client.transport="ws"`、`endToEndMs`；
-8. 连续 `POST /eval` 改页面（制造 damage）后读 `.utb-perf`，确认 FPS/延迟来自**实际显示**；
-9. 验证轮询回退：`Page.addScriptToEvaluateOnNewDocument` 把目标 URL 的 `new WebSocket` 改成抛错 → `Page.reload` → 重复 3–8，此时 `client.transport="poll"`、`host.clients=0`（若 3081 上有外部 viewer 则不会为 0，见文末注意）、延迟应高于 WS。
+1. 改动范围与需求一致，不做顺手重构。
+2. 工具名、schema、能力报告、内置 Skill 与文档同步更新（同一事实多处出现时必须一起改）。
+3. 至少跑通受影响的套件；行为变化要在 PR 描述里给出命令与结果。
+4. 未验证的部分明确写「未验证」，不得用推断代替结论。
+5. 不提交凭据、个人设备数据、未脱敏的认证流量或本机绝对路径。
 
-可选脚本：`node tests/acceptance/real-browser-ws.mjs`（带清理；不得触碰用户的 3080/3081）。
+## 贡献方向
 
-## 注意
+最有价值的是可复现的问题：DSH 集成差异、平台可行性、无障碍/DOM 回退案例、安全威胁模型，以及具体的 UI 验收场景。
 
-- **同一时间只允许一个驱动者**：`verify-3081.mjs` 与 `address-history-3081.mjs` 都会驱动 3081 的同一个浏览器（导航/输入/`/close`）。并发运行、或在一个脚本运行期间重启 3081，会让两边结果全部作废——本轮实测踩过（GUI 脚本 15 条失败、verify 结果不可用）。验收窗口内不要重启、不要额外发 `/navigate` `/reload` `/history` `/input` `/eval` `/close`。
-- 隔离实例默认收起右侧边栏；`更多` 下拉在左侧，菜单行文本是「调试视图」。
-- 隔离实例可能出现「开始使用」遮罩；判断"点击没生效"前先确认遮罩是否挡住。
-- 沙箱内 Chrome 直接启动会失败（setuid sandbox / `/dev/shm`），套件会自动回退 `chrome-wrapper.sh`，并把 `environment.chromePlan` 写进报告。
-- **不要在 3081 上断言 `host.clients` 的绝对值为 0**：3081 可能长期连着外部 viewer（用户自己的 3080 浏览器、旧 headless `/tmp/chrome-iso2`），本轮的基线实测就是 1；而正常 GUI reload（即使拦掉 `/plugins/ui-testing/frames`）在私有实例上实测会回收为 0。另有一个既有缺口：没有 WebSocket Close 帧的粗暴断开会让服务端 socket 停在 `CLOSE-WAIT`、frame-push 不回收该 client（`MAX_CLIENTS=8`，`frame-push.js` 本轮未改）；要测该计数请用增量或私有实例。
-- 观察到一次环境相关的瞬时失败：`P8-close-resources` 的"关闭后临时 profile 目录被删除"在 8s 预算内判失败（有 Chromium 退出/目录重建竞争），随后两轮全绿；报告 `runs/2026-10-31T10-15-24-114Z-184962`。复跑前先确认没有残留 Chromium 在占用 `/tmp/dsh-ui-testing-*`。
-- 用户自己的 3080 窗口里可能正在别的会话上工作，不要长期占用、也不要乱点；插件 Host 改动必须重启 DSH 才生效。
-- **第 5 轮 3081（工作区隔离）**：listener pid <pid>，22:57:39 启动，home `/tmp/dsh-utb-home`；`loadedBuildMatchesWorkspace=true`、`editedAfterStart={}`。`workspace-isolation-3081` 17/17（`runs/host-3081-workspace-1793458998884/`）、`gui-workspace-3081` 45/45（`runs/gui-workspace-2026-10-31T15-33-53-964Z-381563/`）、`address-history-3081` 278/278（`runs/address-history-2026-10-31T15-34-45-025Z-382205/`，与 main 面板同 session scope）、legacy `verify-3081` 22/22（`runs/host-3081-1793458887176/`）。**3080 仍是旧构建（pid <pid>，19:36:05）**；要加载工作区隔离需用户重启 DSH。
-- 地址/历史的主机侧核验（真实 Chromium + fake ctx）可参考本轮临时脚本思路：`/state` 带认证假 `connection` 时取 `ui.address`，断言 pushState/replaceState/hash、真实 back/forward、reload 不新增历史、redirect 最终地址、`/frame` 两个分支同形 `ui`、close 清空；这类脚本不入库，最终证据以 `address-history-3081.mjs` 的 `runs/` 报告为准。
-- 同样的思路可以起一个**私有隔离 DSH 实例**（临时 DSH_HOME + 复制 web profile + 软链 node_modules，端口避开 3080/3081）做 GUI 冒烟：本轮用无头 Chrome 打开 `更多 → 调试视图` 后 19/19 通过——冷启动地址空/三按钮禁用、地址跟随真实导航与 `pushState`、面板后退/前进按真实 CDP 历史、草稿跨 3 次轮询不被覆盖、blur/Escape 恢复已接受地址、刷新复位文档且 URL/历史长度不变、面板提交显示 redirect 最终地址。**这不是 3081 证据**，不能替代 `address-history-3081.mjs`，也不要把私有实例端口写成 3081。
+提 issue 时请附 DSH 版本/commit、平台与运行时版本、复现步骤、预期与实际结果，以及脱敏后的证据。

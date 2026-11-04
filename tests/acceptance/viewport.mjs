@@ -28,7 +28,7 @@
  *                  ui.view), H7 (default/explicit capture sizes + mapping + low-scale refusal +
  *                  16M budget), H8 (T3 live default scale + frozen act recapture),
  *                  H10 (lossless JSON, close resets observed/x/y),
- *                  H11/canvas (docs/canvas-viewport.md: C/S/O invariants, canvasX/canvasY set,
+ *                  H11/canvas (docs/viewport-control.md: C/S/O invariants, canvasX/canvasY set,
  *                       x/y keeps O, page scroll keeps O, navigation/close reset,
  *                       HTTP/state/capabilities ui.canvas projection),
  *                  H12/frame-metadata (frame scrollX/scrollY through FrameSource, the WS binary
@@ -370,7 +370,7 @@ async function main() {
   } = harnessModule;
   const { startFixtureServer } = await import(pathToFileURL(join(REPO_ROOT, 'tests/ui_test_fixture/server.mjs')).href);
   const { decodePng, inspectPng } = await import(pathToFileURL(join(REPO_ROOT, 'capture-p0.js')).href);
-  // Frame metadata is unit-tested directly (docs/canvas-viewport.md §5.1): the WS push and the frame
+  // Frame metadata is unit-tested directly (docs/viewport-control.md §5.1): the WS push and the frame
   // store must both carry the capture-time top-level scroll.
   const { FrameSource } = await import(pathToFileURL(join(REPO_ROOT, 'frame-source.js')).href);
   const { createFramePusher } = await import(pathToFileURL(join(REPO_ROOT, 'frame-push.js')).href);
@@ -452,7 +452,7 @@ async function main() {
   const getView = (exec) => harness.invoke('browser_viewport', { action: 'get' }, exec);
 
   /* ---------------------------------------------------------------------------------------------
-   * P0-D annotations (docs/annotation-p0d.md §11) — Host helpers.
+   * P0-D annotations (docs/viewport-control.md §11) — Host helpers.
    *
    * The panel's annotation document has exactly ONE write surface: the scoped, peer-authenticated
    * `POST /plugins/ui-testing/annotations`. There is no 31st tool, so every helper below talks to

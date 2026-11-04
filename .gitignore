@@ -1,4 +1,10 @@
-tests/acceptance/runs/
-tests/acceptance/evidence/viewport-gui-*/
-output/
-reference/
+# Local engineering notes and historical implementation records
+/docs/internal/
+
+# Generated acceptance reports, logs, and screenshots
+/tests/acceptance/runs/
+/tests/acceptance/evidence/
+/output/
+
+# Local reference material
+/reference/

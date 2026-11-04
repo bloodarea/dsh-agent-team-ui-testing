@@ -1,5 +1,5 @@
 /**
- * vision-baseline.js — Web T3 受管基线存储（docs/t3-vision.md §2.6、§3.3、§8、§9 C33–C39）。
+ * vision-baseline.js — Web T3 受管基线存储（docs/t3-vision.md、§3.3、§8、§9 C33–C39）。
  *
  * 职责边界：本模块只负责“可信持久根 + 不可变 revision + head CAS + tombstone + 只读 list/get”，
  * 不做 PNG 解码/比较/产品 store，也不解析 source（index.js 负责把 source 解析成 product 后
@@ -68,7 +68,7 @@ const SOURCE_KEYS = 'capturedAt,documentEpoch,pageGeneration,productId,runtimeId
 const IMAGE_KEYS = 'bytes,height,relativePath,sha256,width';
 
 /**
- * 默认算法默认值：与 docs/t3-vision.md §2.4/§8.3 固定值一致。此处不 import vision-t3.js，
+ * 默认算法默认值：与 docs/t3-vision.md 固定值一致。此处不 import vision-t3.js，
  * 避免基线存储依赖算法切片（默认值本身是契约常量，跨切片重复比隐式耦合安全）。
  */
 const DEFAULT_DIFF_OPTIONS = Object.freeze({ threshold: 0.1, includeAA: false, minRegionPixels: 1 });

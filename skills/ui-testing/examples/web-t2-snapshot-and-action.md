@@ -1,7 +1,7 @@
 # T2 示例：快照 → 定位 → 动作 → 证据 → 等待/节点状态
 
 > 示例页面是仓库内确定性靶机 `tests/ui_test_fixture/web-t2.html`（契约见该目录 README「T2 页面契约」）。本文是**行为规范示例**，不是运行证据：`ref` 编号、`snapshotId`、`digest` 都随实际运行时变化，引用时必须写真实返回值。
-> T2 工程状态：verified（优化构建 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`：探针 37/38、必需检查 **260/260**、exit 0；快照树为压缩后投影——见下文 `- text " "` 与 generic 无 ref 说明）。真实宿主会话已由 `tests/acceptance/evidence/t2-real-host-2026-11-01.md` 验证（14/14 检查行）；仍未验证：provider 图像可见性、closed-shadow ref 细分——这类断言写 `NOT_RUN`。
+> T2 工程状态：verified（优化构建 `tests/acceptance/runs/2026-11-01T03-41-31-025Z-39784/run-report.json`：探针 37/38、必需检查 **260/260**、exit 0；快照树为压缩后投影——见下文 `- text " "` 与 generic 无 ref 说明）。真实宿主会话已由 `本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md` 验证（14/14 检查行）；仍未验证：provider 图像可见性、closed-shadow ref 细分——这类断言写 `NOT_RUN`。
 
 ## 1. 先观察：拿到 ref
 

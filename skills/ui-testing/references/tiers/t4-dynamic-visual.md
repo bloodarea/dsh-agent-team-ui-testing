@@ -2,7 +2,7 @@
 
 **实现状态：2026-11-04 已实现并注册 5 个工具（工具面 30 → 35）。** 验收 `tests/acceptance/t4-dynamic.mjs` 逐条跑 DV01–DV16 / DN01–DN12 / DC01–DC12 共 40 条，当前 **8 PASS / 20 PARTIAL / 0 FAIL / 12 NOT_RUN**（`requiredNotRun=32` → exit 2）；纯核心单测 `node --test tests/dynamic-t4.test.mjs` **101/101**。真实 3080 宿主加载与 provider 图像可见性 **NOT_RUN**。
 
-权威来源：[T4 权威契约](../../../../docs/t4-dynamic-behavior.md)、[实现冻结](../../../../docs/t4-implementation-contract.md)、[状态](../../../../docs/status.md)「WEB-T4 实现」。
+权威来源：[T4 权威契约](../../../../docs/t4-dynamic-behavior.md)、[实现冻结](../../../../docs/t4-dynamic-behavior.md)、[状态](../../../../docs/capability-tiers.md)「WEB-T4 实现」。
 
 ## 能用什么
 

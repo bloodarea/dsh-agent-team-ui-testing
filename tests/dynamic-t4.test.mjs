@@ -1,7 +1,7 @@
 /**
  * dynamic-t4.test.mjs — WEB-T4 纯核心的 U 类单测（零浏览器、零 CDP、零文件系统写入）。
  *
- * 契约来源：docs/t4-dynamic-behavior.md §2/§3.4/§5/§8 与 docs/t4-implementation-contract.md
+ * 契约来源：docs/t4-dynamic-behavior.md
  * §6/§7/§9。断言口径：
  *  - 失败优先：FAIL > BLOCKED > INCONCLUSIVE > WARN > PASS；runMotionAssertions 的 exitCode
  *    1/2/0 与 T3 一致，不调用 process.exit。

@@ -83,6 +83,6 @@ annotations = {
 
 ## 10. 参考
 
-- 权威契约：`docs/annotation-p0d.md`（§11 v2 Agent 可见面、§12 v3 保留与隔离）
-- 真宿主实测（读取路径、手写无原文、箭头落点解析）：`tests/acceptance/evidence/annotation-realhost-2026-11-02.md`
+- 权威契约：`docs/viewport-control.md`（§11 v2 Agent 可见面、§12 v3 保留与隔离）
+- 真宿主实测（读取路径、手写无原文、箭头落点解析）：`本地验证记录（不随仓库分发）/annotation-realhost-2026-11-02.md`
 - 隔离验收：`tests/acceptance/viewport.mjs`（A1–A5）、`tests/acceptance/viewport-gui.mjs`（V15/V16/V17）

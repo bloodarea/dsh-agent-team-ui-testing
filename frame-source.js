@@ -19,7 +19,7 @@ function toPositiveInt(value) {
 }
 
 /**
- * Capture-time top-level scroll (docs/canvas-viewport.md §5.1): a finite non-negative CSS px value;
+ * Capture-time top-level scroll (docs/viewport-control.md): a finite non-negative CSS px value;
  * 0 is legal. Missing/invalid metadata is stored as 0, never as NaN/undefined (the value is lossless
  * JSON on both the HTTP `/frame` payload and the WS binary header).
  */
@@ -70,7 +70,7 @@ export class FrameSource {
       pageWidth: toPositiveInt(input.pageWidth) || toPositiveInt(input.width),
       pageHeight: toPositiveInt(input.pageHeight) || toPositiveInt(input.height),
       // The page's top-level scroll when this frame was captured; the panel uses it to place the
-      // frame in canvas space (docs/canvas-viewport.md §5.1).
+      // frame in canvas space (docs/viewport-control.md).
       scrollX: toScrollOffset(input.scrollX),
       scrollY: toScrollOffset(input.scrollY),
       capturedAt,

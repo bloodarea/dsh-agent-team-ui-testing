@@ -222,4 +222,4 @@
 
 - 执行者交付消息必须包含：改动文件、测试命令（带 flock）、报告路径、必需检查数/通过数/失败数/NOT_RUN、证据路径（含截图）、已知限制。只报事实，不报“应该”。
 - Lead 会独立复跑两套件并实看落盘截图；执行者不得把“我跑绿了”当作最终验收，也不得放宽断言来变绿。失败先定位是实现/测试 setup/真环境，保留失败报告。
-- 准备阶段结束时更新：`docs/t4-dynamic-behavior.md`（顾问）、`docs/index.md`/`docs/status.md`/`docs/capability-tiers.md` 的“T4 仍未实现 + 准备资产”表述（Lead）、`tests/ui_test_fixture/README.md` 两行入口（Lead）。
+- 准备阶段结束时更新：`docs/t4-dynamic-behavior.md`（顾问）、`docs/index.md`/`docs/capability-tiers.md`/`docs/capability-tiers.md` 的“T4 仍未实现 + 准备资产”表述（Lead）、`tests/ui_test_fixture/README.md` 两行入口（Lead）。

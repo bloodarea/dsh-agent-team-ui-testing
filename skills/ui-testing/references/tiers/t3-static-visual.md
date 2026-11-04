@@ -48,7 +48,7 @@
   1. `C25` DOM 小数 / Blink 截断：Chrome 对小数 clip 取 floor（79.5→79），Host 按 §3.1 以实际采样构造 mapping 并记录 `sizeTolerance`（±1px）；页面侧小数字面量不可稳定观测。
   2. `C30` inert hit-test：inert 子树不参与命中测试（`elementFromPoint`/CDP 均返回 BODY），故「inert 命中→零派发」不可达；已由 Lead 裁决改为断言「inert 按钮未被激活/事件不递送」，Host 侧保留 composed 祖先 inert 检查作防御。
   3. `C31` 页面级 downs/ups：取消/部分派发的按钮释放由 CDP 层保证，页面事件计数不能稳定观测（部分派发仍不重放）。
-- **真实宿主已复验**：2026-11-01 16:23 重启后的 3080 真实会话内完成六工具冒烟（live 裁剪/识别/两图比较/baseline 全套/check/act + 页面真值），记录 `tests/acceptance/evidence/t3-real-host-2026-11-01.md`；同一时点复跑本套件 56/56、389/389、exit 0（`2026-11-01T08-38-27-595Z-194712`）。
+- **真实宿主已复验**：2026-11-01 16:23 重启后的 3080 真实会话内完成六工具冒烟（live 裁剪/识别/两图比较/baseline 全套/check/act + 页面真值），记录 `本地验证记录（不随仓库分发）/t3-real-host-2026-11-01.md`；同一时点复跑本套件 56/56、389/389、exit 0（`2026-11-01T08-38-27-595Z-194712`）。
 - **仍未验证（NOT_RUN，不得由本套件推定）**：provider 图像可见性（附件已作为 image block 进入会话，但未专项验收）、T4 动态视觉；
   以及本地恶意进程 TOCTOU、网络文件系统下的 HEAD CAS、`link/fsync` 崩溃孤儿等运行风险。
 - 能力台账（`manifests/declared-capabilities.json`）中 6 个 `web.t3.*` 与聚合 `web.t3.static-vision` 记 **verified**，并已写入上述报告路径、N/A 与未验证项。

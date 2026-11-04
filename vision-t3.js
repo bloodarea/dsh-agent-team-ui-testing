@@ -2,7 +2,7 @@
  * vision-t3.js — WEB-T3 静态视觉的纯算法层（零 npm 依赖、无 CDP/浏览器代码）。
  *
  * 权威契约：docs/t3-vision.md（§1–§5、§9 的 U 类条目）；
- * 模块 API：docs/t3-implementation-plan.md §2.1/§2.3。
+ * 模块 API 见 docs/t3-vision.md。
  *
  * 设计约束：
  *  - 只依赖 node:crypto / node:zlib 与既有 capture-p0.js（inspectPng/crc32）、browser-safety.js（BrowserError）。
@@ -359,7 +359,7 @@ export function validatePoint(value, label = 'point') {
  *
  * `scale` **保留“省略”**：省略时规范化结果里没有 `scale` 字段，由 Host 在本次调用的队列内
  * 解析一次当前 `view.scale`（cold 时 1）。这里绝不能填 1，否则 Host 无法区分“调用方显式要 1”
- * 与“调用方没说话”，默认截图比例就永远跟着固定值而不是共享视口（docs/viewport-control.md §6.1，
+ * 与“调用方没说话”，默认截图比例就永远跟着固定值而不是共享视口（docs/viewport-control.md，
  * Lead 冻结 2026-11-01）。显式 scale 的合法范围同步扩到下界 0.1。
  */
 export function validateSource(value, label = 'source') {
@@ -2406,7 +2406,7 @@ export function mappingAfterCrop(mapping, rect) {
     imagePixels: { width, height },
     capturedCssRect,
   };
-  // Canvas-space mappings (docs/canvas-viewport.md §6.2): a crop moves the canvas origin; the
+  // Canvas-space mappings (docs/viewport-control.md): a crop moves the canvas origin; the
   // content box stays anchored at (0,0), so the derived content intersection must be recomputed.
   if (isPlainObject(mapping.canvas) && capturedCssRect
     && Number.isFinite(mapping.canvas.contentWidth) && Number.isFinite(mapping.canvas.contentHeight)) {

@@ -2609,7 +2609,7 @@ async function probeC56({ harness, check, finding }) {
 
 
 /* ------------------------------------------------------------------------------------------------
- * C57 — canvas-space live/find/compare/act (P0-C v2, docs/canvas-viewport.md §6.2)
+ * C57 — canvas-space live/find/compare/act (P0-C v2, docs/viewport-control.md §6.2)
  *
  * Added as an extra probe under §9.C56 (the closed-loop criterion already covers canvas mapping);
  * docs/t3-vision.md §9 still has exactly 56 criteria. Every check is either a decoded-PNG pixel

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * WEB-T4 dynamic-behaviour acceptance: docs/t4-dynamic-behavior.md §8 (DV01–DV16, DN01–DN12,
- * DC01–DC12) against docs/t4-implementation-contract.md.
+ * DC01–DC12) against docs/t4-dynamic-behavior.md.
  *
  * This suite is independent, zero-dependency and single-driver:
  *   flock /tmp/dsh-t4-browser.lock node tests/acceptance/t4-dynamic.mjs
@@ -86,7 +86,7 @@ function fileEvidence(relative) {
 const report = {
   schemaVersion: 1,
   suite: 'dsh-agent-team-ui-testing/acceptance-t4-dynamic',
-  contract: 'docs/t4-dynamic-behavior.md §8 + docs/t4-implementation-contract.md',
+  contract: 'docs/t4-dynamic-behavior.md §8 + docs/t4-dynamic-behavior.md',
   milestone: 'M3',
   generatedAt: new Date().toISOString(),
   command: 'flock /tmp/dsh-t4-browser.lock node tests/acceptance/t4-dynamic.mjs',

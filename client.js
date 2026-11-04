@@ -153,14 +153,14 @@ window.__ModuleLoader__.load({
       width: [200, 4096],
       height: [200, 4096],
       scroll: [0, 10000000],
-      // P0-C v2 canvas origin C (docs/canvas-viewport.md §2): viewport top-left on the document
+      // P0-C v2 canvas origin C (docs/viewport-control.md): viewport top-left on the document
       // canvas, allowed to be negative or beyond the content box.
       canvas: [-10000000, 10000000],
       scalePercent: [10, 200],
     };
     /**
      * Host screenshot/T3 blank colour: evidence semantics, always #ffffff
-     * (docs/canvas-viewport.md §6). The panel must NOT use it for display.
+     * (docs/viewport-control.md). The panel must NOT use it for display.
      */
     const CANVAS_BLANK_EVIDENCE = '#ffffff';
     /**
@@ -184,7 +184,7 @@ window.__ModuleLoader__.load({
     const FRAME_WHEEL_LINE_CSS_PX = 16;
     /** P0-D annotation layer: SVG namespace for the imperative draft node. */
     const SVG_NS = 'http://www.w3.org/2000/svg';
-    /** P0-D annotation defaults (docs/annotation-p0d.md §2). */
+    /** P0-D annotation defaults (docs/viewport-control.md). */
     const ANNOT_DEFAULT = Object.freeze({ tool: 'rect', color: '#ff3b30', width: 3, fill: false, stroke: true });
     /**
      * 用户 2026-11-03 第 1 条：填充/外框是互斥选择（单一真源 mode）。非闭合工具与文字按工具
@@ -202,10 +202,10 @@ window.__ModuleLoader__.load({
       Object.freeze({ id: 'arrow', label: '箭头' }),
       Object.freeze({ id: 'brush', label: '画笔' }),
       Object.freeze({ id: 'text', label: '文字' }),
-      // 第七个工具（v2，docs/annotation-p0d.md §11.4）：单选、与其他六个互斥、不产生图形。
+      // 第七个工具（v2，docs/viewport-control.md）：单选、与其他六个互斥、不产生图形。
       Object.freeze({ id: 'eraser', label: '橡皮擦' }),
     ]);
-    /** P0-D v2 上报（docs/annotation-p0d.md §11.3）：150ms trailing 合并、500ms 单次重试。 */
+    /** P0-D v2 上报（docs/viewport-control.md）：150ms trailing 合并、500ms 单次重试。 */
     const ANNOT_PUBLISH_DEBOUNCE_MS = 150;
     const ANNOT_PUBLISH_RETRY_MS = 500;
     /** 橡皮擦命中半径 r=max(strokeWidth/2,6) 画布 CSS px；长拖插值步长 ≤3 画布 px（§11.4）。 */
@@ -221,7 +221,7 @@ window.__ModuleLoader__.load({
     });
 
     /* ------------------------------------------------------------------------------------------
-     * P0-D v3 标注工作区保留（docs/annotation-p0d.md §12）。
+     * P0-D v3 标注工作区保留（docs/viewport-control.md）。
      *
      * The Host already stores one annotation document per workspace Runtime and already isolates
      * workspaces. The client's remaining jobs are:
@@ -481,7 +481,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Shared canvas projection (`ui.canvas`, docs/canvas-viewport.md §2). Its presence is the
+     * Shared canvas projection (`ui.canvas`, docs/viewport-control.md). Its presence is the
      * capability handshake: a Host without it is an old Host, so the panel keeps the legacy
      * scroll-only X/Y behaviour and disables canvas editing/drag (fail closed, no guessing).
      */
@@ -837,7 +837,7 @@ window.__ModuleLoader__.load({
       /* ---- PNG seed for static pages (no screencast damage after load) ------------------------
        *
        * A seed is a /screenshot of the current canvas view. On a canvas Host it must be provably
-       * composited at the C/S/revision/scale it was requested for (docs/canvas-viewport.md §5.2);
+       * composited at the C/S/revision/scale it was requested for (docs/viewport-control.md);
        * the React side publishes `updateSeedContext()` on every accepted state and the transport
        * refreshes the seed when that context moves. Same shell state is requested at most once; an
        * incomplete response or a stale capture is dropped and leaves canvas input fail-closed.
@@ -965,7 +965,7 @@ window.__ModuleLoader__.load({
         seedPending = true;
         seedStats.requested += 1;
         if (force) seedStats.forced += 1;
-        // A canvas seed must be composed at C (docs/canvas-viewport.md §5.2); an old Host keeps the
+        // A canvas seed must be composed at C (docs/viewport-control.md); an old Host keeps the
         // historical plain-page screenshot request.
         callHost('screenshot', requestedContext.legacy ? {} : { canvas: true }, { scope, signal }).then((payload) => {
           if (closed) return;
@@ -1067,7 +1067,7 @@ window.__ModuleLoader__.load({
                   height: payload.height,
                   pageWidth: payload.pageWidth,
                   pageHeight: payload.pageHeight,
-                  // P0-C v2 frame metadata (docs/canvas-viewport.md §5.1): the capture-time top-level
+                  // P0-C v2 frame metadata (docs/viewport-control.md): the capture-time top-level
                   // scroll, needed to composite the canvas view and to prove input freshness.
                   scrollX: payload.scrollX,
                   scrollY: payload.scrollY,
@@ -1476,7 +1476,7 @@ window.__ModuleLoader__.load({
       const annotBarRef = React.useRef(null);
       const sizingRef = React.useRef(false);
       const annotWidthWheelRef = React.useRef(null);
-      // ---- P0-D 标注模式（docs/annotation-p0d.md）------------------------------------------
+      // ---- P0-D 标注模式（docs/viewport-control.md）------------------------------------------
       // The synchronous truth lives in `annotRef` (mode + current style/tool); React state only
       // mirrors it for rendering. Committed geometry is stored in canvas CSS px, so a C/scale change
       // moves the drawing with the content instead of re-basing it.
@@ -1516,7 +1516,7 @@ window.__ModuleLoader__.load({
       const annotButtonRef = React.useRef(null);
       const annotPanelIdRef = React.useRef('');
       const annotMapSigRef = React.useRef('');
-      // ---- P0-D v3 标注工作区文档（docs/annotation-p0d.md §12）--------------------------------
+      // ---- P0-D v3 标注工作区文档（docs/viewport-control.md）--------------------------------
       // `annotSync` is only the render mirror; the synchronous truth (queue, in-flight snapshot,
       // identity, revisions) lives in module-level publishers keyed by scope/runtime/surface so an
       // unmount cannot lose unacknowledged content.
@@ -1698,7 +1698,7 @@ window.__ModuleLoader__.load({
             editVersionRef.current += 1;
             setError('');
           }
-          // A document/address change invalidates the drawing (docs/annotation-p0d.md §5). The mode
+          // A document/address change invalidates the drawing (docs/viewport-control.md). The mode
           // itself is not exited here: an external navigation keeps the annotation mode on. A rotated
           // Host documentKey is the same fact without an address change (v2 §11.2).
           const previousToken = previousUi && previousUi.annotationContext
@@ -1723,7 +1723,7 @@ window.__ModuleLoader__.load({
         // Hydration runs *after* runtime/revision acceptance and view adoption (§12.2).
         if (nextUi) annotHydrate(nextUi);
         // Publish the post-adoption canvas signature: the frame transport re-seeds a static page
-        // whenever C/S/scale/revision moved (docs/canvas-viewport.md §5.1–§5.2).
+        // whenever C/S/scale/revision moved (docs/viewport-control.md).
         const transport = transportRef.current;
         if (transport && typeof transport.updateSeedContext === 'function') {
           try { transport.updateSeedContext(seedContext()); } catch { /* transport must not break UI */ }
@@ -1802,7 +1802,7 @@ window.__ModuleLoader__.load({
         return String(Math.round(number * 100) / 100);
       }
 
-      /* ---- P0-C v2 canvas state (docs/canvas-viewport.md §5.2–§5.3) --------------------------- */
+      /* ---- P0-C v2 canvas state (docs/viewport-control.md) --------------------------- */
 
       /** True when the Host exposes the canvas projection AND a shared view to hold it. */
       function canvasActive() {
@@ -1924,7 +1924,7 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * Fail-closed geometry/scroll barrier for canvas input (docs/canvas-viewport.md §5.3).
+       * Fail-closed geometry/scroll barrier for canvas input (docs/viewport-control.md).
        *
        * O=0 keeps the old (best-effort, ≤250ms) barrier only. When O≠0 the displayed frame must
        * prove the current page scroll: `frame.scroll` within ±1 CSS px of S and the capture page
@@ -1937,7 +1937,7 @@ window.__ModuleLoader__.load({
         const geom = frameGeomRef.current;
         const view = viewRef.current;
         // A PNG seed is already composited at its capture C; it is only usable while the live
-        // C/S/revision/scale still agree (docs/canvas-viewport.md §5.1–§5.2). A stale or
+        // C/S/revision/scale still agree (docs/viewport-control.md). A stale or
         // provenance-less seed is fail-closed until the transport refreshes it.
         if (geom && geom.seed) {
           const near = (a, b, tolerance) => Number.isFinite(Number(a)) && Number.isFinite(Number(b)) && Math.abs(Number(a) - Number(b)) <= tolerance;
@@ -1993,7 +1993,7 @@ window.__ModuleLoader__.load({
         if (!info) return { inside, blank: false, q, x: q.x, y: q.y };
         const offsetX = info.offsetX;
         const offsetY = info.offsetY;
-        // O=0 is the documented old-behaviour regression point (docs/canvas-viewport.md §1.2): the
+        // O=0 is the documented old-behaviour regression point (docs/viewport-control.md): the
         // frame covers the whole box (there is no composited white to protect) and input keeps the
         // legacy mapping. Only a real residual O creates a blank band that must be zero-dispatched.
         if (Math.abs(offsetX) < 0.5 && Math.abs(offsetY) < 0.5) {
@@ -2374,7 +2374,7 @@ window.__ModuleLoader__.load({
       }
 
       /* ----------------------------------------------------------------------------------------
-       * P0-D 标注模式（docs/annotation-p0d.md）
+       * P0-D 标注模式（docs/viewport-control.md）
        *
        * The layer is a panel-local SVG view over the accepted canvas space:
        *   P  = paintedRect(box, naturalW/H)      // never the translated <img>
@@ -2444,7 +2444,7 @@ window.__ModuleLoader__.load({
         };
       }
 
-      /* ---- v3 工作区文档：水合 / 保留队列 / 发布者身份（docs/annotation-p0d.md §12）------------ */
+      /* ---- v3 工作区文档：水合 / 保留队列 / 发布者身份（docs/viewport-control.md）------------ */
 
       function annotSurfaceName() {
         return props && typeof props.useTabInfo === 'function' ? 'sidebar' : 'main';
@@ -3088,7 +3088,7 @@ window.__ModuleLoader__.load({
         }, 0);
       }
 
-      /* ---- 橡皮擦（docs/annotation-p0d.md §11.4）------------------------------------------- */
+      /* ---- 橡皮擦（docs/viewport-control.md）------------------------------------------- */
 
       function annotEraseRadius(shape) {
         const width = Number(shape.strokeWidth);
@@ -3218,7 +3218,7 @@ window.__ModuleLoader__.load({
         };
       }
 
-      /** Only samples inside the visible canvas rect are erased (docs/annotation-p0d.md §11.4). */
+      /** Only samples inside the visible canvas rect are erased (docs/viewport-control.md). */
       function annotInViewRect(map, point) {
         return point.x >= map.cx && point.x <= map.cx + map.w && point.y >= map.cy && point.y <= map.cy + map.h;
       }
@@ -3638,7 +3638,7 @@ window.__ModuleLoader__.load({
       }
 
       /** Commit/cancel one text edit. Cancellation is marked *before* the input unmounts, so the
-       * subsequent blur cannot submit twice (docs/annotation-p0d.md §4). */
+       * subsequent blur cannot submit twice (docs/viewport-control.md). */
       function finishAnnotText(commit) {
         const edit = annotEditRef.current;
         if (!edit.active) return;
@@ -4884,7 +4884,7 @@ window.__ModuleLoader__.load({
         if (frameGeomRef.current && frameGeomRef.current.src === source) return;
         const meta = frameMetaRef.current.get(source);
         // A new document epoch invalidates the drawing; an ordinary frame refresh (same epoch) must
-        // keep both committed shapes and the active gesture (docs/annotation-p0d.md §5). A seed PNG
+        // keep both committed shapes and the active gesture (docs/viewport-control.md). A seed PNG
         // is not a document transition. `seq`/`ui.revision` are deliberately not used here.
         if (meta && meta.seed !== true && meta.epoch !== undefined && meta.epoch !== null
           && Number.isFinite(Number(meta.epoch))) {
@@ -4896,7 +4896,7 @@ window.__ModuleLoader__.load({
           annotEpochRef.current = epoch;
         }
         // The mapping and the barriers read the *displayed* frame: decoded natural* plus the
-        // capture-time CSS page size and top-level scroll (docs/canvas-viewport.md §5.1).
+        // capture-time CSS page size and top-level scroll (docs/viewport-control.md).
         const scroll = frameScrollOf(meta, null);
         const seed = Boolean(meta && meta.seed === true);
         frameGeomRef.current = {
@@ -5201,7 +5201,7 @@ window.__ModuleLoader__.load({
       const fitScale = fitScaleValue();
       const manualPercent = clampNumber(Number(zoom) || 100, VIEW_LIMITS.scalePercent[0], VIEW_LIMITS.scalePercent[1]);
       const scale = fit ? fitScale : manualPercent / 100;
-      // P0-C v2 preview compositing (docs/canvas-viewport.md §5.2): the W*scale × H*scale box is the
+      // P0-C v2 preview compositing (docs/viewport-control.md): the W*scale × H*scale box is the
       // clipping viewport; the current frame is translated by -(C - frame.scroll) * displayScale.
       // O=0 with frame.scroll=S yields exactly 0, so the old pixels are unchanged.
       const canvasOn = Boolean(canvasInfo && viewRef.current);
@@ -5315,7 +5315,7 @@ window.__ModuleLoader__.load({
         annotMapSigRef.current = annotMapSignatureNow;
         if (!annotOn || !previous || annotMapSignatureNow === previous) return;
         // An external view/geometry change cancels the uncommitted draft/edit; committed shapes stay
-        // and are re-mapped by the new viewBox (docs/annotation-p0d.md §3).
+        // and are re-mapped by the new viewBox (docs/viewport-control.md).
         if (annotGestureRef.current.active || annotEditRef.current.active || annotEraseRef.current.active) {
           cancelAnnotDraft();
           cancelAnnotText();

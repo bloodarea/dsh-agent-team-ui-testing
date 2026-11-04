@@ -82,7 +82,7 @@ async function main() {
   const indexSource = await readFile(INDEX_FILE, 'utf8');
   const actualTools = new Set();
   for (const match of indexSource.matchAll(/name:\s*'((?:browser_)[a-z0-9_]+)'/g)) actualTools.add(match[1]);
-  // 30 = 10 T1 (docs/runtime-t1.md + docs/viewport-control.md §7 `browser_viewport`)
+  // 30 = 10 T1 (docs/architecture.md + docs/viewport-control.md §7 `browser_viewport`)
   //      + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
   //      + 7 network (docs/network-p0.md §2).
   const expectedTools = [

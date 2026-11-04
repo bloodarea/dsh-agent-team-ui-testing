@@ -1,50 +1,63 @@
-# 能力分层：Web 的 T1–T4（现行标准）
+# 能力分层与限制
 
-> 索引：[docs/index.md](index.md)
+四层是**选择与回退策略**，不是必须逐层执行的流水线：挑够用且成本最低的可靠路径，不通再升级。涉及外观与交互的验收必须有 UI 层证据，不能拿 T1 的成功当界面测试通过。
 
-四层是**选择与回退策略**，不是必须逐层执行的流水线：挑"够用且成本最低的可靠路径"，不通再往下退。涉及外观/交互的验收必须有 UI 层证据，不能拿 T1 的成功当界面测试通过。
-
-| 层级 | 正式名称 | 核心技术 | 主要调试能力 | 触发与升级条件 | 相对成本 |
+| 层级 | 名称 | 核心技术 | 典型用途 | 升级条件 | 相对成本 |
 | --- | --- | --- | --- | --- | --- |
-| **T1** | 程序化调试 | CDP、HTTP、Fetch、JavaScript、`Network`、`Console` | 接口请求、网络抓包、JS 执行、异常检测、资源加载、状态检查、性能数据 | 默认优先；需要操作页面元素时进入 T2 | 低 |
-| **T2** | 结构化 GUI 调试 | DOM、Accessibility Tree、ARIA、Snapshot、Locator、Ref | 元素定位、点击、输入、滚动、表单、交互测试、节点状态、结构化证据 | 无法通过可靠的结构化定位完成操作，或需要视觉判断时进入 T3 | 低～中 |
-| **T3** | 静态视觉调试 | Screenshot、Computer Vision、坐标操作、图像差异分析 | UI 布局、颜色、遮挡、样式缺陷、Canvas、图表、静态截图操作 | 需要连续动作、动画或时间状态判断时进入 T4 | 高 |
-| **T4** | 动态视觉调试 | Screencast、帧序列、时间戳、视觉推理、鼠标键盘事件 | 动画、拖拽、复杂动态组件、过渡状态、连续画面分析 | 最高级：失败后输出诊断结果，交由 Agent 或人类裁决 | 最高 |
+| **T1** | 程序化调试 | CDP、HTTP、JavaScript、Network、Console | 接口检查、网络故障、页面状态、性能数据 | 需要操作页面元素 → T2 | 低 |
+| **T2** | 结构化 GUI | DOM、无障碍树、Snapshot/Ref、可信输入 | 按钮、表单、导航、交互测试 | 结构定位不可靠或需视觉判断 → T3 | 低～中 |
+| **T3** | 静态视觉 | 截图、确定性像素分析、坐标操作 | 布局、颜色、遮挡、Canvas、图表、样式缺陷 | 需要连续画面/时序 → T4 | 高 |
+| **T4** | 动态视觉 | Screencast、帧序列、时间戳、运动分析 | 动画、过渡、拖拽、时间相关行为 | 最高层；输出诊断交 Agent 或人裁决 | 最高 |
 
-选型对照与实现策略（“参考”只是对比对象，不代表已选定依赖；Web T3 已按纯 JavaScript 自研实现，未引入 Sharp/Pixelmatch/Argos 依赖）：T1 Playwright MCP / agent-browser / Chrome DevTools MCP，直接复用；T2 ego-lite / agent-browser / Playwright MCP，复用 + 统一节点协议；T3 Playwright MCP Vision / Sharp / Pixelmatch / Argos，参考算法、自研判定（现行实现见下方“对当前实现的含义”）；T4 agent-browser 视频录制机制 / 自研动态视觉调度 / CDP Animation / rrweb / 按需 FFmpeg・OpenCV，复用采集、自研时序验证。
-
-## 每一级的完成门槛
+## 完成门槛
 
 - **T1**：独立完成不依赖视觉理解的页面与接口诊断，并向 T2 提供同一浏览器会话。
-- **T2**：对常规 Web 页面实现可靠的结构化发现、定位、操作、验证闭环，并明确识别何时需要视觉能力。
-- **T3**：对静态画面完成视觉定位与操作并准确验证前后状态；需要连续时间信息时升级 T4。
-- **T4**：根据连续帧判断动态交互的结果，并输出带时间戳的可复现证据。
+- **T2**：对常规页面实现可靠的结构化发现、定位、操作、验证闭环，并能识别何时需要视觉能力。
+- **T3**：对静态画面完成视觉定位与操作，并准确验证前后状态。
+- **T4**：根据连续帧判断动态交互结果，并输出带时间戳的可复现证据。
 
-## 回退链规则
+## 回退规则
 
 1. **按需选择**：网络异常优先 T1，按钮交互优先 T2，布局错误可以直接 T3。
-2. **逐级升级是默认策略，允许跳级**：已明确需要连续动态画面时可以直接进入 T4。
-3. **区分工具失败和产品缺陷**：定位器失效可重试或升级；业务断言失败必须记录缺陷，不能用回退掩盖。
-4. **证据跨层级复用**：T1 的 Network 数据、T2 的元素 Ref、T3 的截图与 T4 的关键帧归属同一次调试任务。
+2. **允许跳级**：已明确需要连续动态画面时可直接进入 T4。
+3. **区分工具失败与产品缺陷**：定位器失效可重试或升级；业务断言失败必须记录为缺陷，不能用回退掩盖。
+4. **证据跨层复用**：T1 的网络数据、T2 的 ref、T3 的截图与 T4 的关键帧归属同一次调试任务。
 
-## 三条约束
+## 基础设施（P0）
 
-- **只对 Web 定义过 T1–T4。** 其他运行环境（Windows / Android / Linux / macOS / TUI / HarmonyOS / 游戏 / 3D）尚未定义，不要照搬 Web 的技术栈去假设它们的实现路径。
-- `README.md` / `README_zh.md` 的分层章节与本文件是同一套 T1–T4（分层总表、每级完成门槛、回退链规则、架构图节点、R2 里程碑）；再调整分层时三份文件要一起改。
-- 仓库其余位置（`skills/ui-testing/references/tiers/*.md` 的标题、[t1-issues-and-solutions.md](t1-issues-and-solutions.md) 的分类栏）沿用旧称（T1 程序化接口、T2 结构化 GUI、T3 静态视觉理解、T4 动态视觉理解），指的就是本表的四层；名称以本表为准，改名时不要顺带改工具名或验收口径。
+P0 是四项互相独立的能力，不能相互顶替：
 
-## 对当前实现的含义
+| 项 | 内容 | 文档 |
+| --- | --- | --- |
+| P0-A | 图片输入流与截图采集 | [capture-p0.md](capture-p0.md) |
+| P0-B | 网络抓包与业务链路 | [network-p0.md](network-p0.md) |
+| P0-C | 共享视口控制 | [viewport-control.md](viewport-control.md) |
+| P0-D | 混合画布与客户端标注 | [viewport-control.md](viewport-control.md) |
 
-调试视图通过无头 Chromium + CDP 同时提供 Web T1（程序化）、T2（结构化 GUI）与 T3（静态视觉）。**P0 基础设施由四项独立能力组成：P0-A 图片输入流/截图采集（capture-p0.md）、P0-B 网络抓包/业务链路（network-p0.md）、P0-C 共享视口控制（viewport-control.md）与 P0-D 混合画布/客户端标注（canvas-viewport.md、annotation-p0d.md）；四者独立验收、不能互相顶替。工具面 35 个 = 10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4**（第 8 轮网络 P0 的 7 个工具、第 9 轮 P0-C 的 `browser_viewport` 与 T4 轮的 5 个工具都是**纯新增**；旧工具除有意变更的截图默认密度外只做加法式增强：`browser_screenshot` 证据新增 `capture.networkWindow`（`capture.version` 仍 1）、T2 动作与网络事件加 mark 关联，`browser_network`/T3 语义不变）：
+工具面共 35 个：10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4。
 
-- T1：10 个工具（导航、JS、截图、输入、网络、计算样式、独立 HTTP、共享视口、状态、能力发现），现行契约与验收见 [t1-m0-m2-contract.md](t1-m0-m2-contract.md)、[t1-http-request.md](t1-http-request.md)、[viewport-control.md](viewport-control.md)。T1 行的「网络抓包」仍由旧 `browser_network`（元数据、300 条环形缓冲）提供，**深度抓包/正文/控制看下面的 network P0 七工具**，两者并存、语义不互相顶替。
-- **P0-B network（第 8 轮，网络抓包/业务链路）**：7 个工具 `browser_network_session` / `events` / `detail` / `trace` / `control` / `evidence` / `subscribe`，覆盖六类能力——采集（HTTP/HTTPS 请求响应体、WebSocket 双向帧、SSE 事件、同主 page 的 same-origin iframe/OOPIF/Worker）、时序（标准化事件 + 统一时间轴 + 与 GUI 动作/页面状态/截图的时间关联）、分析（参数解析、业务状态码、耗时统计、错误/重试/重复、关联标识、筛选检索聚合、依赖关系）、链路（步骤窗口、业务对象提取传递、跨请求关联、状态变化、异步/轮询、因果元数据）、控制（启停、按需详情、拦截/改写/延迟带宽/断连/重放/Mock）、证据（JSONL/HAR 导入导出、索引检索、脱敏、配额与完整性、多 Agent 独立订阅）。纯 JavaScript、零 npm 依赖；诊断/只读动作不启动浏览器，`session.start` 与需要 page 的 `control` 才懒启动。权威契约 [network-p0.md](network-p0.md)（7 工具 schema、事件 schema、配额、`NET_*` 错误、靶机路由、验收 C1–C52）。
-  - **边界（不夸大）**：`G1.5` 为 **partial**——same-origin iframe 与 dedicated worker 已实证，OOPIF 为 `partial`（未单独验证），shared/service worker **不采集**（attach 会暂停 service worker 并破坏 `register()`），popup 继续被既有目标策略阻断，不采 popup、不跨 scope 聚合、无多标签/窗口工具；**HTTPS 未独立验收**（能力报告 `limits.network.https = "mechanism-identical"`，C1 子项 NOT_RUN）；**`responseModification` 条件支持**（仅当 Chrome 实测支持 `Fetch.continueResponse` 才声明，否则 C37 子项 NOT_RUN）；不做 MITM/不装 CA/不读 TLS 密钥、不做真实网络限速（只模拟 CDP 网络条件）、HAR 只保证 1.2 子集。
-  - **验收（Lead 独立串行，同一最终代码）**：`node tests/acceptance/network-p0.mjs` → **52/52 criteria（pass 52 / fail 0）、requiredChecks 266/266、failedChecks 0、notRunChecks 8、exit 0**（[run-report.json](../tests/acceptance/runs/2026-11-01T12-27-48-770Z-370586/run-report.json)），单测 `tests/network-p0.test.mjs` **43/43**；8 条 NOT_RUN（C1 HTTPS、C2 二进制 body、C5 service worker、C20 单样本 p95、C35 淘汰 body 三态、C37 `modify-response`、C52 外部套件、C52 真实宿主）逐条登记在 [status.md](status.md) 与网络台账。**真实宿主**：2026-11-02 重启后的 3080 已冒烟 `session`/`events`/`detail`（21 事件、detail 含 headers/timing），见 [证据](../tests/acceptance/evidence/viewport-real-host-2026-11-02.md)；`control`/`replay`/证据/订阅的真宿主行为仍 NOT_RUN，不能由进程内套件推定。
+## 各层已实现范围
 
-- **P0-A 图片输入流/截图采集**：已有 `browser_screenshot` 增强为显式 scale 0.1–4（省略时跟随共享 view.scale）、**canvas CSS region（O=0 与文档相同）**、PNG 结构/尺寸/均匀统计、安全落盘和 capture 证据；默认暂存（dispose 清理），out/persist:true/非空 env 显式持久；file 区分绝对暂存/相对持久，能力 observed 不含绝对路径。C1–C15 共 **15/15、162/162**（画布轮 [报告](../tests/acceptance/runs/capture-p0-2026-11-01T20-18-32-415Z-768943/report.json)；此前 14/14、142/142 保留为历史）。**P0 采集本身不构成 T3 判定**；T3 由新增六工具与独立验收另证（见下）。权威契约见 [capture-p0.md](capture-p0.md)；provider 与真实宿主：2026-11-02 重启后的 3080 已冒烟默认/显式比例、region、mapping 与 networkWindow（[证据](../tests/acceptance/evidence/viewport-real-host-2026-11-02.md)），provider 视觉仍 NOT_RUN。
-- **P0-C 共享视口控制**：每个工作区一份权威 CSS 像素 `view`（真实页面滚动 x/y、CSS 视口宽高、显示/默认截图比例、派生 mode、source/revision）；`browser_viewport get` 只读缓存诊断、`set` 租约页面操作（含 scale-only）、`expectedRevision` CAS（`VIEWPORT_CONFLICT`，HTTP 409）、事件驱动 200ms 滚动观测；面板五输入滚轮与纯本地 `fit`。**不改页面 CSS 视口/DPR/页面缩放**。权威契约 [viewport-control.md](viewport-control.md)；验收 `viewport.mjs` **14/14 probes、166/166 required、exit 0**。
-- **P0-D 混合画布（2026-11-02 用户要求）**：在真实页面之上叠加画布取景——`canvasX/canvasY`（视口左上角在文档画布上的位置，±1e7，可负/越界）、`O=C-S`、内容盒与空白（**面板深色棋盘格 14px / 截图与 T3 纯白 `#ffffff`**）、拖拽平移（内容跟手、空白 overlay）、严格锁屏幕光标的滚轮缩放（5%/Shift 10%/Alt 1%、fit 自动解锁、Ctrl/Meta 不缩放）、`q→p=q+O` 输入映射与空白零派发 + fail-closed 合成 seed、画布空间截图/T3（`composite:true` 披露重编码）。`O=0` 与旧文档路径字节/像素一致；不改页面 DOM/CSS/视口/DPR/zoom。契约 [canvas-viewport.md](canvas-viewport.md)；验收：`viewport.mjs` 画布探针 14/14、166/166（标注 v2 起整包 **19/206**，含 A1–A5）；`viewport-gui.mjs` **142/142 PASS、5 NOT_RUN、exit 0**（画布轮；标注 v1 198/198 → v2 222/222、14 NOT_RUN → v3 242/242 → v4 258/258 → 尺寸预设归零 260/260 → **预设分页选择器+拖拽互斥 262/262、0 FAIL、12 NOT_RUN、exit 0**：V12 拖拽 + V13 画布 + V14 缩放 + V15/V16/V17 标注 + V18 交互细节（V18.16/V18.17 预设归零、V18.18/V18.19 分页选择器与拖拽互斥））；`capture-p0.mjs` **15/15、162/162**（C15）；`t3-vision.mjs` **56/56、415/415**（C57）。**真实宿主（2026-11-02 11:15 重启）**：Host 画布语义已实测（[证据](../tests/acceptance/evidence/canvas-realhost-2026-11-02.md)）；**面板交互与需 GUI 认证的路由仍 NOT_RUN**。**标注模式（同属 P0-D）**：工具栏入口 + 独立横栏（七工具含橡皮擦/清除画布）+ SVG 画布坐标绘制 + 模式内页面零交互；**Agent 可见面**：仅认证 scoped `POST /annotations` 写入每 Runtime 的最近标注文档，`browser_state.annotations` 与 `ui.annotations` 同源只读，`browser_capabilities.annotations` 声明限额（工具面仍 30）；契约 [annotation-p0d.md](annotation-p0d.md)，验收 `viewport.mjs` A1–A5 与 `viewport-gui.mjs` V15/V16/V17/V18；**v3 起标注跨分页/会话保留并按工作区隔离**（水合 + 不再隐式清空 + retained queue + 发布者身份复用）；**v4（2026-11-03）起**填充/外框与 `拖拽|适应窗口|默认` 两组分页选择器单选、双向模式互斥、默认分辨率按运行环境（web=横屏、Android=手机）、粗细支持滚轮，计数见 [status.md](status.md)。
-- T2：7 个工具（`browser_snapshot` + `click` / `type` / `scroll` / `fill_form` / `node_state` / `wait_for`），AX 语义树 + 单调 `eN` Ref + 可信输入 + `evidence.version=1`；契约与 38 条验收见 [t2-structured-gui.md](t2-structured-gui.md)，实现/验收状态见 [status.md](status.md)。T2 仍属主 frame + AX-backed open shadow，iframe 内部、closed shadow、原生 select popup/拖拽/上传下载/contenteditable/IME 与视觉判定不在范围内。
-- **T3（静态视觉，已实现并通过进程内验收）**：6 个工具 `browser_vision_image` / `find` / `compare` / `act` / `baseline` / `check`（工具面共 30 = 10 T1 + 7 T2 + 6 T3 + 7 network）。纯 JavaScript、零 npm 依赖：PNG 编解码/裁剪/缩放/预处理/标注、YIQ 像素差异与相似度/差异区域高亮/动态 mask、color/components/edges/template 确定性识别、截图坐标的真实 CDP 输入（六步安全校验、失败零派发）、受管基线（不可变 revision + HEAD CAS + 墓碑）、回归与六类缺陷用例（像素信号 + 调用方显式 provenance facts；T3 不主动读 DOM）。权威契约 [t3-vision.md](t3-vision.md)；进程内验收 **56/56 criteria、415/415 required、exit 0**（画布轮：[报告](../tests/acceptance/runs/2026-11-01T20-18-56-169Z-770336/run-report.json)；此前 391/391 保留为历史）。T3 live 现在使用 canvas mapping（blank `documentCss=null`、act blank 零派发）。无 VLM/OCR/语义命名；真实宿主加载已复验（2026-11-02 重启后，image/find/compare 在真实会话跑通），provider 图像可见性与 T4 仍 NOT_RUN。
-- **T4（动态行为，2026-11-04 已实现，40 条门槛未全过）**：5 个工具 `browser_dynamic_session` / `browser_motion_observe` / `browser_motion_analyze` / `browser_motion_control` / `browser_dynamic_correlate`（工具面 35）。动态视觉用**真实 CDP screencast**（唯一协调器在预览 latest-frame 覆盖前取原始引用、唯一 ACK、有界帧存储、原始 sourceTimestamp、encoded/rgba 双 hash、dropped/evicted/gaps 计数）与 **screenshot-loop PNG** 精确路径；纯核心自研 baseline JPEG 解码器（零依赖）；七类确定性分析原语（帧差/区域变化/闪烁/冻结/卡顿/轨迹/过渡）；WAAPI 控制与 restoreToken 恢复；动态网络**复用** 7 个 `browser_network_*`（无第二套抓包）；六向 Dynamic Event Correlation 区分 `explicit/redirect/initiator`（confirmed-causal）与 `observed`/`temporal`（默认过滤）。**`observe {region}` crop-on-delivery**（2026-11-04 用户批准）：只交付指定矩形（帧图像像素）的 PNG，附 `crop.roiSha256`（与整帧 hash 分列）；不带 region 仍整帧 JPEG 且零解码。用于「只看动画那一块」——避免整页截图把页面自述文字喂给 Agent，同时体积 14.7–39× 缩小。**会话续约 `extend`**（2026-11-04 用户批准）：`running` 会话可追加 `durationMs`（单次 ≤60000、累计 ≤300000ms），纯 Host 内存操作、不复活已停会话、不放大任何预算，写 `session.extend` 审计事件并暴露 `deadlineMs/cumulativeMs`。契约 [t4-dynamic-behavior.md](t4-dynamic-behavior.md)、实现冻结 [t4-implementation-contract.md](t4-implementation-contract.md)。验收 `t4-dynamic.mjs`：DV01–DV16 + DN01–DN12 + DC01–DC12 共 40 条，当前 **8 PASS / 20 PARTIAL / 0 FAIL / 12 NOT_RUN（exit 2）**；纯逻辑单测 `dynamic-t4.test.mjs` **93/93**；两套准备靶机 `t4-visual-fixtures.mjs` 12/12、`t4-network-fixtures.mjs` 15/15（其不越界探针已改为断言 35 工具真实态）。**真实宿主（2026-11-04 四轮重启后）**：35 工具/`web.t4.*` 已实测；screencast 480–600 帧（60s 会话 3517 帧、evicted 3337、ackFailures 0）、screenshot-loop 19 帧、jank 真实分布、`browser_screenshot` 图像进入模型上下文（provider 可见性已实测）。四轮共暴露并修复 **8 条真实宿主缺陷**：control 目标解析、analyze 预算分组、0 帧 hint、attachmentError、pageSource 误报、候选预算、retained 控制义务（reset 兜底）、duration 上限过短；**已真机复验通过**：control selector 与注入元素、retained pause→reset 恢复（running 与 retained 两条路径 + 零义务负例）、`durationMsHard=60000` 与 fresh/幂等 start 不续期（`stoppedAt−startedAt=60000ms`）、running 会话 `correlate`（`pageSource.available`、pairs 5 条）。**仍未验证**：close/dispose 恢复（认证面板路由，Agent 面被设计性拒绝）、WebGPU 渲染、16ms 闪白采样覆盖、media 适配器、visual/retry 父桥、header-verified 身份（P0 脱敏）、长连接与 OOPIF/HTTPS/worker 限制沿 P0。
+- **T1**：导航、JS 执行、截图、原始输入、轻量网络列表、计算样式、独立 HTTP 请求、共享视口、状态与能力发现。轻量 `browser_network` 只提供元数据环形缓冲；深度抓包、正文与控制属于 P0-B 的七个工具，两者并存、语义不互相顶替。
+- **T2**：snapshot → ref 定位 → 可信输入 → 证据 → 等待/节点状态，覆盖点击、输入、滚动、表单与状态读取。
+- **T3**：纯 JavaScript、零 npm 依赖的图像处理、确定性识别、YIQ 差异、坐标输入、受管基线、回归与六类缺陷用例。
+- **T4**：真实 CDP screencast 与 screenshot-loop 两条帧源、有界帧存储、七类确定性分析、WAAPI 运动控制、六向事件关联。
+- **P0-B**：采集（HTTP/HTTPS 请求响应、WebSocket、SSE、同页 iframe 与 dedicated worker）、时序、分析、业务链路、控制、证据导出与多 Agent 订阅。
+
+## 已知限制
+
+- **仅 Web。** Windows、Linux、macOS 桌面、Android、TUI、HarmonyOS、游戏与 3D 尚无适配器，运行时选择器保持禁用。
+- **视觉是确定性的，不是语义的。** 没有 VLM/OCR、没有语义命名；「这段文字是什么意思」「人看着对不对」不在范围内。
+- **T4 验收未全覆盖。** 40 条动态行为门槛中 8 条通过、20 条部分通过、12 条未运行、0 条失败。主要路径已在真实宿主复验并修掉暴露的缺陷，但 close/dispose 恢复、WebGPU 渲染、媒体 seek/stall、header 校验身份、16 ms 闪白覆盖与长连接稳定性仍未验证。
+- **网络采集边界不完整。** OOPIF 为部分覆盖；shared/service worker 不采集；不采 popup、不做多标签聚合；HTTPS 未独立验收；`responseModification` 视 Chrome 实测能力而定；HAR 只保证 1.2 子集。
+- **共享浏览器 profile。** Cookie 与存储由 Chromium profile 共享；只有页面、URL、视口、历史、网络缓冲与租约按工作区隔离，**不是登录态隔离**。
+- **截图不脱敏。** 分享前请检查内容；附件返回也不等于 provider 一定以原始分辨率收到图像。
+- **共享状态是乐观并发。** `browser_viewport get` 是缓存诊断，`stale` 表示「最近没观测」；`expectedRevision` 竞争失败返回 `VIEWPORT_CONFLICT` 且不自动重放。
+
+## 如何判断「真的可用」
+
+以运行态为准，不以文档为准：
+
+1. `browser_capabilities` 报三态（`available`/`unavailable`/`unsupported`）与 limits。
+2. 实际调用返回的证据（`evidence`、`verdict`、`integrity`、`analysis`）。
+3. 需要复现时按[验证与贡献](verification.md)跑测试。

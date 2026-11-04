@@ -1,7 +1,7 @@
 # 视觉与动态场景调试手册（T3 静态 / T4 时序）
 
 > 面向**没有上下文**的 Agent：照本文管线走就能调动画，不必先读源码。
-> 权威契约 [docs/t4-dynamic-behavior.md](../../../../docs/t4-dynamic-behavior.md)、实现冻结 [docs/t4-implementation-contract.md](../../../../docs/t4-implementation-contract.md)。
+> 权威契约 [docs/t4-dynamic-behavior.md](../../../../docs/t4-dynamic-behavior.md)、实现冻结 [docs/t4-dynamic-behavior.md](../../../../docs/t4-dynamic-behavior.md)。
 
 ## 0. 先选层，别用错工具
 

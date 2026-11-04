@@ -2,9 +2,9 @@
  * dynamic-t4.js — WEB-T4 动态行为的**纯核心**（零 CDP / 零文件系统 / 零网络 / 零 npm 依赖）。
  *
  * 权威契约：
- *  - docs/t4-dynamic-behavior.md §2（时钟/事件/ID 域/有界存储）、§3.4（七原语）、§5（DC）、
+ *  - docs/t4-dynamic-behavior.md（时钟/事件/ID 域/有界存储）、§3.4（七原语）、§5（DC）、
  *    §7.2/§7.3（工具参数与错误草案）、§8（U 类验收口径）。
- *  - docs/t4-implementation-contract.md（advisor 冻结的导出名/签名/错误码；落后于本文件时以契约为准）。
+ *  - docs/t4-dynamic-behavior.md（advisor 冻结的导出名/签名/错误码；落后于本文件时以契约为准）。
  *
  * 边界（本文件只做纯逻辑）：
  *  - 不做 CDP、不启动浏览器、不读写文件、不读环境变量、不建目录、不申请租约；无全局可变状态。

@@ -19,7 +19,7 @@ runtime-faults 16/16、check-skill 25/25、check-skill-registry 17/17（均 exit
 团队同代码复跑：runs/2026-10-31T19-21-26-010Z-49307（T2 37/38 + C38 NOT_RUN）、runs/2026-10-31T19-22-02-871Z-50749（T1 22/22）
 ```
 
-§9.38 真实宿主由 Lead 在 DSH 3080（pid <pid>，2026-11-01 10:40:04 重载终版）的真实 Agent 会话补齐：`tests/acceptance/evidence/t2-real-host-2026-11-01.md` —— **14/14 检查行通过**（16 工具注册与 capabilities、snapshot 主文档/scope、可信 click、type、fill_form 7 字段、表单提交真值、toggle、wait text/textGone、文档与目标滚动、隐藏节点 node_state、覆盖目标 NOT_INTERACTABLE、导航后 REF_STALE、T1 未回归），每行带 actionId 与页面真值。套件内 **C38 仍记 NOT_RUN 是套件边界**（fake ctx 不能冒充真实宿主），该项以真实宿主记录为准。
+§9.38 真实宿主由 Lead 在 DSH 3080（pid <pid>，2026-11-01 10:40:04 重载终版）的真实 Agent 会话补齐：`本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md` —— **14/14 检查行通过**（16 工具注册与 capabilities、snapshot 主文档/scope、可信 click、type、fill_form 7 字段、表单提交真值、toggle、wait text/textGone、文档与目标滚动、隐藏节点 node_state、覆盖目标 NOT_INTERACTABLE、导航后 REF_STALE、T1 未回归），每行带 actionId 与页面真值。套件内 **C38 仍记 NOT_RUN 是套件边界**（fake ctx 不能冒充真实宿主），该项以真实宿主记录为准。
 
 ## 逐工具状态
 
@@ -65,7 +65,7 @@ runtime-faults 16/16、check-skill 25/25、check-skill-registry 17/17（均 exit
 | 多标签 / popup 接管 / 触摸 | unsupported | 不在本轮 |
 | 视觉判定（颜色/可读性/遮挡成因/canvas 文字） | unsupported（T3） | hit-test 只证明坐标命中；`escalation:"T3"` 只是提示 |
 | 动画/时序/运动连续性 | unsupported（T4） | `unstable` 只拒绝派发并建议 T4 |
-| 真实宿主 Agent 会话内 T2 调用（优化前构建） | verified | `tests/acceptance/evidence/t2-real-host-2026-11-01.md`（3080 pid <pid> / 2026-11-01 10:40:04 重载 / session-8ed5dfdc… / scope <scope-id>）**14/14 检查行通过**；该记录属**优化前构建**，优化后行为见下一行 |
+| 真实宿主 Agent 会话内 T2 调用（优化前构建） | verified | `本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md`（3080 pid <pid> / 2026-11-01 10:40:04 重载 / session-8ed5dfdc… / scope <scope-id>）**14/14 检查行通过**；该记录属**优化前构建**，优化后行为见下一行 |
 | 优化构建真实宿主定向复验 | **待复验（pending，非失败）** | 需 DSH 重启加载优化构建后按记录「优化构建复验（待真实宿主重载）」小节跑 5 项：① 压缩形态（无重复 text、`- text " "` 分隔、generic 无 ref）② 同名/独立节点 refs 各自可点 ③ 离屏目标 scroll 零派发 + `outside-viewport` + hint 后恢复 ④ 持续运动 `unstable` ⑤ T1 未回归；**未完成前不得声称优化后真实宿主已验证** |
 
 ## 优化构建（2026-11-01）
@@ -77,13 +77,13 @@ runtime-faults 16/16、check-skill 25/25、check-skill-registry 17/17（均 exit
 | 变更 3：`browser_scroll` 硬化 | 契约 §4.3 裁决。**不自动滚入视口**（click/type 的准备滚动不适用）；direction 与 to 都在派发前过 visible/stable/viewport/center-hit 门禁，不满足零派发 `NOT_INTERACTABLE(outside-viewport|unstable)` + 固定无 selector 的 `details.hint`；失败前后页面与元素 scroll 原样保留；持续运动一律拒绝 |
 | 实测效果（同 fixture / 默认参数） | nodeCount 421→275（−34.7%）、tree UTF-8 14432→9254（−35.9%）、`- text` 行 232→91；两次连续捕获 tree/digest 一致 |
 | 限额口径变化 | requiredChecks 233→260（C4 24、C6 8 含注入 800×~220B 的 treeBytes 用例、C25 18、C26 8）；`nodeCount` 与 `tree/digest` 属**构建相关**读数，跨构建变化不算回归；`treeBytes` 上限仍 131072、`snapshotBytes` 524288、`evidenceBytes` 262144 不变 |
-| 复验状态 | 进程内 260/260 已过；真实宿主的 14 行记录属**优化前构建**，优化后需按 `tests/acceptance/evidence/t2-real-host-2026-11-01.md` 的「优化构建复验」小节跑 5 项定向复验（**待复验，非失败**） |
+| 复验状态 | 进程内 260/260 已过；真实宿主的 14 行记录属**优化前构建**，优化后需按 `本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md` 的「优化构建复验」小节跑 5 项定向复验（**待复验，非失败**） |
 
 ## 验收门槛（本轮达成情况）
 
 1. ✅ T2 套件在授权 loopback fixture 上跑绿（优化构建）：`runs/2026-11-01T03-41-31-025Z-39784`（probes 38：37 pass / 0 fail / 1 notRun，requiredChecks **260/260**，criteriaCovered 38，exit 0；此前 233/233 见 `runs/2026-10-31T19-25-29-077Z-54114`）。覆盖 §9 的注册面、冷启动能力、工作区隔离、快照、ref 生命周期、唯一 selector、可信动作、表单、滚动、等待、错误码、证据、租约、取消。
 2. ✅ 报告路径 + 计数已写入本表与 `manifests/declared-capabilities.json` 的 `evidence`/`observations`。
-3. ✅ 隔离/真实宿主注册 16 工具（T2 时点；T3 收口后注册面为 22）并由新 Agent 会话跑通 snapshot→动作→wait/node_state：`tests/acceptance/evidence/t2-real-host-2026-11-01.md` 14/14 检查行通过（DSH 3080 pid <pid> 重载终版，非 legacy scope）。套件内 C38 仍记 NOT_RUN 属套件边界。
+3. ✅ 隔离/真实宿主注册 16 工具（T2 时点；T3 收口后注册面为 22）并由新 Agent 会话跑通 snapshot→动作→wait/node_state：`本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md` 14/14 检查行通过（DSH 3080 pid <pid> 重载终版，非 legacy scope）。套件内 C38 仍记 NOT_RUN 属套件边界。
 4. ✅ `browser_capabilities` 可调用并按 §5.3 报 `limits.structuredGui`（C2 required 检查）。
 
 因此：7 个 T2 工具与聚合项按上述实测覆盖记 `verified`；真实宿主会话已由记录补齐，**仅剩 provider 图像可见性（T1/T3 遗留）与仅 advisory 覆盖的 closed-shadow ref 细分未验证**。不要把本台账的 verified 外推到跨帧、视觉（T3/T4）、provider 图像可见性（T1 遗留）或真实宿主首次加载行为。
@@ -91,6 +91,6 @@ runtime-faults 16/16、check-skill 25/25、check-skill-registry 17/17（均 exit
 ## 变更日志
 
 - 2026-11-01（task-11，优化构建）：快照冗余文本压缩 + 空白/generic 裁决 + `browser_scroll` 不自动滚入/稳定性硬化；进程内 260/260（C4 24、C6 8、C25 18、C26 8）通过；真实宿主 14 行记录标为优化前构建，优化后 5 项定向复验待做（pending，非失败）。
-- 2026-11-01（task-8，Lead 真实宿主验收）：§9.38 由 `tests/acceptance/evidence/t2-real-host-2026-11-01.md` 补齐（3080 pid <pid> 重载终版、14/14 检查行、每行 actionId），「真实宿主会话」行升 `verified`、门槛第 3 项打勾；closed-shadow ref 细分仍 `partial`，provider 视觉仍未验证。
+- 2026-11-01（task-8，Lead 真实宿主验收）：§9.38 由 `本地验证记录（不随仓库分发）/t2-real-host-2026-11-01.md` 补齐（3080 pid <pid> 重载终版、14/14 检查行、每行 actionId），「真实宿主会话」行升 `verified`、门槛第 3 项打勾；closed-shadow ref 细分仍 `partial`，provider 视觉仍未验证。
 - 2026-11-01（task-7）：T2 套件与 T1 套件由 Lead 独立复跑全绿，逐工具/逐能力状态升 `verified`（closed-shadow ref 细分与真实宿主会话保留 partial/NOT_RUN），补报告路径与计数，门槛第 3 项仍缺。T1 台账不变。
 - 2026-11-01（task-5）：新建本台账。工具面 9 → 16；T2 七工具与聚合项登记为 implemented-not-verified（当时无运行报告）；记录能力报告实测与 T3/T4 升级边界。

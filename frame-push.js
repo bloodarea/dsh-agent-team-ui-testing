@@ -21,7 +21,7 @@
  *           header = {v:1, seq, epoch, capturedAtMs, receivedAtMs, width, height,
  *                     pageWidth, pageHeight, scrollX, scrollY, format:"jpeg", scopeId, runtimeId,
  *                     dropped:{coalesced,blocked,stale,rejected}}
- *           (scrollX/scrollY are the capture-time top-level scroll, docs/canvas-viewport.md §5.1.)
+ *           (scrollX/scrollY are the capture-time top-level scroll, docs/viewport-control.md)
  * Client -> server messages are ignored except close/ping control frames.
  */
 
