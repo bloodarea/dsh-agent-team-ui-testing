@@ -54,7 +54,7 @@
 ## 验收门槛（本轮达成情况）
 
 覆盖注册面、冷启动能力、工作区隔离、快照、ref 生命周期（含 LRU 与跨快照保留）、唯一 selector、可信动作、表单、滚动、等待、错误码、证据、租约、取消。
-2. 报告路径与计数已写进 `manifests/declared-capabilities.json` 与 `knowledge/web/t2-capability-ledger.md`。
+2. 能力状态声明见 `manifests/declared-capabilities.json`。
 
 4. ✅ `browser_capabilities` 按 §5.3 报 `limits.structuredGui`（C2 required 检查通过）。
 

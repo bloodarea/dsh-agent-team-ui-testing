@@ -22,4 +22,4 @@ T1 共 10 个工具（含独立 HTTP `browser_http_request` 与共享视口 `bro
 
 安全策略见 [安全边界](../core/safety.md)：loopback 允许，RFC1918 默认阻断，可显式环境变量开放；Document/DNS/最终 URL 校验不等于对子资源/页面 fetch/WebSocket 的完整网络沙箱，仍有 rebinding 风险。
 
-所有工具 action 元数据进入 render；操作成功与断言分离。网络元数据不证明完整接口契约（接口契约用 `browser_http_request`），CSSOM 不证明视觉，原始截图可见不意味着 T3/T4 已实现。元素语义与元素级交互优先走 T2（`browser_snapshot`/`browser_click`/`browser_type`/`browser_fill_form`/`browser_wait_for`，见 [T2 表](t2-structured.md)）；下载/上传/Cookie 导出、多 target/frame 选择、Agent 视口工具；验收状态见 [T1 台账](../../knowledge/web/t1-capability-ledger.md)、[T2 台账](../../knowledge/web/t2-capability-ledger.md) 与 [网络 P0 台账](../../knowledge/web/network-p0-capability-ledger.md)，未有本轮证据前不标 verified。
+所有工具 action 元数据进入 render；操作成功与断言分离。网络元数据不证明完整接口契约（接口契约用 `browser_http_request`），CSSOM 不证明视觉，原始截图可见不意味着 T3/T4 已实现。元素语义与元素级交互优先走 T2（`browser_snapshot`/`browser_click`/`browser_type`/`browser_fill_form`/`browser_wait_for`，见 [T2 表](t2-structured.md)）；下载/上传/Cookie 导出、多 target/frame 选择、Agent 视口工具；运行态以 `browser_capabilities` 与实际调用为准。

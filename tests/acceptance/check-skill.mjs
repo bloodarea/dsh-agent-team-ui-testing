@@ -8,12 +8,10 @@
  *   - every `references/*.md` mentioned/backticked in SKILL.md exists on disk;
  *   - every browser_* tool name mentioned in SKILL.md is one of the tools index.js actually
  *     registers (no invented capabilities, no Playwright/Puppeteer tool names);
- *   - knowledge/web/t1-capability-ledger.md exists, uses only known status values, and does not
- *     claim the unsupported http-request capability as available;
- *   - the composed surface is consistent: index.js registers 30 tools (10 T1 + 7 T2 + 6 T3
- *     + 7 network), the T1 ledger exists, and the manifest declares T2/T3 as supported while T4
- *     stays unsupported. The manifest/ledger halves for T2, T3 and network P0 are *optional* until
- *     the skill owner lands them (task-5); until then they are reported as INFO, never faked.
+ *   - the composed surface is consistent: index.js registers 35 tools (10 T1 + 7 T2 + 6 T3
+ *     + 7 network + 5 T4) and the manifest declares every tier as supported. Capability status
+ *     ledgers live in docs/internal/ (local engineering notes) and are no longer part of the
+ *     shipped skill, so they are not checked here.
  *
  * SKIP (exit 0) when skills/ does not exist yet (task-1 not started / not merged).
  * Exit codes: 0 pass or skip, 1 structural failure.
@@ -28,7 +26,6 @@ const REPO_ROOT = dirname(dirname(HERE));
 const SKILLS_ROOT = join(REPO_ROOT, 'skills');
 const SKILL_DIR = join(SKILLS_ROOT, 'ui-testing');
 const SKILL_FILE = join(SKILL_DIR, 'SKILL.md');
-const LEDGER_FILE = join(SKILL_DIR, 'knowledge', 'web', 't1-capability-ledger.md');
 const MANIFEST_FILE = join(SKILL_DIR, 'manifests', 'declared-capabilities.json');
 const INDEX_FILE = join(REPO_ROOT, 'index.js');
 
@@ -126,34 +123,8 @@ async function main() {
   const inventedTools = [...mentionedTools].filter((name) => !actualTools.has(name));
   record(`SKILL.md 中出现的每个 browser_* 工具名都是 index.js 实际注册的 ${expectedTools.length} 个之一`, inventedTools.length === 0, { mentioned: [...mentionedTools], invented: inventedTools });
 
-  // 5. Ledger.
-  record('knowledge/web/t1-capability-ledger.md 存在', existsSync(LEDGER_FILE), relative(REPO_ROOT, LEDGER_FILE));
-  if (existsSync(LEDGER_FILE)) {
-    const ledger = await readFile(LEDGER_FILE, 'utf8');
-    record('台账非空（>= 200 字符）', ledger.length >= 200, { length: ledger.length });
-    const statuses = [...ledger.matchAll(/(?:status|状态)\s*[:：]\s*`?([a-z][a-z-]*)`?/gi)].map((match) => match[1].toLowerCase());
-    const unknownStatuses = statuses.filter((status) => !ALLOWED_STATUSES.has(status));
-    record('台账状态值只使用 implemented-not-verified / verified / partial / unsupported', unknownStatuses.length === 0, { statuses: [...new Set(statuses)], unknown: [...new Set(unknownStatuses)] });
-    record('台账不把模板的 planned 状态当作真实状态', !/\bplanned\b/i.test(ledger), '包含 planned');
-    const httpLine = ledger.split(/\r?\n/).find((line) => /http-request/i.test(line));
-    record('台账把 http-request 标为 implemented-not-verified/verified（不再是 unsupported）',
-      Boolean(httpLine) && /implemented-not-verified|verified|partial/i.test(httpLine) && !/unsupported|not implemented|不支持/i.test(httpLine),
-      httpLine || '未提及 http-request');
-    const discoveryLine = ledger.split(/\r?\n/).find((line) => /web\.t1\.capability-discovery/.test(line));
-    record('台账能力发现对应 browser_capabilities 且标明实现状态', Boolean(discoveryLine) && /browser_capabilities/.test(discoveryLine) && /implemented-not-verified|verified|partial/.test(discoveryLine), discoveryLine);
-    // Shared viewport (docs/viewport-control.md §7): the 10th T1 tool must be recorded as implemented
-    // in the T1 ledger — the old `viewport-control -> unsupported` row is no longer the truth.
-    const viewportLine = ledger.split(/\r?\n/).find((line) => /web\.t1\.viewport(?!-control)/.test(line));
-    record('台账把 web.t1.viewport 记为 browser_viewport 且状态 implemented-not-verified/verified/partial',
-      Boolean(viewportLine) && /browser_viewport/.test(viewportLine)
-        && /implemented-not-verified|verified|partial/.test(viewportLine)
-        && !/unsupported|not implemented|不支持/i.test(viewportLine),
-      viewportLine || '未提及 web.t1.viewport');
-    record('Skill 明确记录错误码、lease、截图回退契约', ['BrowserError', 'BUSY', 'browser_capabilities', 'base64-fallback'].every((term) => raw.includes(term)), '缺少 M0–M2 契约关键词');
-  }
-
-  const T2_LEDGER_FILE = join(SKILL_DIR, 'knowledge', 'web', 't2-capability-ledger.md');
-  record('knowledge/web/t2-capability-ledger.md 存在（T2 台账）', existsSync(T2_LEDGER_FILE), relative(REPO_ROOT, T2_LEDGER_FILE), { optional: true });
+  // 5. Contract keywords that must stay documented in SKILL.md.
+  record('Skill 明确记录错误码、lease、截图回退契约', ['BrowserError', 'BUSY', 'browser_capabilities', 'base64-fallback'].every((term) => raw.includes(term)), '缺少 M0–M2 契约关键词');
 
   // 6. Manifest.
   record('manifests/declared-capabilities.json 存在', existsSync(MANIFEST_FILE), relative(REPO_ROOT, MANIFEST_FILE));

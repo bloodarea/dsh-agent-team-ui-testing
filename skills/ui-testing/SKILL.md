@@ -426,13 +426,11 @@ browser_http_request {
 - 验证：`references/core/verification.md`；安全：`references/core/safety.md`
 - T1：`references/tiers/t1-programmatic.md`；T2：`references/tiers/t2-structured.md`
 - T3：`references/tiers/t3-static-visual.md`（已实现摘要，权威契约 `docs/t3-vision.md`）；T4：`references/tiers/t4-dynamic-visual.md`（已实现摘要与用法，权威契约 `docs/t4-dynamic-behavior.md`、实现冻结 `docs/t4-dynamic-behavior.md`）
-- 网络 P0：权威契约 `docs/network-p0.md`；台账 `knowledge/web/network-p0-capability-ledger.md`（逐项 G1.1–G6.9 + 7 工具状态）；能力三态与限额见 `references/contracts/capability.md` 的 network 段
+- 网络 P0：权威契约 `docs/network-p0.md`；能力三态与限额见 `references/contracts/capability.md` 的 network 段
 - 平台：`references/platforms/index.md`、`references/platforms/web.md`
 - 契约：`references/contracts/capability.md`、`references/contracts/operation.md`、`references/contracts/evidence.md`
 - **跨层贯通（强烈建议先读）**：`references/scenarios/functional.md`（**五层速查 + 选路决策树 + 八个贯通配方 R1–R8 + 升级/降级回退链 + 跨层证据合成 + 错误码速查 + 12 条反模式**）
 - 场景：`references/scenarios/visual-motion.md`（**T3/T4 调试手册：三条铁律 + 六步管线 + 判读红线 + 成本参考**）、`references/scenarios/annotations.md`（面板标注的读取与指代解析）
-- 示例：`examples/selection-and-escalation.md`（逐条断言该用哪层）、`examples/web-t1-*.md`、`examples/web-t2-snapshot-and-action.md`
-- 示例：`examples/selection-and-escalation.md`、`examples/web-t2-snapshot-and-action.md`、`examples/web-t1-runtime-and-cssom.md`、`examples/web-t1-input-and-screenshot.md`、`examples/web-t1-http-request.md`
-- 台账：`knowledge/web/t1-capability-ledger.md`、`knowledge/web/t2-capability-ledger.md`、`knowledge/web/network-p0-capability-ledger.md`；静态清单：`manifests/declared-capabilities.json`
+- 静态清单：`manifests/declared-capabilities.json`（工程状态声明，不是运行态证明）
 
 资源读取需要宿主提供授权文件读取能力；读不到时明确限制，不假设内容或能力。
