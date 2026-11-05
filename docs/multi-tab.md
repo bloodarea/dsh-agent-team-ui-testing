@@ -81,6 +81,7 @@
 - 新标签创建后成为 GUI active；地址、预览、输入、标注、尺寸、DevTools、网络和左下状态跟随 active。
 - 标签有标题、active 指示和关闭按钮（aria-label）；关闭 child 后回 primary 或最后可用标签；Host views 移除会同步 UI。
 - **关闭最后一个（primary）标签 = 进入空态**：标签条里不再有任何标签，只保留 `+`；地址栏为空、预览回到默认空态。primary 槽位在 Host 侧变冷态（仍保留 runtimeId/binding），Agent 侧 `browser_tabs.close primary` 语义相同。空态下点 `+` 会新建一个空白标签并选中它。
+- **空态会跨刷新/面板重挂载保持**：面板挂载时的 seed 截图（`/screenshot`）只读取已运行页面，不会为冷态 primary 启动页面；只有用户显式导航或点 `+` 才会重新产生页面。
 - child 关闭被 Agent lease 挡住时（GUI 与 Agent 同时操作），面板会提示「标签正被 Agent 操作；稍后再关闭」，不再静默失败。
 - 4/8 容量与 per-tab lease 同样约束 GUI：第 5 个标签/tab 返回 `TAB_LIMIT` 并在本地提示。
 
@@ -95,6 +96,8 @@
 | blocked popup notices / 关闭审计 | 各最多 8 条/workspace |
 
 标签来源：真人 `target=_blank` / `window.open` 的受控接管、GUI `+`、Agent `browser_tabs.open`。自动/未授权/无真人来源/非法目标/超容量 popup 仍阻断（见 [网络调试](network-p0.md) 的准入边界）；显式 `browser_tabs.open` 创建常量 about:blank，不需要先制造 popup。
+
+空白首发弹窗（策略 A）：真人点击产生的 popup，如果原始 target 与 intent 都是空白/脚本窗口（`about:blank`/`data:`/`blob:`/`javascript:`），Host 会先接管并等待它的首个文档变成允许的 HTTP(S) 页面（最长 4s）；最终文档必须通过地址校验，否则仍以 `target-forbidden` 阻断并关闭该 target。这样兼容常见的 `window.open()` 后再 `location.href` 的站点写法，同时不放开自动弹窗或非法目标。
 
 ## 生命周期与可观察性
 

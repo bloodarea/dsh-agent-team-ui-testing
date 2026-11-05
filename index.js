@@ -1325,7 +1325,12 @@ function devtoolsStartupError(reason, attempts, extra = {}) {
  * Popup interception is unchanged: extra page targets that are not owned by a Runtime are paused
  * via auto-attach, have Fetch fail-all installed, then are resumed and closed.
  */
-export class BrowserHost {
+export /** True for the popup documents that carry no settleable URL (about:blank/data/blob/js). */
+function isBlankPageUrl(value) {
+  return !value || /^(about:blank|data:|blob:|javascript:)/i.test(String(value));
+}
+
+class BrowserHost {
   constructor(log) {
     this.log = log;
     this.proc = undefined;
@@ -1938,13 +1943,21 @@ export class BrowserHost {
       }
       openEventId = intent.openEventId || null;
       const url = this.#popupUrl(targetInfo, intent);
-      if (!url) {
-        reason = 'target-forbidden';
-        this.#blockPopup(browserCdp, targetId, sessionId, { parentEntry, reason, openEventId });
-        return;
-      }
-      try { await validateTarget(url, { origins: [...parent.origins] }); }
-      catch {
+      // Policy A (2026-11-06): a human-click popup that opens a scripting/blank window and then
+      // navigates is common (Baidu News et al.). Adopt it only when BOTH the raw target and the
+      // declared intent are blank/scripting; the first document must still become an allowed
+      // HTTP(S) page within a bounded settle window, otherwise it is blocked as before.
+      let blankFirst = false;
+      if (url) {
+        try { await validateTarget(url, { origins: [...parent.origins] }); }
+        catch {
+          reason = 'target-forbidden';
+          this.#blockPopup(browserCdp, targetId, sessionId, { parentEntry, reason, openEventId });
+          return;
+        }
+      } else if (isBlankPageUrl(targetInfo && targetInfo.url) && isBlankPageUrl(intent && intent.url)) {
+        blankFirst = true;
+      } else {
         reason = 'target-forbidden';
         this.#blockPopup(browserCdp, targetId, sessionId, { parentEntry, reason, openEventId });
         return;
@@ -1978,12 +1991,24 @@ export class BrowserHost {
       };
       await child.adoptPage({ targetId, cdp, generation }, { signal: AbortSignal.timeout(10000), resume });
       // The intent URL is not success: v1 only accepts a real HTTP(S) first document (no
-      // about:blank/data/blob scripting page). Give the first navigation a short settle window.
-      for (let wait = 0; wait < 20 && !/^https?:/i.test(String(child.url || '')); wait += 1) {
+      // about:blank/data/blob scripting page). Give the first navigation a bounded settle window;
+      // a blank-first window gets a longer one because its navigation starts only after resume.
+      const settleMs = blankFirst ? 4000 : 1000;
+      const settleDeadline = Date.now() + settleMs;
+      while (Date.now() < settleDeadline && !/^https?:/i.test(String(child.url || ''))) {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      if (!/^https?:/i.test(String(child.url || ''))) {
+      const firstDocument = String(child.url || '');
+      if (!/^https?:/i.test(firstDocument)) {
+        reason = 'target-forbidden';
         throw new BrowserError('POPUP_UNSUPPORTED', 'popup 的首个文档不是可居留的 HTTP(S) 页面');
+      }
+      // Validate the document the child actually landed on (not only the declared intent): a
+      // blank-first window may redirect anywhere after resume.
+      try { await validateTarget(firstDocument, { origins: [...parent.origins] }); }
+      catch {
+        reason = 'target-forbidden';
+        throw new BrowserError('POPUP_UNSUPPORTED', 'popup 的首个文档不在允许范围');
       }
       const owned = this.ownedTargets.get(targetId);
       if (owned) owned.initializing = false;
@@ -14245,6 +14270,13 @@ export function apply(ctx) {
         // `canvas:true` enables the canvas-space seed provenance (O = 0 keeps the raw single-CDP
         // PNG path). Empty/legacy bodies keep the historical raw reply shape byte-for-byte.
         const canvas = body && typeof body === 'object' && body.canvas === true;
+        // The panel's seed capture is a display request, not a lifecycle action: a closed primary
+        // must stay closed (the empty tab state), otherwise every panel mount would resurrect a
+        // blank tab. Agent screenshot calls go through the tool runtime, not this GUI route.
+        if (!entry.runtime.running) {
+          sendJson(res, 200, { ok: true, closed: true, image: null, capturedAt: Date.now() });
+          return;
+        }
         const shot = await entry.runtime.run(() => entry.runtime.screenshot(canvas ? { canvas: true } : {}));
         registry.markRecent(entry);
         sendJson(res, 200, {

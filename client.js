@@ -1612,7 +1612,13 @@ window.__ModuleLoader__.load({
         // historical plain-page screenshot request.
         callHost('screenshot', requestedContext.legacy ? {} : { canvas: true }, { scope, signal }).then((payload) => {
           if (closed) return;
-          if (!payload || !payload.image) { seedStats.failed += 1; warnSeed('no-image'); return; }
+          if (!payload || !payload.image) {
+            // The page is intentionally closed (empty tab state): no seed, no error, no page start.
+            if (payload && payload.closed === true) return;
+            seedStats.failed += 1;
+            warnSeed('no-image');
+            return;
+          }
           if (requestedContext.legacy) {
             // Historical plain-page seed (old Host / no canvas): no canvas provenance to claim.
             const meta = {

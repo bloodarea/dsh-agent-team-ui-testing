@@ -419,6 +419,8 @@ async function main() {
       <a id="popup-link" href="/popup-b" target="_blank" rel="noopener" style="position:absolute;left:500px;top:300px;padding:16px;background:#ddd">open popup</a>
       <a id="popup-link2" href="/popup-b" target="_blank" style="position:absolute;left:500px;top:360px;padding:16px;background:#ddd">open popup noopener=false</a>
       <button id="js-open" style="position:absolute;left:500px;top:420px;padding:16px" onclick="window.open('/popup-b','_blank')">JS open</button>
+      <button id="blank-open" style="position:absolute;left:500px;top:450px;padding:16px" onclick="const w=window.open('about:blank'); if (w) setTimeout(() => { w.location.href='/popup-b'; }, 50);">blank-first open</button>
+      <button id="blank-forbidden" style="position:absolute;left:500px;top:480px;padding:16px" onclick="const w=window.open('about:blank'); if (w) setTimeout(() => { w.location.href='http://169.254.169.254/'; }, 50);">blank then forbidden</button>
       <a id="forbidden" href="http://169.254.169.254/" target="_blank" rel="noopener" style="position:absolute;left:500px;top:480px;padding:16px">forbidden</a>
       <div id="sticky">sticky bar</div>
       <div id="tick">0</div>
@@ -598,6 +600,7 @@ async function main() {
       await clickId('js-open');
       t = await waitTab(2);
       check('tabs: real window.open opens a second tab', t.count > 1 && String(t.addr).includes('/popup-b'), { count: 2 }, t);
+
       // Child navigation C and back B; primary A unchanged.
       const parentBefore = await hostState();
       const childView = (parentBefore.ui?.views || []).find((view) => view.kind === 'popup');
@@ -639,6 +642,19 @@ async function main() {
       check('tabs: toggle is immediately left of the annotation button', layout.before && layout.toggle && layout.annot && layout.toggle.right <= layout.annot.left + 1, true, layout);
       check('tabs: strip sits below the address bar and above the stage', layout.tabs && layout.bar && layout.stage && layout.tabs.top >= layout.bar.bottom - 1 && layout.stage.top >= layout.tabs.bottom - 1, true, layout);
       await closeChild();
+      // Policy A: window.open() that starts blank and then navigates to an allowed HTTP(S) URL.
+      await clickId('blank-open');
+      t = await waitTab(2);
+      check('tabs: blank-first popup adopts after its first HTTP(S) document',
+        t.count > 1 && String(t.addr || '').includes('/popup-b'),
+        { count: 2, addr: '/popup-b' }, t);
+      await closeChild();
+      // Policy A does not relax the target policy: an invalid final document is still blocked.
+      await clickId('blank-forbidden');
+      await sleep(1200);
+      t = await tabState();
+      const blankNotice = await evaluate(`document.querySelector('[data-utb-popup-notice]')?.getAttribute('data-utb-popup-notice') || ''`);
+      check('tabs: blank-first popup with a forbidden final document is blocked', t.count === 1 && blankNotice === 'target-forbidden', { count: 1, notice: 'target-forbidden' }, { t, blankNotice });
       // Invalid target and no-ticket window.open.
       await clickId('forbidden');
       await sleep(1400);
@@ -747,6 +763,58 @@ async function main() {
       check('tabs: + in the empty state creates one active blank tab',
         Boolean(recreated) && recreated.count === 1 && recreated.active !== 'primary' && recreated.plusStrip === 1,
         { count: 1, active: 'child', plus: 1 }, recreated);
+
+      // A GUI panel seed screenshot is a display request, not a page lifecycle action: it must not
+      // start a closed primary page (that would resurrect a blank tab in the empty state).
+      await pageHostFetch('/screenshot', { method: 'POST', headers: { ...state.scope, 'content-type': 'application/json' }, body: { canvas: true } }).catch(() => {});
+      await sleep(1200);
+      const afterSeedShot = await hostState();
+      const seedPrimary = (afterSeedShot.ui?.views || []).find((view) => view.kind === 'primary');
+      check('tabs: GUI seed screenshot does not start a closed primary',
+        Boolean(seedPrimary) && seedPrimary.status === 'closed',
+        { primaryStatus: 'closed' }, { primary: seedPrimary, address: afterSeedShot.ui?.address });
+
+      // Closing the plus-created child must return to the same empty state, and the empty state
+      // must survive a panel remount (page reload) instead of silently resurrecting a blank tab.
+      const childClosed = await evaluate(`(() => { const b=document.querySelector('[data-utb-tab-close-kind="popup"]'); if (b) b.click(); return !!b; })()`);
+      let emptied = null;
+      const emptyAgainDeadline = Date.now() + 15000;
+      while (Date.now() < emptyAgainDeadline) {
+        const strip = await evaluate(`(() => ({
+          count: document.querySelectorAll('[role="tab"]').length,
+          plusStrip: document.querySelectorAll('[data-utb-tab-new="strip"]').length,
+        }))()`);
+        if (strip.count === 0 && strip.plusStrip === 1) { emptied = strip; break; }
+        await sleep(200);
+      }
+      check('tabs: closing the recovered child returns to the empty state', Boolean(emptied) && childClosed === true, { count: 0, plus: 1 }, { emptied, childClosed });
+
+      await state.chrome.cdp.send('Page.reload', { ignoreCache: true });
+      await sleep(3500);
+      // The DSH shell does not reopen the right sidebar after a reload; re-open the panel the same
+      // way a user does, then assert whether the empty state survived the remount.
+      await openPanel().catch((error) => log('[reload] openPanel failed: ' + String(error && error.message || error)));
+      await sleep(1200);
+      let survived = null;
+      const surviveDeadline = Date.now() + 20000;
+      while (Date.now() < surviveDeadline) {
+        try {
+          const strip = await evaluate(`(() => ({
+            count: document.querySelectorAll('[role="tab"]').length,
+            plusStrip: document.querySelectorAll('[data-utb-tab-new="strip"]').length,
+            addr: document.querySelector('.utb-addr')?.value || '',
+            views: document.querySelector('.utb')?.getAttribute('data-utb-views-count') || null,
+            ready: document.querySelector('.utb')?.getAttribute('data-utb-ready-views') || null,
+          }))()`);
+          if (strip.count === 0) { survived = strip; break; }
+        } catch { /* panel still reloading */ }
+        await sleep(300);
+      }
+      const hostAfterReload = await hostState();
+      check('tabs: empty state survives a panel remount (no blank tab resurrected)',
+        Boolean(survived) && survived.count === 0 && survived.plusStrip === 1 && Number(survived.ready || '0') === 0,
+        { tabs: 0, plus: 1, ready: 0 },
+        { survived, hostViews: hostAfterReload.ui?.views, address: hostAfterReload.ui?.address });
     }
 
     async function hostAgentPrimaryCheck() {
