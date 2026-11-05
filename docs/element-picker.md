@@ -45,21 +45,28 @@
 
 选元素模式不拦截滚轮：滚轮照常滚动目标页面。滚动稳定（约 180ms 去抖，且 Host 画布原点 `C` 已回读）后，面板按最后的指针位置重新请求悬浮命中，因此框会跟随滚动后的元素重新定位。
 
-## 点击加入聊天框
+## 点击加入聊天框（@ 元素引用 chip）
 
-`pointerdown` 时以**当下坐标**重新请求一次完整详情（不复用可能过期的悬浮结果），成功后把以下文本块追加到聊天框末尾（新段落，保留既有草稿、@ 引用 chip 与引用块）：
+`pointerdown` 时以**当下坐标**重新请求一次完整详情（不复用可能过期的悬浮结果）。成功后优先把元素作为一条 **`@` 引用 chip** 插入聊天框末尾（保留既有草稿、@ 引用 chip 与引用块）：
+
+- chip 只显示紧凑标签：`元素 <selector>`（selector 退化或过长时用 `tag#id.class` 兜底，标签最多 40 码点）；hover 的 `title` 与标签相同。
+- **模型实际收到的是完整块**（由插件注册的 `@` 来源的 `codec.serialize` 生成），而不是 chip 标签：
 
 ```text
-[调试视图元素] <outerHTML 折叠空白并截断 240 字符；缺失时用 <tag#id.class>>
-selector: <稳健 CSS path>
+[调试视图元素] <outerHTML 折叠空白；超过 240 码点则截断并以 … 结尾>
+selector: <稳健 CSS path>（degraded 时标注「非唯一定位，仅作线索」）
 role: <role> · name: <name>
 rect(文档坐标): x=…, y=…, w×h
 page: <url>
+outerHTML: 截断 <显示>/<原始> 码点（末尾 …，完整文本未取得）   ← 仅截断时出现
 ```
 
 - `role` 与 `name` 都为空时省略整行。
-- selector 优先唯一 `id`；否则生成带 `nth-of-type` 的祖先路径，并校验在所属 root 内唯一。
-- 成功后提示「已加入聊天框：<selector>」，退出选元素模式，焦点交给聊天框；页面本身不产生点击。
+- selector 优先唯一 `id`；否则生成带 `nth-of-type` 的祖先路径，并校验在所属 root 内唯一；Host 在 `selectorQuality` 里返回 `unique` / `degraded` / `none`，degraded 不当作稳定定位器。
+- 点击 chip 会打开调试视图面板（`openReference`），便于回到该元素继续取证。
+- 在聊天框输入 `@` 会出现「最近选取的元素」候选（按会话保存，最多 12 条），可直接重新引用。
+- **降级**：`@` 引用插入不可用时（`inputTriggers`/`insertReference` 缺失、会话未保留、草稿处于 adjudicating/submitting/sending），自动回退为把上面的完整块作为纯文本追加，并在状态里标注原因；绝不静默丢弃元素。
+- 成功后提示「已加入聊天框（引用）：<selector>」或「已加入聊天框（文本）：<selector>」，退出选元素模式，焦点交给聊天框；页面本身不产生点击。
 - 失败时只在面板内提示，不抛异常、不写 Host `lastError`：
   - 未命中：「未命中页面元素（页面可能已变化）」
   - 旧 Host：「当前 Host 不支持选元素，请重启 DSH 后刷新面板」
@@ -68,6 +75,14 @@ page: <url>
   - 会话未保留：「该会话未保留，无法加入聊天框（请在会话打开时操作）」
   - 会话切换：「会话已切换，请重试」
   - 其他：「获取元素失败，请稍后重试」
+
+## 发送后的聊天记录
+
+发送后的用户消息里，同样的 `[调试视图元素] …` 块会经客户端文本规则折叠为一条紧凑的**元素引用 chip**（`元素 <selector>`，悬停 `title` 显示完整原文：selector/rect/page/截断说明）。模型侧文本不变——发送时仍由 `codec.serialize` 提供完整块。
+
+- 规则**只匹配引用块本身**（首行 `[调试视图元素] `，后续 `selector:`/`role:`/`rect(文档坐标):`/`page:`/`outerHTML:`），不跨普通段落；你在 chip 后面输入的其它文字原样保留在折叠块之外（末尾 `page:`/`outerHTML:` 行按固定结尾截断，不会把后续句子吞进 chip）。
+- 历史消息同样按当前规则渲染；规则/渲染节点缺失时保持原文可见（不丢内容）。
+- degraded selector、`outerHTML: 截断 …` 等信息保留在 chip 的 title 里，折叠不隐藏证据。
 
 ## Host 接口
 
@@ -78,7 +93,8 @@ page: <url>
 ```
 
 - `x` / `y` 是页面文档 CSS 像素，必须是有限数且 `|v| ≤ 1e7`；否则 `400 INVALID_ARGUMENT`。小数会被 floor 后再命中。
-- 命中：`200 {ok:true, element:{tag,id,classes,rect,frameId,scroll,page:{url,title},loaderId?}}`；`detail:true` 追加 `selector`、`outerHTML`（≤240 字符）、`text`（≤160）、`role`/`name`（AX best-effort）以及 shadow 事实 `shadowHost`/`closedShadow`。
+- 命中：`200 {ok:true, element:{tag,id,classes,rect,frameId,scroll,page:{url,title},loaderId?}}`；`detail:true` 追加 `selector` 与 `selectorQuality`（`unique`/`degraded`/`none`）、`outerHTML` 与 `outerHTMLTruncated`/`outerHTMLLength`、`text` 与 `textTruncated`/`textLength`、`role`/`name`（AX best-effort）以及 shadow 事实 `shadowHost`/`closedShadow`。
+- 截断是显式的：`outerHTML` 超过 240 码点时切到 240 并以 `…` 结尾（`outerHTMLTruncated:true`、`outerHTMLLength` 为原始码点数）；`text` 同理（上限 160）。
 - 未命中：`200 {ok:true, element:null, reason}`，`reason` 为：
   - `no-page`：该 scope 没有运行中的页面（冷态）；
   - `no-hit`：空白页面背景或该点没有节点；

@@ -775,9 +775,16 @@ async function main() {
       check('outerHTML 与真实 outerHTML（空白折叠、≤240 字符）一致',
         element.outerHTML === collapse(truthNow.detailHTML, 240),
         element.outerHTML, collapse(truthNow.detailHTML, 240));
+      check('未截断时 outerHTMLTruncated=false 且 outerHTMLLength=真实码点长度',
+        element.outerHTMLTruncated === false
+          && element.outerHTMLLength === Array.from(collapse(truthNow.detailHTML, 1e9)).length,
+        { truncated: element.outerHTMLTruncated, length: element.outerHTMLLength },
+        { truncated: false, length: Array.from(collapse(truthNow.detailHTML, 1e9)).length });
       check('text 与真实 textContent（空白折叠、≤160 字符）一致',
         element.text === collapse(await pageEval('document.getElementById("pick-detail").textContent'), 160),
         element.text, 'Detail Target');
+      check('selectorQuality=unique（selector 在本 root 内唯一命中该元素）',
+        element.selectorQuality === 'unique', element.selectorQuality, 'unique');
       check('role=button（Accessibility.getPartialAXTree）', element.role === 'button', element.role, 'button');
       check('name=Detail Target（可访问名称）', element.name === 'Detail Target', element.name, 'Detail Target');
       check('detail 响应同样带 scroll，且与真实页面一致',
@@ -825,15 +832,34 @@ async function main() {
       const long = await pick(350, 640, true);
       report.observations.h4Long = long;
       const longElement = long.json?.element || {};
-      const expectOuter = collapse(longTruth?.outerHTML, 240);
-      const expectText = collapse(longTruth?.text, 160);
-      check('outerHTML 截断到 240 代码点且内容正确',
-        longElement.outerHTML === expectOuter && Array.from(String(longElement.outerHTML || '')).length === 240,
-        { length: Array.from(String(longElement.outerHTML || '')).length },
-        { length: 240, value: expectOuter.slice(0, 60) });
-      check('text 截断到 160 代码点且内容正确',
-        longElement.text === expectText && Array.from(String(longElement.text || '')).length === 160,
-        { length: Array.from(String(longElement.text || '')).length }, { length: 160 });
+      const fullOuter = collapse(longTruth?.outerHTML, 1e9);
+      const fullText = collapse(longTruth?.text, 1e9);
+      const expectOuter = collapse(fullOuter, 240) + '…';
+      const expectText = collapse(fullText, 160) + '…';
+      check('outerHTML 截断到 240 码点并显式加省略号（241 chars），truncated/length 如实',
+        longElement.outerHTML === expectOuter
+          && Array.from(String(longElement.outerHTML || '')).length === 241
+          && longElement.outerHTMLTruncated === true
+          && longElement.outerHTMLLength === Array.from(fullOuter).length,
+        {
+          length: Array.from(String(longElement.outerHTML || '')).length,
+          truncated: longElement.outerHTMLTruncated,
+          reported: longElement.outerHTMLLength,
+        },
+        { length: 241, truncated: true, reported: Array.from(fullOuter).length, value: expectOuter.slice(0, 60) + '…' });
+      check('text 截断到 160 码点并显式加省略号（161 chars），truncated/length 如实',
+        longElement.text === expectText
+          && Array.from(String(longElement.text || '')).length === 161
+          && longElement.textTruncated === true
+          && longElement.textLength === Array.from(fullText).length,
+        {
+          length: Array.from(String(longElement.text || '')).length,
+          truncated: longElement.textTruncated,
+          reported: longElement.textLength,
+        },
+        { length: 161, truncated: true, reported: Array.from(fullText).length });
+      check('selector 仍唯一时 selectorQuality=unique（截断字段不影响定位质量）',
+        longElement.selectorQuality === 'unique', longElement.selectorQuality, 'unique');
     });
 
   /* --- H5: blank / off-screen points --------------------------------------------------------- */

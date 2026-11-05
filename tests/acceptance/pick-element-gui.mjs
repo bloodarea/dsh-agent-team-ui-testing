@@ -565,10 +565,16 @@ const readOverlay = () => pageEvaluate(`(() => {
 const readComposer = () => pageEvaluate(`(() => {
   const editor = document.querySelector('[data-composer-input]');
   const active = document.activeElement;
+  const chips = editor
+    ? Array.from(editor.querySelectorAll('[title]'))
+      .filter((el) => String(el.getAttribute('title') || '').startsWith('元素 '))
+      .map((el) => ({ title: el.getAttribute('title'), text: (el.textContent || '').trim() }))
+    : [];
   return {
     exists: Boolean(editor),
     editable: editor ? editor.getAttribute('contenteditable') : null,
     text: editor ? (editor.innerText || editor.textContent || '') : '',
+    chips,
     activeIsComposer: Boolean(active && typeof active.hasAttribute === 'function' && active.hasAttribute('data-composer-input')),
     activeTag: active ? active.tagName : null,
   };
@@ -1002,28 +1008,49 @@ async function main() {
     await capturePng('hover.png');
 
     log('\n--- G5 click adds the element to the composer ---');
+    // Test-only hook: client exposes the exact ref/label/model text it inserted (guarded by the
+    // page global below) so this suite can verify "chip display != model text" without sending.
+    await pageEvaluate('window.__UTB_TEST_HOOKS__ = true; true');
     await clickAt(screen.x, screen.y);
     const committed = await waitFor(async () => {
       const status = await readOverlay();
       const composer = await readComposer();
-      return status.status?.kind === 'ok' && composer.text.includes('[调试视图元素]') ? { status: status.status, composer } : undefined;
-    }, { timeoutMs: 10000, intervalMs: 150, label: 'composer text appended' });
+      const chip = (composer.chips || []).find((item) => item.title.includes('#pick-target'));
+      return status.status?.kind === 'ok' && chip ? { status: status.status, composer, chip } : undefined;
+    }, { timeoutMs: 10000, intervalMs: 150, label: 'composer @ element chip inserted' });
     observations.committed = committed;
     const composerText = committed.composer.text;
-    check('G5.1', 'composer contains the element outerHTML line',
-      composerText.includes('[调试视图元素] <button id="pick-target" type="button">Pick Target</button>'),
-      true, composerText.slice(0, 300));
-    check('G5.2', 'composer contains the unique selector line', composerText.includes('selector: #pick-target'), true, composerText.slice(0, 300));
-    check('G5.3', 'composer contains the document rect line',
-      composerText.includes('rect(文档坐标): x=300, y=300, 160×44'), true, composerText.slice(0, 300));
-    check('G5.4', 'composer contains the page URL line', composerText.includes('page: ' + fixtureUrl), true, composerText.slice(0, 300));
-    check('G5.5', 'composer contains role/name line', composerText.includes('role: button · name: Pick Target'), true, composerText.slice(0, 300));
-    check('G5.10', 'existing draft is preserved and the element block is appended after it',
-      composerText.includes(DRAFT_MARKER) && composerText.indexOf(DRAFT_MARKER) < composerText.indexOf('[调试视图元素]'),
-      true, { marker: DRAFT_MARKER, blockIndex: composerText.indexOf('[调试视图元素]'), markerIndex: composerText.indexOf(DRAFT_MARKER) });
-    check('G5.6', 'status is ok: 已加入聊天框：#pick-target',
-      committed.status.kind === 'ok' && committed.status.text.includes('已加入聊天框：#pick-target'),
-      { kind: 'ok', text: '已加入聊天框：#pick-target' }, committed.status);
+    const chip = committed.chip;
+    check('G5.1', 'composer contains one @ element chip labelled 元素 #pick-target',
+      Boolean(chip) && chip.title === '元素 #pick-target' && chip.text.includes('元素 #pick-target'),
+      { title: '元素 #pick-target' }, chip);
+    check('G5.2', 'existing draft is preserved and the chip is appended after it',
+      composerText.includes(DRAFT_MARKER)
+        && composerText.indexOf(DRAFT_MARKER) < composerText.indexOf('元素 #pick-target'),
+      true, { markerIndex: composerText.indexOf(DRAFT_MARKER), chipIndex: composerText.indexOf('元素 #pick-target') });
+    check('G5.3', 'status is ok: 已加入聊天框（引用）：#pick-target',
+      committed.status.kind === 'ok' && committed.status.text.includes('已加入聊天框（引用）：#pick-target'),
+      { kind: 'ok', text: '已加入聊天框（引用）：#pick-target' }, committed.status);
+    const elementRef = await pageEvaluate('window.__UTB_ELEMENT_REF_LAST__ || null');
+    observations.elementRef = elementRef;
+    check('G5.4', 'chip clipboard projection is compact while the model text carries the full block',
+      elementRef?.clipboardText === '@元素 #pick-target'
+        && elementRef?.label === '元素 #pick-target'
+        && String(elementRef?.modelText || '').includes('[调试视图元素] <button id="pick-target" type="button">Pick Target</button>')
+        && String(elementRef?.modelText || '').includes('selector: #pick-target')
+        && String(elementRef?.modelText || '').includes('rect(文档坐标): x=300, y=300, 160×44')
+        && String(elementRef?.modelText || '').includes('role: button · name: Pick Target')
+        && String(elementRef?.modelText || '').includes('page: ' + fixtureUrl),
+      { clipboardText: '@元素 #pick-target', modelText: 'full [调试视图元素] block with selector/rect/role/page' },
+      { clipboardText: elementRef?.clipboardText, label: elementRef?.label, modelText: String(elementRef?.modelText || '').slice(0, 200) });
+    check('G5.5', 'the referenced payload keeps host facts (unique selector + document rect)',
+      elementRef?.payload?.selector === '#pick-target'
+        && elementRef?.payload?.selectorQuality === 'unique'
+        && elementRef?.payload?.rect?.x === 300 && elementRef?.payload?.rect?.y === 300
+        && elementRef?.payload?.rect?.width === 160 && elementRef?.payload?.rect?.height === 44
+        && elementRef?.payload?.page?.url === fixtureUrl,
+      { selector: '#pick-target', quality: 'unique', rect: { x: 300, y: 300, width: 160, height: 44 } },
+      { selector: elementRef?.payload?.selector, quality: elementRef?.payload?.selectorQuality, rect: elementRef?.payload?.rect });
     const exited = await waitFor(async () => {
       const entry = await readEntry();
       const overlay = await readOverlay();
@@ -1033,20 +1060,65 @@ async function main() {
       exited.pick.state === 'ready' && exited.pick.pressed === 'false', { state: 'ready', pressed: 'false' }, exited.pick);
     check('G5.8', 'composer has focus after the append', committed.composer.activeIsComposer, true,
       { activeIsComposer: committed.composer.activeIsComposer, activeTag: committed.composer.activeTag });
-    // Evidence note: every G5 content assertion reads the REAL composer DOM
-    // (`[data-composer-input]` innerText/textContent of the Lexical editor), not the client's
-    // status line. `data-utb-pick-status=ok` is a separate check (G5.6).
+    // G5.6: the plugin-owned @ source is registered and exposes exactly the picked element through
+    // the same functions the menu uses (candidates / onPick insert shape / codec.serialize).
+    // The menu DOM itself is not driven by programmatic input in this isolated profile, so that
+    // interaction is recorded as NOT_RUN rather than claimed.
+    // Functions cannot cross pageEvaluate (JSON-only); call them inside the page.
+    const sourceHook = await pageEvaluate(`(() => {
+      const hook = window.__UTB_ELEMENT_SOURCE_HOOK__;
+      return hook ? { registered: hook.registered, name: hook.name, lastSessionId: hook.lastSessionId } : null;
+    })()`);
+    const sourceCandidates = await pageEvaluate(`(() => {
+      const hook = window.__UTB_ELEMENT_SOURCE_HOOK__;
+      return hook && typeof hook.candidates === 'function' ? hook.candidates('') : null;
+    })()`);
+    const sourceInsert = elementRef?.ref
+      ? await pageEvaluate(`window.__UTB_ELEMENT_SOURCE_HOOK__.insertFor(${JSON.stringify(elementRef.ref)})`)
+      : null;
+    const sourceSerialized = elementRef?.ref
+      ? await pageEvaluate(`window.__UTB_ELEMENT_SOURCE_HOOK__.serialize(${JSON.stringify(elementRef.ref)})`)
+      : null;
+    observations.elementSourceHook = { hook: sourceHook, candidates: sourceCandidates, insert: sourceInsert, serialized: sourceSerialized };
+    check('G5.6', '@ element source is registered and advertises the picked element as a candidate',
+      sourceHook?.registered === true
+        && sourceHook?.name === 'ui-element'
+        && Array.isArray(sourceCandidates)
+        && sourceCandidates.some((candidate) => candidate.label === '元素 #pick-target'
+          && candidate.name === '#pick-target' && candidate.value === elementRef.ref)
+        && sourceInsert?.source === 'ui-element'
+        && sourceInsert?.label === '元素 #pick-target'
+        && sourceInsert?.clipboardText === '@元素 #pick-target'
+        && String(sourceSerialized || '').includes('[调试视图元素]')
+        && String(sourceSerialized || '').includes('selector: #pick-target'),
+      { registered: true, candidateLabel: '元素 #pick-target', insertClipboard: '@元素 #pick-target', serialized: 'full block' },
+      {
+        registered: sourceHook?.registered,
+        name: sourceHook?.name,
+        candidates: sourceCandidates,
+        insert: sourceInsert,
+        serialized: String(sourceSerialized || '').slice(0, 160),
+      });
+    notRun('G5.6-menu', '@ 菜单 DOM 交互（隔离实例）',
+      '程序化 insertText/keydown 未触发 DSH 输入触发管线（隔离实例没有真实用户键盘路径），因此不把“菜单可见”写成通过；'
+      + '来源注册/candidates/onPick/serialize 已由 G5.6 直接调用插件同一份代码验证',
+      { verifiedBy: 'G5.6 source hook', menuProbe: 'not-open' });
+
+    // Evidence note: the chip assertion reads the REAL composer DOM (`[data-composer-input]`
+    // descendants with a title attribute), not the client's status line; the model text comes from
+    // the insertion hook (G5.4), which is the codec.serialize output for the same ref.
     observations.composerEvidence = {
       selector: '[data-composer-input]',
-      source: 'innerText || textContent of the Lexical editor DOM',
+      source: 'chip DOM (title attribute) + client insertion hook (ref/label/clipboardText/modelText)',
       text: composerText,
+      chip,
+      elementRef: elementRef
+        ? { label: elementRef.label, clipboardText: elementRef.clipboardText, modelText: elementRef.modelText }
+        : null,
       lines: {
-        outerHTML: composerText.includes('[调试视图元素] <button id="pick-target" type="button">Pick Target</button>'),
-        selector: composerText.includes('selector: #pick-target'),
-        rect: composerText.includes('rect(文档坐标): x=300, y=300, 160×44'),
-        page: composerText.includes('page: ' + fixtureUrl),
-        roleName: composerText.includes('role: button · name: Pick Target'),
+        chip: Boolean(chip),
         draftPreserved: composerText.includes(DRAFT_MARKER),
+        modelBlock: String(elementRef?.modelText || '').includes('[调试视图元素]'),
       },
     };
     const clicksAfterCommit = await pageCounters();
@@ -1054,6 +1126,124 @@ async function main() {
       clicksAfterCommit?.document === 0 && clicksAfterCommit?.target === 0,
       { document: 0, target: 0 }, clicksAfterCommit);
     await capturePng('committed.png');
+
+    log('\n--- G5.11 forced fallback: chip unavailable appends the full text block ---');
+    await pageEvaluate('window.__UTB_TEST_FORCE_TEXT_APPEND__ = true; true');
+    await enterPickMode();
+    const fallbackHover = await hoverAt(center);
+    const fallbackPoint = fallbackHover.point;
+    await clickAt(fallbackPoint.x, fallbackPoint.y);
+    const fallback = await waitFor(async () => {
+      const status = await readOverlay();
+      const composer = await readComposer();
+      return status.status?.kind === 'ok' && composer.text.includes('[调试视图元素]') ? { status: status.status, composer } : undefined;
+    }, { timeoutMs: 10000, intervalMs: 150, label: 'fallback text block appended' });
+    observations.fallback = fallback;
+    check('G5.11', 'forced chip failure falls back to the full text block and marks status （文本）',
+      fallback.status.kind === 'ok'
+        && fallback.status.text.includes('已加入聊天框（文本）：#pick-target')
+        && fallback.status.text.includes('引用不可用：forced')
+        && fallback.composer.text.includes('[调试视图元素] <button id="pick-target" type="button">Pick Target</button>')
+        && fallback.composer.text.includes('selector: #pick-target')
+        && fallback.composer.text.includes('rect(文档坐标): x=300, y=300, 160×44'),
+      { status: '已加入聊天框（文本）：#pick-target（引用不可用：forced）', block: 'full [调试视图元素] lines' },
+      { status: fallback.status, tail: fallback.composer.text.slice(-260) });
+    await pageEvaluate('window.__UTB_TEST_FORCE_TEXT_APPEND__ = false; true');
+
+    log('\n--- G5.12 inserting a second chip keeps the existing chip and maps the draft end ---');
+    await enterPickMode();
+    const secondHover = await hoverAt(center);
+    await clickAt(secondHover.point.x, secondHover.point.y);
+    const secondChip = await waitFor(async () => {
+      const status = await readOverlay();
+      const composer = await readComposer();
+      const chips = composer.chips || [];
+      return status.status?.kind === 'ok' && chips.length >= 2 ? { status: status.status, composer, chips } : undefined;
+    }, { timeoutMs: 10000, intervalMs: 150, label: 'second @ chip inserted next to the first' });
+    observations.secondChip = secondChip;
+    check('G5.12', 'a second pick inserts another @ chip without losing the existing one',
+      secondChip.status.text.includes('已加入聊天框（引用）：#pick-target')
+        && secondChip.chips.length >= 2
+        && secondChip.chips.every((item) => item.title === '元素 #pick-target'),
+      { status: '已加入聊天框（引用）：#pick-target', chips: 2 },
+      { status: secondChip.status, chips: secondChip.chips });
+
+    // G5.13: the sent user message is rendered through the transcript rule (same text the model
+    // gets), folded into a compact reference chip. The rule/matcher are verified directly; the
+    // rendered transcript needs a real provider message stream, so that stays NOT_RUN.
+    const transcriptSample = [
+      '[调试视图元素] <button id="pick-target" type="button">Pick Target</button>',
+      'selector: #pick-target',
+      'role: button · name: Pick Target',
+      'rect(文档坐标): x=300, y=300, 160×44',
+      'page: ' + fixtureUrl,
+    ].join('\n');
+    const transcriptMatch = await pageEvaluate(`(() => {
+      const hook = window.__UTB_ELEMENT_SOURCE_HOOK__;
+      return hook && typeof hook.matchText === 'function' ? hook.matchText(${JSON.stringify(transcriptSample)}, 0) : null;
+    })()`);
+    const transcriptState = await pageEvaluate(`(() => {
+      const hook = window.__UTB_ELEMENT_SOURCE_HOOK__;
+      return hook ? hook.textRule : null;
+    })()`);
+    observations.transcriptRule = { match: transcriptMatch, state: transcriptState, sample: transcriptSample };
+    check('G5.13', 'transcript rule matches the sent element block into compact chip data',
+      transcriptState?.registered === true
+        && transcriptState?.slotRegistered === true
+        && transcriptMatch?.id === 'ui-element'
+        && transcriptMatch?.start === 0
+        && transcriptMatch?.end === transcriptSample.length
+        && transcriptMatch?.data?.label === '元素 #pick-target'
+        && transcriptMatch?.data?.selector === '#pick-target'
+        && transcriptMatch?.data?.rect === 'x=300, y=300, 160×44'
+        && transcriptMatch?.data?.page === fixtureUrl
+        && transcriptMatch?.data?.truncation === null,
+      { id: 'ui-element', start: 0, end: transcriptSample.length, label: '元素 #pick-target' },
+      { state: transcriptState, match: transcriptMatch });
+    // G5.13b: the exact shape produced for the live Baidu pick (long nth-of-type selector,
+    // empty AX name, truncated outerHTML) still parses into chip data + truncation disclosure.
+    const truncatedSample = [
+      '[调试视图元素] <div class="chat-input-container"><div id="chat-input-top-band"><!--4--><div><!--5--><!--6--></div><!--4--></div><div id="chat-input-area"><textarea id="chat-textarea" class="chat-input-textarea chat-input-scroll-style" data-ai-placeholder=…',
+      'selector: #chat-input-main > div:nth-of-type(4) > div:nth-of-type(1)',
+      'role: generic · name: ',
+      'rect(文档坐标): x=113, y=186, 798×97',
+      'page: https://www.baidu.com/',
+      'outerHTML: 截断 240/3316 码点（末尾 …，完整文本未取得）',
+    ].join('\n');
+    const truncatedMatch = await pageEvaluate(`(() => {
+      const hook = window.__UTB_ELEMENT_SOURCE_HOOK__;
+      return hook && typeof hook.matchText === 'function' ? hook.matchText(${JSON.stringify(truncatedSample)}, 0) : null;
+    })()`);
+    observations.transcriptRuleTruncated = { match: truncatedMatch, sample: truncatedSample };
+    // G5.13c: user text typed right after the chip lands on the last block line; only the block
+    // may be folded, the caller's own sentence must stay outside the chip.
+    const withUserText = truncatedSample + ' 帮我检查这个登录按钮';
+    const splitMatch = await pageEvaluate(`(() => {
+      const hook = window.__UTB_ELEMENT_SOURCE_HOOK__;
+      return hook && typeof hook.matchText === 'function' ? hook.matchText(${JSON.stringify(withUserText)}, 0) : null;
+    })()`);
+    observations.transcriptRuleTrailingText = { match: splitMatch, sample: withUserText };
+    check('G5.13c', 'trailing user text after the chip stays outside the folded reference',
+      splitMatch?.start === 0
+        && splitMatch?.end === truncatedSample.length
+        && splitMatch?.data?.truncation === '截断 240/3316 码点（末尾 …，完整文本未取得）'
+        && splitMatch?.data?.page === 'https://www.baidu.com/'
+        && withUserText.slice(splitMatch.end) === ' 帮我检查这个登录按钮',
+      { end: truncatedSample.length, remainder: ' 帮我检查这个登录按钮' },
+      { end: splitMatch?.end, remainder: withUserText.slice(splitMatch?.end ?? 0), data: splitMatch?.data });
+    check('G5.13b', 'transcript rule keeps the long selector + truncation disclosure for the live block shape',
+      truncatedMatch?.start === 0
+        && truncatedMatch?.end === truncatedSample.length
+        && truncatedMatch?.data?.selector === '#chat-input-main > div:nth-of-type(4) > div:nth-of-type(1)'
+        && truncatedMatch?.data?.label === '元素 #chat-input-main > div:nth-of-type(4) > div:nth-of-type(1)'
+        && truncatedMatch?.data?.rect === 'x=113, y=186, 798×97'
+        && truncatedMatch?.data?.page === 'https://www.baidu.com/'
+        && String(truncatedMatch?.data?.truncation || '').includes('截断 240/3316 码点'),
+      { label: '元素 <long selector>', truncation: '截断 240/3316 码点（末尾 …，完整文本未取得）' },
+      truncatedMatch);
+    notRun('G5.13-render', '聊天记录里的元素块实际渲染（隔离实例）',
+      '规则注册与匹配已由 G5.13 直接验证；真实 transcript 渲染需要 provider 消息流（隔离实例无消息发送，无法构造发送后的用户消息），不把“已折叠显示”写成通过',
+      { verifiedBy: 'G5.13 matcher/registration' });
 
     log('\n--- G6 Esc / pointerleave / zero page input ---');
     await enterPickMode();
@@ -1191,8 +1381,8 @@ async function main() {
       '需要会话处于发送中 phase；隔离实例没有 provider 消息流，无法真实触发，按契约不伪造',
       { implementedIn: 'client.js pickAppendToChat / pickChatFailureText' });
     notRun('G9.6', '@ mention chip / quote preservation',
-      '需要真实的 mention/quote 节点才能断言 chip/quote 不被破坏；本套件只验证纯文本草稿保留与新段落追加（G5.10）',
-      { coveredInsteadBy: 'G5.10' });
+      '元素引用 chip 的插入/标签/模型文本已由 G5.1–G5.6 覆盖；quote 节点保留与外部 @file mention 混排仍需要构造真实 quote/mention 才能断言，不做推断',
+      { coveredInsteadBy: 'G5.1–G5.6（@ element chip）；菜单 DOM 见 G5.6-menu NOT_RUN' });
     notRun('G9.7', 'panel close / tab switch / scope switch lifecycle',
       '需要会触发 scope/tab 生命周期变化的 GUI 操作；本轮覆盖导航与滚轮导致的 C 变化，不做推断',
       { implementedIn: 'client.js pick lifecycle effects' });
@@ -1201,7 +1391,7 @@ async function main() {
       G2: ['G4.1', 'G4.3', 'G4.5', 'G7.3', 'G7.4', 'G7.5'],
       G3: 'NOT_RUN G9.1（画布平移 O≠0）',
       G4: ['G7.1', 'G7.2', 'G7.3', 'G7.4', 'G7.5'],
-      G5: ['G5.1', 'G5.2', 'G5.3', 'G5.4', 'G5.5', 'G5.6', 'G5.7', 'G5.8', 'G5.9', 'G5.10'],
+      G5: ['G5.1', 'G5.2', 'G5.3', 'G5.4', 'G5.5', 'G5.6', 'G5.7', 'G5.8', 'G5.9', 'G5.11', 'G5.12', 'G5.13', 'G5.13b', 'G5.13c'],
       G6: 'NOT_RUN G9.5（发送中）',
       G7: 'NOT_RUN G9.2（主面板 recent / 无 session）',
       G8: ['G6.3', 'G6.4', 'G6.6'],

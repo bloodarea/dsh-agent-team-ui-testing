@@ -13457,10 +13457,23 @@ const ELEMENT_SELECTOR_JS = `function () {
     }
     return selector;
   }
+  function uniqueFor(selector, node) {
+    if (!selector) return false;
+    try {
+      var scope = rootOf(node);
+      return scope.querySelectorAll(selector).length === 1 && scope.querySelector(selector) === node;
+    } catch (error) {
+      return false;
+    }
+  }
   var root = rootOf(el);
   var host = root && root.host ? root.host : null;
+  var finalSelector = selectorFor(el);
   return {
-    selector: selectorFor(el),
+    selector: finalSelector,
+    // 'unique' means the selector resolves to exactly this node in its own root; 'degraded' means
+    // the path fell back to tag/nth-of-type candidates and must not be used as a standalone locator.
+    selectorQuality: finalSelector ? (uniqueFor(finalSelector, el) ? 'unique' : 'degraded') : 'none',
     outerHTML: el.outerHTML == null ? '' : String(el.outerHTML),
     text: el.textContent == null ? '' : String(el.textContent),
     // Shadow-DOM facts (detail only, best effort): the selector above is ROOT-scoped when the hit
@@ -13497,11 +13510,20 @@ function elementPickRequest(body) {
   return { x, y, detail: body.detail === true };
 }
 
-/** Collapse whitespace and cut to `max` code points (never split a surrogate pair). */
+/**
+ * Collapse whitespace and cut to `max` code points (never split a surrogate pair).
+ * The cut is explicit: a trailing ellipsis plus `truncated/length` facts keep the consumer from
+ * mistaking a display truncation for a malformed element (TOOL: element picker).
+ */
 function elementCut(value, max) {
   const collapsed = String(value == null ? '' : value).replace(/\s+/gu, ' ').trim();
   const chars = Array.from(collapsed);
-  return chars.length > max ? chars.slice(0, max).join('') : collapsed;
+  const truncated = chars.length > max;
+  return {
+    text: truncated ? chars.slice(0, max).join('') + '…' : collapsed,
+    truncated,
+    length: chars.length,
+  };
 }
 
 /** Flat `attributes` array from DOM.describeNode -> plain object (last duplicate wins). */
@@ -13539,7 +13561,8 @@ function elementQuadRect(model, scrollX, scrollY) {
 async function elementDetailFacts(cdp, backendNodeId) {
   const bounded = (method, params) => cdp.send(method, params, { timeoutMs: ELEMENT_CDP_TIMEOUT_MS });
   const facts = {
-    selector: null, outerHTML: null, text: null, role: null, name: null, shadowHost: null, closedShadow: null,
+    selector: null, selectorQuality: null, outerHTML: null, outerHTMLTruncated: false, outerHTMLLength: null,
+    text: null, textTruncated: false, textLength: null, role: null, name: null, shadowHost: null, closedShadow: null,
   };
   try {
     const resolved = await bounded('DOM.resolveNode', { backendNodeId });
@@ -13553,8 +13576,20 @@ async function elementDetailFacts(cdp, backendNodeId) {
         facts.selector = typeof value.selector === 'string' && value.selector
           ? Array.from(value.selector).slice(0, ELEMENT_SELECTOR_MAX).join('')
           : null;
-        facts.outerHTML = typeof value.outerHTML === 'string' ? elementCut(value.outerHTML, ELEMENT_OUTER_HTML_MAX) : null;
-        facts.text = typeof value.text === 'string' ? elementCut(value.text, ELEMENT_TEXT_MAX) : null;
+        facts.selectorQuality = value.selectorQuality === 'unique' || value.selectorQuality === 'degraded'
+          || value.selectorQuality === 'none' ? value.selectorQuality : null;
+        if (typeof value.outerHTML === 'string') {
+          const outer = elementCut(value.outerHTML, ELEMENT_OUTER_HTML_MAX);
+          facts.outerHTML = outer.text;
+          facts.outerHTMLTruncated = outer.truncated;
+          facts.outerHTMLLength = outer.length;
+        }
+        if (typeof value.text === 'string') {
+          const text = elementCut(value.text, ELEMENT_TEXT_MAX);
+          facts.text = text.text;
+          facts.textTruncated = text.truncated;
+          facts.textLength = text.length;
+        }
         const host = value.shadowHost && typeof value.shadowHost === 'object' ? value.shadowHost : null;
         facts.shadowHost = host ? {
           tag: String(host.tag || ''),
