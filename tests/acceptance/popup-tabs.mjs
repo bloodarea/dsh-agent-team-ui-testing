@@ -554,7 +554,7 @@ async function main() {
       await sleep(300);
       t = await tabs();
       check('tabs: toggle restores the same pages', t.count > 1 && t.visible === 'true', { count: '>1', visible: 'true' }, t);
-      const close = await evaluate(`(() => { const b=document.querySelector('[data-utb-tab-close]'); if (!b) return null; const id=b.getAttribute('data-utb-tab-close'); b.click(); return id; })()`);
+      const close = await evaluate(`(() => { const b=document.querySelector('[data-utb-tab-close-kind="popup"]'); if (!b) return null; const id=b.getAttribute('data-utb-tab-close'); b.click(); return id; })()`);
       check('tabs: child has a close button', Boolean(close), true, close);
       await sleep(300);
       log('[debug after close] ' + JSON.stringify({ host: (await hostState()).ui?.views, closeRequests: state.requests.filter((r) => r.url.includes('/close')).length, tabs: await tabs() }));
@@ -586,7 +586,7 @@ async function main() {
         return tabState();
       };
       const closeChild = async () => {
-        await evaluate(`(() => { const b=document.querySelector('[data-utb-tab-close]'); if (b) b.click(); return !!b; })()`);
+        await evaluate(`(() => { const b=document.querySelector('[data-utb-tab-close-kind="popup"]'); if (b) b.click(); return !!b; })()`);
         return waitTab(1, false);
       };
       // Explicit target=_blank without rel=noopener.
@@ -684,6 +684,71 @@ async function main() {
       check('tabs: automatic timer popup adds no tab', (autoViews.ui?.views || []).length === 1, 1, autoViews.ui?.views);
     }
 
+    async function primaryReset() {
+      log('\n--- Closing the last (primary) tab enters the empty state ---');
+      await pageHostFetch('/navigate', { method: 'POST', headers: state.scope, body: { url: fixtureUrl } });
+      await sleep(300);
+      const control = await evaluate(`(() => {
+        const b = document.querySelector('[data-utb-tab-close="primary"]');
+        return b ? {
+          kind: b.getAttribute('data-utb-tab-close-kind'),
+          label: b.getAttribute('aria-label'),
+          title: b.getAttribute('title'),
+        } : null;
+      })()`);
+      check('tabs: primary tab has a close control',
+        Boolean(control) && control.kind === 'primary' && String(control.title || '').includes('空态'),
+        { kind: 'primary', title: '关闭标签（回到空态）' }, control);
+      const clicked = await evaluate(`(() => { const b=document.querySelector('[data-utb-tab-close="primary"]'); if (b) b.click(); return !!b; })()`);
+      check('tabs: primary close control is clickable', clicked === true, true, clicked);
+
+      // Empty state: zero tabs, the strip keeps only its +, and the Host primary view is closed.
+      let empty = null;
+      const emptyDeadline = Date.now() + 20000;
+      while (Date.now() < emptyDeadline) {
+        const strip = await evaluate(`(() => ({
+          count: document.querySelectorAll('[role="tab"]').length,
+          plusStrip: document.querySelectorAll('[data-utb-tab-new="strip"]').length,
+          plusToolbar: document.querySelectorAll('[data-utb-tab-new="toolbar"]').length,
+          views: document.querySelector('.utb')?.getAttribute('data-utb-views-count') || null,
+          ready: document.querySelector('.utb')?.getAttribute('data-utb-ready-views') || null,
+          active: document.querySelector('.utb')?.getAttribute('data-utb-active-view') || null,
+          addr: document.querySelector('.utb-addr')?.value || '',
+          notice: document.querySelector('[data-utb-tab-notice]')?.textContent || '',
+        }))()`);
+        const st = await hostState();
+        const primary = (st.ui?.views || []).find((view) => view.kind === 'primary');
+        if (strip.count === 0 && primary && primary.status === 'closed') {
+          empty = { strip, host: { address: st.ui?.address, primary } };
+          break;
+        }
+        await sleep(200);
+      }
+      check('tabs: closing the last tab leaves no tabs (empty state with only +)',
+        Boolean(empty) && empty.strip.count === 0 && empty.strip.plusStrip === 1 && empty.strip.plusToolbar === 0
+          && String(empty.strip.addr || '') === '' && Number(empty.strip.ready || '0') === 0,
+        { tabs: 0, plus: 1, ready: 0, address: '', primaryStatus: 'closed' }, empty);
+
+      // The + in the empty strip creates a fresh blank tab and activates it.
+      const plusClicked = await evaluate(`(() => { const b=document.querySelector('[data-utb-tab-new="strip"]'); if (!b) return false; b.click(); return true; })()`);
+      check('tabs: empty-state + is clickable', plusClicked === true, true, plusClicked);
+      let recreated = null;
+      const recreateDeadline = Date.now() + 15000;
+      while (Date.now() < recreateDeadline) {
+        const strip = await evaluate(`(() => ({
+          count: document.querySelectorAll('[role="tab"]').length,
+          active: document.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute('data-utb-tab') || null,
+          addr: document.querySelector('.utb-addr')?.value || '',
+          plusStrip: document.querySelectorAll('[data-utb-tab-new="strip"]').length,
+        }))()`);
+        if (strip.count === 1 && strip.active && strip.active !== 'primary') { recreated = strip; break; }
+        await sleep(200);
+      }
+      check('tabs: + in the empty state creates one active blank tab',
+        Boolean(recreated) && recreated.count === 1 && recreated.active !== 'primary' && recreated.plusStrip === 1,
+        { count: 1, active: 'child', plus: 1 }, recreated);
+    }
+
     async function hostAgentPrimaryCheck() {
       log('\n--- Host harness: Agent stays primary ---');
       const harness = await createHarness({
@@ -718,6 +783,7 @@ async function main() {
     try {
       await tabSmoke();
       await popupScenarios();
+      await primaryReset();
       await hostAgentPrimaryCheck();
       await captureGuiPng('popup-tabs-panel.png');
     } catch (error) {

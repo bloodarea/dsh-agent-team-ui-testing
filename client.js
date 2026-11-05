@@ -2401,8 +2401,33 @@ window.__ModuleLoader__.load({
         });
       }
 
+      function showTabNotice(text) {
+        setTabNotice(text);
+        window.clearTimeout(tabNoticeTimerRef.current);
+        tabNoticeTimerRef.current = window.setTimeout(() => setTabNotice(''), 4000);
+      }
+
       function closeView(view) {
-        if (!view || view.kind === 'primary') return;
+        if (!view) return;
+        if (view.kind === 'primary') {
+          // Close the last (primary) tab into the EMPTY state: the fixed primary slot goes cold,
+          // so the strip renders no tabs at all and keeps only the `+` entry. Target it by runtime
+          // id so closing still addresses primary while a child tab is active.
+          const primaryRuntimeId = stableViews && stableViews.primaryRuntimeId ? String(stableViews.primaryRuntimeId) : '';
+          if (!primaryRuntimeId) return;
+          setTabNotice('');
+          callHost('close', {}, { scope: scopeSnapshot('recent', '', primaryRuntimeId, false) }).then(() => {
+            viewSwitchRef.current = true;
+            retiredRuntimeRef.current = '';
+            setActiveViewId('primary');
+          }).catch((error) => {
+            const code = String((error && error.code) || '');
+            showTabNotice(code === 'BUSY'
+              ? '标签正在执行操作，稍后再关闭'
+              : '关闭标签失败，请稍后重试');
+          });
+          return;
+        }
         // Close with the child's own binding. The Host answer is the only success signal; on
         // success an active child falls back locally (its own /state may already be gone).
         callHost('close', {}, { scope: scopeSnapshot('recent', '', view.runtimeId, false) }).then(() => {
@@ -2411,7 +2436,11 @@ window.__ModuleLoader__.load({
             retiredRuntimeRef.current = '';
             setActiveViewId('primary');
           }
-        }).catch(() => { /* keep the current selection; the poll owns the real state */ });
+        }).catch((error) => {
+          const code = String((error && error.code) || '');
+          if (code === 'BUSY') showTabNotice('标签正被 Agent 操作；稍后再关闭');
+          /* else: keep the current selection; the poll owns the real state */
+        });
       }
 
       function noteHostScope(payload) {
@@ -7054,12 +7083,13 @@ window.__ModuleLoader__.load({
           onClick: () => switchView(view.id),
         },
           h('span', { className: 'utb-tab-label' }, tabText(view)),
-          view.kind === 'popup' && h('button', {
+          h('button', {
             type: 'button',
             className: 'utb-tab-close',
-            'aria-label': '关闭标签 ' + tabText(view),
-            title: '关闭标签',
+            'aria-label': (view.kind === 'primary' ? '重置标签 ' : '关闭标签 ') + tabText(view),
+            title: view.kind === 'primary' ? '关闭标签（回到空态）' : '关闭标签',
             'data-utb-tab-close': String(view.id),
+            'data-utb-tab-close-kind': view.kind === 'primary' ? 'primary' : 'popup',
             onClick: (event) => { event.stopPropagation(); closeView(view); },
           }, '×'))),
           h('button', {

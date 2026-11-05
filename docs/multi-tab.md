@@ -79,7 +79,9 @@
 - 地址栏下方有内部标签栏，由工具栏「标注」左侧的开关控制显隐；**单标签也占行**（默认显示）。标签栏最右是 `+` 新建空白标签；工具栏（地址栏行）不常驻 `+`。
 - 显隐开关（`data-utb-tabs-toggle`，aria-pressed）只作用于标签栏本身，页面/tabs/active 保留；隐藏时栏内的 `+` 一并隐藏，需要新建标签时先打开标签栏。开关行为与标签数量无关。
 - 新标签创建后成为 GUI active；地址、预览、输入、标注、尺寸、DevTools、网络和左下状态跟随 active。
-- 标签有标题、active 指示和关闭按钮（aria-label）；关闭 active 后回 primary 或最后可用标签；Host views 移除会同步 UI。
+- 标签有标题、active 指示和关闭按钮（aria-label）；关闭 child 后回 primary 或最后可用标签；Host views 移除会同步 UI。
+- **关闭最后一个（primary）标签 = 进入空态**：标签条里不再有任何标签，只保留 `+`；地址栏为空、预览回到默认空态。primary 槽位在 Host 侧变冷态（仍保留 runtimeId/binding），Agent 侧 `browser_tabs.close primary` 语义相同。空态下点 `+` 会新建一个空白标签并选中它。
+- child 关闭被 Agent lease 挡住时（GUI 与 Agent 同时操作），面板会提示「标签正被 Agent 操作；稍后再关闭」，不再静默失败。
 - 4/8 容量与 per-tab lease 同样约束 GUI：第 5 个标签/tab 返回 `TAB_LIMIT` 并在本地提示。
 
 ## 容量与来源

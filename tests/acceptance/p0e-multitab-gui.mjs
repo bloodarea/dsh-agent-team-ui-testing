@@ -802,7 +802,7 @@ async function main() {
       await sleep(300);
       t = await tabs();
       check('tabs: toggle restores the same pages', t.count > 1 && t.visible === 'true', { count: '>1', visible: 'true' }, t);
-      const close = await evaluate(`(() => { const b=document.querySelector('[data-utb-tab-close]'); if (!b) return null; const id=b.getAttribute('data-utb-tab-close'); b.click(); return id; })()`);
+      const close = await evaluate(`(() => { const b=document.querySelector('[data-utb-tab-close-kind="popup"]'); if (!b) return null; const id=b.getAttribute('data-utb-tab-close'); b.click(); return id; })()`);
       check('tabs: child has a close button', Boolean(close), true, close);
       await sleep(300);
       log('[debug after close] ' + JSON.stringify({ host: (await hostState()).ui?.views, closeRequests: state.requests.filter((r) => r.url.includes('/close')).length, tabs: await tabs() }));
@@ -828,7 +828,7 @@ async function main() {
       await click('[data-utb-tab-new="strip"]');
       x = await wait((v) => v.views > 1 && v.active && v.active !== 'primary');
       check('plus: new blank tab becomes active', x.views === 2 && x.strip === 2 && x.plusStrip === 1 && x.plusToolbar === 0, { views: 2, strip: 2, stripPlus: 1 }, x);
-      await click('[data-utb-tab-close]');
+      await click('[data-utb-tab-close-kind="popup"]');
       x = await wait((v) => v.views === 1);
       check('plus: closing child restores the single-tab strip', x.views === 1 && x.strip === 1 && x.plusStrip === 1 && x.plusToolbar === 0 && x.visible === 'true', { views: 1, strip: 1, plus: 1, visible: 'true' }, x);
       // Hidden strip hides the row and the + with it; the toolbar never carries a fallback +.
@@ -843,14 +843,14 @@ async function main() {
       x = await wait((v) => v.visible === 'true');
       check('plus: showing the strip restores its +', x.views === 2 && x.strip === 2 && x.plusStrip === 1 && x.plusToolbar === 0, { views: 2, strip: 2, plus: 1 }, x);
       // Reset to one, then fill to 4 and expect a local limit notice (Host returns TAB_LIMIT).
-      while ((await state()).views > 1) { await click('[data-utb-tab-close]'); await wait((v) => v.views === 1); }
+      while ((await state()).views > 1) { await click('[data-utb-tab-close-kind="popup"]'); await wait((v) => v.views === 1); }
       await click('[data-utb-tab-new="strip"]'); await wait((v) => v.views === 2);
       await click('[data-utb-tab-new="strip"]'); await wait((v) => v.views === 3);
       await click('[data-utb-tab-new="strip"]'); await wait((v) => v.views === 4);
       await click('[data-utb-tab-new="strip"]');
       x = await wait((v) => v.notice.length > 0);
       check('plus: fifth tab shows local TAB_LIMIT notice', x.views === 4 && /最多 4 个标签/.test(x.notice), { views: 4, notice: '最多 4 个标签' }, x);
-      while ((await state()).views > 1) { await click('[data-utb-tab-close]'); await wait((v) => v.views === 1); }
+      while ((await state()).views > 1) { await click('[data-utb-tab-close-kind="popup"]'); await wait((v) => v.views === 1); }
     };
     async function agentGuiSmoke() {
       log('\n--- Agent A/B + GUI state ---');
