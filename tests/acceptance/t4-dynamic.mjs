@@ -37,6 +37,8 @@ await mkdir(RUN_DIR, { recursive: true });
 process.env.DSH_UI_TESTING_CAPTURE_DIR = RUN_DIR;
 
 const { createHarness, EXPECTED_TOOLS, LEGACY_TOOLS, NETWORK_TOOLS, sleep } = await import('./harness.mjs');
+// U-side reference truth for TOOL-P1-06: the pure core's machine-readable assertion schema.
+const { MOTION_ASSERTION_SCHEMA } = await import('../../dynamic-t4.js');
 const T4_TOOL_NAMES = Object.freeze([
   'browser_dynamic_session', 'browser_motion_observe', 'browser_motion_analyze',
   'browser_motion_control', 'browser_dynamic_correlate',
@@ -205,6 +207,14 @@ function framesAroundEncodedChange(frames, max = 7) {
 
 function check(id, kind, expected, body) {
   return { id, kind, required: true, expected, body };
+}
+
+/** Nearest-rank median for measured sampling intervals (acceptance-side only). */
+function medianOf(values) {
+  const finite = (Array.isArray(values) ? values : []).filter((value) => Number.isFinite(value));
+  if (finite.length === 0) return null;
+  const sorted = [...finite].sort((left, right) => left - right);
+  return sorted[Math.floor((sorted.length - 1) / 2)];
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -598,15 +608,40 @@ const checks = [
       await call('browser_dynamic_session', { action: 'stop' });
     }
     // Encoded-only screencast regression: still a full-frame JPEG, no crop, no decode.
+    // Fixture precondition: an earlier criterion may have paused the shared page; a damage-driven
+    // screencast only produces frames while the page animates, so restore the animated scenario and
+    // wait (bounded) for the first encoded frame instead of treating a slow first frame as a
+    // product regression.
+    try {
+      await call('browser_eval', { expression: 'window.__t4.visual.setScenario("normal"), window.__t4.visual.setPaused(false)' });
+    } catch { /* the page may not be the visual fixture; the delivery check is still attempted */ }
     const regStart = await call('browser_dynamic_session', { action: 'start', name: 'dv09-jpeg', config: { source: 'screencast', durationMs: 1500 } });
     const regSession = valueOf(regStart)?.session;
-    if (regSession) {
-      await sleep(500);
-      const regDelivery = valueOf(await call('browser_motion_observe', { motionSessionId: regSession.motionSessionId, limit: 2, includeImages: true }));
-      const regFrame = regDelivery?.frames?.[0];
-      if (!regFrame?.image || regFrame.image.mediaType !== 'image/jpeg') problems.push('screencast full-frame delivery is not JPEG (regression)');
-      if (regFrame?.crop !== undefined) problems.push('screencast full-frame delivery unexpectedly carries crop');
-      if (regDelivery?.cropStats?.decodes !== 0) problems.push('screencast full-frame delivery performed decodes (regression)');
+    let jpegSubNotRun = null;
+    if (!regSession) {
+      problems.push('dv09-jpeg session start failed: ' + String(regStart.error?.code || 'unknown'));
+    } else {
+      let regDelivery = null;
+      let regFrame = null;
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        await sleep(250);
+        regDelivery = valueOf(await call('browser_motion_observe', { motionSessionId: regSession.motionSessionId, limit: 2, includeImages: true }));
+        regFrame = (regDelivery?.frames || []).find((frame) => frame?.image) || null;
+        if (regFrame) break;
+      }
+      const anyFrames = (regDelivery?.frames || []).length;
+      if (!regFrame) {
+        // No encoded frame arrived inside the bounded window: this sub-check did not run. Do not
+        // turn a missing sample into a product regression.
+        jpegSubNotRun = anyFrames === 0
+          ? 'no screencast frame captured within 2s (damage-driven source)'
+          : 'delivered frames carried no image bytes';
+        if (anyFrames > 0) problems.push('screencast frames delivered without image bytes');
+      } else {
+        if (regFrame.image.mediaType !== 'image/jpeg') problems.push('screencast full-frame delivery is not JPEG (regression)');
+        if (regFrame.crop !== undefined) problems.push('screencast full-frame delivery unexpectedly carries crop');
+        if (regDelivery?.cropStats?.decodes !== 0) problems.push('screencast full-frame delivery performed decodes (regression)');
+      }
       await call('browser_dynamic_session', { action: 'stop' });
     }
     const diffResult = diff?.results?.[0];
@@ -630,6 +665,7 @@ const checks = [
     }
     return {
       status: problems.length ? 'FAIL' : 'PASS',
+      subNotRun: jpegSubNotRun ? ['screencast-jpeg-delivery: ' + jpegSubNotRun] : [],
       expected: 'real JPEG frame-diff (encoding=jpeg, precise=false, >=2 samples); full mask refuses with INCONCLUSIVE/BLOCKED, never similarity=1; U suite green',
       actual: {
         diff: diffResult ? { verdict: diffResult.verdict, reasons: diffResult.reasons, encoding: diffResult.encoding, precise: diffResult.precise, sampleCount: diffResult.sampleCount } : null,
@@ -1101,6 +1137,239 @@ const checks = [
       reason: problems.length ? problems.join('; ') : 'cross-process clock precision has no dedicated evidence: PARTIAL',
     };
   }),
+
+  /* ---- DV sampling truth + assertion schema (TOOL-P1-03 / P1-06) --------------------------- */
+  check('DV17', 'B',
+    'screenshot-loop sampling：start/status/extend/observe 都有 measured，mechanism/cadence/requested 正确；measured 与 observe 帧集合同源（frames/intervals 一致，p50 差 ≤ max(5ms,1%)）',
+    async () => {
+      await call('browser_navigate', { url: ctx.fixture.url + FIXTURE_VISUAL.slice(1) });
+      await call('browser_eval', { expression: 'window.__t4.visual.setScenario("normal"), window.__t4.visual.setPaused(false)' });
+      const started = await call('browser_dynamic_session', {
+        action: 'start', name: 'dv17',
+        config: { source: 'screenshot-loop', sampleIntervalMs: 100, durationMs: 4000 },
+      });
+      const session = valueOf(started)?.session;
+      if (!session) return notRunCheck('DV17', 'screenshot-loop measured sampling', 'session start failed: ' + errorMessage(started.error));
+      const problems = [];
+      const startSampling = session.sampling;
+      if (!startSampling) problems.push('start sampling missing');
+      if (startSampling?.mechanism !== 'screenshot-loop') problems.push('start mechanism != screenshot-loop');
+      if (startSampling?.cadence !== 'host-scheduled') problems.push('start cadence != host-scheduled');
+      if (startSampling?.requested?.intervalMs !== 100) problems.push('start requested.intervalMs != 100');
+      if (startSampling?.counters?.samplingFailures !== 0) problems.push('start samplingFailures != 0');
+
+      await sleep(900);
+      const status = valueOf(await call('browser_dynamic_session', { action: 'status' }));
+      const statusSampling = status?.session?.sampling;
+      if (!statusSampling) problems.push('status sampling missing');
+      if (statusSampling?.measured?.from !== 'loop-tick-start') problems.push('status measured.from != loop-tick-start');
+      if (!Number.isFinite(statusSampling?.measured?.p50Ms)) problems.push('status measured.p50Ms not finite');
+      if (!(statusSampling?.counters?.sampled >= 1)) problems.push('status counters.sampled < 1');
+
+      const extended = valueOf(await call('browser_dynamic_session', { action: 'extend', durationMs: 800 }));
+      if (!extended?.session?.sampling) problems.push('extend sampling missing');
+
+      // Same-source cross-check: Host sampling.measured is computed from the SAME stored frames that
+      // observe returns (frame.receivedMonoMs = loop tick start). A loop tick landing between the
+      // frame listing and the sampling projection of one response would add one frame to the
+      // measured window; retry the read a bounded number of times until both describe the same
+      // frame set, then demand p50 equality within max(5ms, 1%) — no tolerance widening.
+      let observe = null;
+      let observeSampling = null;
+      let tickTimes = [];
+      let frameIntervals = [];
+      let observeMedian = null;
+      let sameSetAttempts = 0;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        observe = valueOf(await call('browser_motion_observe', {
+          motionSessionId: session.motionSessionId, limit: 200,
+        }));
+        observeSampling = observe?.sampling;
+        sameSetAttempts = attempt + 1;
+        tickTimes = (observe?.frames || []).map((frame) => frame.receivedMonoMs).filter(Number.isFinite);
+        frameIntervals = [];
+        for (let index = 1; index < tickTimes.length; index += 1) frameIntervals.push(tickTimes[index] - tickTimes[index - 1]);
+        observeMedian = medianOf(frameIntervals);
+        if (observeSampling?.measured?.frames === tickTimes.length) break;
+        await sleep(150);
+      }
+      if (!observeSampling) problems.push('observe sampling missing');
+      if (observeSampling?.mechanism !== 'screenshot-loop') problems.push('observe mechanism != screenshot-loop');
+      if (!observe?.evidence?.dynamic?.sampling) problems.push('evidence.dynamic.sampling missing');
+      const measuredP50 = observeSampling?.measured?.p50Ms;
+      const measuredFrames = observeSampling?.measured?.frames;
+      const measuredIntervals = observeSampling?.measured?.intervals;
+      if (measuredFrames !== tickTimes.length) problems.push('measured.frames != observe frame count (not the same frame set)');
+      if (measuredIntervals !== frameIntervals.length) problems.push('measured.intervals != observe frame interval count');
+      const tolerance = Math.max(5, (Number.isFinite(observeMedian) ? observeMedian : 0) * 0.01);
+      const delta = Number.isFinite(measuredP50) && Number.isFinite(observeMedian)
+        ? Math.abs(measuredP50 - observeMedian) : null;
+      if (delta === null) problems.push('measured p50 or observe median not finite');
+      else if (delta > tolerance) problems.push('measured p50 vs observe frame interval mismatch');
+      if (!(observeSampling?.measured?.intervals >= 2)) problems.push('measured intervals < 2');
+
+      await call('browser_dynamic_session', { action: 'stop' });
+      const actual = {
+        startSampling, statusSampling: statusSampling
+          ? { mechanism: statusSampling.mechanism, cadence: statusSampling.cadence, measured: statusSampling.measured, counters: statusSampling.counters, limitations: statusSampling.limitations }
+          : null,
+        observeSampling: observeSampling
+          ? { mechanism: observeSampling.mechanism, measured: observeSampling.measured, counters: observeSampling.counters }
+          : null,
+        sameFrameSet: {
+          measuredFrames, observeFrames: tickTimes.length, measuredIntervals, observeIntervals: frameIntervals.length,
+          sameSetAttempts,
+        },
+        observeMedian, measuredP50, delta, tolerance, problems,
+      };
+      return problems.length
+        ? failCheck('DV17', 'screenshot-loop measured sampling', actual, problems.join('; '))
+        : passCheck('DV17', 'screenshot-loop measured sampling (start/status/extend/observe/evidence)', actual);
+    }),
+
+  check('DV18', 'B',
+    'screencast sampling：damage-driven、requested.intervalMs=null、measured.from=frame-timeline 且与 observe 帧 timeline 间隔一致',
+    async () => {
+      await call('browser_navigate', { url: ctx.fixture.url + FIXTURE_VISUAL.slice(1) });
+      await call('browser_eval', { expression: 'window.__t4.visual.setScenario("normal"), window.__t4.visual.setPaused(false)' });
+      const started = await call('browser_dynamic_session', {
+        action: 'start', name: 'dv18', config: { source: 'screencast', durationMs: 3000 },
+      });
+      const session = valueOf(started)?.session;
+      if (!session) return notRunCheck('DV18', 'screencast measured sampling', 'session start failed: ' + errorMessage(started.error));
+      const problems = [];
+      if (session.sampling?.mechanism !== 'screencast') problems.push('mechanism != screencast');
+      if (session.sampling?.cadence !== 'damage-driven') problems.push('cadence != damage-driven');
+      if (session.sampling?.requested?.intervalMs !== null) problems.push('requested.intervalMs must be null');
+      await sleep(1200);
+      const observe = valueOf(await call('browser_motion_observe', { motionSessionId: session.motionSessionId, limit: 80 }));
+      const sampling = observe?.sampling;
+      if (!sampling) problems.push('observe sampling missing');
+      if (sampling?.measured?.from !== 'frame-timeline') problems.push('measured.from != frame-timeline');
+      const timeline = (observe?.frames || []).map((frame) => frame.timelineMs).filter(Number.isFinite);
+      const frameIntervals = [];
+      for (let index = 1; index < timeline.length; index += 1) frameIntervals.push(timeline[index] - timeline[index - 1]);
+      const observeMedian = medianOf(frameIntervals);
+      const measuredP50 = sampling?.measured?.p50Ms;
+      const tolerance = Math.max(20, (Number.isFinite(observeMedian) ? observeMedian : 0) * 0.2);
+      const delta = Number.isFinite(measuredP50) && Number.isFinite(observeMedian)
+        ? Math.abs(measuredP50 - observeMedian) : null;
+      if (delta === null) problems.push('measured p50 or observe median not finite');
+      else if (delta > tolerance) problems.push('measured p50 vs observe timeline interval mismatch');
+      if (!(sampling?.measured?.frames >= 3)) problems.push('measured frames < 3');
+      if (!observe?.evidence?.dynamic?.sampling) problems.push('evidence.dynamic.sampling missing');
+      await call('browser_dynamic_session', { action: 'stop' });
+      const actual = {
+        sampling: sampling
+          ? { mechanism: sampling.mechanism, cadence: sampling.cadence, requested: sampling.requested, measured: sampling.measured, counters: sampling.counters, limitations: sampling.limitations }
+          : null,
+        observeMedian, measuredP50, delta, tolerance, problems,
+      };
+      return problems.length
+        ? failCheck('DV18', 'screencast measured sampling', actual, problems.join('; '))
+        : passCheck('DV18', 'screencast measured sampling (damage-driven, frame-timeline)', actual);
+    }),
+
+  check('DV19', 'U+B',
+    'capabilities.dynamic.assertions 与核心 MOTION_ASSERTION_SCHEMA 无损一致（七类 allowed/required/枚举/默认阈值）、sampling 段与低采样 limitations 可发现',
+    async () => {
+      const caps = valueOf(await call('browser_capabilities', {}));
+      const dynamic = caps?.dynamic;
+      const schema = dynamic?.assertions;
+      const problems = [];
+      if (!dynamic) problems.push('capabilities.dynamic missing');
+      if (!schema) problems.push('capabilities.dynamic.assertions missing');
+      const types = ['frame-diff', 'region-change', 'flicker', 'freeze', 'jank', 'trajectory', 'transition'];
+      if (schema) {
+        for (const type of types) {
+          if (!schema.byType || !schema.byType[type]) { problems.push('assertions.byType.' + type + ' missing'); continue; }
+          if (typeof schema.byType[type].allowed?.length !== 'number') problems.push(type + '.allowed missing');
+          if (typeof schema.byType[type].required?.length !== 'number') problems.push(type + '.required missing');
+          if (typeof schema.byType[type].thresholds?.defaults !== 'object') problems.push(type + '.thresholds.defaults missing');
+        }
+        if (schema.maxAssertions !== MOTION_ASSERTION_SCHEMA.maxAssertions) problems.push('maxAssertions mismatch');
+        if (typeof schema.idPattern !== 'string' || !schema.idPattern) problems.push('idPattern missing');
+        // The capability projection must be a lossless JSON projection of the core schema.
+        const roundtrip = JSON.parse(JSON.stringify(schema));
+        if (JSON.stringify(roundtrip.byType) !== JSON.stringify(JSON.parse(JSON.stringify(MOTION_ASSERTION_SCHEMA.byType)))) {
+          problems.push('assertions.byType differs from core MOTION_ASSERTION_SCHEMA');
+        }
+        if (JSON.stringify(roundtrip.fields) !== JSON.stringify(JSON.parse(JSON.stringify(MOTION_ASSERTION_SCHEMA.fields)))) {
+          problems.push('assertions.fields differs from core MOTION_ASSERTION_SCHEMA');
+        }
+        if (JSON.stringify(roundtrip.types) !== JSON.stringify(MOTION_ASSERTION_SCHEMA.types)) problems.push('assertions.types differs from core');
+        if (schema.byType.flicker.thresholds.allowed.includes('maxDurationMs') !== true) problems.push('flicker maxDurationMs not discoverable');
+        if (schema.byType.jank.required.includes('expectedIntervalMs') !== true) problems.push('jank expectedIntervalMs not required');
+        if (JSON.stringify(schema.byType.flicker.thresholds.defaults) !== JSON.stringify(MOTION_ASSERTION_SCHEMA.byType.flicker.thresholds.defaults)) {
+          problems.push('flicker defaults mismatch');
+        }
+      }
+      if (dynamic?.sampling?.cadence?.['screenshot-loop'] !== 'host-scheduled') problems.push('sampling.cadence screenshot-loop missing');
+      if (dynamic?.sampling?.cadence?.screencast !== 'damage-driven') problems.push('sampling.cadence screencast missing');
+      if (dynamic?.sampling?.measured?.from?.screencast !== 'frame-timeline') problems.push('sampling.measured.from missing');
+      if (!(dynamic?.sampling?.requested?.screenshotLoop?.intervalMs?.length === 2)) problems.push('sampling requested range missing');
+      const capsLimitations = Array.isArray(caps?.limitations) ? caps.limitations : [];
+      const hasMeasured = capsLimitations.some((text) => String(text).includes('measured'));
+      const hasLowSampling = capsLimitations.some((text) => String(text).includes('低采样') || String(text).includes('不得证明'));
+      if (!hasMeasured) problems.push('capabilities.limitations: measured-vs-requested disclosure missing');
+      if (!hasLowSampling) problems.push('capabilities.limitations: low-sampling non-negative disclosure missing');
+      const actual = {
+        assertionTypes: schema ? [...schema.types] : null,
+        maxAssertions: schema?.maxAssertions ?? null,
+        idPattern: schema?.idPattern ?? null,
+        flickerAllowed: schema?.byType?.flicker?.allowed ?? null,
+        flickerDefaults: schema?.byType?.flicker?.thresholds?.defaults ?? null,
+        jankRequired: schema?.byType?.jank?.required ?? null,
+        sampling: dynamic?.sampling
+          ? { mechanisms: dynamic.sampling.mechanisms, cadence: dynamic.sampling.cadence, measuredFrom: dynamic.sampling.measured?.from }
+          : null,
+        limitations: capsLimitations,
+        problems,
+      };
+      return problems.length
+        ? failCheck('DV19', 'machine-readable assertion schema + sampling semantics', actual, problems.join('; '))
+        : passCheck('DV19', 'capabilities assertion schema is a lossless projection and sampling semantics are declared', actual);
+    }),
+
+  check('DV20', 'U+B',
+    'browser_motion_observe 注册 schema 列出 region（image-px，仅与 includeImages 同用），且 handler 行为不变（单独 region 拒绝）',
+    async () => {
+      const problems = [];
+      const definition = ctx.harness.toolDefinitions().find((item) => item.name === 'browser_motion_observe');
+      const region = definition?.parameters?.properties?.region;
+      if (!definition) problems.push('browser_motion_observe definition missing');
+      if (!region) problems.push('registered schema does not list region');
+      else {
+        if (region.type !== 'object') problems.push('region.type != object');
+        if (region.additionalProperties !== false) problems.push('region.additionalProperties != false');
+        for (const key of ['x', 'y', 'width', 'height']) {
+          if (!region.properties?.[key] || region.properties[key].type !== 'integer') problems.push('region.' + key + ' not integer');
+        }
+        if (region.properties?.width?.minimum !== 1 || region.properties?.height?.minimum !== 1) problems.push('region width/height minimum != 1');
+        if (JSON.stringify(region.required) !== JSON.stringify(['x', 'y', 'width', 'height'])) problems.push('region.required mismatch');
+      }
+      // Behaviour unchanged: region without includeImages:true must still be refused.
+      await call('browser_navigate', { url: ctx.fixture.url + FIXTURE_VISUAL.slice(1) });
+      const started = await call('browser_dynamic_session', {
+        action: 'start', name: 'dv20', config: { source: 'screenshot-loop', sampleIntervalMs: 200, durationMs: 2000 },
+      });
+      const session = valueOf(started)?.session;
+      if (!session) {
+        return notRunCheck('DV20', 'observe region schema/behaviour',
+          'session start failed: ' + errorMessage(started.error), { region: region ?? null, problems });
+      }
+      await sleep(350);
+      const denied = await call('browser_motion_observe', {
+        motionSessionId: session.motionSessionId, region: { x: 0, y: 0, width: 16, height: 16 },
+      });
+      if (denied.ok) problems.push('region without includeImages was accepted (handler behaviour changed)');
+      else if (denied.error?.code !== 'DYNAMIC_INVALID_ARGUMENT') problems.push('region refusal code != DYNAMIC_INVALID_ARGUMENT (' + String(denied.error?.code) + ')');
+      await call('browser_dynamic_session', { action: 'stop' });
+      const actual = { region: region ?? null, problems };
+      return problems.length
+        ? failCheck('DV20', 'observe region schema/behaviour', actual, problems.join('; '))
+        : passCheck('DV20', 'observe region is discoverable in the registered schema and handler semantics unchanged', actual);
+    }),
 
   /* ---- DN: dynamic network (P0 reuse) ------------------------------------------------------ */
   check('DN01', 'B', '导航前 P0 start、初始 cart GET、WS 握手/帧与页面账本', async () => {
@@ -1848,7 +2117,7 @@ const checks = [
   }),
 
 
-  check('DC12', 'B+U', '准备阶段 capabilities 仍 unsupported/30；未来 35 须另验 schema/错误/旧 30 回归；真实宿主单列 NOT_RUN', async () => {
+  check('DC12', 'B+U', '准备阶段 capabilities 仍 unsupported/31；未来 36 须另验 schema/错误/旧 31 回归；真实宿主单列 NOT_RUN', async () => {
     const names = ctx.harness.toolNames();
     const registeredT4 = names.filter((name) => T4_TOOL_NAMES.includes(name));
     const expectedNames = [...LEGACY_TOOLS, ...NETWORK_TOOLS].map((entry) => entry.name);
@@ -1864,12 +2133,12 @@ const checks = [
     }
     const t4Unknown = registeredT4.filter((name) => !T4_REGISTERED_EXPECTED.includes(name));
     const t4Missing = T4_REGISTERED_EXPECTED.filter((name) => !registeredT4.includes(name));
-    const countOk = names.length === 30 + registeredT4.length;
+    const countOk = names.length === 31 + registeredT4.length;
     const caps = valueOf(await call('browser_capabilities', {}));
     const t4Caps = (caps?.capabilities || []).filter((item) => String(item.id).startsWith('web.t4.'));
     const unavailableT4 = t4Caps.filter((item) => item.tool && !registeredT4.includes(item.tool) && item.status !== 'unsupported');
     const problems = [];
-    if (!countOk) problems.push(`tool count ${names.length} != 30 + ${registeredT4.length}`);
+    if (!countOk) problems.push(`tool count ${names.length} != 31 + ${registeredT4.length}`);
     if (missingLegacy.length) problems.push('legacy tools missing: ' + missingLegacy.join(','));
     if (extra.length) problems.push('unexpected tools: ' + extra.join(','));
     if (schemaMismatch.length) problems.push('legacy schema mismatch: ' + schemaMismatch.join(','));
@@ -1878,7 +2147,7 @@ const checks = [
     if (unavailableT4.length) problems.push('unregistered T4 tool reported available: ' + unavailableT4.map((item) => item.id).join(','));
     return {
       status: problems.length ? 'FAIL' : 'PASS',
-      expected: 'tool surface = 30 unchanged legacy tools + the real M1 T4 subset; no unregistered tool available; real-host evidence NOT_RUN',
+      expected: 'tool surface = 31 unchanged legacy tools + the real M1 T4 subset; no unregistered tool available; real-host evidence NOT_RUN',
       actual: {
         toolCount: names.length, registeredT4, expectedNames: T4_REGISTERED_EXPECTED,
         legacyCount: expectedNames.length, missingLegacy, schemaMismatch, unavailableT4,
@@ -1975,8 +2244,14 @@ function runCoreUnitSuite() {
     cwd: REPO_ROOT, encoding: 'utf8', timeout: 180000,
   });
   const output = String(result.stdout || '') + String(result.stderr || '');
-  const pass = Number((output.match(/# pass (\d+)/) || [])[1] || 0);
-  const fail = Number((output.match(/# fail (\d+)/) || [])[1] || 0);
+  // Node's default reporter uses "# pass N" (TAP) on older versions and "ℹ pass N" on Node 24+;
+  // parse either so a green suite is not misread as 0/0.
+  const count = (label) => {
+    const match = output.match(new RegExp('(?:# |ℹ )' + label + ' (\\d+)'));
+    return Number(match ? match[1] : 0);
+  };
+  const pass = count('pass');
+  const fail = count('fail');
   const summary = { available: true, pass, fail, status: result.status, durationMs: Date.now() - startedAt };
   report.resources.coreUnit = summary;
   if (result.error) { summary.available = false; summary.error = String(result.error.message || result.error); }

@@ -18,7 +18,9 @@ import { createHash } from 'node:crypto';
 
 import {
   DC_ALGORITHM_VERSION, DC_BASIS, DC_CONFIDENCE, DC_DIRECTIONS, DC_GRADE_MAP,
-  DynamicEventLog, DynamicFrameStore, MOTION_TYPES, T4_ALGORITHM_VERSION, T4_LIMITS, T4_VERSION,
+  DynamicEventLog, DynamicFrameStore, MOTION_ASSERTION_SCHEMA, MOTION_TYPES,
+  T4_ALGORITHM_VERSION, T4_LIMITS, T4_THRESHOLDS, T4_VERSION,
+  computeFrameSampling,
   cropFrameRoi, decodeFrameRgba, decodeJpegRgba, frameMeta, materializeFrameImage, runMotionAssertionsAsync,
   validateSessionDuration, validateSessionExtend,
   analyzeFlicker, analyzeFrameDiff, analyzeFreeze, analyzeJank, analyzeRegionChange,
@@ -353,6 +355,113 @@ test('DC vocabulary: six directions, basis/grade map, confidence', () => {
   assert.equal(DC_GRADE_MAP.temporal, 'temporal-proximity');
   assert.deepEqual([...DC_CONFIDENCE], ['direct', 'supported', 'weak', 'unknown']);
   assert.equal(MOTION_TYPES.length, 7);
+});
+
+/* ------------------------------------------------------------------ */
+/* TOOL-P1-06：机器可读断言规格与 T4_THRESHOLDS/校验器同源               */
+/* ------------------------------------------------------------------ */
+
+test('MOTION_ASSERTION_SCHEMA: derived from T4_THRESHOLDS and aligned with validators', () => {
+  assert.equal(MOTION_ASSERTION_SCHEMA.version, 1);
+  assert.equal(MOTION_ASSERTION_SCHEMA.algorithmVersion, T4_ALGORITHM_VERSION);
+  assert.equal(MOTION_ASSERTION_SCHEMA.maxAssertions, T4_LIMITS.maxAssertions);
+  assert.equal(MOTION_ASSERTION_SCHEMA.idMaxBytes, 64);
+  assert.deepEqual([...MOTION_ASSERTION_SCHEMA.types], [...MOTION_TYPES]);
+  assert.deepEqual(Object.keys(MOTION_ASSERTION_SCHEMA.byType).sort(), [...MOTION_TYPES].sort());
+
+  const baseFields = ['id', 'type', 'region', 'masks', 'thresholds'];
+  const extraRequired = {
+    'frame-diff': [],
+    'region-change': [],
+    flicker: [],
+    freeze: ['expectation'],
+    jank: ['expectedIntervalMs'],
+    trajectory: ['query'],
+    transition: [],
+  };
+  for (const type of MOTION_TYPES) {
+    const spec = MOTION_ASSERTION_SCHEMA.byType[type];
+    // allowed/required 与 MOTION_THRESHOLDS 的实际阈值表一致（引用同一真值，不复制）。
+    assert.deepEqual([...spec.thresholds.allowed], [...T4_THRESHOLDS[type].allowed], `${type}.thresholds.allowed`);
+    assert.deepEqual({ ...spec.thresholds.defaults }, { ...T4_THRESHOLDS[type].defaults }, `${type}.thresholds.defaults`);
+    assert.deepEqual(Object.keys(spec.thresholds.fields), [...T4_THRESHOLDS[type].allowed], `${type}.thresholds.fields`);
+    for (const key of T4_THRESHOLDS[type].allowed) {
+      assert.equal(spec.thresholds.fields[key].default, T4_THRESHOLDS[type].defaults[key], `${type}.${key}.default`);
+    }
+    assert.deepEqual([...spec.allowed], [...baseFields, ...extraRequired[type]], `${type}.allowed`);
+    assert.deepEqual([...spec.required], ['id', 'type', ...extraRequired[type]], `${type}.required`);
+  }
+
+  // 采样窗口描述直接派生自同一阈值表。
+  assert.equal(MOTION_ASSERTION_SCHEMA.byType.flicker.samplingWindow.kind, 'threshold');
+  assert.equal(MOTION_ASSERTION_SCHEMA.byType.flicker.samplingWindow.key, 'maxDurationMs');
+  assert.equal(MOTION_ASSERTION_SCHEMA.byType.flicker.samplingWindow.defaultMs,
+    T4_THRESHOLDS.flicker.defaults.maxDurationMs);
+  assert.equal(MOTION_ASSERTION_SCHEMA.byType.freeze.samplingWindow.defaultMs,
+    T4_THRESHOLDS.freeze.defaults.minDurationMs);
+  assert.equal(MOTION_ASSERTION_SCHEMA.byType.jank.samplingWindow.intervalFactor,
+    T4_THRESHOLDS.jank.defaults.intervalFactor);
+  assert.equal(MOTION_ASSERTION_SCHEMA.byType.transition.samplingWindow.kind, 'none');
+  assert.equal(MOTION_ASSERTION_SCHEMA.byType.flicker.samplingDisclosure, true);
+  assert.equal(MOTION_ASSERTION_SCHEMA.byType['frame-diff'].samplingDisclosure, false);
+
+  // 关键不变量：schema 声明的 allowed/required 必须与 validateMotionAssertions 实际行为一致。
+  const minimal = (type) => {
+    const item = { id: 'a', type };
+    if (type === 'freeze') {
+      item.expectation = { motionExpected: true, sourceEventId: 'ev-1', referenceEventIds: ['ev-2'] };
+    }
+    if (type === 'jank') item.expectedIntervalMs = 16;
+    if (type === 'trajectory') item.query = { method: 'color', color: [255, 0, 0] };
+    return item;
+  };
+  const conditionalValue = {
+    expectedIntervalMs: 16,
+    query: { method: 'color', color: [1, 2, 3] },
+    expectation: { motionExpected: true, sourceEventId: 'ev-1', referenceEventIds: ['ev-2'] },
+  };
+  for (const type of MOTION_TYPES) {
+    const spec = MOTION_ASSERTION_SCHEMA.byType[type];
+    const normalized = validateMotionAssertions([minimal(type)]);
+    assert.equal(normalized.length, 1, type);
+    // 非本类型允许的额外字段必须被拒绝。
+    for (const key of Object.keys(conditionalValue)) {
+      if (spec.allowed.includes(key)) continue;
+      assert.throws(
+        () => validateMotionAssertions([{ ...minimal(type), [key]: conditionalValue[key] }]),
+        (error) => error.code === 'DYNAMIC_INVALID_ARGUMENT',
+        `${type} must reject ${key}`,
+      );
+    }
+    // required 缺失必须被拒绝。
+    for (const key of spec.required) {
+      if (key === 'id' || key === 'type') continue;
+      const without = minimal(type);
+      delete without[key];
+      assert.throws(
+        () => validateMotionAssertions([without]),
+        (error) => error.code === 'DYNAMIC_INVALID_ARGUMENT',
+        `${type} must require ${key}`,
+      );
+    }
+    // 所有 allowed thresholds 的默认值都必须真实可用（避免 schema 与实现漂移）。
+    const overrides = {};
+    for (const key of spec.thresholds.allowed) overrides[key] = spec.thresholds.defaults[key];
+    assert.equal(validateMotionAssertions([{ ...minimal(type), thresholds: overrides }]).length, 1, `${type} thresholds`);
+  }
+
+  // trajectory.query 的默认值与 schema 一致。
+  const trajectory = validateMotionAssertions([{
+    id: 'q', type: 'trajectory', query: { method: 'color', color: [1, 2, 3] },
+  }])[0];
+  const colorVariant = MOTION_ASSERTION_SCHEMA.fields.query.variants.find((variant) => variant.method === 'color');
+  assert.equal(trajectory.query.tolerance, colorVariant.fields.tolerance.default);
+  assert.equal(trajectory.query.minArea, colorVariant.fields.minArea.default);
+  assert.equal(trajectory.query.maxResults, colorVariant.fields.maxResults.default);
+  // 原型链键名不能被当成合法 variant。
+  assert.throws(() => validateMotionAssertions([{
+    id: 'q', type: 'trajectory', query: { method: 'toString', color: [1, 2, 3] },
+  }]), (error) => error.code === 'DYNAMIC_INVALID_ARGUMENT');
 });
 
 /* ------------------------------------------------------------------ */
@@ -827,6 +936,176 @@ test('flicker: detected flicker across missing intermediate frames keeps FAIL wi
   const result = analyzeFlicker({ frames });
   assert.equal(result.verdict, 'FAIL');
   assert.ok(result.limitations.includes('missing-intermediate-frames'));
+});
+
+/* ------------------------------------------------------------------ */
+/* TOOL-P1-03：实测采样统计（computeFrameSampling）与低采样判读          */
+/* ------------------------------------------------------------------ */
+
+test('computeFrameSampling: sourceTimestamp first, then receivedMonoMs/timeline', () => {
+  const bySource = [
+    frame({ id: 'a', seq: 1, sourceTimestamp: 10, receivedMonoMs: 1000, timelineMs: 0 }),
+    frame({ id: 'b', seq: 2, sourceTimestamp: 10.05, receivedMonoMs: 1100, timelineMs: 100 }),
+    frame({ id: 'c', seq: 3, sourceTimestamp: 10.10, receivedMonoMs: 1200, timelineMs: 200 }),
+  ];
+  const source = computeFrameSampling(bySource);
+  assert.equal(source.source, 'source-timestamp');
+  assert.equal(source.frameCount, 3);
+  assert.deepEqual(source.intervals, { count: 2, p50: 50, p95: 50, min: 50, max: 50, mean: 50 });
+  assert.equal(source.windowMs, 100);
+  assert.equal(source.effectiveFps, 20);
+  assert.equal(source.sufficient, true);
+  assert.equal(source.insufficientReason, null);
+  // sourceTimestamp 秒 → 毫秒（raw 单位始终是秒）。
+  assert.equal(source.firstMs, 10000);
+  assert.equal(source.lastMs, 10100);
+
+  // 任一帧缺 sourceTimestamp 时整段回退到 receivedMonoMs，不混用时钟。
+  const mixed = bySource.map((item, index) => (index === 1 ? { ...item, sourceTimestamp: null } : item));
+  const received = computeFrameSampling(mixed);
+  assert.equal(received.source, 'received-mono');
+  assert.deepEqual(received.intervals, { count: 2, p50: 100, p95: 100, min: 100, max: 100, mean: 100 });
+  assert.equal(received.effectiveFps, 10);
+
+  const timelineOnly = bySource.map((item) => ({ ...item, sourceTimestamp: null, receivedMonoMs: null }));
+  const timeline = computeFrameSampling(timelineOnly);
+  assert.equal(timeline.source, 'timeline');
+  assert.deepEqual(timeline.intervals, { count: 2, p50: 100, p95: 100, min: 100, max: 100, mean: 100 });
+
+  const noTime = bySource.map((item) => ({ ...item, sourceTimestamp: null, receivedMonoMs: null, timelineMs: null }));
+  const unverifiable = computeFrameSampling(noTime);
+  assert.equal(unverifiable.source, null);
+  assert.deepEqual(unverifiable.intervals, { count: 0, p50: null, p95: null, min: null, max: null, mean: null });
+  assert.equal(unverifiable.windowMs, null);
+  assert.equal(unverifiable.sufficient, false);
+  assert.equal(unverifiable.insufficientReason, 'no-interval');
+});
+
+test('computeFrameSampling: p50/p95/min/max/mean, window, fps and coarse-window flag', () => {
+  const frames = [0, 40, 80, 200].map((time, index) => frame({
+    id: `s${index + 1}`, seq: index + 1, timelineMs: time, receivedMonoMs: 10_000 + time,
+  }));
+  const sampling = computeFrameSampling(frames);
+  assert.deepEqual(sampling.intervals, {
+    count: 3, p50: 40, p95: 120, min: 40, max: 120, mean: 200 / 3,
+  });
+  assert.equal(sampling.windowMs, 200);
+  assert.equal(sampling.effectiveFps, 15);
+  assert.equal(sampling.source, 'received-mono');
+  assert.equal(sampling.sufficient, true);
+
+  const coarse = computeFrameSampling(frames, { assertionWindowMs: 30 });
+  assert.equal(coarse.assertionWindowMs, 30);
+  assert.equal(coarse.sufficient, false);
+  assert.equal(coarse.insufficientReason, 'sampling-coarser-than-assertion-window');
+
+  const fine = computeFrameSampling(frames, { assertionWindowMs: 40 });
+  assert.equal(fine.sufficient, true);
+
+  // 按 seq 排序（输入乱序不伪造间隔）。
+  const reversed = computeFrameSampling([...frames].reverse());
+  assert.deepEqual(reversed.intervals, sampling.intervals);
+  assert.throws(() => computeFrameSampling('nope'), (error) => error.code === 'DYNAMIC_INVALID_ARGUMENT');
+  assert.throws(() => computeFrameSampling([], { assertionWindowMs: -1 }),
+    (error) => error.code === 'DYNAMIC_INVALID_ARGUMENT');
+});
+
+test('flicker: sparse sampling cannot claim no-flicker → INCONCLUSIVE (TOOL-P1-03)', () => {
+  // 实测中位间隔 200ms > maxDurationMs(100ms)：60ms 级闪白无法覆盖，阴性结论不成立。
+  const sparse = analyzeFlicker({ frames: solidFrames(20, 20, [RED, RED, RED], { stepMs: 200 }) });
+  assert.equal(sparse.verdict, 'INCONCLUSIVE');
+  // Lead 裁决：INCONCLUSIVE 时不再保留阴性 token 'no-flicker'，避免下游把阴性当结论。
+  assert.deepEqual(sparse.reasons, ['insufficient-temporal-resolution']);
+  assert.ok(sparse.limitations.includes('sampling-coarser-than-assertion-window'));
+  assert.equal(sparse.metrics.sampling.intervals.p50, 200);
+  assert.equal(sparse.metrics.sampling.insufficientReason, 'sampling-coarser-than-assertion-window');
+  assert.equal(sparse.metrics.sampling.sufficient, false);
+
+  // 40ms 正常 cadence 仍可给出 PASS/no-flicker。
+  const cadence = analyzeFlicker({ frames: solidFrames(20, 20, [RED, RED, RED], { stepMs: 40 }) });
+  assert.equal(cadence.verdict, 'PASS');
+  assert.deepEqual(cadence.reasons, ['no-flicker']);
+  assert.equal(cadence.metrics.sampling.intervals.p50, 40);
+  assert.equal(cadence.metrics.sampling.sufficient, true);
+  assert.ok(cadence.limitations.includes('sampling-coarser-than-assertion-window') === false);
+
+  // 慢脉冲 PASS 语义不变（正例观察，不因采样粗于窗口被改成 INCONCLUSIVE）。
+  const slow = analyzeFlicker({ frames: solidFrames(20, 20, [RED, WHITE, RED], { stepMs: 300 }) });
+  assert.equal(slow.verdict, 'PASS');
+  assert.ok(slow.reasons.includes('flicker-too-long'));
+  assert.equal(slow.metrics.sampling.sufficient, false);
+});
+
+test('flicker: no measurable time base cannot claim no-flicker → INCONCLUSIVE', () => {
+  // 三帧静态画面但完全没有时间基准：无法排除采样间隙里的短闪，不能 PASS。
+  const untimed = solid(RED, RED, RED)
+    .map((item) => ({ ...item, timelineMs: null, receivedMonoMs: null, sourceTimestamp: null }));
+  const result = analyzeFlicker({ frames: untimed });
+  assert.equal(result.verdict, 'INCONCLUSIVE');
+  assert.deepEqual(result.reasons, ['insufficient-temporal-resolution']);
+  assert.equal(result.metrics.sampling.source, null);
+  assert.equal(result.metrics.sampling.intervals.count, 0);
+  assert.equal(result.metrics.sampling.sufficient, false);
+  assert.equal(result.metrics.sampling.insufficientReason, 'no-interval');
+  assert.ok(result.limitations.includes('sampling-coarser-than-assertion-window'));
+});
+
+test('sampling: freeze/jank/transition disclose coarse sampling without changing verdict', () => {
+  const token = 'sampling-coarser-than-assertion-window';
+
+  // freeze：800ms 间隔粗于 minDurationMs(500ms)，FAIL 语义不变。
+  const frozen = analyzeFreeze({
+    frames: solidFrames(20, 20, [RED, RED, RED, RED], { stepMs: 800 }),
+    expectation: frozenExpectation(),
+    events: advancingEvents(),
+  });
+  assert.equal(frozen.verdict, 'FAIL');
+  assert.ok(frozen.reasons.includes('freeze-detected'));
+  assert.equal(frozen.metrics.sampling.intervals.p50, 800);
+  assert.equal(frozen.metrics.sampling.sufficient, false);
+  assert.ok(frozen.limitations.includes(token));
+
+  // 200ms 间隔（≤ minDurationMs）不冒充“采样不足”。
+  const fineFreeze = analyzeFreeze({
+    frames: solidFrames(20, 20, [RED, RED, RED, RED], { stepMs: 200 }),
+    expectation: frozenExpectation(),
+    events: advancingEvents(),
+  });
+  assert.equal(fineFreeze.metrics.sampling.sufficient, true);
+  assert.ok(fineFreeze.limitations.includes(token) === false);
+
+  // jank：实测中位 100ms 已超出断言窗口 expectedIntervalMs×intervalFactor=80ms。
+  const jank = analyzeJank({ frames: jankFrames([0, 100, 200]), expectedIntervalMs: 40 });
+  assert.equal(jank.verdict, 'FAIL');
+  assert.ok(jank.reasons.includes('jank-detected'));
+  assert.equal(jank.metrics.sampling.intervals.p50, 100);
+  assert.equal(jank.metrics.sampling.sufficient, false);
+  assert.ok(jank.limitations.includes(token));
+
+  const normalJank = analyzeJank({ frames: jankFrames([0, 40, 80, 120]), expectedIntervalMs: 40 });
+  assert.equal(normalJank.verdict, 'PASS');
+  assert.equal(normalJank.metrics.sampling.sufficient, true);
+  assert.ok(normalJank.limitations.includes(token) === false);
+
+  // transition：没有可用时间源时 PASS 不变，但采样统计如实标记不可核验。
+  const untimed = solid(BLACK, BLACK, WHITE, WHITE, WHITE, WHITE)
+    .map((item) => ({ ...item, timelineMs: null, receivedMonoMs: null, sourceTimestamp: null }));
+  const transition = analyzeTransition({ frames: untimed });
+  assert.equal(transition.verdict, 'PASS');
+  assert.ok(transition.reasons.includes('transition-observed'));
+  assert.equal(transition.metrics.sampling.source, null);
+  assert.equal(transition.metrics.sampling.sufficient, false);
+  assert.ok(transition.limitations.includes(token));
+
+  // 非时间断言（frame-diff）不新增采样块，保持既有 metrics 形状。
+  const frameDiff = analyzeFrameDiff({ frames: solid(BLACK, WHITE) });
+  assert.equal(frameDiff.verdict, 'FAIL');
+  assert.equal(frameDiff.metrics.sampling, undefined);
+
+  // BLOCKED(no-frames) 不叠加“采样过粗”的 limitation 噪声。
+  const blocked = runMotionAssertions({ frames: [], assertions: [{ id: 'b', type: 'flicker' }] });
+  assert.equal(blocked.results[0].verdict, 'BLOCKED');
+  assert.ok(blocked.results[0].limitations.includes(token) === false);
 });
 
 /* ------------------------------------------------------------------ */

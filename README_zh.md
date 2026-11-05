@@ -6,7 +6,7 @@
 
 [English](README.md) | **简体中文**
 
-> **状态：预发布。** Web / Chromium 通道四个层级均已实现：35 个 Agent 工具 + 调试面板，覆盖程序化检查、结构化 GUI 操作、静态视觉分析、动态帧/时序分析、网络抓包、共享视口控制、混合画布与客户端标注。其他运行环境仍在规划中，运行时选择器保持禁用。插件目前以本地链接方式接入，尚未发布安装包。能力、限制与验证方式见 [docs/capability-tiers.md](docs/capability-tiers.md) 与 [docs/verification.md](docs/verification.md)。
+> **状态：预发布。** Web / Chromium 通道四个层级均已实现：36 个 Agent 工具 + 调试面板，覆盖程序化检查、结构化 GUI 操作、静态视觉分析、动态帧/时序分析、网络抓包、共享视口控制、混合画布与客户端标注。其他运行环境仍在规划中，运行时选择器保持禁用。插件目前以本地链接方式接入，尚未发布安装包。能力、限制与验证方式见 [docs/capability-tiers.md](docs/capability-tiers.md) 与 [docs/verification.md](docs/verification.md)。
 
 ## 这是什么项目？
 
@@ -31,7 +31,7 @@
 ## 当前已实现
 
 - **共享浏览器运行时**——每台主机一个无头 Chromium；每个 DSH 工作区拥有独立的页面、URL、视口、历史、网络缓冲与租约。Cookie 和存储由 Chromium profile 共享。
-- **35 个 Agent 工具**，覆盖程序化调试、结构化 GUI、静态视觉、动态行为与网络调试。
+- **36 个 Agent 工具**，覆盖程序化调试、结构化 GUI、静态视觉、动态行为与网络调试。
 - **动态行为（T4）**——真实 CDP screencast 与 screenshot-loop 两条帧源、带完整性计数的有界帧存储、七类确定性运动分析、WAAPI 运动控制与恢复、只交付指定区域的帧，以及六向「帧↔网络」事件关联。
 - **调试面板**——实时预览、响应式尺寸控制、共享视口状态、混合画布，以及 Agent 可读回的客户端标注层。
 - **证据与安全**——类型化错误、结构化操作证据、经过校验的 PNG 截图、受管视觉基线、网络证据，以及共享状态的乐观并发控制。
@@ -75,7 +75,7 @@ DSH Agent / Agent Team
 UI 测试插件运行时
   ├─ 共享无头 Chromium
   ├─ 每个 DSH 工作区独立页面（URL、视口、历史、网络、租约）
-  ├─ 35 个 Agent 工具
+  ├─ 36 个 Agent 工具
   └─ 调试面板（预览、尺寸栏、画布、标注）
         │
         ▼
@@ -116,7 +116,7 @@ T1 调用成功不能被当成视觉验收通过。涉及界面的验收标准�
 
 - **仅 Web。** Windows、Linux、macOS 桌面、Android、TUI、HarmonyOS、游戏和 3D 仍在规划中，运行时选择器保持禁用。
 - **视觉是确定性的，不是语义的。** T3 判断单张 PNG，T4 判断帧序列，两者都用确定性算法：没有 VLM/OCR、没有语义命名，所以「这段文字是什么意思」「人看着对不对」不在范围内。
-- **T4 验收是部分的。** 动态行为 40 条门槛中 8 条通过、20 条部分通过、0 条失败、12 条未运行——套件非零退出只表示有必需项未运行，不代表失败。主要真实宿主路径在重启后已复验，并修掉了它暴露的缺陷；close/dispose 恢复、WebGPU 渲染、媒体 seek/stall、header-verified 身份、16ms 闪白覆盖与长连接稳定性仍未验证。
+- **T4 验收是部分的。** 动态行为 44 条门槛中 12 条通过、20 条部分通过、0 条失败、12 条未运行——套件非零退出只表示有必需项未运行，不代表失败。主要真实宿主路径在重启后已复验，并修掉了它暴露的缺陷；close/dispose 恢复、WebGPU 渲染、媒体 seek/stall、header-verified 身份、16ms 闪白覆盖与长连接稳定性仍未验证。
 - **共享浏览器 profile。** Cookie 和存储由 Chromium profile 共享；只有页面、URL、视口、历史、网络缓冲和租约按工作区隔离。
 - **截图不脱敏。** 分享前请检查截图内容。
 - **附件不等于 provider 可见。** 返回图片附件不代表模型一定以原始分辨率收到了它。
@@ -137,7 +137,7 @@ T1 调用成功不能被当成视觉验收通过。涉及界面的验收标准�
 | --- | --- |
 | [docs/index.md](docs/index.md) | 文档索引 |
 | [docs/getting-started.md](docs/getting-started.md) | 安装要求、接入、调试面板与首次调用 |
-| [docs/tools.md](docs/tools.md) | 35 个工具、参数与错误分类 |
+| [docs/tools.md](docs/tools.md) | 36 个工具、参数与错误分类 |
 | [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 选路模型、P0 基础设施与已知限制 |
 | [docs/viewport-control.md](docs/viewport-control.md) | 共享视口、混合画布与标注 |
 | [docs/capture-p0.md](docs/capture-p0.md) | 截图、图片交付与文件生命周期 |

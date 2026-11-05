@@ -11,19 +11,42 @@ description: 使用 browser_* 工具调试与测试已授权的 Web 页面：T1 
 
 ## 事实来源与边界
 
-运行时是无头 Chromium + CDP，加上 Host 侧独立 HTTP(S) 客户端；Host 实现入口为 `index.js`，网络纯逻辑在 `network-p0.js`。**工具面 35 个**：T1 10 个（含共享视口 `browser_viewport`）+ T2 7 个（`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`）+ T3 6 个（`browser_vision_image`、`browser_vision_find`、`browser_vision_compare`、`browser_vision_act`、`browser_vision_baseline`、`browser_vision_check`）+ 网络 P0 7 个（`browser_network_session`、`browser_network_events`、`browser_network_detail`、`browser_network_trace`、`browser_network_control`、`browser_network_evidence`、`browser_network_subscribe`）+ T4 5 个（`browser_dynamic_session`、`browser_motion_observe`、`browser_motion_analyze`、`browser_motion_control`、`browser_dynamic_correlate`）。共享视口的权威契约是 `docs/viewport-control.md`（§3 数据模型、§4 Host 应用/兼容、§5 面板坐标映射与滚轮、§6 截图比例、§7 工具/schema/错误/limits、§8 验收）；T2 的权威接口契约是本仓库 `docs/t2-structured-gui.md`（§2 工具表、§3 Ref、§4 动作/表单/等待、§5 证据、§6 错误）；T3 的权威契约是 `docs/t3-vision.md`（§2 工具表、§3 坐标/证据/错误、§4 算法、§5 识别、§6 act、§7 缺陷、§8 基线/回归）；网络 P0 的权威契约是 `docs/network-p0.md`（§2 七工具、§4 事件 schema/配额/完整性、§5 分析、§6 链路、§7 控制、§8 证据/安全/隔离、§9 靶机、§10 验收 C1–C52、§13 R1 裁决）。共享视口、T2、T3 与网络 P0 的可用性以运行态为准，不以文档推断。
+运行时是无头 Chromium + CDP，加上 Host 侧独立 HTTP(S) 客户端；Host 实现入口为 `index.js`，网络纯逻辑在 `network-p0.js`。**工具面 36 个**：T1 10 个（含共享视口 `browser_viewport`）+ P0-E 1 个（`browser_tabs`）+ T2 7 个（`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`）+ T3 6 个（`browser_vision_image`、`browser_vision_find`、`browser_vision_compare`、`browser_vision_act`、`browser_vision_baseline`、`browser_vision_check`）+ 网络 P0 7 个（`browser_network_session`、`browser_network_events`、`browser_network_detail`、`browser_network_trace`、`browser_network_control`、`browser_network_evidence`、`browser_network_subscribe`）+ T4 5 个（`browser_dynamic_session`、`browser_motion_observe`、`browser_motion_analyze`、`browser_motion_control`、`browser_dynamic_correlate`）。共享视口的权威契约是 `docs/viewport-control.md`（§3 数据模型、§4 Host 应用/兼容、§5 面板坐标映射与滚轮、§6 截图比例、§7 工具/schema/错误/limits、§8 验收）；T2 的权威接口契约是本仓库 `docs/t2-structured-gui.md`（§2 工具表、§3 Ref、§4 动作/表单/等待、§5 证据、§6 错误）；T3 的权威契约是 `docs/t3-vision.md`（§2 工具表、§3 坐标/证据/错误、§4 算法、§5 识别、§6 act、§7 缺陷、§8 基线/回归）；网络 P0 的权威契约是 `docs/network-p0.md`（§2 七工具、§4 事件 schema/配额/完整性、§5 分析、§6 链路、§7 控制、§8 证据/安全/隔离、§9 靶机、§10 验收 C1–C52、§13 R1 裁决）。共享视口、T2、T3 与网络 P0 的可用性以运行态为准，不以文档推断。
 
-- **实现范围**：T1–T4 与网络 P0 共 35 个工具均已注册；T4 的 40 条门槛尚未全覆盖（部分通过、部分未运行），未运行项不得写成通过。
+- **实现范围**：T1–T4、网络 P0 与 P0-E 共 36 个工具均已注册；T4 的 40 条门槛尚未全覆盖（部分通过、部分未运行），未运行项不得写成通过。
 - **工程状态与运行态分开**：静态文档、manifest 与台账只记录工程状态，不构成可用性证明；是否可用以注册表与 `browser_capabilities` 为准。
 - **能力报告不能自证**：若 `browser_capabilities` 抛错或字段与注册 schema 不符，按证据不足处理（`BLOCKED`/`INCONCLUSIVE`），不要反向推断某能力可用或不可用。
 - 独立 HTTP 请求由 `browser_http_request` 提供：Host 侧 HTTP(S) 客户端，不启动 Chromium、不依赖页面/页面 Cookie、不受页面租约与串行队列约束；默认不跟随重定向、默认 5s 总超时与 64 KiB 保留上限，每跳重定向都复验目标策略。`browser_eval` 内的页面 `fetch` 仍属页面上下文（受 CORS/Cookie/CSP/导航状态影响），不能替代它。
-- **按 DSH 工作区隔离 page，不是一个 page 共享。** 同一时刻最多一个 headless Chromium/profile；每个工作区独立 page、URL/viewport/history/网络缓冲/串行队列/租约/ref 表；Cookie、localStorage、cache 仍共享（明确非安全隔离）。没有多标签/frame 选择、下载、上传、Cookie 导出、文件选择工具。
+- **按 DSH 工作区隔离 page，不是一个 page 共享。** 同一时刻最多一个 headless Chromium/profile；每个工作区有 primary page，GUI 内部标签页（真人点击 `target=_blank`/`window.open`）会为同工作区创建受控 child page；每个 page 独立 URL/viewport/history/网络缓冲/串行队列/租约/ref 表。Agent 的 `browser_*` 工具默认路由到**当前会话的 selectedTab**（默认 primary），可用 `browser_tabs select` 切换、用 `wait` 等待新标签、用 `list` 看生命周期与 blocked-popup notices；多个 tab 之间不自动聚合网络/帧/证据，跨标签结论必须逐 tab 取证。Cookie、localStorage、cache 仍共享（明确非安全隔离）。Agent 没有 frame 选择、下载、上传、Cookie 导出、文件选择工具。
 - 共享视口：每个工作区 Runtime 一份权威 `view={version,mode,x,y,width,height,scale,source,revision}`（文档 CSS px），Agent 的 `browser_viewport` 与面板读写同一对象；默认 1280×800@100%、DPR 固定 1、mobile=false。`scale` 0.1–2（10–200%）只是显示比例与默认截图密度，**不改变页面 CSS 视口、DPR 或页面 zoom**；只有显式改 width/height 才发 `Emulation.setDeviceMetricsOverride`。
 - 面板 screencast 是事件驱动的 JPEG 预览（同源 WS 优先、HTTP 轮询回退）；`/metrics` 是预览诊断，不是 Agent 页面证据或 T4 帧序列。
 - 关闭清空网络/请求/URL/标题/帧缓存并回收进程与 profile，同时清空 T2 的 snapshot/ref 表。引用记录仍须核对 action 时间，避免引用同一次运行中更早的页面。
 - 没有直接 CDP 命令工具，不得自行拼 CDP、虚构 Playwright/Puppeteer 能力或调用内部面板 HTTP 路由绕过工具层。
 
-## 统一工具接口（35 个）
+## 最短流程（8 步）与判定门禁
+
+**先走这 8 步，再谈结论**；任一步不满足就停在该步，如实记 `BLOCKED`/`INCONCLUSIVE`，不许跳到 PASS。
+
+1. **锁目标与契约**：写下 `expected_contract`（验收原文 + 来源）、目标 URL/标题/heading/关键元素、视口/DPR、需要的标签与登录态。契约来源不明 → 只能观察 + `UNKNOWN`。
+2. **探能力**：`browser_capabilities {}` 看本层工具的真实三态（不启动浏览器）；缺能力就写缺哪项，不猜。
+3. **页面身份门禁**：动作前记 expected，用 `browser_state` / `browser_snapshot`（heading+关键容器）/ `browser_tabs current` 回读 actual；不一致就回目标页或 `BLOCKED`，**不得用另一页面的 PASS 覆盖本题**（见 `references/core/page-identity.md`）。
+4. **先观测再动作**：记录初始状态、请求/UI 基线；元素级动作用 T2（`browser_snapshot` → ref → 动作）。
+5. **回读与独立证据**：`browser_node_state`/`browser_wait_for`/页面真值/网络/像素/帧证据；`ok:true`、`dispatched:true`、`applied:N` 都不是断言结果。
+6. **判定五元组**：`expected_contract` / `observation` / `evidence_ids` / `counterexamples` / `verdict`（见 `references/core/verdict-gate.md`）。
+7. **覆盖声明**：任何替代路径（自建标签、独立 HTTP、手工坐标、页面 JS）都要写清替代了什么、仍缺哪条原始断言、`coverage=full|partial|blocked`（见 `references/core/reporting.md`）。
+8. **提交前 6 项交叉校验**：verdict↔observation 异常词 / verdict↔缺陷清单 / observation↔证据 / 数字↔来源 / limitation↔status / 截图↔文件名与声明。任一项未消解 → 不得 PASS。
+
+**判定门禁速记**（PASS 前必过）：
+
+- `PASS`：observation 无未解释反例；关键断言都有 evidence_id；limitation 不含"无法验证该断言"。
+- `FAIL`：有可复现证据，且与 `expected_contract` 的偏离有契约依据；保留缺陷证据，不再找 PASS"翻案"。
+- `BLOCKED`：能力/权限/环境缺失；附动作、错误码、最小复现、已完成的替代验证。
+- `INCONCLUSIVE`：执行了但证据不足（含采样不足 `INSUFFICIENT_TEMPORAL_RESOLUTION`）。
+- `NOT_RUN`：未执行，不得计入通过。
+
+反例词（重复/重放/旧值/未变化/白色/闪烁/错位/409/冲突/0 项/无去重/超时）出现即**触发复核**，不能凭词直接判 FAIL，也不能忽略；契约允许时写进 `counterexamples` 并给来源（合成正反例见 `references/core/verdict-examples.md`）。
+
+## 统一工具接口（36 个）
 
 下面是各工具的业务字段；每次调用还返回并 render `actionId/sessionId/startedAt/finishedAt/target/args`（另有 `scope` 工作区身份），args 为参数摘要。实际返回与注册 schema 优先。
 
@@ -61,6 +84,23 @@ browser_viewport { "action": "set", "canvasX": 300, "canvasY": 200 }      // 画
 - **比例不等于页面缩放**：`scale` 只影响面板显示与"省略 scale 的截图密度"；判断布局要用页面 `innerWidth/innerHeight`、`devicePixelRatio`、`visualViewport.scale` 等真值，而不是截图尺寸。
 - **截图默认值改了**：`browser_screenshot` 省略 `scale` 现在跟随 `view.scale`（Agent 若把比例设成 0.65，后续默认截图就是 520×390 而不是 800×600）。需要固定分辨率时**显式给 scale**。
 - **边界**：画布是视图层合成，`O≠0` 时截图会重编码并披露 `composite:true`；`fixed`/`sticky` 随整帧平移；空白区域不存在于 DOM。面板画布交互与需认证的 GUI 路由不在本 Skill 的结论范围内。
+
+### P0-E（1 个，多标签页）
+
+`browser_tabs` 是唯一的 page 组管理工具，权威行为见 `docs/multi-tab.md`。
+
+```json
+{ "action": "list | current | select | open | close | wait",
+  "tabId": "select/close/wait 可选；close 省略=当前标签",
+  "kind": "仅 wait：primary | tab；source：primary | gui-popup | agent-open",
+  "timeoutMs": "仅 wait：0–30000，默认 5000；pollMs：50–1000，默认 100" }
+```
+
+- `list` 只读：每项 `tabId/runtimeId/kind/title/url/status/selected/busy/owner/reset` 之外还有 `source`（primary/gui-popup/agent-open）、`parentTabId`（popup 的 opener；primary 为 null）、`openEventId`、`createdAt`/`lastUsedAt`、`idleRemainingMs`、`manageable`；同时返回 `notices`（被策略阻断的 popup：reason/parentTabId/openEventId/at，≤8）与 `recentClosed`（closed/idle/evicted，≤8）。
+- **`click` 成功 ≠ 有新页**：原生 `target=_blank`/`window.open` 只有在真人 GUI 手势下才会被接管成 child tab。Agent 经 T2 点击触发的新页通常被策略阻断；先 `list` 看 `notices` 的 `reason`（如 `automatic-popup`/`popup-limit`/`no-opener`），再决定写 BLOCKED 还是等真人操作。**不要用 `browser_tabs.open` 自建空白页冒充原生弹窗链路**——那是替代路径，必须在 `coverage` 里标 partial 并写清缺失断言（opener/焦点/postMessage）。
+- `wait` 是纯内存轮询（不启动 Chromium、不取租约）：不带 `tabId` 时只匹配**调用开始后**新出现的标签；命中在 `matchedTab`（统一信封的 `tab` 仍是调用路由标签）。
+- `select` 原子 claim；被其他会话占用返回 `BUSY`。`close` 需要本人有效 lease；省略 tabId 关闭当前标签。child 被关闭/退休后旧 selection 进 `pendingReset`，下一次页面工具返回 `TARGET_NOT_FOUND(selected-tab-closed, fallbackTabId:primary)`，必须先 `current`/`select` 确认。
+- 每个 tab 独立 lease/队列/ref/网络/帧，`BUSY` 按 tab 计；不能把 A tab 的证据当作 B tab 的结论。
 
 ### T2（7 个，结构化 GUI）
 
@@ -132,7 +172,7 @@ browser_network_evidence {action:"export"|"link"|"integrity"}   # 或 browser_ne
 - **脱敏**：URL 敏感 query、敏感头（`authorization`/`cookie`/`set-cookie`/`x-api-key`/`x-auth-token`/`x-net-token`/`proxy-authorization`）、JSON/form 敏感字段一律 `***`，原值不进事件/证据/日志/错误消息；关联标识以每会话 HMAC 的公开 hash 呈现。脱敏不是通用秘密检测器，导出/分享前仍需检查。
 - **不伪造**：body 读不到 `available:false`；淘汰/丢弃/截断必须计数并进 `integrity`；时间相邻只能标 `basis:"temporal"`，不能冒充因果；`ok:true` 只表示调用完成。
 - **旧 22 工具不变**：这 7 个是本轮**纯新增**，不属于契约 §1.2「旧 22 工具保持不变」；旧工具的加法式增强只有两处——`browser_screenshot` 证据新增 `capture.networkWindow`（`capture.version` 仍 **1**，其余 capture/附件/file 语义不变）、T2 动作与网络事件加 mark 关联（`networkDelta` 仍在）；`browser_network` 仍是最近 300 条元数据环形缓冲，T3 六工具未改。
-- **边界**：`G1.5` 为 partial——OOPIF 部分覆盖，shared/service worker 不采集，popup 被目标策略阻断；HTTPS 未独立验收（`limits.network.https:"mechanism-identical"`）；`responseModification` 视 Chrome 实测能力；HAR 只保证 1.2 子集。只读动作不启动浏览器，`session.start` 与需要 page 的 control 才懒启动。
+- **边界**：`G1.5` 为 partial——OOPIF 部分覆盖，shared/service worker 不采集；自动/未授权 popup 仍被目标策略阻断，真人 GUI 触发的 `target=_blank` 可作为同工作区 child page 打开，但 Agent 网络工具仍只操作 primary、不做跨标签聚合；HTTPS 未独立验收（`limits.network.https:"mechanism-identical"`）；`responseModification` 视 Chrome 实测能力；HAR 只保证 1.2 子集。只读动作不启动浏览器，`session.start` 与需要 page 的 control 才懒启动。
 
 
 ### T4（5 个，动态行为）
@@ -140,7 +180,7 @@ browser_network_evidence {action:"export"|"link"|"integrity"}   # 或 browser_ne
 | 工具 | 必填 | 用途 |
 | --- | --- | --- |
 | `browser_dynamic_session` | `action` | start/stop/status/reset/**extend**；`config.captureVisual` 视觉采集（`source:"screencast"` 共享预览 JPEG 流 / `source:"screenshot-loop"` PNG 精确采样），或 `captureVisual:false`+`networkSessionId` 建纯网络关联视图（不启动 P0、不采帧） |
-| `browser_motion_observe` | `motionSessionId` | 只读帧/事件查询：`cursor`/`sinceSeq`/`window`/`frameIds` 互斥、`includeImages`≤3、`fresh` 显式真实采样；**`region` = 只交付该矩形（crop-on-delivery，PNG，需配 `includeImages`）**；不 ensure、不续租 |
+| `browser_motion_observe` | `motionSessionId` | 只读帧/事件查询：`cursor` 与 `sinceSeq` 互斥、`frameIds` 与 `window`/`cursor`/`sinceSeq` 互斥、`fresh` 不能与这些查询字段同用、`includeImages`≤3、`fresh` 显式真实采样；**`region` = 只交付该矩形（crop-on-delivery，PNG，需配 `includeImages`）**；不 ensure、不续租 |
 | `browser_motion_analyze` | `motionSessionId`,`assertions` | 七类断言：`frame-diff`/`region-change`/`flicker`/`freeze`/`jank`/`trajectory`/`transition`；离线不采新帧
 | `browser_motion_control` | `motionSessionId`,`action` | `pause`/`resume`/`seek`/`rate`/`restore`；`adapterId`+`targetIds`≤20，逐目标 `before/after` 回读，`applied/failedIndex/restoreStatus`；`restoreToken` 只在 restore 用 |
 | `browser_dynamic_correlate` | `dynamicSessionId` | 六向关联：`operation→visual`/`operation→network`/`network→visual`/`visual→network`/`network→network`/`visual→visual`；`includeTemporal` 默认 false |
@@ -155,7 +195,7 @@ browser_network_evidence {action:"export"|"link"|"integrity"}   # 或 browser_ne
 - 禁止：用单张截图/`browser_eval` 页面状态/页面 `anomalies` 冒充帧分析；把编码字节 hash 当像素；把时间邻近当因果；跨 scope 聚合；未采到断言"无闪烁/无卡顿"。
 
 **方法论（三条铁律，详版见 `references/scenarios/visual-motion.md`）**：
-1. **不要用整页截图"理解动画"**——页面常把答案画在画面上（如 `t=233ms tx=93.32 opacity=0.855`），等于读答案而不是看运动；且整帧 JPEG 61,824 B vs 裁出动画本体 PNG 4,198 B（**14.7×**）。先 `region-change` 定位 bbox → 再 `observe {region}` 只看这块。
+1. **不要用整页截图"理解动画"**——页面常把状态行（形如 `t=…ms tx=… opacity=…` 的读数）画在画面上，等于读答案而不是看运动；且整帧 JPEG 体积通常是裁出动画区域 PNG 的十倍以上。先 `region-change` 定位 bbox → 再 `observe {region}` 只看这块。
 2. **算力靠抽帧，不靠 `region`**——JPEG 必须整帧解码，`region` 只缩小比较/输出；实测 176 帧全序列 **20.5s→BLOCKED**、抽 6 帧 **883ms**。耗时用 `frameIds`/`window` 压，token 用 `region` 压。
 3. **采样没覆盖 ≠ 没有异常**——16ms 闪白抓不到就报"采样不足"，不许写"无闪烁"。
 标准管线：**打开页面+开始采集同批下发**（Agent 往返 ~11.7s，否则错过观察窗口）→ 定位 → 收窄抽帧 → 七类断言 → `region` 看图 → `motion_control` 消融（目标来自 T2）→ `dynamic_correlate` 关联。
@@ -424,6 +464,10 @@ browser_http_request {
 - 工作流：`references/core/workflow.md`
 - 选路：`references/core/selection.md`；回退：`references/core/fallback.md`
 - 验证：`references/core/verification.md`；安全：`references/core/safety.md`
+- **判定门禁（PASS 前必读）**：`references/core/verdict-gate.md`（五元组 + 提交前 6 项交叉校验）；页面身份：`references/core/page-identity.md`
+- 工具路由与断言 schema：`references/core/tool-routing-and-limits.md`（失败码→下一步 + `motion_analyze` 七类断言字段 + 坐标空间对照表）
+- 网络与状态：`references/core/network-and-state.md`（SSE/多视图不变量/409 三方核对）；动态视觉与采样：`references/core/dynamic-visual.md`（三层分离 + 采样真实性 + WebGL 假设树）
+- 报告与覆盖声明：`references/core/reporting.md`；字段模板：`references/core/report-template.md`；合成正反例：`references/core/verdict-examples.md`
 - T1：`references/tiers/t1-programmatic.md`；T2：`references/tiers/t2-structured.md`
 - T3：`references/tiers/t3-static-visual.md`（已实现摘要，权威契约 `docs/t3-vision.md`）；T4：`references/tiers/t4-dynamic-visual.md`（已实现摘要与用法，权威契约 `docs/t4-dynamic-behavior.md`、实现冻结 `docs/t4-dynamic-behavior.md`）
 - 网络 P0：权威契约 `docs/network-p0.md`；能力三态与限额见 `references/contracts/capability.md` 的 network 段

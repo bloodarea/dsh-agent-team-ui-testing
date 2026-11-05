@@ -32,8 +32,9 @@ import { fileURLToPath } from 'node:url';
 import { apply } from '../../index.js';
 
 /**
- * The tool surface implemented by index.js, 35 tools:
+ * The tool surface implemented by index.js, 36 tools:
  *   10 T1 (docs/architecture.md + docs/viewport-control.md §7 `browser_viewport`)
+ * + 1 P0-E multi-tab (`browser_tabs`, docs/internal/p0e-multitab-contract.md §3)
  * + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
  * + 7 network P0 (docs/network-p0.md §2)
  * + 5 Web T4 dynamic behavior (contract docs/t4-dynamic-behavior.md §7, implementation contract
@@ -56,6 +57,8 @@ export const EXPECTED_TOOLS = Object.freeze([
   Object.freeze({ name: 'browser_http_request', required: ['url'] }),
   Object.freeze({ name: 'browser_state', required: [] }),
   Object.freeze({ name: 'browser_capabilities', required: [] }),
+  // P0-E (docs/internal/p0e-multitab-contract.md §3): one new tool, 35 → 36.
+  Object.freeze({ name: 'browser_tabs', required: ['action'] }),
   // Shared viewport (docs/viewport-control.md §7): `action` is the only registered required field;
   // "get accepts no other field / set needs at least one view field" is enforced at execution time.
   Object.freeze({ name: 'browser_viewport', required: ['action'] }),

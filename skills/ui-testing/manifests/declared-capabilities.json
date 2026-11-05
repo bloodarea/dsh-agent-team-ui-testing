@@ -141,7 +141,8 @@
       "browser_scroll",
       "browser_fill_form",
       "browser_node_state",
-      "browser_wait_for"
+      "browser_wait_for",
+      "browser_tabs"
     ],
     "viewport_actions": {
       "tool": "browser_viewport",
@@ -377,7 +378,7 @@
         "原生 select popup / 文件选择器 / JSDialog",
         "hover 专用工具、drag/drop、上传、下载",
         "contenteditable/富文本编辑器协议、IME/composition",
-        "多标签/popup 接管、force/JS click 逃生参数",
+        "Agent 多标签/popup 目标选择（GUI 内部标签页已支持）、force/JS click 逃生参数",
         "像素/颜色/可读性等视觉判定（T3）",
         "动画/时序/运动连续性（T4）"
       ],
@@ -430,6 +431,13 @@
       "isolation": "independent requests; no shared page lease or queue",
       "targetPolicy": "HTTP(S), URL and DNS validation per dispatch; loopback allowed; private ranges require DSH_UI_TESTING_ALLOW_PRIVATE=1; known DSH origins blocked",
       "security": "Not a complete network sandbox; DNS rebinding remains possible; response content may contain secrets"
+    },
+    "tabs": {
+      "maxTabsPerWorkspace": 4,
+      "maxChildTabs": 3,
+      "maxGlobalPages": 8,
+      "leaseIdleMs": 15000,
+      "defaultTab": "primary"
     }
   },
   "operations": [
@@ -487,7 +495,7 @@
       "status": "partial",
       "tool": "browser_capabilities",
       "source_lines": "Runtime 能力探测 / browser_capabilities",
-      "constraints": "P0新增capture/limits.capture声明与上次真实截图observed（首次null），不启动/不夺租约；设计上不启动、不占租约；工具面 35 项（10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4），含 web.t1.http-request=available、web.t1.viewport=available（get 只读、set 页面操作，其他 owner 持租约时 set 报 BUSY、get 仍可读）、web.t2.*、web.t2.structured-dom、web.t3.* 与 web.network.*；另报 viewport 段（get/set/预设/比例/limits.viewport，observed 只来自真实读回）与 capture.defaultScaleSource='view.scale'；未启动的页面工具可 available（按需启动可能失败）；其他 owner 占用时页面/network/T2/T3 unavailable+BUSY、诊断与 HTTP 仍 available。available 只是设计级状态，行为验证看各套件报告。"
+      "constraints": "P0新增capture/limits.capture声明与上次真实截图observed（首次null），不启动/不夺租约；设计上不启动、不占租约；工具面 36 项（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4），含 web.t1.http-request=available、web.t1.viewport=available（get 只读、set 页面操作，其他 owner 持租约时 set 报 BUSY、get 仍可读）、web.t2.*、web.t2.structured-dom、web.t3.* 与 web.network.*；另报 viewport 段（get/set/预设/比例/limits.viewport，observed 只来自真实读回）与 capture.defaultScaleSource='view.scale'；未启动的页面工具可 available（按需启动可能失败）；其他 owner 占用时页面/network/T2/T3 unavailable+BUSY、诊断与 HTTP 仍 available。available 只是设计级状态，行为验证看各套件报告。"
     },
     {
       "id": "web.t1.http-request",
@@ -564,7 +572,7 @@
       "status": "unsupported",
       "tool": null,
       "source_lines": null,
-      "constraints": "无下载/上传/Cookie 导出/多标签页/frame 级目标；无 hover 专用工具、无 drag/drop、无原生 select popup/文件选择/JSDialog 接管/IME/composition/contenteditable 编辑器协议/截图 diff。"
+      "constraints": "无下载/上传/Cookie 导出；Agent 无多标签页/frame 级目标（GUI 内部真人 target=_blank 标签页已支持，但工具仍只操作 primary）；无 hover 专用工具、无 drag/drop、无原生 select popup/文件选择/JSDialog 接管/IME/composition/contenteditable 编辑器协议/截图 diff。"
     },
     {
       "id": "web.t3.image",
@@ -703,7 +711,7 @@
       "id": "web.network.p0",
       "status": "verified",
       "source_lines": "网络 P0 聚合能力（采集/时序/分析/链路/控制/证据/订阅）+ docs/network-p0.md §1、§12、§13",
-      "constraints": "聚合声明：7 个 browser_network_* 工具面 22→29 后的网络层，旧 22 工具参数/返回/语义不变；只读/离线动作不启动浏览器（session.start 与需 page 的 control 才懒启动），session/control 变更走该工作区队列与 single-owner-lease；默认脱敏、配额与完整性计数公开、跨 scope 拒绝、订阅 owner-only；边界：G1.5 为 partial（popup 被既有目标策略阻断，无多标签/popup 采集）、HTTPS 未独立验收（能力报 https:\"mechanism-identical\"）、responseModification 条件支持、不做 MITM/CA/真实限速、HAR 仅 1.2 子集；真实宿主行为需单独证据。"
+      "constraints": "聚合声明：7 个 browser_network_* 工具面 22→29 后的网络层，旧 22 工具参数/返回/语义不变；只读/离线动作不启动浏览器（session.start 与需 page 的 control 才懒启动），session/control 变更走该工作区队列与 single-owner-lease；默认脱敏、配额与完整性计数公开、跨 scope 拒绝、订阅 owner-only；边界：G1.5 为 partial（自动/未授权 popup 仍被目标策略阻断；GUI 内部真人 target=_blank child page 已支持，但 Agent 网络仍只操作 primary、不做跨标签聚合）、HTTPS 未独立验收（能力报 https:\"mechanism-identical\"）、responseModification 条件支持、不做 MITM/CA/真实限速、HAR 仅 1.2 子集；真实宿主行为需单独证据。"
     },
     {
       "id": "web.t4.dynamic-session",
@@ -753,6 +761,13 @@
       "tool": null,
       "source_lines": "legacy alias",
       "constraints": "旧聚合别名，aliasOf=web.t4.dynamic-behavior；不是独立工具、不计入工具面。"
+    },
+    {
+      "id": "web.tabs",
+      "status": "verified",
+      "tool": "browser_tabs",
+      "source_lines": "RuntimeRegistry selectedTab/browser_tabs",
+      "constraints": "P0-E 第 36 个工具；list/current 只读；select 原子 claim；open 新建 about:blank；close 仅本人有效 lease；每 workspace 4 tabs/3 child、全局 8；错误 TAB_NOT_FOUND/TAB_LIMIT/TAB_FORBIDDEN/BUSY；Agent selectedTab 默认 primary，GUI active 独立。"
     }
   ],
   "unsupported_tiers": [],

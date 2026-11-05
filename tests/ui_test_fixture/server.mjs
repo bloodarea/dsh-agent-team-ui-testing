@@ -30,6 +30,7 @@
  *   GET  /web-t3.html     -> web-t3.html (T3 static-vision fixture page)
  *   GET  /capture-p0.html -> capture-p0.html (P0 capture pixel-truth page; fixed CSS boxes/colours)
  *   GET  /blank.html      -> blank.html (P0 capture blank-page fixture: pure white body)
+ *   GET  /pick-element.html -> pick-element.html (read-only element-pick fixture: fixed boxes)
  *
  * Network fixture (/n/*, truth table in tests/ui_test_fixture/README.md §NET; only 127.0.0.1,
  * every response carries `cache-control: no-store` + `x-fixture: dsh-ui-testing`):
@@ -126,6 +127,8 @@ const STATIC_FILES = new Map([
   // P0 capture fixtures (docs/capture-p0.md; truth table in tests/ui_test_fixture/README.md).
   ['/capture-p0.html', 'capture-p0.html'],
   ['/blank.html', 'blank.html'],
+  // Read-only element-pick fixture (tests/acceptance/pick-element-host.mjs): fixed boxes.
+  ['/pick-element.html', 'pick-element.html'],
   // Network fixture (/n/*): truth table in tests/ui_test_fixture/README.md §NET.
   ['/web-network.html', 'web-network.html'],
   ['/web-network-frame.html', 'web-network-frame.html'],

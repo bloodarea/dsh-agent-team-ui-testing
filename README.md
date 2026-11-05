@@ -6,7 +6,7 @@ Let AI agents operate, inspect, test and verify real user interfaces — with ev
 
 **English** | [简体中文](README_zh.md)
 
-> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 35 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, shared viewport control, a hybrid canvas and client-side annotations. Other environments are planned and stay disabled in the runtime picker. The plugin is linked locally during development; there is no published package yet. Capabilities, limits and verification are documented in [docs/capability-tiers.md](docs/capability-tiers.md) and [docs/verification.md](docs/verification.md).
+> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 36 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, shared viewport control, a hybrid canvas and client-side annotations. Other environments are planned and stay disabled in the runtime picker. The plugin is linked locally during development; there is no published package yet. Capabilities, limits and verification are documented in [docs/capability-tiers.md](docs/capability-tiers.md) and [docs/verification.md](docs/verification.md).
 
 ## What is this?
 
@@ -31,7 +31,7 @@ This project focuses on:
 ## What works today
 
 - **Shared browser runtime** — one headless Chromium per host; each DSH workspace gets its own page, URL, viewport, history, network buffer and lease. Cookies and storage are shared by the Chromium profile.
-- **35 agent tools** across programmatic, structured GUI, static vision, dynamic behavior and network debugging.
+- **36 agent tools** across programmatic, structured GUI, static vision, dynamic behavior and network debugging.
 - **Dynamic behavior (T4)** — real CDP screencast plus a screenshot-loop path, a bounded frame store with integrity counters, seven deterministic motion analyses, WAAPI motion control with restore, region-only frame delivery, and six-direction frame↔network event correlation.
 - **Debug panel** — live preview, responsive size controls, shared viewport state, a hybrid canvas, and a client-side annotation layer that agents can read back.
 - **Evidence and safety** — typed errors, structured action evidence, validated PNG capture, managed visual baselines, network evidence and optimistic concurrency for shared state.
@@ -75,7 +75,7 @@ DSH Agent / Agent Team
 UI testing plugin runtime
   ├─ shared headless Chromium
   ├─ one page per DSH workspace (URL, viewport, history, network, lease)
-  ├─ agent tool surface (35 tools)
+  ├─ agent tool surface (36 tools)
   └─ debug panel (preview, size bar, canvas, annotations)
         │
         ▼
@@ -137,7 +137,7 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 | --- | --- |
 | [docs/index.md](docs/index.md) | Documentation index |
 | [docs/getting-started.md](docs/getting-started.md) | Requirements, install, debug panel and first calls |
-| [docs/tools.md](docs/tools.md) | All 35 tools, parameters and error classes |
+| [docs/tools.md](docs/tools.md) | All 36 tools, parameters and error classes |
 | [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 selection model, P0 infrastructure and known limits |
 | [docs/viewport-control.md](docs/viewport-control.md) | Shared viewport, hybrid canvas and annotations |
 | [docs/capture-p0.md](docs/capture-p0.md) | Screenshots, image delivery and file lifecycle |

@@ -35,7 +35,7 @@
 
 ## 三条铁律（详版方法论见 `references/scenarios/visual-motion.md`）
 
-1. **不要用整页截图"理解动画"**：页面常把答案画在画面上（`t=233ms tx=93.32 opacity=0.855`），整页图等于泄漏答案；且整帧 JPEG 61,824 B vs 裁剪 243×139 PNG 4,198 B（**14.7×**）。先 `region-change` 定位 bbox → 再 `observe {region}` 只看这块。
+1. **不要用整页截图"理解动画"**：页面常把状态行（形如 `t=…ms tx=… opacity=…` 的读数）画在画面上，整页图等于泄漏答案；且整帧 JPEG 体积通常是裁剪区域 PNG 的十倍以上。先 `region-change` 定位 bbox → 再 `observe {region}` 只看这块。
 2. **算力靠抽帧不靠 region**：JPEG 必须整帧解码；176 帧全序列 **20.5s→BLOCKED**，抽 6 帧 **883ms**。
 3. **采样没覆盖 ≠ 没有异常**：16ms 闪白抓不到即报"采样不足"，不写"无闪烁"。
 

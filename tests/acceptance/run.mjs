@@ -351,13 +351,13 @@ async function probe1ToolSurface({ harness, check, finding }) {
   const expectedNames = EXPECTED_TOOLS.map((tool) => tool.name);
   const actualNames = harness.toolNames();
 
-  // 35 = 10 T1 (docs/architecture.md + docs/viewport-control.md §7 browser_viewport)
+  // 36 = 10 T1 + 1 P0-E browser_tabs (docs/architecture.md + docs/viewport-control.md §7 browser_viewport)
   //      + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
   //      + 7 network (docs/network-p0.md §2)
   //      + 5 T4 (docs/t4-dynamic-behavior.md §7 / docs/t4-dynamic-behavior.md §2).
   //      Counted against EXPECTED_TOOLS so a group surface cannot drift silently; the "same
   //      names" assertion below still proves nothing extra.
-  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4）`, actualNames.length === EXPECTED_TOOLS.length, {
+  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4）`, actualNames.length === EXPECTED_TOOLS.length, {
     expected: { count: EXPECTED_TOOLS.length, names: expectedNames },
     actual: { count: actualNames.length, names: actualNames },
   });
@@ -573,7 +573,7 @@ async function probe23NetworkSurface({ harness, createHarness, fixture, check, f
     const legacyKeys = Object.keys(legacy.value || {}).sort();
     // §2.8 keeps the legacy body `{entries:[metadata]}` (wrapped by the shared action envelope); `ok`
     // is not required, the envelope fields are allowed to grow.
-    const envelopeKeys = ['actionId', 'sessionId', 'startedAt', 'tool', 'args', 'scope', 'target', 'finishedAt'];
+    const envelopeKeys = ['actionId', 'sessionId', 'startedAt', 'tool', 'args', 'scope', 'target', 'tab', 'finishedAt'];
     check('旧 browser_network 仍返回 {entries:[元数据]}（envelope 允许携带 actionId 等，不要求 ok）',
       legacy.ok && Array.isArray(legacy.value?.entries)
         && legacyKeys.every((key) => key === 'entries' || key === 'capturedAt' || key === 'note' || envelopeKeys.includes(key)),
@@ -1743,7 +1743,7 @@ async function main() {
     helpers: harnessModule,
   };
 
-  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 30 个 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network），名称/参数 schema 与 docs/architecture.md + docs/viewport-control.md §7 + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 + docs/network-p0.md §2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
+  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 36 个 browser_* 工具（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4），名称/参数 schema 与 docs/architecture.md + docs/viewport-control.md §7 + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 + docs/network-p0.md §2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
   await runProbe({
     id: 'P23-network-surface',
     title: 'network P0 工具面（注册/schema/离线诊断/owner/BUSY/旧工具不变）',

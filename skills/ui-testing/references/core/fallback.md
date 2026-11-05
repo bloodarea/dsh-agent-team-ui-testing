@@ -1,6 +1,6 @@
 # Fallback & Stop · 恢复与停止（当前实现版）
 
-> 本文件只在按 `selection.md` 选路后参与决策。回退是换一个方法验证**同一个预先确定的断言**；不能降低验收标准，也不能用新结果覆盖已证实的缺陷。当前插件已实现 T1 + T2 + T3 + T4 + 网络 P0（35 工具）：T2 → T3 → T4 的升级是**真实可用路径**，且跨层证据要分别记账。
+> 本文件只在按 `selection.md` 选路后参与决策。回退是换一个方法验证**同一个预先确定的断言**；不能降低验收标准，也不能用新结果覆盖已证实的缺陷。当前插件已实现 T1 + T2 + T3 + T4 + 网络 P0 + P0-E 多标签（36 工具）：T2 → T3 → T4 的升级是**真实可用路径**，且跨层证据要分别记账。
 
 ## 决策流程
 
@@ -51,7 +51,7 @@
 
 | 结果 | 语义 | 合法下一步 |
 |---|---|---|
-| `UNSUPPORTED` | 当前插件明确没有该能力（如 T3/T4、iframe/OOPIF 内部、closed shadow、contenteditable 编辑器、下载/上传/Cookie/多标签页、原生 select popup、Agent 视口工具） | 报告 `BLOCKED`，不要找不存在的方法 |
+| `UNSUPPORTED` | 当前插件明确没有该能力（如 T3/T4、iframe/OOPIF 内部、closed shadow、contenteditable 编辑器、下载/上传/Cookie 导出、Agent 多标签页选择（GUI 内部标签页另有支持）、原生 select popup、Agent 视口工具） | 报告 `BLOCKED`，不要找不存在的方法 |
 | `UNAVAILABLE` | 工具存在但当前不可用（浏览器启动失败、CDP 连接断开、30s 超时） | 检查 `browser_state.error`；可重试一次并记录，不要越权绕过 |
 | `INCONCLUSIVE` | 执行了部分操作，但证据不足以得出结论（例如截图无法分析、导航未等待加载） | 换 T1 观察方法；仍不足则 `INCONCLUSIVE` |
 | `ACTION_UNKNOWN` | 输入/导航超时或断连，副作用不确定 | **先查页面状态**，不得盲重放提交、删除、支付等动作 |

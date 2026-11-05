@@ -517,14 +517,14 @@ async function probeC1({ check, finding }) {
     check('capabilities 覆盖全部 35 个工具（含 10 个 T1 + 7 个 T2 + 6 个 T3 + 7 个 network + 5 个 T4）', toolEntries.length === EXPECTED_TOOLS.length && EXPECTED_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
       expected: { count: EXPECTED_TOOLS.length }, actual: toolEntries.map((item) => `${item.tool}:${item.status}`),
     });
-    // Proves the pre-network surface did not regress independently of the new group: the 23
-    // legacy tools (22 pre-viewport + browser_viewport) must still be declared, and the 7 network
-    // tools must be declared too.
-    check('旧 23 工具（22 旧 + browser_viewport）与 7 个 network、5 个 T4 工具都各自完整声明', LEGACY_TOOLS.length === 23 && NETWORK_TOOLS.length === 7
+    // Proves the pre-network surface did not regress independently of the new group: the 24
+    // legacy tools (22 pre-viewport + browser_viewport + browser_tabs) must still be declared, and
+    // the 7 network tools must be declared too.
+    check('旧 24 工具（22 旧 + browser_viewport + browser_tabs）与 7 个 network、5 个 T4 工具都各自完整声明', LEGACY_TOOLS.length === 24 && NETWORK_TOOLS.length === 7
       && LEGACY_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name))
       && NETWORK_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name))
       && T4_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
-      expected: { legacy: 23, network: 7, t4: 5 },
+      expected: { legacy: 24, network: 7, t4: 5 },
       actual: { legacyMissing: LEGACY_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name),
         networkMissing: NETWORK_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name),
         t4Missing: T4_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name) },
@@ -1647,7 +1647,8 @@ async function probeC20({ harness, check }) {
   check('Enter 触发真实提交：#t2-output 的 JSON 含刚输入的值', output.name === 'Enter User' && output.email === 'enter@example.test' && stateAfterSubmit.submitted === '1', {
     expected: { name: 'Enter User', email: 'enter@example.test', submitted: '1' }, actual: { output, submitted: stateAfterSubmit.submitted },
   });
-  const business = Object.keys(submitted.value || {}).filter((key) => !['ok', 'actionId', 'sessionId', 'startedAt', 'finishedAt', 'target', 'args', 'scope', 'evidence', 'tool'].includes(key));
+  // 'tab' is P0-E host metadata attached to every action result, not an Enter business field.
+  const business = Object.keys(submitted.value || {}).filter((key) => !['ok', 'actionId', 'sessionId', 'startedAt', 'finishedAt', 'target', 'args', 'scope', 'evidence', 'tool', 'tab'].includes(key));
   check('submitted 只表示 Enter 已派发（业务字段仅 dispatched/insertedCharacters/replaced/submitted）', JSON.stringify(business.sort()) === JSON.stringify(['dispatched', 'insertedCharacters', 'replaced', 'submitted']), {
     expected: ['dispatched', 'insertedCharacters', 'replaced', 'submitted'], actual: business,
   });

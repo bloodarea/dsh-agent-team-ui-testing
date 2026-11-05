@@ -10,9 +10,10 @@ import { delimiter, isAbsolute, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FrameSource } from './frame-source.js';
 import { attachFramePush } from './frame-push.js';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { BrowserError, Cdp, asBrowserError, checkAbort, abortable, redactUrl, redactText, validateTarget } from './browser-safety.js';
 import {
@@ -758,12 +759,50 @@ const IDLE_MS_DEFAULT = 600000;
 const VIEWER_TTL_MS = 15000;
 /** Bounded cold-entry cache: at most maxPages page entries + this many idle scope entries. */
 const MAX_ENTRIES_DEFAULT = 32;
+/** Per-workspace popup child cap (primary is separate; global maxPages still applies). */
+const MAX_POPUP_CHILDREN_DEFAULT = 3;
+/**
+ * P0-E browser_tabs.wait (TOOL-P0-01): a pure Host-memory poll. The bounds are the same as the
+ * tool schema so a rejected argument never reaches the browser.
+ */
+const TAB_WAIT_TIMEOUT_DEFAULT_MS = 5000;
+const TAB_WAIT_TIMEOUT_MAX_MS = 30000;
+const TAB_WAIT_POLL_DEFAULT_MS = 100;
+const TAB_WAIT_POLL_MIN_MS = 50;
+const TAB_WAIT_POLL_MAX_MS = 1000;
+/** Per-workspace bounded lifecycle projections: blocked popup notices + close audit. */
+const POPUP_NOTICES_LIMIT = 8;
+const CLOSED_HISTORY_LIMIT = 8;
 /** Contract defaults, exported so acceptance tests can assert them even when env overrides. */
 export const WORKSPACE_ISOLATION_DEFAULTS = Object.freeze({ maxPages: MAX_PAGES_DEFAULT, idleMs: IDLE_MS_DEFAULT, viewerTtlMs: VIEWER_TTL_MS });
 /** Bounded wait for a freshly created target to show up in /json/list with its debugger URL. */
 const TARGET_WS_TIMEOUT_MS = 10000;
 /** Host-owned createTarget lifetime: the response must still be adopted if the caller aborts. */
 const PAGE_CREATE_TIMEOUT_MS = 30000;
+
+/**
+ * DevTools popup startup contract (docs/internal/devtools-popup.md §2).
+ *
+ * The debugger port is chosen *before* spawn so the exact browser Origin can be allowed at launch
+ * (`--remote-allow-origins`): Chrome 111+ rejects a CDP WebSocket whose Origin is not allow-listed,
+ * and the wildcard `*` is forbidden by the contract. Chrome 152 does not write DevToolsActivePort
+ * for an explicit port, so readiness is the `/json/version` endpoint plus the identity line the
+ * child itself printed on stderr. Every failed round owns a fresh process + profile and is cleaned
+ * up before the next candidate; the whole start is bounded (3 attempts / 30s).
+ */
+const DEVTOOLS_STARTUP = Object.freeze({
+  maxAttempts: 3,
+  attemptTimeoutMs: 10000,
+  totalBudgetMs: 30000,
+  pollIntervalMs: 100,
+  fetchTimeoutMs: 500,
+  portCandidates: 5,
+  stderrBufferBytes: 8192,
+  killGraceMs: 1200,
+  killFinalMs: 500,
+});
+/** Reasons that justify another bounded attempt with a fresh port/process/profile. */
+const DEVTOOLS_RETRYABLE = new Set(['port-unavailable', 'endpoint-mismatch', 'debugger-not-ready']);
 
 const delay = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
@@ -1182,6 +1221,105 @@ function readAnnotationBody(req, maxBytes) {
 }
 
 /**
+ * Pick one loopback port that is free on both 127.0.0.1 and ::1 (when IPv6 exists).
+ *
+ * The contract requires holding both probe sockets until the probe is finished and closing them
+ * before spawn. There is an unavoidable TOCTOU window between close and Chrome's bind; this is a
+ * candidate picker, not a port reservation. If ::1 is occupied the whole candidate is rejected
+ * (another debugger already owns it); a platform without IPv6 degrades explicitly to IPv4-only.
+ */
+async function probeLoopbackDevtoolsPort() {
+  const ipv4 = await new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.once('error', (error) => resolve({ server: null, error }));
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+  if (!ipv4.server) return { port: 0, ipv6: false, error: ipv4.error };
+  const port = ipv4.port;
+  const ipv6 = await new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.once('error', (error) => resolve({ server: null, error }));
+    server.listen(port, '::1', () => resolve({ server }));
+  });
+  await new Promise((resolve) => ipv4.server.close(resolve));
+  if (ipv6.server) await new Promise((resolve) => ipv6.server.close(resolve));
+  if (ipv6.error) {
+    const code = ipv6.error.code;
+    if (['EAFNOSUPPORT', 'EADDRNOTAVAIL', 'EPROTONOSUPPORT', 'EINVAL'].includes(code)) return { port, ipv6: false };
+    return { port: 0, ipv6: false, error: ipv6.error };
+  }
+  return { port, ipv6: true };
+}
+
+/** True when a /proc/net/tcp{,6} listening address is a loopback address (never 0.0.0.0/::). */
+function isLoopbackProcAddress(addressHex, ipv6) {
+  if (!ipv6) return /^[0-9A-Fa-f]{6}7F$/.test(addressHex); // 127.0.0.0/8 (little-endian word)
+  if (addressHex.length !== 32) return false;
+  if (addressHex === '00000000000000000000000001000000') return true; // ::1
+  return /^0{16}FFFF0000[0-9A-Fa-f]{6}7F$/.test(addressHex); // ::ffff:127.0.0.0/8
+}
+
+/**
+ * Measure the real listener address instead of trusting `--remote-debugging-address`.
+ * Returns 'loopback' | 'external' | 'unknown' | 'unavailable' (no /proc on this platform).
+ */
+async function inspectLoopbackListener(port) {
+  let inspected = false;
+  let loopback = false;
+  for (const [file, ipv6] of [['/proc/net/tcp', false], ['/proc/net/tcp6', true]]) {
+    let text;
+    try { text = await readFile(file, 'utf8'); } catch { continue; }
+    inspected = true;
+    for (const line of text.split('\n').slice(1)) {
+      const fields = line.trim().split(/\s+/);
+      if (fields.length < 4 || fields[3] !== '0A') continue; // TCP_LISTEN
+      const local = fields[1];
+      const separator = local.lastIndexOf(':');
+      if (separator < 0) continue;
+      if (Number.parseInt(local.slice(separator + 1), 16) !== port) continue;
+      if (!isLoopbackProcAddress(local.slice(0, separator), ipv6)) return 'external';
+      loopback = true;
+    }
+  }
+  if (loopback) return 'loopback';
+  return inspected ? 'unknown' : 'unavailable';
+}
+
+/**
+ * Parse a browser-level CDP endpoint from `webSocketDebuggerUrl` or a stderr identity line.
+ * Only ws, loopback host (normalised forms accepted), the exact expected port and
+ * `/devtools/browser/<id>` are accepted; no credentials, query or fragment.
+ */
+function parseDevtoolsBrowserEndpoint(raw, expectedPort) {
+  if (typeof raw !== 'string' || !raw) return null;
+  let url;
+  try { url = new URL(raw); } catch { return null; }
+  if (url.protocol !== 'ws:') return null;
+  if (url.username || url.password || url.search || url.hash) return null;
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (!['127.0.0.1', 'localhost', '::1'].includes(host)) return null;
+  if (Number(url.port) !== expectedPort) return null;
+  const match = /^\/devtools\/browser\/([A-Za-z0-9._-]{8,128})$/.exec(url.pathname);
+  if (!match) return null;
+  return { browserId: match[1], pathname: url.pathname, port: expectedPort };
+}
+
+/** Startup failure with the fixed detail enum from the contract (§2.3). */
+function devtoolsStartupError(reason, attempts, extra = {}) {
+  const messages = {
+    'port-unavailable': '没有可用的 loopback 调试端口（端口冲突或仅 IPv6 可用）',
+    'endpoint-mismatch': '调试端口返回了其他进程的端点',
+    'debugger-not-ready': 'Chromium 调试端点未在预期时间内就绪',
+  };
+  const code = reason === 'debugger-not-ready' ? 'CDP_TIMEOUT' : 'CDP_DISCONNECTED';
+  return new BrowserError(code, messages[reason] || 'Chromium 调试端点启动失败', {
+    phase: 'startup', reason, attempts, ...extra,
+  });
+}
+
+/**
  * One headless Chromium + temporary profile for the whole plugin, with N independent page targets.
  *
  * Popup interception is unchanged: extra page targets that are not owned by a Runtime are paused
@@ -1205,7 +1343,14 @@ export class BrowserHost {
     this.pendingCreates = 0;
     this.closingTargets = new Set();
     this.popupSessions = new Set();
+    /** Authenticated GUI mouse/key tickets and Page.windowOpen intents (popup admission). */
+    this.popupTickets = new Map();
+    this.windowIntents = new Map();
+    this.popupInFlight = new Set();
+    this.popupEventSeq = 0;
     this.initialTargetId = undefined;
+    /** Log the explicit IPv4-only degradation once per host, not once per start attempt. */
+    this.ipv6ProbeLogged = false;
   }
 
   get pageCount() { return this.ownedTargets.size; }
@@ -1345,100 +1490,270 @@ export class BrowserHost {
   async #spawn(signal) {
     // Resolve first: a missing browser must fail before a profile directory is created.
     const chromeBin = resolveChromeExecutable();
-    const profileDir = await mkdtemp(join(tmpdir(), 'dsh-ui-testing-'));
-    this.profileDir = profileDir;
-    this.generation += 1;
-    const generation = this.generation;
-    let proc;
-    try {
-      proc = spawn(chromeBin, [
-        '--headless=new',
-        '--remote-debugging-port=0',
-        `--user-data-dir=${profileDir}`,
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-gpu',
-        '--hide-scrollbars',
-        '--mute-audio',
-        '--disable-background-timer-throttling',
-        '--disable-renderer-backgrounding',
-        // Keep hidden/occluded page targets compositing: without this, a non-front page stops
-        // emitting screencast frames, so only one workspace preview would ever update.
-        '--disable-backgrounding-occluded-windows',
-        '--disable-features=CalculateNativeWinOcclusion',
-        '--window-size=1280,800',
-        'about:blank',
-      ], { stdio: ['ignore', 'ignore', 'pipe'] });
-      this.proc = proc;
-      let spawnError;
-      proc.on('error', (error) => { spawnError = error; });
-      proc.stderr.on('data', (chunk) => {
-        const text = String(chunk);
-        if (/error|fatal/i.test(text)) this.log('chrome: ' + text.trim().slice(0, 300));
-      });
-      proc.on('exit', () => {
-        if (this.proc !== proc) return;
-        this.proc = undefined;
-        this.browserCdp = undefined;
-      });
-
-      const devtoolsFile = join(profileDir, 'DevToolsActivePort');
-      let port = 0;
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        checkAbort(signal);
-        if (spawnError || proc.exitCode !== null) {
-          if (spawnError && ['ENOENT', 'EACCES'].includes(spawnError.code)) {
-            throw new BrowserError('UNSUPPORTED', `Chrome 可执行文件无法启动（${spawnError.code}）：${chromeBin}`, { binary: chromeBin, phase: 'spawn' });
-          }
-          throw new BrowserError('CDP_DISCONNECTED', spawnError?.message || 'Chromium 启动进程提前退出');
-        }
+    const generation = this.generation + 1;
+    this.generation = generation;
+    const overallDeadline = Date.now() + DEVTOOLS_STARTUP.totalBudgetMs;
+    let attempts = 0;
+    let lastError;
+    for (let round = 1; round <= DEVTOOLS_STARTUP.maxAttempts; round += 1) {
+      checkAbort(signal);
+      this.#assertSpawnGeneration(generation);
+      if (Date.now() >= overallDeadline) break;
+      attempts = round;
+      let profileDir;
+      let proc;
+      let browserCdp;
+      let stderr;
+      try {
+        const candidate = await this.#pickDevtoolsPort(Math.min(overallDeadline, Date.now() + DEVTOOLS_STARTUP.attemptTimeoutMs));
+        if (!candidate) throw devtoolsStartupError('port-unavailable', attempts);
+        const attemptDeadline = Math.min(overallDeadline, Date.now() + DEVTOOLS_STARTUP.attemptTimeoutMs);
+        if (attemptDeadline <= Date.now()) throw devtoolsStartupError('port-unavailable', attempts);
+        // A fresh profile per attempt: a half-written profile or stale lock must not poison a retry.
+        profileDir = await mkdtemp(join(tmpdir(), 'dsh-ui-testing-'));
+        this.profileDir = profileDir;
+        proc = this.#spawnChrome(chromeBin, profileDir, candidate.port);
+        this.proc = proc;
+        stderr = this.#watchChromeStderr(proc);
+        proc.on('exit', () => {
+          // A late exit event from an old attempt must never clear the new attempt's state.
+          if (this.proc !== proc || this.generation !== generation) return;
+          this.proc = undefined;
+          this.browserCdp = undefined;
+          this.port = 0;
+        });
+        const ready = await this.#awaitDevtoolsReady({
+          chromeBin, proc, stderr, port: candidate.port, deadline: attemptDeadline, signal, generation,
+        });
+        browserCdp = new Cdp(ready.wsUrl);
         try {
-          const text = await readFile(devtoolsFile, 'utf8');
-          port = Number(text.split('\n')[0]);
-          if (port) break;
-        } catch { /* not ready yet */ }
-        await delay(100);
+          await browserCdp.connect({ signal });
+        } catch (error) {
+          const classified = asBrowserError(error);
+          const code = classified.code === 'CDP_TIMEOUT' ? 'CDP_TIMEOUT' : 'CDP_DISCONNECTED';
+          throw new BrowserError(code, '调试端点已就绪但 CDP 连接失败：' + classified.message, { phase: 'connect', attempts });
+        }
+        this.#assertSpawnGeneration(generation);
+        this.browserCdp = browserCdp;
+        // Internal only: the public DevTools URL is built from uiState and needs a live page too.
+        this.port = candidate.port;
+        browserCdp.on((message) => {
+          if (this.browserCdp !== browserCdp) return;
+          this.#onBrowserEvent(browserCdp, message);
+        });
+        // Record the pre-existing about:blank target BEFORE enabling auto-attach: setAutoAttach
+        // also attaches to existing targets, and an attach event for the initial page must never
+        // be classified as a popup (that would block/close the page we are about to reuse).
+        this.initialTargetId = await this.#findInitialPage(signal);
+        await browserCdp.send('Target.setAutoAttach', {
+          autoAttach: true, waitForDebuggerOnStart: true, flatten: true,
+          filter: [{ type: 'page', exclude: false }],
+        }, { signal });
+        this.log(`chromium ready on devtools port ${candidate.port} (generation ${generation})`);
+        return browserCdp;
+      } catch (error) {
+        const classified = asBrowserError(error);
+        const cleanupFailed = await this.#disposeAttempt({ proc, profileDir, browserCdp });
+        if (this.proc === proc) this.proc = undefined;
+        if (this.profileDir === profileDir) this.profileDir = undefined;
+        if (this.browserCdp === browserCdp) this.browserCdp = undefined;
+        this.port = 0;
+        this.initialTargetId = undefined;
+        if (classified.code === 'ABORTED' || this.closing || this.generation !== generation) throw classified;
+        if (cleanupFailed) {
+          throw new BrowserError('CDP_DISCONNECTED', 'Chromium 启动失败且本轮进程未确认退出', {
+            phase: 'startup', reason: 'cleanup-failed', attempts,
+          });
+        }
+        const reason = classified.details && classified.details.reason;
+        if (classified.code === 'UNSUPPORTED' || !DEVTOOLS_RETRYABLE.has(reason)) throw classified;
+        lastError = classified;
       }
-      if (!port) throw new BrowserError('CDP_TIMEOUT', 'Chromium 未在预期时间内启动（DevToolsActivePort 不存在）', { binary: chromeBin, phase: 'startup' });
-      this.port = port;
-
-      const version = await fetch(`http://127.0.0.1:${port}/json/version`, { signal }).then((response) => response.json());
-      const browserCdp = new Cdp(version.webSocketDebuggerUrl);
-      await browserCdp.connect({ signal });
-      if (this.generation !== generation || this.closing) {
-        try { browserCdp.close(); } catch { /* ignore */ }
-        throw new BrowserError('CDP_DISCONNECTED', '浏览器在启动过程中被关闭');
-      }
-      this.browserCdp = browserCdp;
-      browserCdp.on((message) => {
-        if (this.browserCdp !== browserCdp) return;
-        this.#onBrowserEvent(browserCdp, message);
-      });
-      // Record the pre-existing about:blank target BEFORE enabling auto-attach: setAutoAttach
-      // also attaches to existing targets, and an attach event for the initial page must never be
-      // classified as a popup (that would block/close the page we are about to reuse).
-      this.initialTargetId = await this.#findInitialPage(signal);
-      await browserCdp.send('Target.setAutoAttach', {
-        autoAttach: true, waitForDebuggerOnStart: true, flatten: true,
-        filter: [{ type: 'page', exclude: false }],
-      }, { signal });
-      this.log(`chromium ready on devtools port ${port} (generation ${generation})`);
-      return browserCdp;
-    } catch (error) {
-      try { this.browserCdp?.close(); } catch { /* ignore */ }
-      this.browserCdp = undefined;
-      this.initialTargetId = undefined;
-      this.port = 0;
-      if (proc && proc.exitCode === null) {
-        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
-      }
-      this.proc = undefined;
-      this.profileDir = undefined;
-      if (proc) await waitForExit(proc, 500);
-      // profileDir is the exact absolute directory returned by mkdtemp above.
-      await this.#removeProfileDir(profileDir);
-      throw error;
     }
+    throw lastError || devtoolsStartupError('debugger-not-ready', attempts || 1);
+  }
+
+  /** Fail a start attempt immediately when the host closed or a newer generation took over. */
+  #assertSpawnGeneration(generation) {
+    if (this.closing || this.generation !== generation) {
+      throw new BrowserError('CDP_DISCONNECTED', '浏览器在启动过程中被关闭', {
+        phase: 'startup', generation, currentGeneration: this.generation, closing: Boolean(this.closing),
+      });
+    }
+  }
+
+  /** One Chrome process with the exact loopback port + matching Origin allow-list. */
+  #spawnChrome(chromeBin, profileDir, port) {
+    return spawn(chromeBin, [
+      '--headless=new',
+      '--remote-debugging-address=127.0.0.1',
+      `--remote-debugging-port=${port}`,
+      // Chrome 111+ rejects a CDP WebSocket whose Origin is not allow-listed (even same-origin
+      // DevTools). The wildcard `*` is forbidden: it would admit any website's Origin.
+      `--remote-allow-origins=http://127.0.0.1:${port}`,
+      `--user-data-dir=${profileDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-gpu',
+      '--hide-scrollbars',
+      '--mute-audio',
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+      // Keep hidden/occluded page targets compositing: without this, a non-front page stops
+      // emitting screencast frames, so only one workspace preview would ever update.
+      '--disable-backgrounding-occluded-windows',
+      '--disable-features=CalculateNativeWinOcclusion',
+      '--window-size=1280,800',
+      'about:blank',
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  }
+
+  /**
+   * Bounded stderr line buffer: the identity line and bind failures are all this start needs.
+   * The complete debugger URL is never logged and never accumulates beyond one buffer.
+   */
+  #watchChromeStderr(proc) {
+    const state = { spawnError: undefined, exited: false, exitCode: null, signal: null, identity: null, bindFailed: false };
+    let buffer = '';
+    proc.on('error', (error) => { state.spawnError = error; });
+    proc.on('exit', (code, signal) => { state.exited = true; state.exitCode = code; state.signal = signal; });
+    proc.stderr.setEncoding('utf8');
+    proc.stderr.on('data', (chunk) => {
+      buffer += String(chunk);
+      if (buffer.length > DEVTOOLS_STARTUP.stderrBufferBytes) buffer = buffer.slice(-DEVTOOLS_STARTUP.stderrBufferBytes);
+      let index;
+      while ((index = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        const listening = /DevTools listening on (ws:\/\/\S+)/.exec(line);
+        if (listening) {
+          try {
+            const endpoint = parseDevtoolsBrowserEndpoint(listening[1], Number(new URL(listening[1]).port));
+            if (endpoint) state.identity = endpoint;
+          } catch { /* not an identity line */ }
+          continue;
+        }
+        if (/failed to bind|address already in use|cannot start http server for devtools/i.test(line)) {
+          state.bindFailed = true;
+          continue;
+        }
+        if (/error|fatal/i.test(line)) this.log('chrome: ' + line.trim().slice(0, 300));
+      }
+    });
+    return state;
+  }
+
+  /**
+   * Wait for `/json/version` on the candidate IPv4 loopback port AND prove this process owns it.
+   * An endpoint that answers but cannot be tied to this child's stderr identity is never adopted:
+   * a port race must fail closed instead of attaching to a stranger's Chrome.
+   */
+  async #awaitDevtoolsReady({ chromeBin, proc, stderr, port, deadline, signal, generation }) {
+    let lastReason = 'debugger-not-ready';
+    while (Date.now() < deadline) {
+      checkAbort(signal);
+      this.#assertSpawnGeneration(generation);
+      if (stderr.spawnError) {
+        const code = stderr.spawnError.code;
+        if (code === 'ENOENT' || code === 'EACCES') {
+          throw new BrowserError('UNSUPPORTED', `Chrome 可执行文件无法启动（${code}）：${chromeBin}`, { binary: chromeBin, phase: 'spawn' });
+        }
+        throw new BrowserError('CDP_DISCONNECTED', 'Chromium 启动失败', { phase: 'spawn', reason: 'spawn-failed' });
+      }
+      // An explicit bind failure is a port conflict even when the child then exits: retry with a
+      // new candidate instead of misclassifying it as a non-port startup crash.
+      if (stderr.bindFailed) throw devtoolsStartupError('port-unavailable', 0);
+      if (stderr.exited || proc.exitCode !== null) {
+        throw new BrowserError('CDP_DISCONNECTED', 'Chromium 启动进程提前退出', {
+          phase: 'spawn', reason: 'process-exited',
+          ...(Number.isInteger(stderr.exitCode) ? { exitCode: stderr.exitCode } : {}),
+          ...(stderr.signal ? { signal: stderr.signal } : {}),
+        });
+      }
+      if (stderr.identity && stderr.identity.port !== port) lastReason = 'endpoint-mismatch';
+      const version = await this.#fetchJsonVersion(port, deadline - Date.now(), signal);
+      if (version) {
+        const endpoint = parseDevtoolsBrowserEndpoint(version.webSocketDebuggerUrl, port);
+        if (!endpoint) throw devtoolsStartupError('endpoint-mismatch', 0);
+        const listener = await inspectLoopbackListener(port);
+        if (listener === 'external') throw devtoolsStartupError('port-unavailable', 0);
+        if (!stderr.identity) {
+          // Reachable but unproven: keep polling for this child's identity line, never adopt it.
+          lastReason = 'debugger-not-ready';
+        } else if (stderr.identity.browserId !== endpoint.browserId || stderr.identity.port !== port) {
+          throw devtoolsStartupError('endpoint-mismatch', 0);
+        } else {
+          // Normalise to IPv4: the contract publishes/uses only 127.0.0.1 even if Chrome's own
+          // stderr printed a localhost/[::1] form.
+          return { wsUrl: `ws://127.0.0.1:${port}${endpoint.pathname}` };
+        }
+      }
+      const wait = Math.min(DEVTOOLS_STARTUP.pollIntervalMs, deadline - Date.now());
+      if (wait > 0) await delay(wait);
+    }
+    throw devtoolsStartupError(lastReason, 0);
+  }
+
+  /** Bounded `/json/version` GET; failures are just "not ready yet" (never a CDP command). */
+  async #fetchJsonVersion(port, remainingMs, signal) {
+    const budget = Math.max(1, Math.min(DEVTOOLS_STARTUP.fetchTimeoutMs, remainingMs));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), budget);
+    timer.unref?.();
+    const combined = signal && typeof AbortSignal.any === 'function'
+      ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+        signal: combined, redirect: 'error', headers: { accept: 'application/json' },
+      });
+      if (!response.ok) return null;
+      const text = await response.text();
+      if (text.length > 65536) return null;
+      const parsed = JSON.parse(text);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (error) {
+      if (signal?.aborted) throw new BrowserError('ABORTED', '操作已取消');
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Bounded candidate picking: at most a handful of probes, all inside the attempt budget. */
+  async #pickDevtoolsPort(deadline) {
+    for (let index = 0; index < DEVTOOLS_STARTUP.portCandidates; index += 1) {
+      if (Date.now() >= deadline) return null;
+      const candidate = await probeLoopbackDevtoolsPort();
+      if (candidate.port) {
+        if (!candidate.ipv6 && !this.ipv6ProbeLogged) {
+          this.ipv6ProbeLogged = true;
+          this.log('devtools port probe: ::1 unavailable, using 127.0.0.1 only');
+        }
+        return candidate;
+      }
+      await delay(20);
+    }
+    return null;
+  }
+
+  /** Tear down exactly one failed attempt; returns true when the process could not be confirmed gone. */
+  async #disposeAttempt({ proc, profileDir, browserCdp }) {
+    try { browserCdp?.close(); } catch { /* ignore */ }
+    let cleanupFailed = false;
+    if (proc && proc.exitCode === null) {
+      try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+      const exited = await waitForExit(proc, DEVTOOLS_STARTUP.killGraceMs);
+      if (!exited) {
+        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+        const killed = await waitForExit(proc, DEVTOOLS_STARTUP.killFinalMs);
+        if (!killed) {
+          cleanupFailed = true;
+          this.log('[BROWSER_CLEANUP_FAILED] 启动尝试的 Chromium 进程未确认退出');
+        }
+      }
+    }
+    if (profileDir) await this.#removeProfileDir(profileDir);
+    return cleanupFailed;
   }
 
   async #listTargets(signal) {
@@ -1491,6 +1806,15 @@ export class BrowserHost {
       }
       return;
     }
+    if (message.method === 'Target.targetDestroyed') {
+      const owned = this.ownedTargets.get(message.params.targetId);
+      if (owned && owned.runtime && owned.runtime.kind === 'popup') {
+        // window.close / target crash: close once; registry removes the view entry.
+        const runtime = owned.runtime;
+        setImmediate(() => { runtime.close().catch(() => {}); });
+      }
+      return;
+    }
     if (message.method !== 'Target.attachedToTarget') return;
     const { targetInfo, sessionId } = message.params;
     const targetId = targetInfo.targetId;
@@ -1499,7 +1823,14 @@ export class BrowserHost {
       this.#resumeAndDetach(browserCdp, targetId, sessionId);
       return;
     }
-    if (this.ownedTargets.has(targetId) || targetId === this.initialTargetId) {
+    const owned = this.ownedTargets.get(targetId);
+    if (owned) {
+      // A popup adopt already owns this paused session: its bootstrap resume happens after the
+      // Fetch guard is ready. Never resume it here.
+      if (!owned.initializing) this.#resumeAndDetach(browserCdp, targetId, sessionId);
+      return;
+    }
+    if (targetId === this.initialTargetId) {
       this.#resumeAndDetach(browserCdp, targetId, sessionId);
       return;
     }
@@ -1509,7 +1840,172 @@ export class BrowserHost {
       this.pendingAttach.set(targetId, sessionId);
       return;
     }
-    this.#blockPopup(browserCdp, targetId, sessionId);
+    if (this.popupInFlight.has(targetId)) return;
+    void this.#tryAdoptPopup(browserCdp, targetId, sessionId, targetInfo);
+  }
+
+  /** Authenticated GUI input gives one short-lived popup ticket (one action → one target). */
+  noteGuiInput(runtime, events) {
+    if (!runtime || !Array.isArray(events)) return;
+    const meaningful = events.some((event) => {
+      const kind = String(event && event.kind || '');
+      const type = String(event && (event.type || event.eventType) || '');
+      return (kind === 'mouse' && type === 'mousePressed')
+        || (kind === 'key' && (type === 'keyDown' || type === 'rawKeyDown'))
+        || kind === 'text';
+    });
+    if (!meaningful) return;
+    this.popupTickets.set(runtime.runtimeId, { at: Date.now(), consumed: false });
+  }
+
+  /** Page.windowOpen intent, matched to the raw target's openerId (not script-accessible opener). */
+  noteWindowOpen(runtime, params = {}) {
+    if (!runtime) return;
+    const at = Date.now();
+    this.windowIntents.set(runtime.runtimeId, {
+      at,
+      url: String(params.url || ''),
+      windowName: String(params.windowName || ''),
+      userGesture: params.userGesture === true,
+      openEventId: 'popup-' + (++this.popupEventSeq),
+      consumed: false,
+    });
+  }
+
+  #popupUrl(targetInfo, intent) {
+    const targetUrl = String(targetInfo && targetInfo.url || '');
+    const intentUrl = String(intent && intent.url || '');
+    const blank = (value) => !value || /^(about:blank|data:|blob:|javascript:)/i.test(value);
+    const chosen = !blank(targetUrl) ? targetUrl : (!blank(intentUrl) ? intentUrl : '');
+    if (!chosen) return null;
+    let target;
+    let intended;
+    try { target = new URL(chosen); } catch { return null; }
+    if (!/^https?:$/.test(target.protocol)) return null;
+    if (!blank(targetUrl) && !blank(intentUrl)) {
+      try { intended = new URL(intentUrl); } catch { return null; }
+      if (intended.href !== target.href) return null;
+    }
+    return target.href;
+  }
+
+  async #tryAdoptPopup(browserCdp, targetId, sessionId, targetInfo) {
+    if (this.popupInFlight.has(targetId)) return;
+    this.popupInFlight.add(targetId);
+    let parent;
+    let parentEntry;
+    let child;
+    let entry;
+    let release = () => {};
+    let ownedSet = false;
+    let reason = 'initialize-failed';
+    let openEventId = null;
+    try {
+      const openerId = targetInfo && targetInfo.openerId;
+      const opener = openerId ? this.ownedTargets.get(openerId) : undefined;
+      parent = opener && opener.runtime;
+      parentEntry = parent && parent.registry && parent.registry.findByRuntimeId(parent.runtimeId);
+      if (!parent || !parentEntry) {
+        reason = 'no-opener';
+        this.#blockPopup(browserCdp, targetId, sessionId, { reason });
+        return;
+      }
+      // Agent input/eval can also set userGesture:true; never adopt while the parent is leased or
+      // actively agent-driven (docs/popup §3.1/§5).
+      if (parent.hasLease() || Date.now() < parent.agentUntil) {
+        reason = 'busy';
+        this.#blockPopup(browserCdp, targetId, sessionId, { parentEntry, reason, openEventId });
+        return;
+      }
+      const deadline = Date.now() + 1000;
+      let ticket;
+      let intent;
+      while (Date.now() < deadline) {
+        ticket = this.popupTickets.get(parent.runtimeId);
+        intent = this.windowIntents.get(parent.runtimeId);
+        if (ticket && !ticket.consumed && intent && !intent.consumed && intent.userGesture) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (!ticket || ticket.consumed || Date.now() - ticket.at > 4000 || Date.now() >= parent.humanUntil) {
+        reason = 'no-human-input';
+        this.#blockPopup(browserCdp, targetId, sessionId, { parentEntry, reason, openEventId });
+        return;
+      }
+      if (!intent || intent.consumed || !intent.userGesture || Date.now() - intent.at > 1500) {
+        reason = intent && intent.userGesture ? 'source-stale' : 'automatic-popup';
+        this.#blockPopup(browserCdp, targetId, sessionId, { parentEntry, reason, openEventId });
+        return;
+      }
+      openEventId = intent.openEventId || null;
+      const url = this.#popupUrl(targetInfo, intent);
+      if (!url) {
+        reason = 'target-forbidden';
+        this.#blockPopup(browserCdp, targetId, sessionId, { parentEntry, reason, openEventId });
+        return;
+      }
+      try { await validateTarget(url, { origins: [...parent.origins] }); }
+      catch {
+        reason = 'target-forbidden';
+        this.#blockPopup(browserCdp, targetId, sessionId, { parentEntry, reason, openEventId });
+        return;
+      }
+      ticket.consumed = true;
+      intent.consumed = true;
+      try { release = parent.registry.reservePopupSlot(parentEntry); }
+      catch (limitError) {
+        reason = limitError && limitError.code === 'TAB_LIMIT' ? 'popup-limit' : 'busy';
+        this.#blockPopup(browserCdp, targetId, sessionId, { parentEntry, reason, openEventId });
+        return;
+      }
+      const viewId = randomUUID().replace(/-/gu, '').slice(0, 20);
+      child = new Runtime(this.log, {
+        host: this, origins: parent.origins, scope: parent.scope, registry: parent.registry,
+        kind: 'popup', parentRuntimeId: parent.runtimeId, viewId, parentKey: parentEntry.key,
+        openEventId, sourcePanelId: null, createdBy: 'gui', inheritView: parent.view,
+      });
+      entry = parent.registry.addPopupEntry({
+        parentEntry, runtime: child, viewId, openEventId, sourcePanelId: null,
+      });
+      const generation = this.generation;
+      this.ownedTargets.set(targetId, { runtime: child, generation, initializing: true });
+      ownedSet = true;
+      const wsUrl = await this.#resolveTargetWsUrl(browserCdp, targetId, AbortSignal.timeout(6000));
+      const cdp = new Cdp(wsUrl);
+      await cdp.connect({ signal: AbortSignal.timeout(6000) });
+      const resume = async () => {
+        await browserCdp.send('Runtime.runIfWaitingForDebugger', {}, { sessionId, timeoutMs: 5000 });
+        await browserCdp.send('Target.detachFromTarget', { sessionId }, { timeoutMs: 5000 });
+      };
+      await child.adoptPage({ targetId, cdp, generation }, { signal: AbortSignal.timeout(10000), resume });
+      // The intent URL is not success: v1 only accepts a real HTTP(S) first document (no
+      // about:blank/data/blob scripting page). Give the first navigation a short settle window.
+      for (let wait = 0; wait < 20 && !/^https?:/i.test(String(child.url || '')); wait += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (!/^https?:/i.test(String(child.url || ''))) {
+        throw new BrowserError('POPUP_UNSUPPORTED', 'popup 的首个文档不是可居留的 HTTP(S) 页面');
+      }
+      const owned = this.ownedTargets.get(targetId);
+      if (owned) owned.initializing = false;
+      entry.status = 'ready';
+      parent.registry.bumpViews(entry.primaryKey);
+      this.log('adopted popup target ' + targetId + ' as view ' + viewId + ' (parent ' + parent.runtimeId + ')');
+    } catch (error) {
+      this.log('popup adopt failed: ' + String((error && error.message) || error));
+      try { if (child) await child.close(); } catch { /* ignore */ }
+      if (ownedSet) {
+        try { await this.#closeOwnedTarget(targetId); } catch { /* ignore */ }
+      } else {
+        this.#blockPopup(browserCdp, targetId, sessionId, { parentEntry, reason, openEventId });
+      }
+      if (ownedSet && parentEntry) {
+        try { parentEntry.runtime.registry?.addPopupNotice(parentEntry, { reason, openEventId }); } catch { /* ignore */ }
+      }
+    } finally {
+      release();
+      this.popupInFlight.delete(targetId);
+      try { if (parent) this.popupTickets.delete(parent.runtimeId); this.windowIntents.delete(parent && parent.runtimeId); } catch { /* ignore */ }
+    }
   }
 
   #resumeAndDetach(browserCdp, targetId, sessionId) {
@@ -1520,9 +2016,14 @@ export class BrowserHost {
   }
 
   /** Install fail-all interception BEFORE resuming, then close the extra page target. */
-  #blockPopup(browserCdp, targetId, sessionId) {
-    this.log('blocking popup target ' + targetId);
+  #blockPopup(browserCdp, targetId, sessionId, options = {}) {
+    this.log('blocking popup target ' + targetId + (options.reason ? ' reason=' + options.reason : ''));
     this.pendingAttach.delete(targetId);
+    if (options.parentEntry && options.reason) {
+      try { options.parentEntry.runtime.registry?.addPopupNotice(options.parentEntry, {
+        reason: options.reason, openEventId: options.openEventId || null,
+      }); } catch { /* projection only */ }
+    }
     this.popupSessions.add(sessionId);
     browserCdp.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] }, { sessionId })
       .then(() => browserCdp.send('Runtime.runIfWaitingForDebugger', {}, { sessionId }))
@@ -2514,6 +3015,26 @@ function sessionAliases(status) {
   };
 }
 
+/**
+ * TOOL-P1-04 session/status consistency. `activeSessionId`/`bufferedEvents` let a caller tell
+ * "no session" apart from "session exists but this page produced nothing":
+ *  - `activeSessionId` is the current (running or retained) capture session id, else null;
+ *  - `bufferedEvents` is the pre-session candidate buffer (events observed before a session
+ *    started); it is never served as session events by `browser_network_events`.
+ * A field report of `status.session=null` while events still had rows could not be reproduced from
+ * the current store lifecycle (the store clears its event ring together with the session); the root
+ * cause is recorded as UNKNOWN rather than claimed fixed. The events wrapper additionally refuses to
+ * serve any sessionless event window (docs/network-p0.md §2.2/§3.4).
+ */
+function networkStatusAliases(store, status) {
+  const session = status && status.session ? status.session : null;
+  return {
+    activeSessionId: session ? session.id : null,
+    attribution: status && status.attribution ? status.attribution : null,
+    bufferedEvents: store && Array.isArray(store.preSession) ? store.preSession.length : 0,
+  };
+}
+
 /* ---------------------------------------------------------------------------------------------
  * Web T4 dynamic behaviour — Host side (docs/t4-dynamic-behavior.md).
  *
@@ -2641,6 +3162,8 @@ const DYNAMIC_INTERNAL = Object.freeze({
   imageBytes: 262144,
   imageBytesTotal: 524288,
   maxStep: 10000,
+  // TOOL-P1-03: bounded host-side sampling trace for session/observe/capabilities projections.
+  samplingTraceMax: 240,
 });
 const DYNAMIC_ASSERTION_THRESHOLDS = Object.freeze({
   'frame-diff': Object.freeze(['pixelThreshold', 'changeRatio']),
@@ -2665,6 +3188,41 @@ function newMotionSessionId() { return 'mot_' + randomUUID().replace(/-/gu, '');
 function newDynamicFrameId() { return 'frm_' + randomUUID().replace(/-/gu, '').slice(0, 24); }
 function dynamicMonoNow() { return performance.now(); }
 function dynamicSha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
+
+/**
+ * TOOL-P1-03 Host-side measured sampling stats over a contiguous time series (monotonic ms).
+ * Pure: no store/CDP access, no rounding of raw values. `p50Ms/p95Ms` use the same nearest-rank
+ * convention as the core jank metrics so Host and core projections cannot disagree on cadence.
+ */
+function dynamicIntervalStats(times) {
+  const finite = Array.isArray(times) ? times.filter((value) => Number.isFinite(value)) : [];
+  const stats = {
+    frames: finite.length, intervals: 0,
+    p50Ms: null, p95Ms: null, minMs: null, maxMs: null, meanMs: null,
+    windowMs: null, effectiveFps: null,
+  };
+  if (finite.length < 2) return stats;
+  const intervals = [];
+  for (let index = 1; index < finite.length; index += 1) intervals.push(finite[index] - finite[index - 1]);
+  const sorted = [...intervals].sort((left, right) => left - right);
+  const at = (percentile) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((percentile / 100) * sorted.length) - 1))];
+  const sum = intervals.reduce((total, value) => total + value, 0);
+  const windowMs = finite[finite.length - 1] - finite[0];
+  stats.intervals = intervals.length;
+  stats.p50Ms = at(50);
+  stats.p95Ms = at(95);
+  stats.minMs = sorted[0];
+  stats.maxMs = sorted[sorted.length - 1];
+  stats.meanMs = sum / intervals.length;
+  stats.windowMs = windowMs;
+  stats.effectiveFps = windowMs > 0 ? (intervals.length / windowMs) * 1000 : null;
+  return stats;
+}
+
+/** Lossless JSON projection for capability reports (never emit functions/symbols/undefined). */
+function dynamicJsonProjection(value) {
+  return value === undefined || value === null ? null : JSON.parse(JSON.stringify(value));
+}
 
 /** Strict DYNAMIC_* key check (a dynamic refusal must never surface as NET_/INVALID_ARGUMENT). */
 function assertDynamicKeys(value, allowed, label) {
@@ -3185,6 +3743,14 @@ export class Runtime {
   constructor(log, options = {}) {
     this.log = log;
     this.registry = options.registry;
+    /** primary or popup child (docs/internal/popup-new-tab-policy.md). */
+    this.kind = options.kind === 'popup' ? 'popup' : 'primary';
+    this.parentRuntimeId = options.parentRuntimeId || null;
+    this.viewId = options.viewId || 'primary';
+    this.parentKey = options.parentKey || null;
+    this.openEventId = options.openEventId || null;
+    this.sourcePanelId = options.sourcePanelId || null;
+    this.createdBy = options.createdBy || 'host';
     this.scope = options.scope || LEGACY_SCOPE.scope;
     this.ownsHost = !options.host;
     this.host = options.host || new BrowserHost(log);
@@ -3218,6 +3784,18 @@ export class Runtime {
       source: 'default',
       revision: 0,
     };
+    if (options.inheritView && options.inheritView.width > 0 && options.inheritView.height > 0) {
+      // A popup starts at the parent's accepted size/scale, but with an independent O=0 position.
+      this.view.width = Number(options.inheritView.width);
+      this.view.height = Number(options.inheritView.height);
+      this.view.scale = Number(options.inheritView.scale) || 1;
+      this.view.x = 0;
+      this.view.y = 0;
+      this.view.canvasX = 0;
+      this.view.canvasY = 0;
+      this.view.source = 'default';
+      this.view.revision = 0;
+    }
     /** Last real `Page.getLayoutMetrics` readback (null until the page was actually observed). */
     this.observed = null;
     // Merged background observation of the layout viewport (docs/viewport-control.md): set by
@@ -3320,7 +3898,17 @@ export class Runtime {
     // workspace scope): the ring buffer, bodies, steps, links, artifacts and subscriptions are all
     // scope-local. `netControl` is the interception/throttle/hold state machine; `netTargets` maps
     // an auto-attached child CDP session to its target so every event can be attributed.
-    this.net = new network.NetworkStore({ scopeId: this.scope.id });
+    // TOOL-P1-04: session attribution is a construction-time fact -- scopeId from this Runtime's
+    // workspace, runtimeId its own id, tabId 'primary' for the primary runtime and the popup viewId
+    // for a child tab. It is never inferred from cdpSessionId/targetId and stays stable per tab.
+    this.net = new network.NetworkStore({
+      scopeId: this.scope.id,
+      attribution: {
+        scopeId: this.scope.id,
+        runtimeId: this.runtimeId,
+        tabId: this.kind === 'popup' ? (this.viewId || 'primary') : 'primary',
+      },
+    });
     this.netCtl = new network.ControlState();
     this.netTargets = new Map();
     this.netReq = new Map();
@@ -3337,8 +3925,9 @@ export class Runtime {
     // Web T4 dynamic behaviour (docs/t4-dynamic-behavior.md, docs/t4-dynamic-behavior.md):
     // one active session per scope, up to four retained summaries, one screencast sink, and the
     // last real T4 call projected into browser_capabilities.dynamic.observed. The core module
-    // (dynamic-t4.js) is imported lazily: a T4 call is the only thing that loads it, so page
-    // preview/T1/T2/T3/P0 never depend on it.
+    // (dynamic-t4.js) is imported lazily: a T4 call loads it, and the only exception is
+    // browser_capabilities.dynamic.assertions (TOOL-P1-06), which may load the pure module for its
+    // JSON schema without starting a page or taking a lease; page preview/T1/T2/T3/P0 never depend on it.
     this.dynamic = {
       version: DYNAMIC_VERSION,
       session: null,
@@ -3355,6 +3944,8 @@ export class Runtime {
       lastOperation: null,
       started: 0,
       restored: null,
+      // TOOL-P1-06: set only when browser_capabilities could not load the assertion schema.
+      assertionSchemaUnavailable: null,
     };
     this.viewerTtlMs = Number.isFinite(options.viewerTtlMs) ? options.viewerTtlMs : VIEWER_TTL_MS;
   }
@@ -3617,8 +4208,17 @@ export class Runtime {
   }
 
   async #start(signal) {
+    const page = await this.host.createPage(this, signal);
+    return this.#initializePage(page, { signal });
+  }
+
+  /** Adopt an already-paused popup target: no createPage, guard is enabled before resume. */
+  async adoptPage(page, options = {}) {
+    return this.#initializePage(page, options);
+  }
+
+  async #initializePage(page, { signal, resume } = {}) {
     const host = this.host;
-    const page = await host.createPage(this, signal);
     const cdp = page.cdp;
     this.page = { targetId: page.targetId, generation: page.generation };
     this.cdp = cdp;
@@ -3630,15 +4230,25 @@ export class Runtime {
       if (this.cdp !== cdp) return;
       this.#onEvent(message);
     });
+    const adopting = typeof resume === 'function';
     try {
-      await this.send('Page.enable', {}, signal);
-      await this.send('Runtime.enable', {}, signal);
-      await this.send('Network.enable', { maxTotalBufferSize: 5000000 }, signal);
-      // One merged Fetch configuration: the Document navigation guard plus any active interception
-      // rule. A second Fetch.enable would silently replace this one and kill the guard
-      // (docs/network-p0.md / R1-8).
+      // A freshly attached popup is paused in waitForDebuggerOnStart: Page.enable/Runtime.enable
+      // do not answer until it is resumed. The one command that must run before resume is the
+      // Document Fetch guard, so enable it first, resume through the bootstrap session, then
+      // finish the normal initialisation on the still-connected page WS.
       this.netFetchKey = '';
-      await this.#netSyncFetch(signal);
+      if (adopting) {
+        const guard = await this.#netSyncFetch(signal);
+        await resume();
+        await this.send('Page.enable', {}, signal);
+        await this.send('Runtime.enable', {}, signal);
+        await this.send('Network.enable', { maxTotalBufferSize: 5000000 }, signal);
+      } else {
+        await this.send('Page.enable', {}, signal);
+        await this.send('Runtime.enable', {}, signal);
+        await this.send('Network.enable', { maxTotalBufferSize: 5000000 }, signal);
+        await this.#netSyncFetch(signal);
+      }
       if (this.net.running && this.netCtl.needsArm) {
         this.netCtl.needsArm = false;
         const armed = this.net.config.captureWorkers ? await this.#netArmAutoAttach(signal) : { ok: false, reason: 'capture-disabled:workers' };
@@ -3664,6 +4274,9 @@ export class Runtime {
       }, { signal });
       // A successful (re)initialisation is a clean runtime state: no stale page error.
       this.clearError();
+      // Adopted popups: the first real navigation may still be committing; read the actual address
+      // once (bounded) and never substitute the intent URL for it.
+      if (typeof resume === 'function') { try { await this.refreshMetadata(signal); } catch { /* pending navigation */ } }
       // Publish the fresh runtime state (history/url/title) once the page is up.
       this.refreshMetadataSoon();
       this.activate();
@@ -3684,6 +4297,10 @@ export class Runtime {
   }
 
   #onEvent(message) {
+    if (message.method === 'Page.windowOpen') {
+      try { this.host?.noteWindowOpen?.(this, message.params || {}); } catch { /* popup attribution must never break the page */ }
+      return;
+    }
     // Child targets (worker / OOPIF) are auto-attached on the page connection (§3.1/R1-6).
     if (message.method === 'Target.attachedToTarget' || message.method === 'Target.detachedFromTarget') {
       this.#netOnTarget(message);
@@ -4373,8 +4990,13 @@ export class Runtime {
             : storeBody('request', text, requestType);
           out.requestBytes = stored ? stored.bytes : null;
         } catch (error) {
-          void error;
-          this.net.addBody({ targetId, cdpSessionId, requestId, hopId, kind: 'request', state: 'unavailable' });
+          // TOOL-P1-04: never swallow the reason. Only the stable enum code + a bounded, redacted
+          // detail is stored; the body itself is not retried or re-read (pure read-only detail).
+          this.net.addBody({
+            targetId, cdpSessionId, requestId, hopId, kind: 'request', state: 'unavailable',
+            reasonCode: network.classifyBodyFailure(error),
+            reasonDetail: error && error.message !== undefined ? error.message : String(error || ''),
+          });
         }
       }
     }
@@ -4397,8 +5019,12 @@ export class Runtime {
             : storeBody('response', base64Encoded ? Buffer.from(text, 'base64') : text, info.mimeType || null);
           out.responseBytes = stored ? stored.bytes : null;
         } catch (error) {
-          void error;
-          this.net.addBody({ targetId, cdpSessionId, requestId, hopId, kind: 'response', state: 'unavailable' });
+          // TOOL-P1-04: same contract as the request-body catch above (enum code + redacted detail).
+          this.net.addBody({
+            targetId, cdpSessionId, requestId, hopId, kind: 'response', state: 'unavailable',
+            reasonCode: network.classifyBodyFailure(error),
+            reasonDetail: error && error.message !== undefined ? error.message : String(error || ''),
+          });
         }
       }
     }
@@ -5251,7 +5877,7 @@ export class Runtime {
    * the authenticated same-origin HTTP surface serves this shape (see `projectedState` in apply()).
    * `revision` orders snapshots so a late response cannot move the address bar backwards.
    */
-  uiState() {
+  uiState({ includeDevtools = false } = {}) {
     this.uiRevision += 1;
     const running = Boolean(this.cdp && !this.cdp.closed);
     const annotations = this.annotationsDocument();
@@ -5275,8 +5901,42 @@ export class Runtime {
         annotationContext: this.annotationContext(),
         viewMeta: this.viewMeta(),
         observed: this.observedProjection(),
+        // Authenticated scoped GUI only: the legacy projection also calls uiState(), so this is
+        // opt-in instead of always-present. It carries a loopback port + target id, which must
+        // never reach browser_state, a tool value, metrics, logs or an unauthenticated response.
+        ...(includeDevtools ? { devtools: this.#devtoolsProjection() } : {}),
+        // Workspace-group GUI projection (popup internal tabs): the SAME views list/notices on
+        // the primary and every child /state, never on legacy or Agent values.
+        ...(includeDevtools && this.registry && typeof this.registry.uiViews === 'function'
+          ? this.registry.uiViews(this) : {}),
       },
     };
+  }
+
+  /**
+   * DevTools popup projection (docs/internal/devtools-popup.md §3).
+   *
+   * Pure synchronous cache read: no ensure/fetch/CDP/target/lease. The URL is only offered when
+   * this runtime still owns the live page target in the current host generation; a cold, closing
+   * or re-generated host immediately reports unavailable.
+   */
+  #devtoolsProjection() {
+    const unavailable = { available: false, url: null, pageGeneration: null, reason: 'not-running' };
+    const host = this.host;
+    if (!host || !host.running) return unavailable;
+    if (!this.cdp || this.cdp.closed || !this.page) return unavailable;
+    const port = Number(host.port);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) return unavailable;
+    const targetId = this.page.targetId;
+    if (typeof targetId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(targetId)) return unavailable;
+    const owned = host.ownedTargets.get(targetId);
+    if (!owned || owned.runtime !== this || owned.generation !== this.page.generation) return unavailable;
+    if (!Number.isInteger(host.generation) || host.generation !== this.page.generation) return unavailable;
+    const url = new URL(`http://127.0.0.1:${port}/devtools/inspector.html`);
+    // Only the trusted loopback constant, the verified port and this runtime's target id are
+    // concatenated; no page URL, query or client-supplied value is forwarded.
+    url.searchParams.set('ws', `127.0.0.1:${port}/devtools/page/${targetId}`);
+    return { available: true, url: url.toString(), pageGeneration: this.page.generation, reason: null };
   }
 
   /* -------------------------------------------------------------------------------------------
@@ -6242,10 +6902,6 @@ export class Runtime {
       if (result.changed) {
         if (this.netCtl.responseModification === null) this.netCtl.responseModification = false;
         this.netCtl.needsArm = true;
-        // Declaring a network session is an explicit ownership hand-over for this scope: only one
-        // session can run per scope, so a previous agent's lease must not block the new owner with
-        // BUSY (its page work is already serialized by the page queue).
-        if (this.lease && this.lease.sessionId !== exec.meta.sessionId) this.lease = undefined;
       }
       const status = this.net.status();
       return {
@@ -6253,6 +6909,7 @@ export class Runtime {
         session: status.session, sessions: status.sessions,
         limits: network.limitsView(), subscriptions: status.subscriptions,
         ...sessionAliases(status),
+        ...networkStatusAliases(this.net, status),
         evidence: network.evidenceBlock(this.net, 'session.start'),
       };
     }
@@ -6286,6 +6943,7 @@ export class Runtime {
         ok: true, changed: false, session: status.session, sessions: status.sessions,
         limits: network.limitsView(), subscriptions: status.subscriptions,
         ...sessionAliases(status),
+        ...networkStatusAliases(this.net, status),
         evidence: network.evidenceBlock(this.net, 'session.stop'),
       };
     }
@@ -6305,6 +6963,7 @@ export class Runtime {
         ok: true, reset: true, subscriptionsClosed: reset.subscriptionsClosed,
         session: status.session, sessions: status.sessions, limits: network.limitsView(),
         ...sessionAliases(status),
+        ...networkStatusAliases(this.net, status),
         evidence: network.evidenceBlock(this.net, 'session.reset'),
       };
     }
@@ -6313,13 +6972,33 @@ export class Runtime {
       ok: true, changed: false, session: status.session, sessions: status.sessions,
       limits: network.limitsView(), subscriptions: status.subscriptions,
       ...sessionAliases(status),
+      ...networkStatusAliases(this.net, status),
       evidence: network.evidenceBlock(this.net, 'session.status'),
     };
   }
 
   netEvents(args) {
     this.netTouch('events');
-    return network.queryEvents(this.net, args);
+    const value = network.queryEvents(this.net, args);
+    if (this.net.session) return value;
+    // TOOL-P1-04: no session -> an explicitly sessionless, empty window. The store already clears
+    // the event ring with the session; the second branch is a defensive boundary against a ghost
+    // window (a field report of status=null while events had rows was not reproducible; UNKNOWN).
+    const bufferedEvents = Array.isArray(this.net.preSession) ? this.net.preSession.length : 0;
+    const base = { ...value, session: null, activeSessionId: null, bufferedEvents };
+    if (Array.isArray(this.net.events) && this.net.events.length > 0) {
+      return {
+        ...base,
+        events: [],
+        groups: [],
+        total: 0,
+        returned: 0,
+        truncated: false,
+        cursor: { next: null },
+        evidence: network.evidenceBlock(this.net, 'events', { truncated: false }),
+      };
+    }
+    return base;
   }
 
   /**
@@ -6517,8 +7196,25 @@ export class Runtime {
     return state.corePromise;
   }
 
-  /** Capability report is pure: it may say "core not loaded" but never imports/triggers it. */
+  /** Capability report may state "core not loaded" for data it does not need. */
   #dynamicCoreLoaded() { return this.dynamic.core !== null; }
+
+  /**
+   * TOOL-P1-06: machine-readable assertion schema for browser_capabilities.dynamic.assertions.
+   * Loading the pure core is a module import only (no page, no lease, no frame, no session); if the
+   * core is missing/broken the capability report degrades to `assertions:null` plus a limitation
+   * instead of turning a read-only capability probe into an error.
+   */
+  async dynamicAssertionSchema() {
+    if (this.dynamic.core) return this.dynamic.core.MOTION_ASSERTION_SCHEMA ?? null;
+    try {
+      const core = await this.#dynamicLoadCore();
+      return core.MOTION_ASSERTION_SCHEMA ?? null;
+    } catch (error) {
+      this.dynamic.assertionSchemaUnavailable = (error && error.code) || 'core-unavailable';
+      return null;
+    }
+  }
 
   #dynamicTouch(operation, extra = {}) {
     const state = this.dynamic;
@@ -6716,6 +7412,14 @@ export class Runtime {
       }
       loop.inflight = true;
       const beginMonoMs = dynamicMonoNow();
+      // TOOL-P1-03: the loop tick START is the measured sampling cadence (single-flight; a missed
+      // tick is counted as a sampling failure and is not appended). Bounded to 240 samples.
+      session.counters.samplingTicks += 1;
+      session.samplingTrace.push(beginMonoMs);
+      if (session.samplingTrace.length > DYNAMIC_INTERNAL.samplingTraceMax) {
+        session.samplingTrace.shift();
+        session.samplingTraceTruncated = true;
+      }
       try {
         const shot = await loop.cdp.send('Page.captureScreenshot', { format: 'png' }, { timeoutMs: 5000 });
         const endMonoMs = dynamicMonoNow();
@@ -6939,6 +7643,8 @@ export class Runtime {
       counters: {
         frames: 0, framesStored: 0, events: 0, bytes: 0, dropped: 0, evicted: 0,
         ackAttempts: 0, ackFailures: 0, gaps: 0, sinkErrors: 0, decodeFailures: 0,
+        // TOOL-P1-03 sampling counters: initialized so `+= 1` never turns into NaN.
+        samplingTicks: 0, samplingFailures: 0, missingSourceTimestamps: 0,
         // observe(region) crop-on-delivery accounting (0 on the encoded-only path).
         cropDecodes: 0, cropFailures: 0,
       },
@@ -6951,6 +7657,9 @@ export class Runtime {
       imageCache: new Map(),
       imageBytes: 0,
       samples: new Map(),
+      // TOOL-P1-03: bounded loop-tick starts (screenshot-loop measured cadence) and a truncation flag.
+      samplingTrace: [],
+      samplingTraceTruncated: false,
       // Host-observed page action records for the actionId -> page opId bridge (bounded).
       hostActions: [],
       // Page-declared snapshots are read-only; every projection is tagged page-declared.
@@ -6962,6 +7671,106 @@ export class Runtime {
     };
     record.deadlineMs = record.startedAt + config.durationMs;
     return record;
+  }
+
+  /**
+   * TOOL-P1-03 sampling truth projection (session start/status/extend/stop, observe and
+   * evidence.dynamic all share this block). Values are measured, never inferred from the
+   * requested interval:
+   *  - screenshot-loop: stored frame receivedMonoMs (the loop tick start frozen on each frame);
+   *  - screencast: stored frame timelineMs intervals (damage-driven, uneven);
+   *  - captureVisual:false: no sampling at all (`mechanism:'network-only'`).
+   * Both visual mechanisms use the SAME stored frame window that browser_motion_observe returns,
+   * so sampling.measured can be cross-checked value-for-value against observe frames.
+   * Missing data is reported as null plus an explicit limitation, never as 0.
+   */
+  #dynamicSamplingView(session) {
+    if (!session) return null;
+    const config = session.config || {};
+    const countersIn = session.counters || {};
+    const captureVisual = config.captureVisual !== false;
+    const mechanism = !captureVisual
+      ? 'network-only'
+      : (config.source === 'screenshot-loop' ? 'screenshot-loop' : 'screencast');
+    const cadence = mechanism === 'screenshot-loop'
+      ? 'host-scheduled'
+      : (mechanism === 'screencast' ? 'damage-driven' : 'none');
+    const limitations = [];
+    let times = [];
+    let from = null;
+    let framesConsidered = 0;
+    // Both visual mechanisms read the SAME stored frame set that browser_motion_observe returns,
+    // so `sampling.measured` can be cross-checked value-for-value against observe frames:
+    //  - screenshot-loop: receivedMonoMs (the loop tick start recorded on the frame);
+    //  - screencast: timelineMs (host receive mapping).
+    // session.samplingTrace (loop tick starts) is still recorded for internal/debug use, but it is
+    // NOT the measured basis: failed/evicted ticks would otherwise make the medians disagree.
+    if (mechanism === 'screenshot-loop' || mechanism === 'screencast') {
+      const loop = mechanism === 'screenshot-loop';
+      from = loop ? 'loop-tick-start' : 'frame-timeline';
+      const timeField = loop ? 'receivedMonoMs' : 'timelineMs';
+      try {
+        const store = session.frames;
+        const highWater = store && Number.isInteger(store.highWater) ? store.highWater : 0;
+        const sinceSeq = Math.max(0, highWater - DYNAMIC_INTERNAL.samplingTraceMax);
+        const frames = store
+          ? this.#dynamicFramesOf(session, { sinceSeq, limit: DYNAMIC_INTERNAL.samplingTraceMax })
+          : [];
+        framesConsidered = frames.length;
+        let missingTime = 0;
+        for (const frame of frames) {
+          if (Number.isFinite(frame[timeField])) times.push(frame[timeField]);
+          else missingTime += 1;
+        }
+        if (missingTime > 0) limitations.push(loop ? 'frames-missing-tick-start' : 'frames-missing-timeline');
+        if (highWater > DYNAMIC_INTERNAL.samplingTraceMax) {
+          limitations.push('sampling-window-bounded:' + DYNAMIC_INTERNAL.samplingTraceMax);
+        }
+        if (frames.length === 0) limitations.push('no-sampling-samples');
+      } catch {
+        limitations.push('sampling-frames-unavailable');
+      }
+    } else {
+      limitations.push('no-visual-capture');
+    }
+    const stats = dynamicIntervalStats(times);
+    if (stats.intervals === 0 && mechanism !== 'network-only') limitations.push('interval-count-zero');
+    const requestedIntervalMs = mechanism === 'screenshot-loop' && Number.isFinite(config.sampleIntervalMs)
+      ? config.sampleIntervalMs
+      : null;
+    return {
+      version: 1,
+      mechanism,
+      cadence,
+      requested: {
+        intervalMs: requestedIntervalMs,
+        source: mechanism === 'screenshot-loop'
+          ? 'setInterval(host)'
+          : (mechanism === 'screencast' ? 'cdp-screencast(damage-driven)' : null),
+      },
+      measured: {
+        frames: stats.frames,
+        intervals: stats.intervals,
+        p50Ms: stats.p50Ms,
+        p95Ms: stats.p95Ms,
+        minMs: stats.minMs,
+        maxMs: stats.maxMs,
+        meanMs: stats.meanMs,
+        windowMs: stats.windowMs,
+        effectiveFps: stats.effectiveFps,
+        from,
+      },
+      counters: {
+        sampled: mechanism === 'screenshot-loop'
+          ? (Number.isFinite(countersIn.samplingTicks) ? countersIn.samplingTicks : 0)
+          : (Number.isFinite(countersIn.frames) ? countersIn.frames : 0),
+        dropped: Number.isFinite(countersIn.dropped) ? countersIn.dropped : 0,
+        evicted: Number.isFinite(countersIn.evicted) ? countersIn.evicted : 0,
+        samplingFailures: Number.isFinite(countersIn.samplingFailures) ? countersIn.samplingFailures : 0,
+      },
+      framesConsidered,
+      limitations: [...new Set(limitations)],
+    };
   }
 
   #dynamicSessionView(session) {
@@ -6998,7 +7807,11 @@ export class Runtime {
         dropped: session.counters.dropped,
         evicted: session.counters.evicted,
         ackFailures: session.counters.ackFailures,
+        samplingTicks: Number.isFinite(session.counters.samplingTicks) ? session.counters.samplingTicks : 0,
+        samplingFailures: Number.isFinite(session.counters.samplingFailures) ? session.counters.samplingFailures : 0,
       },
+      // TOOL-P1-03: measured sampling (mechanism/cadence/requested/measured/counters/limitations).
+      sampling: this.#dynamicSamplingView(session),
       retained: session.retained,
     };
   }
@@ -7016,6 +7829,7 @@ export class Runtime {
       stoppedAt: view.stoppedAt,
       retained: view.retained,
       counters: view.counters,
+      sampling: view.sampling,
     };
   }
 
@@ -7108,6 +7922,8 @@ export class Runtime {
         highWater: this.#dynamicHighWater(session),
         clockAnchors: [],
         integrity: this.#dynamicIntegrity(session),
+        // TOOL-P1-03: evidence carries the same measured sampling block (never requested-as-truth).
+        sampling: this.#dynamicSamplingView(session),
         control: this.#dynamicControlEvidence(session),
         redaction: { applied: ['payload:pixels'], rules: [] },
         incomplete: [...incomplete],
@@ -7687,6 +8503,8 @@ export class Runtime {
       return {
         ok: true, frames: [freshFrame], events: [], fromSeq: null, toSeq: null,
         cursor: { next: null }, integrity: this.#dynamicIntegrity(session), sample: sample.sample,
+        // TOOL-P1-03: the same measured sampling block as session start/status.
+        sampling: this.#dynamicSamplingView(session),
         cropStats: { decodes: session.counters.cropDecodes, failures: session.counters.cropFailures },
         evidence: this.#dynamicEvidence('motion.observe', session),
       };
@@ -7695,6 +8513,7 @@ export class Runtime {
       return {
         ok: true, frames: [], events: [], fromSeq: null, toSeq: null,
         cursor: { next: null }, integrity: this.#dynamicIntegrity(session), sample: null,
+        sampling: this.#dynamicSamplingView(session),
         evidence: this.#dynamicEvidence('motion.observe', session, { incomplete: ['no-frame-store'] }),
       };
     }
@@ -7789,6 +8608,8 @@ export class Runtime {
     return {
       ok: true, frames, events, fromSeq, toSeq, cursor: { next: nextCursor },
       integrity: this.#dynamicIntegrity(session), sample: null,
+      // TOOL-P1-03: measured sampling cadence, readable even when frames were evicted/stopped.
+      sampling: this.#dynamicSamplingView(session),
       cropStats: { decodes: session.counters.cropDecodes, failures: session.counters.cropFailures },
       evidence: this.#dynamicEvidence('motion.observe', session),
     };
@@ -9472,6 +10293,9 @@ export class Runtime {
 
   /** Ref numbers are monotonic and never recycled, not even after a navigation (contract §3.2). */
   #t2NextRefNumber() {
+    // P0-E §5: refs are globally unique across sibling tabs, while each Runtime keeps its own
+    // resolution table. The registry allocator is a synchronous counter, not a page queue.
+    if (this.registry && typeof this.registry.allocateRef === 'function') return this.registry.allocateRef();
     if (this.t2.nextRefSeq >= Number.MAX_SAFE_INTEGER - 1) {
       throw new BrowserError('UNSUPPORTED', 'ref 编号已耗尽：请重启调试实例后再继续');
     }
@@ -11033,6 +11857,7 @@ export class Runtime {
     this.viewerSockets = 0;
     // Refs never survive a close/eviction/rebuild (contract §3.2).
     this.#t2BumpDocumentEpoch();
+    try { this.registry?.onRuntimeClosed?.(this); } catch { /* projection only */ }
 
     if (this.ownsHost) {
       // Legacy private runtime: close the process/profile exactly like before.
@@ -11052,6 +11877,14 @@ const SCOPE_HEADER_VERSION = 'x-ui-testing-scope-version';
 const SCOPE_HEADER_SESSION = 'x-ui-testing-session-id';
 const SCOPE_HEADER_SCOPE = 'x-ui-testing-scope';
 const SCOPE_HEADER_BINDING = 'x-ui-testing-scope-binding';
+/**
+ * Optional hint for a session-scoped GUI request: `primary` means "render this workspace's primary
+ * tab, do not apply the Agent session's selectedTab" (P0-E). The panel's own view is authoritative
+ * for the panel; the Agent selection only routes tools. Only the literal `primary` is accepted and
+ * only together with a sessionId — a binding already names its runtime.
+ */
+const SCOPE_HEADER_TAB = 'x-ui-testing-scope-tab';
+const SCOPE_TAB_PRIMARY = 'primary';
 const SCOPE_SPECIAL_VALUES = new Set(['recent', 'unassigned']);
 
 function headerValue(headers, name) {
@@ -11075,6 +11908,15 @@ function scopeSpecial(value) {
   return { mode: text };
 }
 
+/** `x-ui-testing-scope-tab` / `tab=`: only the literal `primary`, only with a sessionId. */
+function scopeTabHint(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (String(value).trim().toLowerCase() !== SCOPE_TAB_PRIMARY) {
+    throw new BrowserError('SCOPE_INVALID', `scope-tab 只支持 ${SCOPE_TAB_PRIMARY}，收到 ${value}`);
+  }
+  return SCOPE_TAB_PRIMARY;
+}
+
 /**
  * HTTP scope protocol. No scope headers at all = the old protocol (`legacy:default`); any scope
  * header without a protocol version, or two different identities in one request, is a 400.
@@ -11085,16 +11927,19 @@ function parseHttpScope(req) {
   const sessionId = headerValue(headers, SCOPE_HEADER_SESSION);
   const special = headerValue(headers, SCOPE_HEADER_SCOPE);
   const binding = headerValue(headers, SCOPE_HEADER_BINDING);
-  const present = [version, sessionId, special, binding].filter((value) => value !== undefined && value !== '');
+  const tab = headerValue(headers, SCOPE_HEADER_TAB);
+  const present = [version, sessionId, special, binding, tab].filter((value) => value !== undefined && value !== '');
   if (present.length === 0) return { mode: 'legacy' };
   if (version === undefined || version === '') throw new BrowserError('SCOPE_INVALID', `缺少 ${SCOPE_HEADER_VERSION}`);
   if (version !== '1') throw new BrowserError('SCOPE_INVALID', `不支持的 scope 版本：${version}`);
   const identities = [sessionId, special, binding].filter((value) => value !== undefined && value !== '');
   if (identities.length > 1) throw new BrowserError('SCOPE_INVALID', '同一请求只能给出一种 scope 身份（sessionId / scope / binding）');
   if (identities.length === 0) throw new BrowserError('SCOPE_INVALID', 'scopeVersion=1 必须给出 sessionId、scope 或 binding');
+  const tabHint = scopeTabHint(tab);
+  if (tabHint && !sessionId) throw new BrowserError('SCOPE_INVALID', 'scope-tab 只能与 sessionId 一起使用');
   if (binding) return { mode: 'binding', runtimeId: scopeToken(binding, 'binding') };
   if (special) return scopeSpecial(special);
-  return { mode: 'session', sessionId: scopeToken(sessionId, 'sessionId') };
+  return { mode: 'session', sessionId: scopeToken(sessionId, 'sessionId'), tab: tabHint };
 }
 
 /** The WS query form of the same protocol: ?scopeVersion=1&sessionId=… / &scope=… / &binding=… */
@@ -11106,17 +11951,20 @@ function parseScopeQuery(rawUrl) {
   const sessionId = url.searchParams.get('sessionId');
   const special = url.searchParams.get('scope');
   const binding = url.searchParams.get('binding');
+  const tab = url.searchParams.get('tab');
   if (version === null) {
-    if (sessionId !== null || special !== null || binding !== null) throw new BrowserError('SCOPE_INVALID', '缺少 scopeVersion');
+    if (sessionId !== null || special !== null || binding !== null || tab !== null) throw new BrowserError('SCOPE_INVALID', '缺少 scopeVersion');
     return { mode: 'legacy' };
   }
   if (version !== '1') throw new BrowserError('SCOPE_INVALID', `不支持的 scope 版本：${version}`);
   const identities = [sessionId, special, binding].filter((value) => value !== null && value !== '');
   if (identities.length > 1) throw new BrowserError('SCOPE_INVALID', '同一连接只能给出一种 scope 身份（sessionId / scope / binding）');
   if (identities.length === 0) throw new BrowserError('SCOPE_INVALID', 'scopeVersion=1 必须给出 sessionId、scope 或 binding');
+  const tabHint = scopeTabHint(tab);
+  if (tabHint && !sessionId) throw new BrowserError('SCOPE_INVALID', 'scope-tab 只能与 sessionId 一起使用');
   if (binding) return { mode: 'binding', runtimeId: scopeToken(binding, 'binding') };
   if (special) return scopeSpecial(special);
-  return { mode: 'session', sessionId: scopeToken(sessionId, 'sessionId') };
+  return { mode: 'session', sessionId: scopeToken(sessionId, 'sessionId'), tab: tabHint };
 }
 
 /** Status for the workspace-isolation error taxonomy (everything else stays 500 for compat). */
@@ -11124,6 +11972,7 @@ function scopeHttpStatus(code) {
   switch (code) {
     // Optimistic-concurrency loss on the shared viewport (docs/viewport-control.md).
     case 'VIEWPORT_CONFLICT': return 409;
+    case 'BUSY': return 409;
     case 'SCOPE_INVALID': return 400;
     case 'SCOPE_FORBIDDEN': return 403;
     case 'SCOPE_NOT_FOUND': return 404;
@@ -11300,7 +12149,19 @@ export class RuntimeRegistry {
     this.idleMs = idleMs;
     this.maxEntries = maxEntries;
     this.viewerTtlMs = viewerTtlMs;
+    this.maxPopupChildren = MAX_POPUP_CHILDREN_DEFAULT;
     this.entries = new Map();
+    /** Workspace-group GUI projection revisions and bounded notices (popup internal tabs). */
+    this.viewsRevision = new Map();
+    this.popupNotices = new Map();
+    /** P0-E lifecycle audit (TOOL-P0-01/P1-05): bounded per-workspace close history. */
+    this.recentClosed = new Map();
+    this.noticesLimit = POPUP_NOTICES_LIMIT;
+    this.closedHistoryLimit = CLOSED_HISTORY_LIMIT;
+    /** P0-E: per-Agent-session selected tab (workspaceKey + sessionId -> {tabId,...}). */
+    this.selectedBySession = new Map();
+    /** P0-E/T2: one monotonic ref allocator across all tabs of this registry. */
+    this.nextGlobalRef = 1;
     this.host = undefined;
     this.reservations = 0;
     this.recentKey = undefined;
@@ -11326,7 +12187,9 @@ export class RuntimeRegistry {
     if (existing) return existing;
     if (this.entries.size >= this.maxEntries) this.#evictColdEntry();
     const runtime = new Runtime(this.log, { host: this.browserHost(), origins: this.origins, scope, registry: this, viewerTtlMs: this.viewerTtlMs });
-    const entry = { key, scope, runtime, createdAt: Date.now(), lastUsedAt: Date.now() };
+    const entry = { key, scope, runtime, kind: 'primary', viewId: 'primary', primaryKey: key,
+      parentRuntimeId: null, parentTabId: null, openEventId: null, createdBy: 'host',
+      tabId: 'primary', createdAt: Date.now(), lastUsedAt: Date.now() };
     this.entries.set(key, entry);
     return entry;
   }
@@ -11337,10 +12200,457 @@ export class RuntimeRegistry {
     return undefined;
   }
 
+  entryForRuntime(runtime) {
+    if (!runtime) return undefined;
+    for (const entry of this.entries.values()) if (entry.runtime === runtime) return entry;
+    return undefined;
+  }
+
+  primaryEntry(entry) {
+    if (!entry) return undefined;
+    const key = entry.primaryKey || entry.key;
+    return this.entries.get(key) || (entry.kind === 'primary' ? entry : undefined);
+  }
+
+  popupCount(primaryKey) {
+    let count = 0;
+    for (const entry of this.entries.values()) if (entry.kind === 'popup' && entry.primaryKey === primaryKey) count += 1;
+    return count;
+  }
+
+  bumpViews(primaryKey) {
+    if (!primaryKey) return;
+    this.viewsRevision.set(primaryKey, (this.viewsRevision.get(primaryKey) || 0) + 1);
+  }
+
+  /** Reserve one popup slot without ever evicting a parent or another workspace. */
+  reservePopupSlot(primaryEntry) {
+    if (this.disposed) throw new BrowserError('SCOPE_UNAVAILABLE', '插件正在卸载');
+    if (!primaryEntry) throw new BrowserError('TAB_LIMIT', '找不到 popup 所属的 primary 工作区');
+    if (this.popupCount(primaryEntry.key) >= this.maxPopupChildren) {
+      throw new BrowserError('TAB_LIMIT', `每个工作区最多 ${this.maxPopupChildren} 个 popup 子页`, {
+        maxPopupChildren: this.maxPopupChildren, popupCount: this.popupCount(primaryEntry.key),
+      });
+    }
+    const host = this.browserHost();
+    this.reservations += 1;
+    if (host.pageCount + this.reservations > this.maxPages) {
+      this.reservations = Math.max(0, this.reservations - 1);
+      throw new BrowserError('TAB_LIMIT', `popup 超出全局 ${this.maxPages} 页上限`, {
+        maxPages: this.maxPages, pageCount: host.pageCount, reservations: this.reservations,
+      });
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.reservations = Math.max(0, this.reservations - 1);
+    };
+  }
+
+  addPopupEntry({ parentEntry, runtime, viewId, openEventId, sourcePanelId }) {
+    const primaryKey = parentEntry.primaryKey || parentEntry.key;
+    const key = `${parentEntry.key}:view:${viewId}`;
+    const entry = {
+      key, scope: parentEntry.scope, runtime, kind: 'popup', viewId, tabId: viewId,
+      primaryKey, parentKey: parentEntry.key, parentRuntimeId: parentEntry.runtime.runtimeId,
+      parentTabId: parentEntry.tabId || (parentEntry.kind === 'primary' ? 'primary' : parentEntry.viewId),
+      openEventId: openEventId || null, sourcePanelId: sourcePanelId || null,
+      createdBy: runtime.createdBy || 'gui',
+      status: 'initializing', createdAt: Date.now(), lastUsedAt: Date.now(),
+    };
+    this.entries.set(key, entry);
+    this.bumpViews(primaryKey);
+    return entry;
+  }
+
+  /** Close every popup child of one primary (parent close/plugin teardown). */
+  async closeChildren(primaryEntry) {
+    const children = [...this.entries.values()].filter((entry) => entry.kind === 'popup'
+      && entry.primaryKey === (primaryEntry.primaryKey || primaryEntry.key));
+    for (const entry of children) {
+      try { await entry.runtime.close(); } catch { /* ignore */ }
+    }
+  }
+
+  addPopupNotice(primaryEntry, { reason, openEventId = null } = {}) {
+    if (!primaryEntry) return;
+    const primaryKey = primaryEntry.primaryKey || primaryEntry.key;
+    const list = this.popupNotices.get(primaryKey) || [];
+    list.push({
+      id: randomUUID(), reason: String(reason || 'blocked').slice(0, 64),
+      parentTabId: primaryEntry.tabId || (primaryEntry.kind === 'primary' ? 'primary' : primaryEntry.viewId),
+      parentRuntimeId: primaryEntry.runtime.runtimeId, openEventId: openEventId || null,
+      at: Date.now(),
+    });
+    while (list.length > this.noticesLimit) list.shift();
+    this.popupNotices.set(primaryKey, list);
+    this.bumpViews(primaryKey);
+  }
+
+  /** Bounded read-only view of the blocked-popup notices for one workspace (TOOL-P0-01). */
+  noticesView(primaryEntry) {
+    if (!primaryEntry) return [];
+    const list = this.popupNotices.get(primaryEntry.primaryKey || primaryEntry.key) || [];
+    return list.map((notice) => ({ ...notice }));
+  }
+
+  /** Bounded read-only view of the close/idle/evict audit for one workspace (TOOL-P1-05). */
+  recentClosedView(primaryEntry) {
+    if (!primaryEntry) return [];
+    const list = this.recentClosed.get(primaryEntry.primaryKey || primaryEntry.key) || [];
+    return list.map((row) => ({ ...row }));
+  }
+
+  /** Append one close-audit row (tabId/kind/reason/at), capped at closedHistoryLimit. */
+  #recordClosed(entry, reason) {
+    const primaryKey = entry.primaryKey || entry.key;
+    if (!primaryKey) return;
+    const list = this.recentClosed.get(primaryKey) || [];
+    const normalized = reason === 'idle' || reason === 'evicted' ? reason : 'closed';
+    list.push({
+      tabId: this.#tabId(entry), kind: this.#tabKind(entry), reason: normalized, at: Date.now(),
+    });
+    while (list.length > this.closedHistoryLimit) list.shift();
+    this.recentClosed.set(primaryKey, list);
+  }
+
+  /** Same bounded workspace-group list for primary and every child /state. */
+  uiViews(runtime) {
+    const entry = this.entryForRuntime(runtime);
+    const primary = this.primaryEntry(entry);
+    if (!entry || !primary) return {};
+    const primaryKey = primary.key;
+    const children = [...this.entries.values()].filter((candidate) => candidate.kind === 'popup'
+      && candidate.primaryKey === primaryKey);
+    let changed = false;
+    const views = [];
+    for (const item of [primary, ...children]) {
+      if (item.status === 'initializing') continue;
+      const rt = item.runtime;
+      const title = redactText(String(rt.title || '').replace(/[\u0000-\u001f\u007f]/gu, '')).slice(0, 120);
+      let hostLabel = '';
+      try { hostLabel = new URL(rt.url).hostname.slice(0, 120); } catch { /* empty */ }
+      const status = rt.page && rt.cdp && !rt.cdp.closed ? 'ready' : 'closed';
+      if (item.lastViewTitle !== title) { item.lastViewTitle = title; changed = true; }
+      if (item.lastViewHost !== hostLabel) { item.lastViewHost = hostLabel; changed = true; }
+      if (item.lastViewStatus !== status) { item.lastViewStatus = status; changed = true; }
+      views.push({
+        id: item.viewId, tabId: item.tabId || (item.kind === 'primary' ? 'primary' : item.viewId), runtimeId: rt.runtimeId, kind: item.kind,
+        busy: Boolean(rt.lease && rt.hasLease()), owner: rt.lease && rt.hasLease() ? 'agent' : null,
+        parentRuntimeId: item.kind === 'popup' ? item.parentRuntimeId : null,
+        title, hostLabel, status, openEventId: item.openEventId || null,
+        sourcePanelId: item.sourcePanelId || null,
+        createdBy: item.runtime.createdBy || (item.kind === 'popup' ? 'gui' : 'host'),
+      });
+    }
+    if (changed) this.bumpViews(primaryKey);
+    return {
+      viewsVersion: 1,
+      viewsRevision: this.viewsRevision.get(primaryKey) || 0,
+      primaryRuntimeId: primary.runtime.runtimeId,
+      views,
+      popupNotices: [...(this.popupNotices.get(primaryKey) || [])],
+    };
+  }
+
+  allocateRef() {
+    if (this.nextGlobalRef >= Number.MAX_SAFE_INTEGER - 1) {
+      throw new BrowserError('UNSUPPORTED', 'ref 编号已耗尽：请重启调试实例后再继续');
+    }
+    const value = 'e' + this.nextGlobalRef;
+    this.nextGlobalRef += 1;
+    return value;
+  }
+
+  tabEntries(primaryEntry) {
+    const primaryKey = primaryEntry.primaryKey || primaryEntry.key;
+    const primary = this.entries.get(primaryKey) || primaryEntry;
+    const children = [...this.entries.values()].filter((entry) => entry.kind === 'popup' && entry.primaryKey === primaryKey);
+    return [primary, ...children];
+  }
+
+  tabEntry(primaryEntry, tabId) {
+    if (!primaryEntry) return undefined;
+    const primaryKey = primaryEntry.primaryKey || primaryEntry.key;
+    const primary = this.entries.get(primaryKey) || primaryEntry;
+    if (!tabId || tabId === 'primary' || tabId === primary.tabId) return primary;
+    return [...this.entries.values()].find((entry) => entry.kind === 'popup'
+      && entry.primaryKey === primaryKey && (entry.tabId === tabId || entry.viewId === tabId));
+  }
+
+  #selectionKey(primaryEntry, sessionId) {
+    return String(primaryEntry.key) + '\u0000' + String(sessionId || 'anonymous');
+  }
+
+  selectionFor(primaryEntry, sessionId) {
+    const key = this.#selectionKey(primaryEntry, sessionId);
+    return this.selectedBySession.get(key) || { tabId: 'primary', revision: 0, resetReason: null, pendingReset: false };
+  }
+
+  /** Confirm a pending tab retirement (browser_tabs.current / explicit select). */
+  confirmSelection(primaryEntry, sessionId) {
+    const key = this.#selectionKey(primaryEntry, sessionId);
+    const record = this.selectedBySession.get(key);
+    if (!record) return this.selectionFor(primaryEntry, sessionId);
+    const previous = record.resetReason || null;
+    if (!record.pendingReset) return { ...record, confirmedResetReason: null };
+    record.pendingReset = false;
+    record.resetReason = null;
+    record.tabId = 'primary';
+    record.revision += 1;
+    this.selectedBySession.set(key, record);
+    return { ...record, confirmedResetReason: previous };
+  }
+
+  /** Resolve the page tool target for one Agent session; pending retirement is a zero-dispatch error. */
+  resolveSessionTab(primaryEntry, sessionId) {
+    const record = this.selectionFor(primaryEntry, sessionId);
+    if (record.pendingReset) {
+      throw new BrowserError('TARGET_NOT_FOUND', '选中的标签已关闭或退休，需用 browser_tabs.current 或 select 确认', {
+        reason: record.resetReason || 'selected-tab-closed', tabId: record.tabId, fallbackTabId: 'primary',
+      });
+    }
+    if (record.tabId === 'primary') return { entry: this.entries.get(primaryEntry.key) || primaryEntry, selection: record };
+    const entry = this.tabEntry(primaryEntry, record.tabId);
+    if (!entry) {
+      const key = this.#selectionKey(primaryEntry, sessionId);
+      const next = { ...record, tabId: 'primary', resetReason: 'tab-closed', pendingReset: true, revision: record.revision + 1 };
+      this.selectedBySession.set(key, next);
+      throw new BrowserError('TARGET_NOT_FOUND', '选中的标签已被关闭', {
+        reason: 'selected-tab-closed', tabId: record.tabId, fallbackTabId: 'primary',
+      });
+    }
+    return { entry, selection: record };
+  }
+
+  selectTab(primaryEntry, sessionId, tabId) {
+    if (!sessionId || sessionId === 'anonymous') {
+      throw new BrowserError('UNSUPPORTED', 'browser_tabs 需要真实 Agent 会话身份', { reason: 'agent-session-required' });
+    }
+    const target = this.tabEntry(primaryEntry, tabId);
+    if (!target) throw new BrowserError('TAB_NOT_FOUND', '标签不存在或不属于当前 workspace', { tabId, fallbackTabId: 'primary' });
+    if (target !== primaryEntry && target.scope !== primaryEntry.scope) {
+      throw new BrowserError('TAB_FORBIDDEN', '标签属于其他 workspace', { tabId });
+    }
+    const record = this.selectionFor(primaryEntry, sessionId);
+    const previous = this.tabEntry(primaryEntry, record.tabId) || primaryEntry;
+    target.runtime.claim(sessionId);
+    if (previous !== target) previous.runtime.release(sessionId);
+    const next = {
+      tabId: target.tabId || target.viewId || 'primary', revision: (record.revision || 0) + 1,
+      resetReason: null, pendingReset: false,
+    };
+    this.selectedBySession.set(this.#selectionKey(primaryEntry, sessionId), next);
+    return { entry: target, selection: next };
+  }
+
+  #tabId(entry) {
+    return entry.tabId || (entry.kind === 'primary' ? 'primary' : entry.viewId || 'primary');
+  }
+
+  #tabKind(entry) { return entry.kind === 'primary' ? 'primary' : 'tab'; }
+
+  /**
+   * Public source projection (TOOL-P0-01): primary slot / GUI-adopted or GUI+ child / explicit
+   * Agent browser_tabs.open. `createdBy` stays an internal audit value.
+   */
+  #tabSource(entry) {
+    if (entry.kind === 'primary') return 'primary';
+    const createdBy = entry.createdBy || entry.runtime?.createdBy || 'gui';
+    return createdBy === 'agent' ? 'agent-open' : 'gui-popup';
+  }
+
+  /** One list row. Read-only: no ensure, no queue, no lease, no CDP. */
+  #tabView(entry, selection, sessionId, now = Date.now()) {
+    const runtime = entry.runtime;
+    const owner = runtime.lease && runtime.hasLease() ? runtime.lease.sessionId : null;
+    const tabId = this.#tabId(entry);
+    const lastUsedAt = Number.isFinite(entry.lastUsedAt) ? entry.lastUsedAt : (Number.isFinite(entry.createdAt) ? entry.createdAt : null);
+    return {
+      tabId,
+      runtimeId: runtime.runtimeId,
+      kind: this.#tabKind(entry),
+      title: redactText(String(runtime.title || '')).slice(0, 120),
+      url: runtime.url ? redactUrl(runtime.url) : '',
+      status: runtime.page && runtime.cdp && !runtime.cdp.closed ? 'ready' : 'closed',
+      selected: selection.tabId === tabId,
+      busy: Boolean(owner), owner: owner === sessionId ? 'self' : (owner ? 'other' : null),
+      reset: selection.pendingReset && selection.tabId === tabId ? selection.resetReason || null : null,
+      // P0-E lifecycle projection: where the tab came from, who opened it and how long it lives.
+      source: this.#tabSource(entry),
+      parentTabId: entry.kind === 'popup' ? (entry.parentTabId || null) : null,
+      openEventId: entry.openEventId || null,
+      createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : null,
+      lastUsedAt,
+      idleRemainingMs: Number.isFinite(this.idleMs) && Number.isFinite(lastUsedAt)
+        ? Math.max(0, this.idleMs - Math.max(0, now - lastUsedAt)) : null,
+      // `manageable` = this Agent session may act on the tab now (not another session's lease).
+      // Closing additionally needs the caller's own lease and no in-flight operation.
+      manageable: owner === null || owner === sessionId,
+    };
+  }
+
+  listTabs(primaryEntry, sessionId) {
+    const selection = this.selectionFor(primaryEntry, sessionId);
+    const now = Date.now();
+    return this.tabEntries(primaryEntry).map((entry) => this.#tabView(entry, selection, sessionId, now));
+  }
+
+  /**
+   * browser_tabs.wait: pure Host-memory polling (TOOL-P0-01).
+   *
+   * Without `tabId`, only tabs that were not already present when the call started can match, so
+   * an immediate `list` that already shows a child can never be mistaken for "a new tab appeared".
+   * With `tabId`, waits for that exact id (immediately when it already exists). `initializing`
+   * popups only match once they are no longer initializing, i.e. when they appear in ui.views.
+   * Never starts Chromium, never takes/extends a lease and never advances an idle timer.
+   * Returns `{matched:true, matchedTab, elapsedMs, polls, condition}` — `matchedTab` is the tab row,
+   * because the tool envelope always owns the standard `tab:{id,runtimeId,selectionRevision}` field.
+   */
+  async waitForTab(primaryEntry, sessionId, { tabId = null, kind = null, source = null,
+    timeoutMs = TAB_WAIT_TIMEOUT_DEFAULT_MS, pollMs = TAB_WAIT_POLL_DEFAULT_MS } = {}, signal) {
+    const startedAt = Date.now();
+    const baseline = new Set(this.tabEntries(primaryEntry)
+      .filter((entry) => entry.status !== 'initializing')
+      .map((entry) => this.#tabId(entry)));
+    const condition = { tabId: tabId || null, kind: kind || null, source: source || null, timeoutMs, pollMs };
+    let polls = 0;
+    for (;;) {
+      if (signal && signal.aborted) throw new BrowserError('ABORTED', '等待标签被取消', { reason: 'aborted' });
+      polls += 1;
+      const tab = this.#findAppearingTab(primaryEntry, sessionId, { tabId, kind, source }, baseline);
+      if (tab) return { matched: true, matchedTab: tab, elapsedMs: Date.now() - startedAt, polls, condition };
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= timeoutMs) {
+        throw new BrowserError('WAIT_TIMEOUT', `等待标签在 ${timeoutMs}ms 预算内未出现（${polls} 次采样）`, {
+          matched: false, elapsedMs: elapsed, polls, condition,
+          lastTabIds: this.tabEntries(primaryEntry).map((entry) => this.#tabId(entry)),
+        });
+      }
+      await this.#waitNextPoll(Math.min(pollMs, Math.max(1, timeoutMs - elapsed)), signal);
+    }
+  }
+
+  #findAppearingTab(primaryEntry, sessionId, { tabId, kind, source }, baseline) {
+    const selection = this.selectionFor(primaryEntry, sessionId);
+    const now = Date.now();
+    for (const entry of this.tabEntries(primaryEntry)) {
+      const id = this.#tabId(entry);
+      if (tabId) {
+        if (id !== tabId) continue;
+      } else if (baseline.has(id)) {
+        continue;
+      }
+      if (entry.status === 'initializing') continue;
+      if (kind && this.#tabKind(entry) !== kind) continue;
+      if (source && this.#tabSource(entry) !== source) continue;
+      return this.#tabView(entry, selection, sessionId, now);
+    }
+    return null;
+  }
+
+  #waitNextPoll(ms, signal) {
+    return new Promise((resolve, reject) => {
+      let timer;
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(new BrowserError('ABORTED', '等待标签被取消', { reason: 'aborted' }));
+      };
+      if (signal && signal.aborted) {
+        cleanup();
+        reject(new BrowserError('ABORTED', '等待标签被取消', { reason: 'aborted' }));
+        return;
+      }
+      timer = setTimeout(() => { cleanup(); resolve(); }, ms);
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  /** P0-E explicit open: create about:blank child and select it for this session. */
+  async openTab(primaryEntry, sessionId, source = 'agent', { select = true } = {}) {
+    if (!sessionId || sessionId === 'anonymous') {
+      throw new BrowserError('UNSUPPORTED', 'browser_tabs 需要真实 Agent 会话身份', { reason: 'agent-session-required' });
+    }
+    const release = this.reservePopupSlot(primaryEntry);
+    const viewId = randomUUID().replace(/-/gu, '').slice(0, 20);
+    const primary = this.entries.get(primaryEntry.primaryKey || primaryEntry.key) || primaryEntry;
+    const child = new Runtime(this.log, {
+      host: this.browserHost(), origins: this.origins, scope: primary.scope, registry: this,
+      kind: 'popup', parentRuntimeId: primary.runtime.runtimeId, viewId, parentKey: primary.key,
+      openEventId: null, sourcePanelId: null, createdBy: source, inheritView: primary.runtime.view,
+    });
+    const entry = this.addPopupEntry({ parentEntry: primary, runtime: child, viewId, openEventId: null, sourcePanelId: null });
+    entry.status = 'initializing';
+    try {
+      const page = await this.browserHost().createPage(child, AbortSignal.timeout(10000));
+      await child.adoptPage(page, { signal: AbortSignal.timeout(10000) });
+      entry.status = 'ready';
+      this.bumpViews(entry.primaryKey);
+      const selected = select ? this.selectTab(primary, sessionId, viewId) : { selection: this.selectionFor(primary, sessionId) };
+      return { entry, selection: selected.selection };
+    } catch (error) {
+      try { await child.close(); } catch { /* ignore */ }
+      try { this.onRuntimeClosed(child); } catch { /* ignore */ }
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
+  /** Close one tab. Agent close requires the caller's own live lease; primary only goes cold. */
+  async closeTab(primaryEntry, sessionId, tabId, { gui = false } = {}) {
+    const target = this.tabEntry(primaryEntry, tabId || this.selectionFor(primaryEntry, sessionId).tabId);
+    if (!target) throw new BrowserError('TAB_NOT_FOUND', '标签不存在或不属于当前 workspace', { tabId });
+    if (!gui) {
+      const owner = target.runtime.lease && target.runtime.hasLease() ? target.runtime.lease.sessionId : null;
+      if (owner !== sessionId) throw new BrowserError('TAB_FORBIDDEN', '关闭标签需要当前会话持有该标签的 lease', { tabId, owner });
+    }
+    if (gui && target.runtime.hasLease()) throw new BrowserError('BUSY', '标签正由 Agent 操作，GUI 暂不能关闭', { tabId });
+    if (target.runtime.active > 0 || target.runtime.inflight > 0) {
+      throw new BrowserError('BUSY', '标签正在执行操作，暂不能关闭', { tabId });
+    }
+    // Primary close only makes primary cold; children stay live (P0-E §1).
+    target.closeReason = 'closed';
+    await target.runtime.run(() => target.runtime.close(), { sessionId, agent: false });
+    return { closed: target.tabId || (target.kind === 'primary' ? 'primary' : target.viewId) };
+  }
+
+  /** Runtime close hook: popup entries retire; the primary stays as a cold entry. */
+  onRuntimeClosed(runtime) {
+    const entry = this.entryForRuntime(runtime);
+    if (!entry) return;
+    // Lifecycle audit (TOOL-P1-05): explicit close/sweep/evict set entry.closeReason before the
+    // runtime is torn down; an external targetDestroyed/window.close keeps the default 'closed'.
+    // Failed opens (initializing entries with no explicit reason) are not tabs the caller saw.
+    const closeReason = entry.closeReason || 'closed';
+    if (entry.closeReason !== 'failed' && !(entry.status === 'initializing' && !entry.closeReason)) {
+      try { this.#recordClosed(entry, closeReason); } catch { /* audit only */ }
+    }
+    if (entry.kind === 'popup') {
+      const tabId = entry.tabId || entry.viewId;
+      for (const [key, record] of this.selectedBySession) {
+        if (record && record.tabId === tabId) {
+          this.selectedBySession.set(key, { ...record, tabId: 'primary', resetReason: 'tab-closed', pendingReset: true, revision: record.revision + 1 });
+        }
+      }
+      this.entries.delete(entry.key);
+      this.bumpViews(entry.primaryKey);
+    } else {
+      this.bumpViews(entry.key);
+    }
+  }
+
   recentEntry() { return this.recentKey ? this.entries.get(this.recentKey) : undefined; }
 
   markRecent(entry) {
     if (!entry || entry.key === LEGACY_SCOPE.key) return;
+    // A popup child never becomes the Agent's recent/primary target.
+    if (entry.kind === 'popup') return;
     this.recentKey = entry.key;
   }
 
@@ -11371,6 +12681,7 @@ export class RuntimeRegistry {
           });
         }
         this.log(`evicting idle scope ${victim.scope.id} (inflight=${victim.runtime.inflight} active=${victim.runtime.active} lease=${Boolean(victim.runtime.hasLease())} viewers=${victim.runtime.viewers} page=${Boolean(victim.runtime.page)}) to make room for ${runtime.scope.id}`);
+        victim.closeReason = 'evicted';
         try { await victim.runtime.close(); } catch (error) { this.log('evict failed: ' + String((error && error.message) || error)); }
       }
       return release;
@@ -11400,11 +12711,18 @@ export class RuntimeRegistry {
       if (!best || entry.lastUsedAt < best.lastUsedAt) best = entry;
     }
     if (!best) throw new BrowserError('RUNTIME_LIMIT', 'scope 实例数量达到上限，且没有可回收的空闲实例', { maxEntries: this.maxEntries });
+    best.closeReason = 'evicted';
     this.#retire(best);
   }
 
   #retire(entry) {
+    // Cold-entry retirement is a lifecycle event too (TOOL-P1-05): default to evicted, while the
+    // idle sweep marks its entries 'idle' before calling here.
+    try {
+      if (entry.closeReason !== 'failed') this.#recordClosed(entry, entry.closeReason || 'evicted');
+    } catch { /* audit only */ }
     this.entries.delete(entry.key);
+    if (entry.kind === 'popup' && entry.primaryKey) this.bumpViews(entry.primaryKey);
     if (this.recentKey === entry.key) this.recentKey = undefined;
     try { this.onRetire?.(entry.runtime); } catch { /* ignore */ }
     try { entry.runtime.frameTransport?.dispose?.(); } catch { /* ignore */ }
@@ -11428,6 +12746,7 @@ export class RuntimeRegistry {
           if (!runtime.evictable()) continue;
           // Restart the idle window before the (possibly slow) close: a concurrent/next sweep
           // must not retire the cold entry while the host is still shutting down.
+          entry.closeReason = 'idle';
           entry.lastUsedAt = Date.now();
           try { await runtime.close(); } catch { /* ignore */ }
           entry.lastUsedAt = Date.now();
@@ -11435,6 +12754,7 @@ export class RuntimeRegistry {
           // A cold entry may still have an ensure/operation in flight (e.g. the shared host is
           // restarting); retiring it here would orphan the page the operation is creating.
           if (runtime.inflight > 0 || runtime.starting || runtime.closing || runtime.hasLease() || runtime.viewers > 0) continue;
+          entry.closeReason = 'idle';
           this.#retire(entry);
         }
       }
@@ -12039,6 +13359,314 @@ export class HttpClient {
   }
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * Read-only element pick for the debug view ("选元素加入聊天框"): POST /plugins/ui-testing/element.
+ *
+ * The panel sends page *document* CSS pixels: the space of `getBoundingClientRect()` plus
+ * `scrollX/scrollY`, which is the canvas coordinate space when the canvas offset O = 0
+ * (docs/viewport-control.md §混合画布). The reply is the hit element plus its document rect, the
+ * `scroll` the rect was computed with (same Page.getLayoutMetrics read) and the main-frame
+ * `loaderId` (document generation, so the panel can discard a response that raced a navigation).
+ * `detail:true` adds a robust CSS selector, the whitespace-collapsed outerHTML/text, the
+ * best-effort accessibility role/name and — for a hit inside a shadow root — the root-scoped
+ * selector facts (`shadowHost`, `closedShadow`).
+ *
+ * Coordinate space, measured on this Chromium by tests/acceptance/pick-element-host.mjs (H0):
+ *   - `DOM.getNodeForLocation` takes MAIN-FRAME DOCUMENT coordinates (scroll included) and only
+ *     hits the CURRENTLY VISIBLE area (`y = scrollY` hits, `y = scrollY - 1` / `y = scrollY +
+ *     clientHeight` answer "No node found at given location"); fractional input is rejected, so
+ *     the route floors it;
+ *   - `DOM.getBoxModel` returns ROOT-FRAME VIEWPORT quads (even for a `position:fixed` element),
+ *     so the document rect is the border quad translated by
+ *     `Page.getLayoutMetrics.cssLayoutViewport.pageX/pageY`.
+ *
+ * Scope: v1 picks inside the MAIN frame only — the same "frame: main" DOM tree T2 snapshots use.
+ * A cross-frame hit (e.g. a point over an iframe) fails closed with `reason:'frame'` instead of
+ * returning a child-frame-relative selector, and a point outside the currently visible viewport
+ * answers `reason:'out-of-viewport'`.
+ *
+ * Read-only contract: nothing here starts Chromium (`ensure`), enters the Runtime serial queue,
+ * claims the single-owner lease, records client metrics, marks agent/human or writes
+ * Runtime.lastError. Every CDP call is bounded by ELEMENT_CDP_TIMEOUT_MS, so a hung or detached
+ * page degrades to `{element:null,reason:'stale'}` (HTTP 200) instead of a 5xx.
+ * ------------------------------------------------------------------------------------------- */
+const ELEMENT_CDP_TIMEOUT_MS = 1500;
+const ELEMENT_COORD_LIMIT = 1e7;
+const ELEMENT_OUTER_HTML_MAX = 240;
+const ELEMENT_TEXT_MAX = 160;
+const ELEMENT_SELECTOR_MAX = 512;
+const ELEMENT_MAX_NODE_WALK = 5;
+
+/**
+ * Selector / outerHTML / text reads, executed once in the page via `Runtime.callFunctionOn`.
+ * `this` is the hit element. The selector is a robust CSS path: a unique id wins, otherwise an
+ * ancestor path with `nth-of-type` disambiguation is built and each candidate is re-checked for
+ * uniqueness against the node's own root (so a shadow-root pick never cites a document selector).
+ */
+const ELEMENT_SELECTOR_JS = `function () {
+  var el = this;
+  if (!el || el.nodeType !== 1) return null;
+  function rootOf(node) {
+    return typeof node.getRootNode === 'function' ? node.getRootNode() : document;
+  }
+  function idOf(node) {
+    return node && node.getAttribute ? node.getAttribute('id') : null;
+  }
+  function selectorFor(node) {
+    var scope = rootOf(node);
+    function unique(selector) {
+      try { return scope.querySelectorAll(selector).length === 1 && scope.querySelector(selector) === node; }
+      catch (error) { return false; }
+    }
+    function simple(n) {
+      var id = idOf(n);
+      if (id) {
+        var idSelector = '#' + CSS.escape(id);
+        if (scope.querySelectorAll(idSelector).length === 1) return idSelector;
+      }
+      var tag = String(n.localName || '').toLowerCase();
+      var parent = n.parentElement;
+      if (parent) {
+        var same = [];
+        for (var i = 0; i < parent.children.length; i += 1) {
+          if (String(parent.children[i].localName || '').toLowerCase() === tag) same.push(parent.children[i]);
+        }
+        if (same.length > 1) return tag + ':nth-of-type(' + (same.indexOf(n) + 1) + ')';
+      }
+      return tag;
+    }
+    var selector = null;
+    var ownId = idOf(node);
+    if (ownId) {
+      var own = '#' + CSS.escape(ownId);
+      if (unique(own)) selector = own;
+    }
+    if (!selector) {
+      var parts = [];
+      var current = node;
+      for (var depth = 0; current && current.nodeType === 1 && depth < 8; depth += 1) {
+        parts.unshift(simple(current));
+        var candidate = parts.join(' > ');
+        // Prefer an anchored path: a bare tag / nth-of-type candidate is unique only by accident,
+        // so a non-id selector must carry at least one ancestor segment.
+        if (unique(candidate) && (parts.length >= 2 || candidate.charAt(0) === '#')) { selector = candidate; break; }
+        if (idOf(current)) break;
+        current = current.parentElement;
+      }
+      if (!selector && parts.length) selector = parts.join(' > ');
+    }
+    return selector;
+  }
+  var root = rootOf(el);
+  var host = root && root.host ? root.host : null;
+  return {
+    selector: selectorFor(el),
+    outerHTML: el.outerHTML == null ? '' : String(el.outerHTML),
+    text: el.textContent == null ? '' : String(el.textContent),
+    // Shadow-DOM facts (detail only, best effort): the selector above is ROOT-scoped when the hit
+    // lives in a shadow root, so document.querySelector(selector) cannot find it; the host facts
+    // let a caller describe the target anyway, and closedShadow says whether the root is closed.
+    shadowHost: host ? {
+      tag: String(host.localName || '').toLowerCase(),
+      id: idOf(host) || '',
+      selector: selectorFor(host),
+    } : null,
+    closedShadow: host ? root.mode === 'closed' : null,
+  };
+}`;
+
+/** Validate the write-free request shape: `{x, y, detail?}` with document CSS px coordinates. */
+function elementPickRequest(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new BrowserError('INVALID_ARGUMENT', 'element 请求体必须是 JSON 对象', { field: 'body' });
+  }
+  const coordinate = (field) => {
+    const value = body[field];
+    if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > ELEMENT_COORD_LIMIT) {
+      throw new BrowserError('INVALID_ARGUMENT', `element ${field} 必须是 |v|≤${ELEMENT_COORD_LIMIT} 的有限数`, {
+        field, valueType: value === null ? 'null' : typeof value,
+      });
+    }
+    return value;
+  };
+  const x = coordinate('x');
+  const y = coordinate('y');
+  if (body.detail !== undefined && body.detail !== null && typeof body.detail !== 'boolean') {
+    throw new BrowserError('INVALID_ARGUMENT', 'element detail 必须是布尔值', { field: 'detail', valueType: typeof body.detail });
+  }
+  return { x, y, detail: body.detail === true };
+}
+
+/** Collapse whitespace and cut to `max` code points (never split a surrogate pair). */
+function elementCut(value, max) {
+  const collapsed = String(value == null ? '' : value).replace(/\s+/gu, ' ').trim();
+  const chars = Array.from(collapsed);
+  return chars.length > max ? chars.slice(0, max).join('') : collapsed;
+}
+
+/** Flat `attributes` array from DOM.describeNode -> plain object (last duplicate wins). */
+function elementAttributes(node) {
+  const out = {};
+  const list = Array.isArray(node && node.attributes) ? node.attributes : [];
+  for (let index = 0; index + 1 < list.length; index += 2) {
+    out[String(list[index])] = String(list[index + 1]);
+  }
+  return out;
+}
+
+/** Border-box quad (viewport CSS px) -> document rect; a degenerate/absent quad is `null`. */
+function elementQuadRect(model, scrollX, scrollY) {
+  const quad = model && (model.border || model.padding || model.content);
+  if (!Array.isArray(quad) || quad.length < 8) return null;
+  const xs = [quad[0], quad[2], quad[4], quad[6]];
+  const ys = [quad[1], quad[3], quad[5], quad[7]];
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+  return {
+    x: minX + scrollX,
+    y: minY + scrollY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
+/**
+ * `detail:true` extras. Both halves are best-effort: a failed resolve/AX read leaves the fact
+ * null instead of turning the hit into an error (the panel can still show tag/rect).
+ */
+async function elementDetailFacts(cdp, backendNodeId) {
+  const bounded = (method, params) => cdp.send(method, params, { timeoutMs: ELEMENT_CDP_TIMEOUT_MS });
+  const facts = {
+    selector: null, outerHTML: null, text: null, role: null, name: null, shadowHost: null, closedShadow: null,
+  };
+  try {
+    const resolved = await bounded('DOM.resolveNode', { backendNodeId });
+    const objectId = resolved && resolved.object ? resolved.object.objectId : null;
+    if (objectId) {
+      const evaluated = await bounded('Runtime.callFunctionOn', {
+        objectId, returnByValue: true, functionDeclaration: ELEMENT_SELECTOR_JS,
+      });
+      const value = evaluated && evaluated.result ? evaluated.result.value : null;
+      if (value && typeof value === 'object') {
+        facts.selector = typeof value.selector === 'string' && value.selector
+          ? Array.from(value.selector).slice(0, ELEMENT_SELECTOR_MAX).join('')
+          : null;
+        facts.outerHTML = typeof value.outerHTML === 'string' ? elementCut(value.outerHTML, ELEMENT_OUTER_HTML_MAX) : null;
+        facts.text = typeof value.text === 'string' ? elementCut(value.text, ELEMENT_TEXT_MAX) : null;
+        const host = value.shadowHost && typeof value.shadowHost === 'object' ? value.shadowHost : null;
+        facts.shadowHost = host ? {
+          tag: String(host.tag || ''),
+          id: String(host.id || ''),
+          selector: typeof host.selector === 'string' && host.selector
+            ? Array.from(host.selector).slice(0, ELEMENT_SELECTOR_MAX).join('')
+            : null,
+        } : null;
+        facts.closedShadow = typeof value.closedShadow === 'boolean' ? value.closedShadow : null;
+      }
+    }
+  } catch { /* best-effort: detail never fails the pick */ }
+  try {
+    const tree = await bounded('Accessibility.getPartialAXTree', { backendNodeId, fetchRelatives: false });
+    const node = tree && Array.isArray(tree.nodes) ? tree.nodes[0] : null;
+    facts.role = node && node.role && typeof node.role.value === 'string' ? node.role.value : null;
+    facts.name = node && node.name && typeof node.name.value === 'string' ? node.name.value : null;
+  } catch { /* best-effort */ }
+  return facts;
+}
+
+/**
+ * Read the element at one document point. Never throws and never mutates the runtime: the caller
+ * turns the result into `{ok:true, element, reason}`.
+ */
+async function pickElementAt(runtime, { x, y, detail }) {
+  if (!runtime || !runtime.running || !runtime.cdp) return { element: null, reason: 'no-page' };
+  const cdp = runtime.cdp;
+  const bounded = (method, params) => cdp.send(method, params, { timeoutMs: ELEMENT_CDP_TIMEOUT_MS });
+  try {
+    // Layout metrics are both the scroll source for the document rect and the visible-area
+    // boundary for the hit test (`DOM.getNodeForLocation` only hits what is on screen).
+    const metrics = await bounded('Page.getLayoutMetrics', {});
+    const viewport = (metrics && (metrics.cssLayoutViewport || metrics.layoutViewport || metrics.visualViewport)) || {};
+    const scrollX = Number.isFinite(viewport.pageX) ? viewport.pageX : 0;
+    const scrollY = Number.isFinite(viewport.pageY) ? viewport.pageY : 0;
+    const width = Number.isFinite(viewport.clientWidth) ? viewport.clientWidth : null;
+    const height = Number.isFinite(viewport.clientHeight) ? viewport.clientHeight : null;
+    // Half-open visible box. Answering `out-of-viewport` is a better diagnostic than a generic
+    // miss: the panel only ever hover-tests points that are on screen anyway.
+    if (width !== null && height !== null
+      && (x < scrollX || y < scrollY || x >= scrollX + width || y >= scrollY + height)) {
+      return { element: null, reason: 'out-of-viewport' };
+    }
+    let hit;
+    try {
+      // Document coordinates, floored: the protocol rejects fractions, and only the hit test is
+      // quantised (nothing is dispatched and nothing is mutated).
+      hit = await bounded('DOM.getNodeForLocation', {
+        x: Math.floor(x), y: Math.floor(y),
+        includeUserAgentShadowDOM: true, ignorePointerEventsNone: false,
+      });
+    } catch (error) {
+      // "No node found at given location" is a miss; a timeout / detached document / closed CDP
+      // is a stale read. Neither may reach the top-level error projection.
+      const noNode = /no node found/i.test(String((error && error.message) || ''));
+      return { element: null, reason: noNode ? 'no-hit' : 'stale' };
+    }
+    if (!hit || !Number.isInteger(hit.backendNodeId)) return { element: null, reason: 'no-hit' };
+    // v1 picks inside the main frame only (the same "frame: main" tree T2 snapshots use). A hit in
+    // a child frame fails closed instead of returning a child-frame-relative selector/rect; when
+    // the main frame id is not known yet, a hit that claims a frame is fail-closed as `stale`
+    // (never trust an unverifiable frame, e.g. mid-navigation).
+    if (hit.frameId) {
+      if (!runtime.mainFrameId) return { element: null, reason: 'stale' };
+      if (hit.frameId !== runtime.mainFrameId) return { element: null, reason: 'frame' };
+    }
+    const described = await bounded('DOM.describeNode', { backendNodeId: hit.backendNodeId, depth: 0 });
+    // A hit may land on a text (or shadow-root) node: walk up to its element, bounded.
+    let node = described && described.node;
+    for (let depth = 0; node && node.nodeType !== 1 && depth <= ELEMENT_MAX_NODE_WALK; depth += 1) {
+      if (!node.parentId) { node = null; break; }
+      const parent = await bounded('DOM.describeNode', { nodeId: node.parentId, depth: 0 });
+      node = parent && parent.node;
+    }
+    if (!node || node.nodeType !== 1) return { element: null, reason: 'no-hit' };
+    const tag = String(node.localName || '').toLowerCase();
+    // A point on empty page background resolves to <html>/<body>; for a picker that is "nothing".
+    if (!tag || tag === 'html' || tag === 'body') return { element: null, reason: 'no-hit' };
+    const box = await bounded('DOM.getBoxModel', { backendNodeId: node.backendNodeId });
+    // Loader id = the document generation the hit belongs to (the panel uses it to discard a
+    // response that raced a navigation). Best-effort: an unreadable frame tree omits the field.
+    let loaderId = null;
+    try {
+      const tree = await bounded('Page.getFrameTree', {});
+      const mainFrame = tree && tree.frameTree && tree.frameTree.frame;
+      loaderId = mainFrame && typeof mainFrame.loaderId === 'string' && mainFrame.loaderId ? mainFrame.loaderId : null;
+    } catch { loaderId = null; }
+    const attributes = elementAttributes(node);
+    const element = {
+      tag,
+      id: attributes.id || '',
+      classes: attributes.class ? attributes.class.split(/\s+/u).filter(Boolean) : [],
+      rect: elementQuadRect(box && box.model, scrollX, scrollY),
+      frameId: String(hit.frameId || runtime.mainFrameId || ''),
+      // The SAME Page.getLayoutMetrics read that produced the document rect: the panel compares it
+      // with its own view to detect a response computed while the page was still scrolling.
+      scroll: { x: scrollX, y: scrollY },
+      ...(loaderId ? { loaderId } : {}),
+      page: {
+        url: runtime.url ? redactUrl(runtime.url) : '',
+        title: runtime.title ? String(runtime.title) : '',
+      },
+    };
+    if (detail) Object.assign(element, await elementDetailFacts(cdp, node.backendNodeId));
+    return { element };
+  } catch {
+    // Any other read failure (CDP timeout/disconnect, detached target, missing box) is stale.
+    return { element: null, reason: 'stale' };
+  }
+}
+
 /** Register the runtime, its HTTP surface, and the agent tools. */
 export function apply(ctx) {
   const log = (text) => {
@@ -12153,7 +13781,12 @@ export function apply(ctx) {
         authenticate: (req) => scopeAuthorization(req),
         resolve: async (scopeRequest) => {
           const resolved = await resolveScopeRequest(ctx, registry, scopeRequest);
-          const entry = registry.getOrCreate(resolved);
+          let entry = scopeRequest && scopeRequest.mode === 'binding'
+            ? registry.peek(resolved.key) : registry.getOrCreate(resolved);
+          if (!entry) throw new BrowserError('SCOPE_NOT_FOUND', 'scope binding 指向的运行时不存在', { scope: 'binding' });
+          if (scopeRequest && scopeRequest.mode === 'session' && scopeRequest.tab !== SCOPE_TAB_PRIMARY) {
+            entry = registry.resolveSessionTab(entry, scopeRequest.sessionId).entry;
+          }
           return { runtime: entry.runtime, scope: resolved.scope, entry };
         },
         onConnect: (runtime, entry) => {
@@ -12201,12 +13834,64 @@ export function apply(ctx) {
    * Scoped requests are authenticated (strict owner-only) BEFORE any scope resolution, registry
    * creation or host-origin recording, so a rejected request has zero side effects.
    */
+  // Test-only tool invocation (P0-E GUI acceptance). Disabled unless BOTH env vars are set;
+  // it never appears in toolDefinitions/capabilities and never changes the public tool surface.
+  const TEST_HOOKS_ENABLED = process.env.DSH_UI_TESTING_TEST_HOOKS === '1'
+    && Boolean(process.env.DSH_UI_TESTING_TEST_TOKEN);
+  const TEST_HOOK_TOKEN = TEST_HOOKS_ENABLED ? String(process.env.DSH_UI_TESTING_TEST_TOKEN) : '';
+  const testToolDefs = new Map();
+  const testTokenEqual = (provided) => {
+    if (typeof provided !== 'string' || !provided || !TEST_HOOK_TOKEN) return false;
+    const a = Buffer.from(provided, 'utf8');
+    const b = Buffer.from(TEST_HOOK_TOKEN, 'utf8');
+    return a.length === b.length && timingSafeEqual(a, b);
+  };
+  const testLoopback = (req) => {
+    const address = String(req.socket?.remoteAddress || '');
+    return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+  };
+
   const handle = async (req, res) => {
     let action = '/';
     let selected;
     try {
       const url = new URL(req.url || '/', 'http://localhost');
       action = url.pathname.slice(ROUTE_PREFIX.length) || '/';
+      if (req.method === 'POST' && action === '/test/invoke' && TEST_HOOKS_ENABLED) {
+        if (!testLoopback(req) || !testTokenEqual(headerValue(req.headers, 'x-ui-testing-test-token'))) {
+          sendJson(res, 404, { ok: false, code: 'NOT_FOUND' });
+          return;
+        }
+        const body = await readJson(req);
+        const keys = body && typeof body === 'object' ? Object.keys(body) : [];
+        const allowed = ['tool', 'args', 'agent'];
+        const agent = body && body.agent;
+        const valid = keys.every((key) => allowed.includes(key))
+          && typeof body?.tool === 'string' && body.tool.length > 0
+          && agent && typeof agent.id === 'string' && agent.id.length > 0
+          && agent.session && agent.session.header && typeof agent.session.header.cwd === 'string'
+          && (body.args === undefined || (body.args && typeof body.args === 'object' && !Array.isArray(body.args)));
+        if (!valid) throw new BrowserError('INVALID_ARGUMENT', 'test/invoke body 必须只含 {tool,args,agent:{id,session:{header:{cwd}}}}');
+        const definition = testToolDefs.get(body.tool);
+        if (!definition) {
+          sendJson(res, 404, { ok: false, code: 'TOOL_NOT_FOUND' });
+          return;
+        }
+        let execAgent = agent;
+        const cwdHint = String(agent.session.header.cwd || '');
+        if (cwdHint.startsWith('workspace:')) {
+          const workspaceId = cwdHint.slice('workspace:'.length);
+          const registryService = hostService(ctx, 'workspaceRegistry');
+          const list = registryService && typeof registryService.list === 'function' ? registryService.list() : [];
+          const workspace = Array.isArray(list) ? list.find((item) => item && item.id === workspaceId) : undefined;
+          const root = workspace && (workspace.path || workspace.root || workspace.cwd || workspace.directory);
+          if (!root) throw new BrowserError('SCOPE_NOT_FOUND', 'test workspace 不存在或没有路径', { workspaceId });
+          execAgent = { ...agent, session: { ...agent.session, header: { ...agent.session.header, cwd: String(root) } } };
+        }
+        const value = await definition.execute(body.args || {}, { agent: execAgent, signal: AbortSignal.timeout(30000) });
+        sendJson(res, 200, { ok: true, value });
+        return;
+      }
       // Scope-header presence decides "scoped" BEFORE parsing: authentication must happen before
       // any scope resolution, registry creation, origin recording or parse-error path.
       const scopeHeaders = req.headers || {};
@@ -12225,12 +13910,28 @@ export function apply(ctx) {
       }
       const select = async ({ create = true } = {}) => {
         const resolved = await resolveScopeRequest(ctx, registry, scopeRequest);
-        const entry = create ? registry.getOrCreate(resolved) : registry.peek(resolved.key);
+        // A binding already names an existing primary/child; never create a new runtime for it.
+        let entry = create && scopeRequest.mode !== 'binding' ? registry.getOrCreate(resolved) : registry.peek(resolved.key);
+        if (entry && scopeRequest.mode === 'session' && scopeRequest.tab !== SCOPE_TAB_PRIMARY) {
+          // P0-E: a session-scoped HTTP read/write follows that Agent session's selectedTab.
+          // `scope-tab: primary` opts out: a GUI panel renders its own selected tab, so the Agent's
+          // selection must never redirect it (docs/multi-tab.md).
+          entry = registry.resolveSessionTab(entry, scopeRequest.sessionId).entry;
+        }
         return { resolved, entry };
       };
+      const assertGuiPageWrite = (runtime, selfSessionId = null) => {
+        const lease = runtime && runtime.lease;
+        if (lease && lease.sessionId !== selfSessionId && (runtime.active > 0 || lease.expiresAt > Date.now())) {
+          throw new BrowserError('BUSY', '该标签正由 Agent 操作，GUI 输入暂不可用', { owner: lease.sessionId });
+        }
+      };
       // Scoped callers are owner-only by construction; legacy callers keep the old fail-closed
-      // requestRejection projection.
-      const projected = (runtime) => (scoped || requestRejection(req) === 0 ? runtime.uiState() : runtime.state());
+      // requestRejection projection. `ui.devtools` is scoped-only: the legacy uiState() shape must
+      // not expose the loopback port/target id even to an accepted old client.
+      const projected = (runtime) => (scoped || requestRejection(req) === 0
+        ? runtime.uiState({ includeDevtools: scoped })
+        : runtime.state());
 
       if (req.method === 'GET' && action === '/frame') {
         const since = Number(url.searchParams.get('since') || 0) || 0;
@@ -12262,6 +13963,13 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         sendJson(res, 200, entry.runtime.metrics());
+        return;
+      }
+      if (req.method === 'GET' && action === '/element') {
+        // Explicit method contract (never a generic 400/405 fallthrough): /element is a POST read
+        // with a body, and the route must not be reachable as a cacheless GET probe.
+        const error = new BrowserError('INVALID_ARGUMENT', '/element 只接受 POST（body: {x,y,detail?}）');
+        sendJson(res, 405, { ok: false, ...error.payload(), error: error.message });
         return;
       }
       if (req.method !== 'POST') {
@@ -12301,6 +14009,37 @@ export function apply(ctx) {
         sendJson(res, 200, { ok: true, ...ack });
         return;
       }
+      if (action === '/element') {
+        // Read-only element pick for the debug view (POST /element, v1 contract): a pure DOM read.
+        //   * NEVER calls ensure()/starts Chromium, never enters runtime.run (no serial queue, no
+        //     single-owner lease, no BUSY) and records no client metrics nor agent/human mark;
+        //   * never writes runtime.lastError: pickElementAt answers {element:null,reason} instead
+        //     of throwing, and this route does not assign `selected`, so the shared error
+        //     projection below (which only touches a selected runtime) cannot see it;
+        //   * scoped requests already passed the strict owner-only gate; a legacy caller keeps the
+        //     historical requestRejection gate — this route exposes page content, so an
+        //     unauthenticated old client is refused instead of being mapped to legacy:default;
+        //   * it owns its body read so an unreadable/invalid body is a 400 INVALID_ARGUMENT (the
+        //     shared catch would answer 500 for that code, which is not this route's contract).
+        if (!scoped) {
+          const rejection = requestRejection(req);
+          if (rejection) { rejectUi(res, rejection); return; }
+        }
+        let request;
+        try {
+          request = elementPickRequest(await readJson(req));
+        } catch (error) {
+          const classified = asBrowserError(error);
+          sendJson(res, 400, { ok: false, ...classified.payload(), error: classified.message });
+          return;
+        }
+        const { entry } = await select({ create: false });
+        const result = entry ? await pickElementAt(entry.runtime, request) : { element: null, reason: 'no-page' };
+        sendJson(res, 200, result.element
+          ? { ok: true, element: result.element }
+          : { ok: true, element: null, reason: result.reason });
+        return;
+      }
       const body = await readJson(req);
       if (action === '/metrics') {
         const { entry } = await select();
@@ -12333,6 +14072,9 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
+        // Legacy HTTP callers keep the historical no-lease path; authenticated GUI page writes
+        // are the ones P0-E gates per tab.
+        if (scoped) assertGuiPageWrite(entry.runtime, scopeRequest.mode === 'session' ? scopeRequest.sessionId : null);
         await entry.runtime.run(() => entry.runtime.navigate(String(body.url || '')));
         registry.markRecent(entry);
         sendJson(res, 200, { ok: true, state: projected(entry.runtime) });
@@ -12348,9 +14090,10 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
+        if (scoped) assertGuiPageWrite(entry.runtime, scopeRequest.mode === 'session' ? scopeRequest.sessionId : null);
         await entry.runtime.run(() => entry.runtime.reload());
         registry.markRecent(entry);
-        sendJson(res, 200, { ok: true, state: entry.runtime.uiState() });
+        sendJson(res, 200, { ok: true, state: entry.runtime.uiState({ includeDevtools: scoped }) });
         return;
       }
       if (action === '/history') {
@@ -12361,9 +14104,10 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
+        if (scoped) assertGuiPageWrite(entry.runtime, scopeRequest.mode === 'session' ? scopeRequest.sessionId : null);
         const moved = await entry.runtime.run(() => entry.runtime.historyMove(String(body.direction || '')));
         registry.markRecent(entry);
-        sendJson(res, 200, { ok: true, moved: moved.moved, state: entry.runtime.uiState() });
+        sendJson(res, 200, { ok: true, moved: moved.moved, state: entry.runtime.uiState({ includeDevtools: scoped }) });
         return;
       }
       if (action === '/viewport') {
@@ -12374,6 +14118,8 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
+        // Viewport configuration is not content input; preview/сize remains usable while an
+        // Agent owns the tab (P0-E only gates page writes/input).
         if (body.version === undefined || body.version === null) {
           const viewport = await entry.runtime.run(async () => {
             await entry.runtime.ensure();
@@ -12435,9 +14181,13 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
+        if (scoped) assertGuiPageWrite(entry.runtime, scopeRequest.mode === 'session' ? scopeRequest.sessionId : null);
+        const events = Array.isArray(body.events) ? body.events : [];
+        // Only an authenticated scoped GUI click/key gets a one-shot popup ticket.
+        if (scoped) entry.runtime.host.noteGuiInput(entry.runtime, events);
         const applied = await entry.runtime.run(() => {
           entry.runtime.touchHuman();
-          return entry.runtime.input(Array.isArray(body.events) ? body.events : []);
+          return entry.runtime.input(events);
         });
         registry.markRecent(entry);
         sendJson(res, 200, { ok: true, applied });
@@ -12447,6 +14197,7 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
+        if (scoped) assertGuiPageWrite(entry.runtime, scopeRequest.mode === 'session' ? scopeRequest.sessionId : null);
         const result = await entry.runtime.run(() => entry.runtime.evaluate(String(body.expression || 'undefined')));
         registry.markRecent(entry);
         sendJson(res, 200, result.ok === false ? { ...result, ...result.error, error: result.error.message } : result);
@@ -12470,6 +14221,29 @@ export function apply(ctx) {
         });
         return;
       }
+      if (action === '/tabs') {
+        const { entry } = await select();
+        selected = entry;
+        const primary = registry.primaryEntry(entry) || entry;
+        const guiSession = 'gui:panel';
+        const tabAction = String(body.action || 'list');
+        if (tabAction === 'list') {
+          sendJson(res, 200, { ok: true, action: tabAction, tabs: registry.listTabs(primary, guiSession) });
+          return;
+        }
+        if (tabAction === 'open') {
+          const opened = await registry.openTab(primary, guiSession, 'gui', { select: false });
+          sendJson(res, 200, { ok: true, action: tabAction, tabId: opened.entry.tabId || opened.entry.viewId, state: projected(opened.entry.runtime) });
+          return;
+        }
+        if (tabAction === 'close') {
+          const tabId = typeof body.tabId === 'string' && body.tabId ? body.tabId : undefined;
+          const closed = await registry.closeTab(primary, guiSession, tabId, { gui: true });
+          sendJson(res, 200, { ok: true, action: tabAction, tabId: closed.closed });
+          return;
+        }
+        throw new BrowserError('INVALID_ARGUMENT', 'tabs.action 只支持 list/open/close', { field: 'action' });
+      }
       if (action === '/close') {
         // Close only the selected scope. The registry entry stays (cold) so its runtimeId and
         // scope binding remain stable; the shared host exits only when no page is left.
@@ -12477,6 +14251,9 @@ export function apply(ctx) {
         selected = entry;
         if (entry) {
           registry.touch(entry);
+          // P0-E: primary close only makes it cold; child tabs stay live. Closing a page is a
+          // lifecycle action, not page input, so it is not gated by the per-tab Agent lease;
+          // browser_tabs.close keeps its own session/lease rule.
           await entry.runtime.run(() => entry.runtime.close());
         }
         sendJson(res, 200, { ok: true });
@@ -12516,6 +14293,7 @@ export function apply(ctx) {
             : value && typeof value === 'object' ? { type: 'object', count: Object.keys(value).length }
             : { type: typeof value }])),
       };
+      const isTabsTool = definition.name === 'browser_tabs';
       const diagnostic = ['browser_state', 'browser_capabilities'].includes(definition.name);
       // Per-action read-only branch (docs/viewport-control.md): `browser_viewport get` is a
       // *cache* diagnostic — no ensure, no CDP (not even Page.bringToFront), no queue, no lease,
@@ -12529,6 +14307,8 @@ export function apply(ctx) {
       // Resolve the workspace scope from the exec identity only (never from a client-supplied
       // path). No exec identity at all is the old protocol and maps to legacy:default.
       let entry;
+      let primaryEntry;
+      let selection;
       let runtime;
       try {
         const resolved = await resolveScopeRequest(ctx, registry, toolScopeRequest(exec));
@@ -12537,7 +14317,15 @@ export function apply(ctx) {
         // page entry (no queue, no lease, no page).
         if (!isHttpRequest) {
           entry = registry.getOrCreate(resolved);
-          runtime = entry.runtime;
+          primaryEntry = entry;
+          if (isTabsTool) {
+            runtime = entry.runtime;
+          } else {
+            const selected = registry.resolveSessionTab(entry, sessionId);
+            entry = selected.entry;
+            selection = selected.selection;
+            runtime = entry.runtime;
+          }
         }
       } catch (error) {
         if (!isHttpRequest) {
@@ -12566,9 +14354,12 @@ export function apply(ctx) {
         //  - the 7 network tools own `sessionId` (采集会话 id 或 null); the agent session moves to
         //    `agentSessionId` so the envelope can never overwrite the contract field.
         //  - the legacy 22 tools keep their historical `{...value, ...meta}` order untouched.
+        const tabMeta = selection
+          ? { id: selection.tabId, runtimeId: runtime ? runtime.runtimeId : null, selectionRevision: selection.revision }
+          : (runtime ? { id: 'primary', runtimeId: runtime.runtimeId, selectionRevision: 0 } : null);
         const result = isNetworkRead
-          ? { ...meta, ...value, agentSessionId: meta.sessionId, finishedAt: Date.now(), target }
-          : { ...value, ...meta, finishedAt: Date.now(), target };
+          ? { ...meta, ...value, agentSessionId: meta.sessionId, ...(tabMeta ? { tab: tabMeta } : {}), finishedAt: Date.now(), target }
+          : { ...value, ...meta, ...(tabMeta ? { tab: tabMeta } : {}), finishedAt: Date.now(), target };
         const notes = [];
         const clean = losslessJson(result, definition.name, notes);
         if (!clean || typeof clean !== 'object' || Array.isArray(clean)) throw new BrowserError('INTERNAL', '工具返回值不是对象');
@@ -12576,6 +14367,10 @@ export function apply(ctx) {
         return clean;
       };
       try {
+        if (isTabsTool) {
+          const value = await execute(args, { ...exec, meta, sessionId, runtime, primaryEntry, registry, httpClient });
+          return finish(value, runtime && runtime.url ? redactUrl(runtime.url) : '');
+        }
         if (isHttpRequest || isNetworkRead) {
           // Independent dispatch branch: no ensure/run/claim/touchAgent, no page queue, no
           // profile, no page lastError. The implementation does its own argument validation.
@@ -12652,6 +14447,7 @@ export function apply(ctx) {
         throw classified;
       }
     };
+    testToolDefs.set(definition.name, definition);
     return ctx.effect(() => ctx.tools.register(definition), 'ui-testing: tool ' + definition.name);
   };
 
@@ -13393,6 +15189,7 @@ export function apply(ctx) {
     readOnly: (args) => !args || args.fresh !== true,
     name: 'browser_motion_observe',
     description: '只读查询 T4 动态会话的帧元数据与事件（不 ensure、不续租、不启动浏览器）：motionSessionId 必填，支持 cursor/sinceSeq/window/frameIds/limit；'
+      + '顶层 sampling 给出实测采样机制/节奏/间隔统计（measured 优先于 requested）；'
       + 'fresh=true 是显式页面动作，只允许当前活动视觉会话，返回一次该会话采样规格的真实采样区间（beginMonoMs/endMonoMs）。'
       + 'includeImages=true 最多命中 3 帧，附原图 hash/尺寸与 inline base64 交付事实，不自动落盘、不生成 T3 product。',
     parameters: {
@@ -13412,6 +15209,18 @@ export function apply(ctx) {
         },
         frameIds: { type: 'array', items: { type: 'string' } },
         includeImages: { type: 'boolean', default: false },
+        region: {
+          type: 'object',
+          description: '帧图像像素矩形（image-px），只交付该矩形；仅与 includeImages:true 同用（单独给 region 抛 DYNAMIC_INVALID_ARGUMENT）',
+          additionalProperties: false,
+          properties: {
+            x: { type: 'integer', minimum: 0 },
+            y: { type: 'integer', minimum: 0 },
+            width: { type: 'integer', minimum: 1 },
+            height: { type: 'integer', minimum: 1 },
+          },
+          required: ['x', 'y', 'width', 'height'],
+        },
       },
     },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
@@ -13754,6 +15563,102 @@ export function apply(ctx) {
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
       return exec.runtime.waitFor(args || {}, exec.signal);
+    },
+  });
+
+  register({
+    name: 'browser_tabs',
+    description: 'P0-E 多标签页：list/current 只读诊断；wait 纯内存等待调用开始后新出现的标签（0–30000ms，不启动 Chromium、不取 lease），命中返回 matched/matchedTab/elapsedMs/polls，超时抛 WAIT_TIMEOUT；'
+      + 'select 选择当前 Agent 会话的 tab（原子 claim，不启动页面）；open 新建 about:blank 并选中；close 关闭当前会话持有 lease 的 tab（primary 只变 cold）。'
+      + 'list 每项含 source/parentTabId/openEventId/createdAt/lastUsedAt/idleRemainingMs/manageable，并返回本 workspace 最近 8 条 blocked popup notices 与最近 8 条 recentClosed（reason closed|idle|evicted）。'
+      + '每个 Agent session 独立 selectedTab，默认 primary。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'current', 'select', 'open', 'close', 'wait'] },
+        tabId: { type: 'string', description: '目标 tabId（1–128 字符）；select/close 使用；wait 用它是等待该 tabId 出现（已存在则立即命中），其余 action 忽略。' },
+        kind: { type: 'string', enum: ['primary', 'tab'], description: '仅 wait：只匹配该 kind（list 中 primary/tab）。' },
+        source: { type: 'string', enum: ['primary', 'gui-popup', 'agent-open'], description: '仅 wait：只匹配该来源（primary 槽 / GUI 真人 popup 或 GUI + / Agent open）。' },
+        timeoutMs: { type: 'integer', minimum: 0, maximum: 30000, description: '仅 wait：等待预算，默认 5000；0 表示只采样一次。超时抛 WAIT_TIMEOUT（details 含 elapsedMs/polls/condition）。' },
+        pollMs: { type: 'integer', minimum: 50, maximum: 1000, description: '仅 wait：轮询间隔，默认 100。' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    // A 30000ms wait budget must be able to report WAIT_TIMEOUT before the host kills the call.
+    timeoutMs: 35000,
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      const action = String(args && args.action || '');
+      const primary = exec.primaryEntry;
+      const registry = exec.registry;
+      const sessionId = exec.sessionId;
+      if (!primary || !registry) throw new BrowserError('UNSUPPORTED', 'browser_tabs 需要 workspace 页面组');
+      const allowed = ['action', 'tabId', 'kind', 'source', 'timeoutMs', 'pollMs'];
+      if (args && Object.keys(args).some((key) => !allowed.includes(key))) {
+        throw new BrowserError('INVALID_ARGUMENT', 'browser_tabs 不接受未知字段', { field: 'additionalProperties', allowed });
+      }
+      if (action !== 'wait' && args && ['kind', 'source', 'timeoutMs', 'pollMs'].some((key) => args[key] !== undefined)) {
+        throw new BrowserError('INVALID_ARGUMENT', 'kind/source/timeoutMs/pollMs 只用于 wait', { field: 'action' });
+      }
+      if (action === 'list') {
+        return {
+          ok: true, action, tabs: registry.listTabs(primary, sessionId),
+          notices: registry.noticesView(primary), recentClosed: registry.recentClosedView(primary),
+          selection: registry.selectionFor(primary, sessionId),
+        };
+      }
+      if (action === 'current') {
+        const selection = registry.confirmSelection(primary, sessionId);
+        return { ok: true, action, tabId: selection.tabId, selection, confirmedResetReason: selection.confirmedResetReason || null };
+      }
+      if (action === 'select') {
+        if (typeof args.tabId !== 'string' || !args.tabId.trim()) throw new BrowserError('INVALID_ARGUMENT', 'select 需要 tabId', { field: 'tabId' });
+        const selected = registry.selectTab(primary, sessionId, args.tabId.trim());
+        return { ok: true, action, tabId: selected.entry.tabId || selected.entry.viewId || 'primary', selection: selected.selection };
+      }
+      if (action === 'open') {
+        const opened = await registry.openTab(primary, sessionId, 'agent');
+        return { ok: true, action, tabId: opened.entry.tabId || opened.entry.viewId, selection: opened.selection };
+      }
+      if (action === 'close') {
+        const tabId = typeof args.tabId === 'string' && args.tabId.trim() ? args.tabId.trim() : registry.selectionFor(primary, sessionId).tabId;
+        const closed = await registry.closeTab(primary, sessionId, tabId);
+        return { ok: true, action, tabId: closed.closed };
+      }
+      if (action === 'wait') {
+        const timeoutMs = args.timeoutMs === undefined ? TAB_WAIT_TIMEOUT_DEFAULT_MS : args.timeoutMs;
+        if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > TAB_WAIT_TIMEOUT_MAX_MS) {
+          throw new BrowserError('INVALID_ARGUMENT', `wait.timeoutMs 必须是 0–${TAB_WAIT_TIMEOUT_MAX_MS} 的整数`, {
+            field: 'timeoutMs', min: 0, max: TAB_WAIT_TIMEOUT_MAX_MS,
+          });
+        }
+        const pollMs = args.pollMs === undefined ? TAB_WAIT_POLL_DEFAULT_MS : args.pollMs;
+        if (!Number.isInteger(pollMs) || pollMs < TAB_WAIT_POLL_MIN_MS || pollMs > TAB_WAIT_POLL_MAX_MS) {
+          throw new BrowserError('INVALID_ARGUMENT', `wait.pollMs 必须是 ${TAB_WAIT_POLL_MIN_MS}–${TAB_WAIT_POLL_MAX_MS} 的整数`, {
+            field: 'pollMs', min: TAB_WAIT_POLL_MIN_MS, max: TAB_WAIT_POLL_MAX_MS,
+          });
+        }
+        const tabId = args.tabId === undefined || args.tabId === null ? null : args.tabId;
+        if (tabId !== null && (typeof tabId !== 'string' || !tabId.trim() || tabId.trim().length > 128)) {
+          throw new BrowserError('INVALID_ARGUMENT', 'wait.tabId 必须是 1–128 字符', { field: 'tabId' });
+        }
+        const kind = args.kind === undefined ? null : String(args.kind);
+        if (kind !== null && !['primary', 'tab'].includes(kind)) {
+          throw new BrowserError('INVALID_ARGUMENT', 'wait.kind 只接受 primary/tab', { field: 'kind', allowed: ['primary', 'tab'] });
+        }
+        const source = args.source === undefined ? null : String(args.source);
+        if (source !== null && !['primary', 'gui-popup', 'agent-open'].includes(source)) {
+          throw new BrowserError('INVALID_ARGUMENT', 'wait.source 只接受 primary/gui-popup/agent-open', {
+            field: 'source', allowed: ['primary', 'gui-popup', 'agent-open'],
+          });
+        }
+        const waited = await registry.waitForTab(primary, sessionId, {
+          tabId: tabId === null ? null : tabId.trim(), kind, source, timeoutMs, pollMs,
+        }, exec.signal);
+        return { ok: true, action, ...waited };
+      }
+      throw new BrowserError('INVALID_ARGUMENT', 'browser_tabs.action 不合法', { field: 'action', allowed });
     },
   });
 
@@ -14931,13 +16836,11 @@ export function apply(ctx) {
         preprocess: {
           type: 'array',
           description: '按列表顺序执行：grayscale/blur(radius 1–3)/normalize/threshold(value 0–255)/channels(order rgba/bgra/argb)，最多 8 项。',
-          maxItems: 8,
           items: { type: 'object' },
         },
         annotations: {
           type: 'array',
           description: '整数像素标注：rect(region)/cross(point,size?)/number(point,number 1–999)/arrow(point,to)，color RGBA、thickness 1–8，最多 64 项；列表顺序即覆盖顺序。',
-          maxItems: 64,
           items: { type: 'object' },
         },
         recognize: {
@@ -15213,7 +17116,7 @@ export function apply(ctx) {
           properties: { x: { type: 'integer' }, y: { type: 'integer' }, width: { type: 'integer' }, height: { type: 'integer' } },
           required: ['x', 'y', 'width', 'height'],
         },
-        masks: { type: 'array', description: 'Mask[]（最多 64、id 唯一）：{id,region:PixelRect}，坐标相对完整图。', maxItems: 64, items: { type: 'object' } },
+        masks: { type: 'array', description: 'Mask[]（最多 64、id 唯一）：{id,region:PixelRect}，坐标相对完整图。', items: { type: 'object' } },
         options: {
           type: 'object',
           description: 'DiffOptions：threshold 0–1（默认 0.1）、includeAA（默认 false）、minRegionPixels ≥1（默认 1）。',
@@ -15633,7 +17536,7 @@ export function apply(ctx) {
         to: { type: 'object', description: 'drag 终点（其他 action 禁止）；同样为图像连续像素坐标。', properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] },
         button: { type: 'string', enum: ['left', 'right', 'middle'], description: '鼠标键（只对 click/drag，默认 left）。' },
         clickCount: { type: 'integer', description: '只对 click，1–2，默认 1。' },
-        modifiers: { type: 'array', items: { type: 'string', enum: ['alt', 'ctrl', 'meta', 'shift'] }, maxItems: 4, uniqueItems: true, description: '修饰键 alt/ctrl/meta/shift（不重复，最多 4 项）。' },
+        modifiers: { type: 'array', items: { type: 'string', enum: ['alt', 'ctrl', 'meta', 'shift'] }, description: '修饰键 alt/ctrl/meta/shift（不重复，最多 4 项）。' },
         steps: { type: 'integer', description: '只对 drag，1–100，默认 20（线性路径，事件数 steps+3）。' },
         durationMs: { type: 'integer', description: '只对 drag，0–2000，默认 500（均分到移动步之间）。' },
       },
@@ -15951,7 +17854,7 @@ export function apply(ctx) {
         caseId: { type: 'string', description: 'create 默认等于 name；update 缺省继承旧值。' },
         options: { type: 'object', description: 'DiffOptions（create 默认契约默认值；update 缺省继承/逐字段合并）。' },
         thresholds: { type: 'object', description: 'Thresholds（同上）。' },
-        masks: { type: 'array', description: 'Mask[]（create 默认 []；update 缺省继承，显式 [] 清空）。', maxItems: 64, items: { type: 'object' } },
+        masks: { type: 'array', description: 'Mask[]（create 默认 []；update 缺省继承，显式 [] 清空）。', items: { type: 'object' } },
       },
     },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
@@ -16840,8 +18743,6 @@ export function apply(ctx) {
         cases: {
           type: 'array',
           description: 'Case[]（1–20）：{id, source, assertions[1–32], facts?[0–64]}。',
-          minItems: 1,
-          maxItems: 20,
           items: { type: 'object' },
         },
       },
@@ -16961,7 +18862,8 @@ export function apply(ctx) {
       + 'viewport 段报告共享视口 get/set 边界、预设、比例范围与 limits.viewport（observed 只来自真实读回）；'
       + 'vision 段报告 T3 算法版本/工具/源类型/预算与最近一次真实视觉调用（observed），六个 web.t3.* 与聚合 web.t3.static-vision 按 BUSY 状态报告；'
       + 'network 段报告 7 个 browser_network_* 工具、会话计数器/完整性与 limits.network（含 responseModification 是否受 CDP 支持）；'
-      + 'dynamic 段报告 T4 动态行为（M1 起）：实际注册的 browser_dynamic_session/browser_motion_* 工具、帧源/编码/算法/适配器、DC 枚举与 limits.dynamic，observed 只来自真实 T4 调用、未启动不算 unsupported。',
+      + 'dynamic 段报告 T4 动态行为（M1 起）：实际注册的 browser_dynamic_session/browser_motion_* 工具、帧源/编码/算法/适配器、DC 枚举与 limits.dynamic，observed 只来自真实 T4 调用、未启动不算 unsupported；'
+      + 'dynamic.assertions 给出机器可读的七类断言规格（allowed/required/枚举/默认阈值），dynamic.sampling 说明 requested 与 measured 语义，顶层 limitations 声明“实际 fps 以 measured 为准、低采样不得证明无异常”。',
     parameters: { type: 'object', properties: {}, required: [] },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
@@ -17017,6 +18919,10 @@ export function apply(ctx) {
         'frames carry scrollX/scrollY captured with the frame so the panel can place them in canvas space',
       ];
       const workspaceIsolation = registry.capabilities();
+      // TOOL-P1-06: the assertion schema is the core module's exported frozen object (lossless JSON
+      // projection). Loading the pure module never starts a page or takes a lease; a broken/missing
+      // core degrades to null + limitation instead of failing the whole capability read.
+      const assertionSchema = await runtime.dynamicAssertionSchema();
       // P0 capture facts. `observed` only ever comes from a real browser_screenshot of this Runtime
       // (relative paths and numbers only) — this call still starts nothing and takes no lease.
       const observation = runtime.captureObservation;
@@ -17068,6 +18974,14 @@ export function apply(ctx) {
             status: busy ? 'unavailable' : 'available',
             ...(busy ? { reason: 'BUSY: browser owned by another session (get 仍可只读诊断)' } : {}),
             constraints: viewportConstraints },
+          { id: 'web.p0e.tabs', tool: 'browser_tabs', status: 'available',
+            constraints: [
+              'P0-E page group: primary + up to 3 child tabs per workspace (4 total; global maxPages still 8)',
+              'list/current are read-only and do not start Chromium or take a lease; select claims an idle tab atomically; open creates about:blank and selects it',
+              'close only accepts a tab this Agent session holds a valid lease for; TAB_NOT_FOUND/TAB_LIMIT/TAB_FORBIDDEN/BUSY',
+              'Each Agent session has its own selectedTab; all other browser_* tools follow it, defaulting to primary; GUI active tab is independent',
+              'BUSY is per tab: different tabs may run concurrently, different owners on one tab conflict; GUI may preview but page writes/input are BUSY',
+            ] },
           { id: 'web.t1.workspace-isolation', status: 'available',
             constraints: [
               'One headless Chromium + temporary profile for the plugin; one independent page target per workspace',
@@ -17155,8 +19069,17 @@ export function apply(ctx) {
             constraints: ['legacy alias of web.t4.dynamic-behavior; not an independent tool', 'tool count unchanged'] },
           { id: 'web.t1.browser-extras', status: 'unsupported', reason: 'Not implemented' },
         ],
-        // Web T4 dynamic behaviour (docs/t4-dynamic-behavior.md). Pure declaration: reading
-        // this never imports the core, starts a page, samples a frame or creates a session.
+        // TOOL-P1-03 caps-level disclosure: measured beats requested, and low sampling can never
+        // prove a negative. Same rule the T4 analyzers enforce in metrics.sampling/verdict.
+        limitations: [
+          'T4 实际采样率以 sampling.measured 为准；requested 只是请求值，不能当作保证',
+          '低采样/无采样不得证明“无异常”或“未发生”；证据不足必须返回 INCONCLUSIVE/BLOCKED',
+          'screenshot-loop 为 host-scheduled（单飞，受抓图耗时限制）；screencast 为 damage-driven（间隔不均匀）',
+          'sampling 采样窗口有界（最多 ' + DYNAMIC_INTERNAL.samplingTraceMax + ' 个已存帧），截断时带 limitation',
+        ],
+        // Web T4 dynamic behaviour (docs/t4-dynamic-behavior.md). Declared, not probed: reading this
+        // starts no page, samples no frame and creates no session. The only module load is the pure
+        // dynamic-t4.js import needed for `assertions` (assertionSchema) and it is best-effort.
         dynamic: (() => {
           const observed = runtime.dynamic.observed;
           return {
@@ -17185,8 +19108,60 @@ export function apply(ctx) {
                 masks: false,
               },
               adapters: runtime.dynamic.controlAdapters ? [...runtime.dynamic.controlAdapters] : [],
-              algorithms: [...DYNAMIC_ASSERTION_TYPES],
+              algorithms: assertionSchema ? [...assertionSchema.types] : [...DYNAMIC_ASSERTION_TYPES],
               limitations: runtime.dynamic.conflicts.length ? [...runtime.dynamic.conflicts] : [],
+            },
+            // TOOL-P1-06: machine-readable assertion contract. This is the core module's own frozen
+            // MOTION_ASSERTION_SCHEMA projected losslessly to plain JSON (no functions/undefined).
+            assertions: assertionSchema
+              ? {
+                ...dynamicJsonProjection(assertionSchema),
+                idPattern: '^[\\s\\S]{1,64}$',
+                idPatternNote: 'Host enforces a non-empty UTF-8 string with byteLength ≤ '
+                  + assertionSchema.idMaxBytes + '; the regex is a code-point approximation',
+              }
+              : null,
+            assertionsUnavailable: assertionSchema
+              ? null
+              : (runtime.dynamic.assertionSchemaUnavailable || 'core-not-loaded'),
+            // TOOL-P1-03: requested vs measured sampling semantics. Reading this never samples.
+            sampling: {
+              version: 1,
+              mechanisms: ['screenshot-loop', 'screencast', 'network-only'],
+              cadence: {
+                'screenshot-loop': 'host-scheduled',
+                screencast: 'damage-driven',
+                'network-only': 'none',
+              },
+              requested: {
+                screenshotLoop: {
+                  intervalMs: [DYNAMIC_LIMITS.sampleIntervalMsMin, DYNAMIC_LIMITS.sampleIntervalMsMax],
+                  source: 'setInterval(host)',
+                  note: 'request only; actual cadence can be slower (single-flight + capture cost)',
+                },
+                screencast: {
+                  intervalMs: null,
+                  source: 'cdp-screencast(damage-driven)',
+                  note: 'no requested interval; frames arrive per page damage',
+                },
+              },
+              measured: {
+                from: {
+                  'screenshot-loop': 'loop-tick-start',
+                  screencast: 'frame-timeline',
+                  'network-only': null,
+                },
+                fields: ['frames', 'intervals', 'p50Ms', 'p95Ms', 'minMs', 'maxMs', 'meanMs', 'windowMs', 'effectiveFps', 'from'],
+                semantics: 'actual sampling cadence computed from the SAME stored frames returned by browser_motion_observe: screenshot-loop uses the frame receivedMonoMs recorded at loop tick start, screencast uses frame timelineMs; requested is NOT a guarantee',
+                boundedSamples: DYNAMIC_INTERNAL.samplingTraceMax,
+              },
+              counters: ['sampled', 'dropped', 'evicted', 'samplingFailures'],
+              limitations: [
+                'measured 数据不足时字段为 null 并带 limitation；null/低采样不得证明“无异常/未发生”',
+                'screenshot-loop 单飞且受抓图耗时限制，实测 effectiveFps 可能低于 requested intervalMs',
+                'screencast 为 damage-driven，间隔不均匀，timeline 间隔不等于渲染帧间隔',
+                '采样窗口有界（最多 ' + DYNAMIC_INTERNAL.samplingTraceMax + ' 个已存帧），超出时带 sampling-window-bounded',
+              ],
             },
             networkReuse: {
               tools: ['browser_network_session', 'browser_network_events', 'browser_network_detail',
@@ -17359,6 +19334,36 @@ export function apply(ctx) {
             };
           })(),
         },
+        // P0-E multi-tab surface (docs/internal/p0e-multitab-contract.md). Declared, no probe.
+        tabs: (() => {
+          const registry = runtime.registry;
+          const entry = registry && typeof registry.entryForRuntime === 'function' ? registry.entryForRuntime(runtime) : undefined;
+          const primary = entry && registry.primaryEntry(entry);
+          const selection = primary ? registry.selectionFor(primary, exec.meta.sessionId) : { tabId: 'primary' };
+          const idleMs = registry ? registry.idleMs : IDLE_MS_DEFAULT;
+          return {
+            version: 1,
+            tools: ['browser_tabs'],
+            actions: ['list', 'current', 'select', 'open', 'close', 'wait'],
+            maxTabsPerWorkspace: 4,
+            maxChildTabs: 3,
+            maxGlobalPages: registry ? registry.maxPages : MAX_PAGES_DEFAULT,
+            idleMs,
+            noticesLimit: registry ? registry.noticesLimit : POPUP_NOTICES_LIMIT,
+            closedHistoryLimit: registry ? registry.closedHistoryLimit : CLOSED_HISTORY_LIMIT,
+            // Any page tool on the tab refreshes its idle timer; list/wait are pure reads.
+            keepalive: {
+              refreshOnPageTools: true, idleMs,
+              note: '任一页面工具在该标签上成功执行都会刷新它的 idle 计时；list/wait 不刷新，也不启动 Chromium/不取 lease',
+            },
+            selectedTab: selection.tabId,
+            selectionIsolation: 'per-agent-session; GUI active is separate',
+            busyScope: 'per-tab',
+            state: {
+              views: primary ? registry.listTabs(primary, exec.meta.sessionId) : [],
+            },
+          };
+        })(),
         // Web P0 network (docs/network-p0.md). Declared, never probed.
         network: (() => {
           const caps = network.networkCapabilities(runtime.net, { control: runtime.netCtl, subTargets: NETWORK_SUBTARGETS });
@@ -17396,6 +19401,17 @@ export function apply(ctx) {
           // the client applies to the same normalized set.
           annotations: annotationLimits(),
           networkEntries: NETWORK_LIMIT,
+          tabs: {
+            maxTabsPerWorkspace: 4, maxChildTabs: 3, maxGlobalPages: registry.maxPages,
+            actions: ['list', 'current', 'select', 'open', 'close', 'wait'],
+            idleMs: registry.idleMs,
+            noticesLimit: registry.noticesLimit,
+            closedHistoryLimit: registry.closedHistoryLimit,
+            keepalive: {
+              refreshOnPageTools: true, idleMs: registry.idleMs,
+              note: '任一页面工具在该标签上成功执行都会刷新它的 idle 计时；list/wait 不刷新，也不启动 Chromium/不取 lease',
+            },
+          },
           network: {
         ...network.limitsView(),
         availability: 'declared',
@@ -17406,6 +19422,17 @@ export function apply(ctx) {
         https: 'mechanism-identical',
         responseModification: runtime.netCtl.responseModification === true,
         subTargets: NETWORK_SUBTARGETS,
+        // TOOL-P1-04 (docs/network-p0.md): declared facts only, never probed here. Body failures
+        // carry a stable reason code; session attribution is per tab and never inferred.
+        bodyStates: {
+          states: ['captured', 'empty', 'unavailable'],
+          unavailableReason: 'NET_BODY_UNAVAILABLE',
+          reasonCodes: [...network.NET_BODY_REASON_CODES],
+          reasonCodeFields: ['reasonCode', 'reasonDetail'],
+          captureBodiesFalseReason: 'not-captured',
+        },
+        attribution: { fields: ['scopeId', 'runtimeId', 'tabId'], missingIsNull: true, noInference: true, crossTabAggregation: false },
+        sessionConsistency: { activeSessionId: true, bufferedEvents: true, sessionlessEventsEmpty: true, divergenceRootCause: 'UNKNOWN' },
         throttleLimits: { latencyMsMax: 60000, downloadKbpsMax: 1000000, uploadKbpsMax: 1000000, unit: 'Kbps = 1024 bit/s' },
         holdLimits: { maxHeld: network.NET_LIMITS.held, timeoutMs: network.NET_LIMITS.holdTimeoutMs },
         ruleLimits: { max: network.NET_LIMITS.rules, kinds: [...network.NET_RULE_KINDS] },

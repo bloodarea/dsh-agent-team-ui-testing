@@ -8,16 +8,23 @@
  *   - every `references/*.md` mentioned/backticked in SKILL.md exists on disk;
  *   - every browser_* tool name mentioned in SKILL.md is one of the tools index.js actually
  *     registers (no invented capabilities, no Playwright/Puppeteer tool names);
- *   - the composed surface is consistent: index.js registers 35 tools (10 T1 + 7 T2 + 6 T3
+ *   - the composed surface is consistent: index.js registers 36 tools (10 T1 + 1 P0-E + 7 T2 + 6 T3
  *     + 7 network + 5 T4) and the manifest declares every tier as supported. Capability status
  *     ledgers live in docs/internal/ (local engineering notes) and are no longer part of the
  *     shipped skill, so they are not checked here.
+ *   - the verdict-gate references (P0/P1/P2 gate + reporting docs, see task-1) exist on disk and are
+ *     linked one-by-one from SKILL.md; the gate vocabulary is actually present
+ *     (expected_contract / counterexamples / page identity / coverage /
+ *     INSUFFICIENT_TEMPORAL_RESOLUTION);
+ *   - no V2 target-specific answer leaks into the shipped skill (precise denylist: coupon code,
+ *     target animation/component names, defect ids, panel readout values, answer-style claims);
+ *   - the entry skill stays small (SKILL.md <= 520 lines).
  *
  * SKIP (exit 0) when skills/ does not exist yet (task-1 not started / not merged).
  * Exit codes: 0 pass or skip, 1 structural failure.
  */
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -30,6 +37,56 @@ const MANIFEST_FILE = join(SKILL_DIR, 'manifests', 'declared-capabilities.json')
 const INDEX_FILE = join(REPO_ROOT, 'index.js');
 
 const ALLOWED_STATUSES = new Set(['implemented', 'implemented-not-verified', 'verified', 'partial', 'unsupported']);
+
+/** task-1 verdict-gate / reporting references that must ship with the entry skill. */
+const GATE_REFS = [
+  'verdict-gate.md', 'page-identity.md', 'tool-routing-and-limits.md', 'network-and-state.md',
+  'dynamic-visual.md', 'reporting.md', 'verdict-examples.md', 'report-template.md',
+];
+
+/**
+ * Gate vocabulary that must actually be present (entry skill + gate refs).
+ * `any` lists an English field name plus its Chinese equivalent where both are acceptable.
+ */
+const GATE_KEYWORDS = [
+  { label: 'expected_contract', any: ['expected_contract'] },
+  { label: 'counterexamples（反例处置）', any: ['counterexamples', '反例'] },
+  { label: 'page identity（页面身份门禁）', any: ['page-identity', '页面身份'] },
+  { label: 'coverage（full|partial|blocked）', any: ['coverage', '覆盖'] },
+  { label: 'INSUFFICIENT_TEMPORAL_RESOLUTION', any: ['INSUFFICIENT_TEMPORAL_RESOLUTION'] },
+];
+
+/**
+ * V2 target-specific answer strings that must not leak into the shipped skill.
+ * Kept deliberately precise: no generic words, so ordinary guidance (e.g. "lumen",
+ * "target=_blank", "signal") never trips it.
+ */
+const DENY_PATTERNS = [
+  { pattern: /SAVE10/u, label: 'V2 优惠码答案（SAVE10）' },
+  { pattern: /signalSlide/u, label: 'V2 靶机动画名（signalSlide）' },
+  { pattern: /ComplexWebTestbench/u, label: 'V2 靶机名（ComplexWebTestbench）' },
+  { pattern: /\bD0[1-9]\b/u, label: 'V2 预置缺陷编号（D01–D09）' },
+  { pattern: /\bt=233ms\b|93\.32|253,\s*14,\s*13/u, label: 'V2 面板状态行读数' },
+  { pattern: /白色闪屏(?:一定|必然|就是|必定)是?缺陷/u, label: '白闪结论式答案（应由采样与契约决定）' },
+  { pattern: /角标(?:必须|一定要)实时同步/u, label: '多视图同步结论式答案（应由契约决定）' },
+];
+
+/** Max lines for the entry skill (low-token loading guard). */
+const ENTRY_MAX_LINES = 520;
+
+async function* walkMarkdown(dir) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) yield* walkMarkdown(full);
+    else if (entry.isFile() && entry.name.endsWith('.md')) yield full;
+  }
+}
 
 const results = [];
 function record(label, pass, detail, { skip = false, optional = false } = {}) {
@@ -79,12 +136,12 @@ async function main() {
   const indexSource = await readFile(INDEX_FILE, 'utf8');
   const actualTools = new Set();
   for (const match of indexSource.matchAll(/name:\s*'((?:browser_)[a-z0-9_]+)'/g)) actualTools.add(match[1]);
-  // 30 = 10 T1 (docs/architecture.md + docs/viewport-control.md §7 `browser_viewport`)
+  // 36 = 10 T1 + 1 P0-E (`browser_tabs`) (docs/architecture.md + docs/viewport-control.md §7 `browser_viewport`)
   //      + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
   //      + 7 network (docs/network-p0.md §2).
   const expectedTools = [
     'browser_navigate', 'browser_eval', 'browser_screenshot', 'browser_input', 'browser_network',
-    'browser_computed_style', 'browser_http_request', 'browser_viewport', 'browser_state', 'browser_capabilities',
+    'browser_computed_style', 'browser_http_request', 'browser_viewport', 'browser_state', 'browser_capabilities', 'browser_tabs',
     'browser_snapshot', 'browser_click', 'browser_type', 'browser_scroll', 'browser_fill_form',
     'browser_node_state', 'browser_wait_for',
     'browser_vision_image', 'browser_vision_find', 'browser_vision_compare',
@@ -95,7 +152,7 @@ async function main() {
     'browser_dynamic_session', 'browser_motion_observe', 'browser_motion_analyze',
     'browser_motion_control', 'browser_dynamic_correlate',
   ];
-  record(`index.js 中可解析出 ${expectedTools.length} 个实际注册的 browser_* 工具（10 T1 + 7 T2 + 6 T3 + 7 network + 5 T4）`,
+  record(`index.js 中可解析出 ${expectedTools.length} 个实际注册的 browser_* 工具（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4）`,
     actualTools.size === expectedTools.length && expectedTools.every((name) => actualTools.has(name))
       && [...actualTools].every((name) => expectedTools.includes(name)), [...actualTools]);
 
@@ -197,6 +254,44 @@ async function main() {
         && manifest.limits.capture.scaleRange[1] === 4,
       { viewport: manifest.limits?.viewport, capture: manifest.limits?.capture });
   }
+
+  // 7. Verdict-gate references exist on disk (task-1 P0/P1/P2 deliverables).
+  const missingGateRefs = GATE_REFS.filter((name) => !existsSync(join(SKILL_DIR, 'references', 'core', name)));
+  record('判定门禁 references/core 下 8 个文件全部存在', missingGateRefs.length === 0,
+    missingGateRefs.map((name) => `references/core/${name}`));
+
+  // 8. ... and each one is linked one-by-one from the entry skill (on-demand loading, no copy-paste body).
+  const unlinkedGateRefs = GATE_REFS.filter((name) => !body.includes(`references/core/${name}`));
+  record('SKILL.md 逐一链接全部 8 个判定门禁 references（按需参考，不复制正文）', unlinkedGateRefs.length === 0,
+    unlinkedGateRefs.map((name) => `references/core/${name}`));
+
+  // 9. The gate vocabulary is actually carried by the entry skill + gate refs.
+  const gateCorpus = [raw, ...GATE_REFS.map((name) => {
+    const file = join(SKILL_DIR, 'references', 'core', name);
+    return existsSync(file) ? readFileSync(file, 'utf8') : '';
+  })].join('\n');
+  const missingKeywords = GATE_KEYWORDS.filter((entry) => !entry.any.some((term) => gateCorpus.includes(term)));
+  record('判定门禁关键词齐全（expected_contract / counterexamples / 页面身份 / coverage / INSUFFICIENT_TEMPORAL_RESOLUTION）',
+    missingKeywords.length === 0, missingKeywords.map((entry) => entry.label));
+
+  // 10. No V2 target-specific answer leaks into the shipped skill (precise denylist, see DENY_PATTERNS).
+  const denyHits = [];
+  for await (const file of walkMarkdown(SKILL_DIR)) {
+    const text = await readFile(file, 'utf8');
+    text.split(/\r?\n/u).forEach((line, index) => {
+      for (const { pattern, label } of DENY_PATTERNS) {
+        if (!pattern.test(line)) continue;
+        denyHits.push({ file: relative(REPO_ROOT, file), line: index + 1, label, excerpt: line.trim().slice(0, 120) });
+      }
+    });
+  }
+  record('Skill 目录无 V2 靶机专属答案泄漏（denylist：优惠码/动画名/靶机名/缺陷编号/面板读数/结论式答案）',
+    denyHits.length === 0, denyHits.slice(0, 10));
+
+  // 11. Entry line guard: the on-demand split only works while SKILL.md stays small.
+  const entryLines = raw.replace(/\r?\n$/u, '').split(/\r?\n/u).length;
+  record(`SKILL.md 入口行数 ≤ ${ENTRY_MAX_LINES}（低 Token 加载；当前 ${entryLines} 行）`,
+    entryLines <= ENTRY_MAX_LINES, { lines: entryLines, max: ENTRY_MAX_LINES });
 
   return failSummary();
 }

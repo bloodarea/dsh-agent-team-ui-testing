@@ -1,6 +1,6 @@
 # Web 平台操作指南（M0–M2 + T2）
 
-Web 已有 **35 个工具**：T1 10 个（含独立 HTTP `browser_http_request` 与共享视口 `browser_viewport`）+ T2 7 个 + T3 6 个 + 网络 P0 7 个 + T4 5 个，工具名见各层表格与 [工具参考](../../../../docs/tools.md)。T3/T4 已实现，其中 T4 的 40 条门槛尚未全覆盖；provider 图像可见性未验证。按当前注册表与 `browser_capabilities` 实际三态选路，不把文档或 manifest 当运行态证明。
+Web 已有 **36 个工具**：T1 10 个（含独立 HTTP `browser_http_request` 与共享视口 `browser_viewport`）+ T2 7 个 + T3 6 个 + 网络 P0 7 个 + T4 5 个，工具名见各层表格与 [工具参考](../../../../docs/tools.md)。T3/T4 已实现，其中 T4 的 40 条门槛尚未全覆盖；provider 图像可见性未验证。按当前注册表与 `browser_capabilities` 实际三态选路，不把文档或 manifest 当运行态证明。
 
 同一时刻最多一个无头 Chromium/profile；每个 DSH 工作区一个 page，默认共享视口 1280×800@100%/DPR1（`browser_viewport` 可改宽高/X-Y/显示比例；比例不改页面 CSS 视口与 DPR）。single-owner-lease 按工作区：空闲 15s、进行中保持、缺 exec 走 legacy、disposed 只释放对应 owner；同工作区其他 session 页面/network/T2 BUSY，不同工作区独立。面板与 Agent 在同一工作区同 page/串行队列；Cookie/localStorage/cache 共享，不是安全隔离。state/capabilities 不启动、不占租约。
 
@@ -14,4 +14,4 @@ Web 已有 **35 个工具**：T1 10 个（含独立 HTTP `browser_http_request` 
 
 面板 screencast 的 WS 优先/HTTP 回退、metrics 都是预览诊断，不是 Agent 页面证据；内部 HTTP 路由不是 Agent API，不可绕过工具。
 
-须验证：35 工具注册面/诊断不启动、标题/导航/错误、租约/anonymous/disposed/BUSY、面板队列与取消关闭、目标/DNS/Document 重定向、网络失败/脱敏/资源界限、action render、截图附件/fallback/provider、独立 HTTP 的预算/重定向/阻断/取消/零派发、T2 的快照/ref 生命周期/唯一 selector/可信动作/表单/滚动/等待/错误码/证据、network P0 的 7 工具注册/三态/限额、事件 schema 与时间轴、body 三态不伪造、脱敏、配额与 integrity、拦截/限速/重放/Mock 与导航守卫共存、JSONL/HAR 往返、订阅隔离与 pin/gap。没有 Agent 视口设置、下载/上传/Cookie 导出、多 target/frame 选择、popup/多标签采集；T4 的 media 适配器、WebGPU 真实渲染、16ms 闪白采样覆盖仍未验证。
+须验证：36 工具注册面/诊断不启动（含 `browser_tabs`）、标题/导航/错误、租约/anonymous/disposed/BUSY、按 tab 的 BUSY 与 selectedTab、面板队列与取消关闭、目标/DNS/Document 重定向、网络失败/脱敏/资源界限、action render、截图附件/fallback/provider、独立 HTTP 的预算/重定向/阻断/取消/零派发、T2 的快照/ref 生命周期/唯一 selector/可信动作/表单/滚动/等待/错误码/证据、network P0 的 7 工具注册/三态/限额、事件 schema 与时间轴、body 三态不伪造、脱敏、配额与 integrity、拦截/限速/重放/Mock 与导航守卫共存、JSONL/HAR 往返、订阅隔离与 pin/gap。没有 Agent 视口设置、下载/上传/Cookie 导出、Agent 多 target/frame 选择、popup/多标签采集（GUI 内部真人 target=_blank 标签页已支持，但 Agent 仍只操作 primary）；T4 的 media 适配器、WebGPU 真实渲染、16ms 闪白采样覆盖仍未验证。

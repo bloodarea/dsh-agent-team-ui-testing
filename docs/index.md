@@ -7,14 +7,16 @@
 | 文档 | 内容 |
 | --- | --- |
 | [快速开始](getting-started.md) | 安装要求、本地接入、打开面板与首次调用 |
-| [工具参考](tools.md) | 35 个工具、T1 调用示例与返回结果判读 |
+| [工具参考](tools.md) | 36 个工具、T1 调用示例与返回结果判读 |
 | [能力分层与限制](capability-tiers.md) | WEB-P0 与 T1–T4 的职责、选路与支持边界 |
 
 ## 功能参考
 
 | 文档 | 内容 |
 | --- | --- |
+| [多标签页](multi-tab.md) | 每工作区 primary + 3 child、per-tab BUSY、Agent selectedTab、`browser_tabs`、GUI 内部标签栏与 `+` |
 | [视口、画布与标注](viewport-control.md) | 共享视口、坐标、缩放、拖拽、标注与并发控制 |
+| [选元素加入聊天框](element-picker.md) | 面板选元素模式、悬浮框选、文档坐标、聊天框文本块、失败提示与限制 |
 | [截图与图片交付](capture-p0.md) | 截图区域、分辨率、文件留存与证据边界 |
 | [网络调试](network-p0.md) | 请求、WebSocket、SSE、链路、控制与证据导出 |
 | [结构化 GUI](t2-structured-gui.md) | snapshot/ref、点击、输入、表单与等待 |

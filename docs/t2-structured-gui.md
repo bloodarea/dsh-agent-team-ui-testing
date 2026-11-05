@@ -65,4 +65,4 @@ provenance / targets / before / after / dispatch / networkDelta / escalation / i
 - 语义来源是主框架的无障碍树；跨 iframe 定位不在范围内。
 - 快照树是压缩投影：`nodeCount` 与 `digest` 会随构建变化，跨版本差异不算回归。
 - 视觉缺陷（颜色、遮挡、像素差异）不属 T2，请升级到 [静态视觉](t3-vision.md)。
-- 面板的「选择元素」回传聊天尚未提供。
+- 面板的「选择元素」见 [选元素加入聊天框](element-picker.md)：在预览中悬浮框选页面元素，点击把节点信息追加到聊天框；v1 只选主帧。

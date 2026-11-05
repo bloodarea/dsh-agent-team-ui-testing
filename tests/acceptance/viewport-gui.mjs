@@ -747,11 +747,26 @@ async function clickAt(x, y) {
 }
 
 async function focusField(label) {
+  const name = String(label);
+  await waitSyncNoticeSettled(name);
   let rect = await fieldRect(label);
   await ensureFieldHit({ label, field: await fieldKeyOf(label) }, rect);
+  await waitSyncNoticeSettled(name);
   rect = await fieldRect(label);
   await clickAt(rect.x, rect.y);
   await sleep(120);
+  // A late syncNotice can shift the bar between rect read and click; typing into the address
+  // bar instead of this field would silently navigate the page (V6.5/V6.6 race). Verify focus
+  // and retry once at a fresh rect.
+  const focused = await pageEvaluate(panelExpr(`
+    (() => { const el = document.activeElement; return el && el.getAttribute ? el.getAttribute('aria-label') : null; })()
+  `));
+  if (focused !== name) {
+    await waitSyncNoticeSettled(name);
+    rect = await fieldRect(label);
+    await clickAt(rect.x, rect.y);
+    await sleep(120);
+  }
   return rect;
 }
 
@@ -811,13 +826,30 @@ async function ensureFieldHit(label, rect) {
   return { ok: false, last: await pageEvaluate(`(() => { const el = document.elementFromPoint(${rect.x}, ${rect.y}); return el ? String(el.className || el.tagName).slice(0, 60) : null; })()`).catch(() => null) };
 }
 
+/**
+ * A visible syncNotice row changes the size-bar offset. Wait until no such row has existed for
+ * ~150 ms, then re-read the field rect right before dispatching the wheel (V13.5 race).
+ */
+async function waitSyncNoticeSettled(label) {
+  let absentSince = 0;
+  const ok = await waitFor(async () => {
+    const note = await pageEvaluate(`(() => { const n = document.querySelector('[data-utb-sync-state]'); return n ? { state: n.getAttribute('data-utb-sync-state'), text: n.textContent || '' } : null; })()`);
+    if (note) { absentSince = 0; return undefined; }
+    if (!absentSince) absentSince = Date.now();
+    return Date.now() - absentSince >= 150 ? true : undefined;
+  }, { timeoutMs: 4000, intervalMs: 50, label: 'sync notice settled for ' + label }).catch(() => null);
+  if (!ok) log(`  [warn] sync notice did not settle before wheel on ${label}`);
+}
+
 /** Real wheel event over a size-bar field (CDP modifiers: Alt=1, Ctrl=2, Meta=4, Shift=8). */
 async function wheelOnField(label, deltaY, modifiers = 0, { settle = true } = {}) {
+  await waitSyncNoticeSettled(String(label.label || 'field'));
   let rect = await fieldRect(label);
   const guard = await ensureFieldHit({ label, field: await fieldKeyOf(label) }, rect);
+  await sleep(40);
+  await waitSyncNoticeSettled(String(label.label || 'field'));
   rect = await fieldRect(label);
   if (!guard.ok) log(`  [warn] wheel target for ${label} is covered by ${guard.last}`);
-  await sleep(40);
   // Chromium routes a wheel event to the *hovered* node, so the pointer must be moved first.
   await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x, y: rect.y, button: 'none', buttons: 0 });
   await sleep(30);
@@ -828,8 +860,10 @@ async function wheelOnField(label, deltaY, modifiers = 0, { settle = true } = {}
 
 /** A burst of wheel notches inside one 120ms window (proves the debounce merge). */
 async function wheelBurst(label, count, deltaY, modifiers = 0) {
+  await waitSyncNoticeSettled(String(label.label || 'field'));
   let rect = await fieldRect(label);
   await ensureFieldHit({ label, field: await fieldKeyOf(label) }, rect);
+  await waitSyncNoticeSettled(String(label.label || 'field'));
   rect = await fieldRect(label);
   await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x, y: rect.y, button: 'none', buttons: 0 });
   await sleep(30);
@@ -4655,10 +4689,15 @@ async function main() {
         const annot = panel.querySelector('button[aria-label="标注"]');
         const prev = annot ? annot.previousElementSibling : null;
         const next = annot ? annot.nextElementSibling : null;
-        return { prev: prev ? prev.tagName : null, next: next ? next.getAttribute('aria-label') : null };
+        return {
+          prev: prev ? prev.tagName : null,
+          prevToggle: Boolean(prev && prev.hasAttribute && prev.hasAttribute('data-utb-tabs-toggle')),
+          next: next ? next.getAttribute('aria-label') : null,
+        };
       `));
-      check('V15.1b', 'toolbar DOM order is 地址栏 → 标注 → 尺寸调整',
-        order.prev === 'FORM' && order.next === '尺寸调整', { prev: 'FORM', next: '尺寸调整' }, order);
+      check('V15.1b', 'toolbar DOM order is 地址栏 → [标签页开关] → 标注 → 尺寸调整',
+        (order.prev === 'FORM' || order.prevToggle === true) && order.next === '尺寸调整',
+        { prev: 'FORM or data-utb-tabs-toggle', next: '尺寸调整' }, order);
 
       const opened = await toggleAnnot(true);
       const openPanel = await panelState();

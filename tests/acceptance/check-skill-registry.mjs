@@ -114,11 +114,12 @@ async function main() {
     const toolNames = [...registeredTools.keys()];
     const t4Tools = ['browser_dynamic_session', 'browser_motion_observe', 'browser_motion_analyze',
       'browser_motion_control', 'browser_dynamic_correlate'];
-    record('真实 ctx.plugin 挂载后注册恰好 35 个 browser_* 工具（含 browser_viewport、7 个 network 与 5 个 T4 工具）', toolNames.length === 35
+    record('真实 ctx.plugin 挂载后注册恰好 36 个 browser_* 工具（含 browser_tabs、browser_viewport、7 个 network 与 5 个 T4 工具）', toolNames.length === 36
+      && registeredTools.has('browser_tabs')
       && toolNames.every((name) => name.startsWith('browser_')) && netTools.every((name) => registeredTools.has(name))
       && registeredTools.has('browser_viewport') && t4Tools.every((name) => registeredTools.has(name)),
-      { count: toolNames.length, network: netTools.filter((name) => registeredTools.has(name)), viewport: registeredTools.has('browser_viewport'), t4: t4Tools.filter((name) => registeredTools.has(name)) });
-    record('35 个注册工具都带 object 参数 schema 与 execute', toolNames.length === 35
+      { count: toolNames.length, tabs: registeredTools.has('browser_tabs'), network: netTools.filter((name) => registeredTools.has(name)), viewport: registeredTools.has('browser_viewport'), t4: t4Tools.filter((name) => registeredTools.has(name)) });
+    record('36 个注册工具都带 object 参数 schema 与 execute', toolNames.length === 36
       && [...registeredTools.values()].every((definition) => definition.parameters?.type === 'object'
         && Array.isArray(definition.parameters?.required) && typeof definition.execute === 'function'),
       [...registeredTools.values()].filter((definition) => definition.parameters?.type !== 'object'

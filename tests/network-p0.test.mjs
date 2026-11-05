@@ -19,10 +19,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  NET_DEFAULTS, NET_LIMITS, NetworkStore,
-  aggregateEvents, decodeCursor, detectPolling, detectRetries, encodeCursor, estimateEventBytes, evidenceBlock,
+  NET_DEFAULTS, NET_LIMITS, NetworkStore, NET_BODY_REASON_CODES,
+  aggregateEvents, classifyBodyFailure, decodeCursor, detailEvent, detectPolling,
+  detectRetries, encodeCursor, estimateEventBytes, evidenceBlock,
   extractBusinessCode, extractCorrelationIds, fromHar, fromJsonl, loadImported,
-  networkCapabilities, normalizeEvent, normalizeSessionConfig, normalizeTiming,
+  networkCapabilities, normalizeBodyReasonDetail, normalizeEvent, normalizeSessionConfig, normalizeTiming,
   parseImportedEvidence, parseQueryString, percentile, queryEvents, sanitizeBody,
   sanitizeHeaders, sanitizeUrl, statusClass, subscriptionAck,
   subscriptionClose, subscriptionCreate, subscriptionList, subscriptionPoll, toHar, toJsonl,
@@ -359,6 +360,149 @@ check('C2', 'body 三态：captured / empty / unavailable 可区分', () => {
   ok(!serialised.includes('undefined'), 'no undefined in body state');
   const missing = store.bodyState({ requestId: 'nope', targetId: 'T1', hopId: 0, cdpSessionId: null });
   ok(JSON.stringify(missing).includes('unavailable') || JSON.stringify(missing).includes('false'), 'missing body reported unavailable');
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * TOOL-P1-04 — body 不可得原因码（classifyBodyFailure / reasonCode / reasonDetail / not-captured）
+ * ---------------------------------------------------------------------------------------------- */
+
+check('C2', 'TOOL-P1-04 classifyBodyFailure 映射稳定枚举，且不回显错误原文', () => {
+  const withCode = (code, message) => Object.assign(new Error(message), { code });
+  const cases = [
+    [withCode('CDP_TIMEOUT', 'CDP 超时: Network.getResponseBody'), 'cdp-timeout'],
+    [new Error('request timed out after 800ms'), 'cdp-timeout'],
+    [withCode('CDP_DISCONNECTED', 'CDP 连接已关闭'), 'cdp-disconnected'],
+    [new Error('Target closed'), 'cdp-disconnected'],
+    [new Error('No resource with given identifier found'), 'cdp-no-resource'],
+    [new Error('No data found for resource with given identifier'), 'cdp-evicted'],
+    [withCode('INVALID_ARGUMENT', 'Invalid parameters'), 'cdp-invalid-params'],
+    [{ code: -32602, message: 'Invalid parameters' }, 'cdp-invalid-params'],
+    [{ code: -32000, message: 'Protocol handshake failed' }, 'cdp-error'],
+    [withCode('INTERNAL', 'CDP error: unexpected response'), 'cdp-error'],
+    [new Error('mysterious failure'), 'cdp-unknown'],
+    [null, 'cdp-unknown'],
+    [undefined, 'cdp-unknown'],
+  ];
+  for (const [error, expected] of cases) {
+    const actual = classifyBodyFailure(error);
+    ok(actual === expected, `${expected}: got ${actual}`);
+    ok(NET_BODY_REASON_CODES.includes(actual), 'only stable enum values');
+  }
+  // 敏感内容只用于匹配、不随枚举回显（返回值是纯字符串枚举）。
+  const sensitive = classifyBodyFailure(new Error('GET https://alice:pass@127.0.0.1/x?token=rawtoken failed'));
+  ok(sensitive === 'cdp-unknown', `sensitive message stays unknown: ${sensitive}`);
+  ok(!String(sensitive).includes('rawtoken'), 'no secret echo');
+  // reasonDetail 归一化：空值 → null，控制字符压成单行，敏感值脱敏，字节上限 160。
+  ok(normalizeBodyReasonDetail(null) === null && normalizeBodyReasonDetail('   ') === null, 'empty detail -> null');
+  const bounded = normalizeBodyReasonDetail('line1\nline2 token=rawtoken ' + 'z'.repeat(300));
+  ok(Buffer.byteLength(bounded, 'utf8') <= 160, 'detail bounded');
+  ok(!bounded.includes('rawtoken') && !bounded.includes('\n'), 'detail single-line + redacted');
+});
+
+check('C2', 'TOOL-P1-04 unavailable 记录保留 reasonCode/reasonDetail，readBody/bodyState 可读', () => {
+  const store = makeStore();
+  store.add(httpEvent({ requestId: 'reason.1' }));
+  const event = store.events[0];
+  const options = { targetId: event.targetId, cdpSessionId: event.cdpSessionId, requestId: 'reason.1', hopId: event.hopId };
+  const rawDetail = 'Network.getResponseBody 失败: GET https://alice:pass@127.0.0.1/x?token=rawtoken ' + 'x'.repeat(200);
+  const stored = store.addBody({
+    ...options, kind: 'response', state: 'unavailable', reasonCode: 'cdp-timeout', reasonDetail: rawDetail,
+  });
+  ok(stored && stored.state === 'unavailable' && stored.reasonCode === 'cdp-timeout', `stored=${JSON.stringify(stored)}`);
+  ok(Buffer.byteLength(stored.reasonDetail, 'utf8') <= 160, 'detail bounded to 160 bytes');
+  ok(!stored.reasonDetail.includes('rawtoken') && !stored.reasonDetail.includes('alice'), 'detail redacted');
+  const read = store.readBody({ ...options, kind: 'response' });
+  ok(read && read.state === 'unavailable' && read.available === false, 'unavailable readable');
+  ok(read.reason === 'NET_BODY_UNAVAILABLE' && read.reasonCode === 'cdp-timeout', 'legacy reason kept + reasonCode added');
+  ok(read.reasonDetail === stored.reasonDetail, 'bounded/redacted detail persisted');
+  ok(read.bytes === null && read.data === null && read.encoding === null, 'no fabricated payload (data stays null, not empty string)');
+  const state = store.bodyState(event);
+  ok(state.response.state === 'unavailable' && state.response.available === false, 'bodyState unavailable');
+  ok(state.response.reason === 'NET_BODY_UNAVAILABLE' && state.response.reasonCode === 'cdp-timeout', 'bodyState reason code');
+  ok(!JSON.stringify(state).includes('undefined'), 'no undefined in body state');
+
+  // 省略 reasonCode 或给未知取值：稳定回落 cdp-unknown（不写入自造词）。
+  store.addBody({ ...options, kind: 'request', state: 'unavailable' });
+  ok(store.bodyState(event).request.reasonCode === 'cdp-unknown', 'omitted reasonCode -> cdp-unknown');
+  store.addBody({ ...options, kind: 'request', state: 'unavailable', reasonCode: 'vendor-quirk' });
+  ok(store.bodyState(event).request.reasonCode === 'cdp-unknown', 'unknown reasonCode -> cdp-unknown');
+
+  // 最新一次尝试优先：后续 captured 记录清除失败原因，三态语义不变。
+  store.addBody({ ...options, kind: 'response', state: 'captured', data: '{"ok":1}', contentType: 'application/json' });
+  const captured = store.readBody({ ...options, kind: 'response' });
+  ok(captured.state === 'captured' && captured.available === true, 'captured wins as latest attempt');
+  ok(captured.reason === null && captured.reasonCode === null && captured.reasonDetail === null, 'captured has no reason');
+  ok(store.bodyState(event).response.reasonCode === null, 'bodyState captured reason null');
+});
+
+check('C2', 'TOOL-P1-04 本地配额淘汰的 body 读为 unavailable + cdp-evicted（旧口径改动的理由）', () => {
+  const store = makeStore({ config: { maxBodyBytes: 64, maxTotalBytes: 80 } });
+  store.addBody({ requestId: 'ev.1', kind: 'response', data: 'a'.repeat(60) });
+  store.addBody({ requestId: 'ev.2', kind: 'response', data: 'b'.repeat(60) });
+  ok(store.counters.bodyEvicted >= 1, `bodyEvicted=${store.counters.bodyEvicted}`);
+  const evicted = store.readBody({ requestId: 'ev.1', kind: 'response' });
+  ok(evicted && evicted.state === 'unavailable' && evicted.available === false, `evicted state=${evicted && evicted.state}`);
+  ok(evicted.reasonCode === 'cdp-evicted', `reasonCode=${evicted.reasonCode}`);
+  const kept = store.readBody({ requestId: 'ev.2', kind: 'response' });
+  ok(kept && kept.state === 'captured' && kept.data === 'b'.repeat(60), 'newest body kept');
+});
+
+check('C2', 'TOOL-P1-04 captureBodies:false 明确 reasonCode=not-captured（detail/bodyState/readBody）', () => {
+  const store = makeStore({ config: { captureBodies: false } });
+  store.add(httpEvent({ requestId: 'off.1' }));
+  const event = store.events[0];
+  const options = { targetId: event.targetId, cdpSessionId: event.cdpSessionId, requestId: 'off.1', hopId: event.hopId };
+  ok(store.addBody({ ...options, kind: 'response', data: '{"x":1}' }) === null, 'captureBodies:false stores no body');
+  ok(store.readBody({ ...options, kind: 'response' }) === null, 'readBody still null (no fabricated record)');
+  const state = store.bodyState(event);
+  ok(state.response.state === 'unavailable' && state.response.available === false, 'bodyState unavailable');
+  ok(state.response.reason === 'NET_BODY_UNAVAILABLE' && state.response.reasonCode === 'not-captured', 'not-captured is not a CDP error');
+  const detail = detailEvent(store, { seq: event.seq, include: ['body'] });
+  ok(detail.body.response.available === false && detail.body.response.reasonCode === 'not-captured', 'detail body reasonCode');
+  ok(Buffer.byteLength(String(detail.body.request.reasonCode), 'utf8') <= 16, 'detail request body also not-captured');
+  ok(detail.body.request.reasonCode === 'not-captured', 'detail.request reasonCode');
+
+  // 采集开启但没有任何记录/失败原因：保持 reasonCode:null（不猜、不伪造 cdp-*）。
+  const capturing = makeStore();
+  capturing.add(httpEvent({ requestId: 'on.1' }));
+  const open = detailEvent(capturing, { seq: capturing.events[0].seq, include: ['body'] });
+  ok(open.body.response.available === false && open.body.response.reason === 'NET_BODY_UNAVAILABLE', 'open capture still unavailable');
+  ok(open.body.response.reasonCode === null, 'no evidence -> null, not a guessed cdp-* code');
+});
+
+check('C34', 'TOOL-P1-04 attribution 在会话视图/status/evidenceBlock 中一致回传（缺失为 null）', () => {
+  const store = new Store({ scopeId: 'scope-a', attribution: { runtimeId: 'rt-1', tabId: 'tab-7' } });
+  const before = store.status();
+  ok(before.attribution.scopeId === 'scope-a' && before.attribution.runtimeId === 'rt-1' && before.attribution.tabId === 'tab-7', 'status attribution before start');
+  ok(before.session === null, 'no session yet');
+  store.start({ name: 'attr' });
+  const status = store.status();
+  ok(status.attribution.scopeId === 'scope-a' && status.attribution.tabId === 'tab-7', 'status top-level attribution');
+  ok(status.session.attribution && status.session.attribution.tabId === 'tab-7', 'sessionView attribution');
+  ok(status.session.attribution.runtimeId === 'rt-1', 'sessionView runtimeId');
+  const block = evidenceBlock(store, 'status');
+  ok(block.attribution && block.attribution.scopeId === 'scope-a' && block.attribution.runtimeId === 'rt-1' && block.attribution.tabId === 'tab-7', 'evidenceBlock attribution');
+  ok(!JSON.stringify(block).includes('undefined'), 'no undefined in evidence block');
+
+  // 未给 attribution：只回传构造器已知的 scopeId，runtimeId/tabId 为 null（不从 cdpSessionId 反推）。
+  const bare = new Store({ scopeId: 'scope-b' });
+  const bareStatus = bare.status();
+  ok(bareStatus.attribution.scopeId === 'scope-b', 'constructor scopeId is known fact');
+  ok(bareStatus.attribution.runtimeId === null && bareStatus.attribution.tabId === null, 'unknown fields stay null');
+  const bareBlock = evidenceBlock(bare, 'events');
+  ok(bareBlock.attribution.tabId === null, 'evidence block does not infer tab');
+
+  // 切 tab 只更新 tabId；显式 null 清空；reset 只清空 runtimeId/tabId 并保留 scopeId。
+  store.setAttribution({ tabId: 'tab-8' });
+  ok(store.status().attribution.tabId === 'tab-8' && store.status().attribution.runtimeId === 'rt-1', 'partial update keeps other fields');
+  store.setAttribution({ tabId: 'x'.repeat(400) });
+  ok(Buffer.byteLength(store.status().attribution.tabId, 'utf8') <= 128, 'attribution ids bounded (128 bytes)');
+  store.setAttribution({ tabId: null });
+  ok(store.status().attribution.tabId === null && store.status().attribution.runtimeId === 'rt-1', 'explicit null clears one field');
+  store.setAttribution(null);
+  ok(store.status().attribution.runtimeId === null && store.status().attribution.tabId === null, 'setAttribution(null) resets unknown fields');
+  ok(store.status().attribution.scopeId === 'scope-a', 'scopeId stays a known fact after reset');
+  ok(store.status().session.attribution.tabId === null, 'sessionView follows current attribution');
 });
 
 /* ------------------------------------------------------------------------------------------------

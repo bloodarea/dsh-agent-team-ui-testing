@@ -11,4 +11,6 @@
 9. 错误按 code/category/retryable 分类；`REF_STALE` 重新快照、`WAIT_TIMEOUT` 不改小预算掩盖、`NOT_INTERACTABLE` 是 finding 不是换目标理由。取消/超时/断连后先查应用状态。已发 CDP 命令后 abort 先关闭浏览器再放锁，不能假设回滚。
 
 
+**判定与门禁**：写 PASS/FAIL/BLOCKED 之前过 [verdict-gate.md](verdict-gate.md) 的五元组与 6 项交叉校验；动作前过 [page-identity.md](page-identity.md) 的页面身份记录；替代路径（自建标签/独立 HTTP/手工坐标）按 [reporting.md](reporting.md) 声明 coverage；工具选路、断言 schema、失败码→下一步与坐标空间见 [tool-routing-and-limits.md](tool-routing-and-limits.md)；网络/SSE/多视图与动态采样分别见 [network-and-state.md](network-and-state.md)、[dynamic-visual.md](dynamic-visual.md)。
+
 面板与 Agent 在同一工作区的同队列内改变该工作区 page；不同工作区 page 独立、ref 表独立，但 Cookie/存储共享。操作前后复查。真实缺陷确认后停止找 PASS，能力不足如实报告。详细契约见 ../contracts/operation.md 与 ../contracts/evidence.md。

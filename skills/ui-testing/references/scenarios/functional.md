@@ -1,6 +1,6 @@
 # 能力贯通手册（T1 / T2 / T3 / T4 / P0 怎么组合用）
 
-> 工具面 **35 个**：T1 10 + T2 7 + T3 6 + 网络 P0 7 + 动态 T4 5。
+> 工具面 **36 个**：T1 10 + T2 7 + T3 6 + 网络 P0 7 + 动态 T4 5。
 > 本文是**选路 + 组合配方**；单层细节见 `references/tiers/*.md`，动画调试全流程见 `references/scenarios/visual-motion.md`。
 
 ## 0. 先探能力，别假设
@@ -120,13 +120,13 @@ T4: 骨架屏/加载态/过渡用 motion_analyze 判时序
 ### R8 · "页面卡/白屏/像挂了"
 
 ```text
-T4 motion_analyze { type:"freeze", expectation:"<可核验的应动声明>" }  → 冻结区间
+T4 motion_analyze { type:"freeze", expectation:{ motionExpected:true, sourceEventId:"…", referenceEventIds:["…"] } }  → 冻结区间
 T4 motion_analyze { type:"jank", expectedIntervalMs:16.7 }             → 掉帧程度
 P0 network_events { view:"timeline" }                                  → 资源是否排队/失败
 T1 browser_eval 读 window.onerror / 未捕获异常；browser_state.error
 ```
 
-判据：`freeze` 必须给可核验 expectation（如"这里应每 16ms 有帧"），否则 INCONCLUSIVE。
+判据：`freeze` 的 `expectation` 必须是对象（`motionExpected:true` + `sourceEventId` + `referenceEventIds`，见 `references/core/tool-routing-and-limits.md` §2），且参照事件可核验，否则 INCONCLUSIVE。
 
 ## 4. 升级与降级（回退链）
 
@@ -195,7 +195,7 @@ T1 browser_eval 读 window.onerror / 未捕获异常；browser_state.error
 ## 9. 已知不可用（如实 BLOCKED/UNSUPPORTED）
 
 - iframe/OOPIF 内部、closed shadow、contenteditable 编辑器、原生 `select` popup、拖拽、上传/下载、Cookie 导出。
-- 多标签页 / 跨窗口（SSO 弹窗）流程。
+- Agent 多标签页 / 跨窗口目标选择（GUI 内部真人 target=_blank 标签页可打开；自动/未授权 SSO 弹窗仍阻断）。
 - T4 的 media 适配器（视频 seek/stall）、WebGPU 真实渲染、16ms 闪白采样覆盖。
 - P0 的 OOPIF/HTTPS/service worker 覆盖、`header-verified` 身份（关联头脱敏）。
 - 需要面板认证的路由（如 `close`/`dispose` 恢复）。

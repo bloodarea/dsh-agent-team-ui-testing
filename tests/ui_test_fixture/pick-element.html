@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pick Element Fixture</title>
+<!--
+  Read-only element-pick fixture (tests/acceptance/pick-element-host.mjs, POST
+  /plugins/ui-testing/element). Fixed geometry, fixed text, no clocks and no network: every
+  assertion is either a real DOM read (`getBoundingClientRect` + scroll) or a raw HTTP response.
+
+  Truth table (document CSS px; body is 2400px tall so scrollY = 200 is reachable):
+    body                 margin 0, height 2400, white background (blank area == <body>)
+    #pick-target         left 300 top 300 160x44 button, text "Pick Target" (GUI task-4 target;
+                         page click counter below proves the panel overlay never reaches the page)
+    #pick-count          left 900 top 1500 (off-screen for this suite; GUI reads its data-* counters)
+                         counters: window.__pickClicks = {document,target}; #pick-count exposes
+                         data-document / data-target and the same text
+    #pick-fixed-btn      position:fixed  left 220 top 320  120x40  button, text "Fixed Button"
+                         (H2: fixed hit at scrollY=0; document rect == viewport rect)
+    #pick-doc-target     position:absolute left 60 top 300 160x48  div, text "Doc Target"
+                         (H3: same document point hits it at scrollY=0 AND scrollY=200)
+    #pick-detail         position:absolute left 60 top 420 200x44  button, class "card primary",
+                         text "Detail Target" (H4: selector/outerHTML/text/role/name)
+    #pick-cased          source markup is <DIV ID="pick-cased" CLASS="Foo Bar"> at left 60 top 520
+                         120x40 (H8: parser lowercases tag/attribute names, values are kept)
+    #pick-list           left 60 top 620 200x60, two <li class="pick-item"> (each 30px tall)
+                         (H4b: no id on the hit element -> the selector needs nth-of-type + a
+                         unique ancestor anchor and must still match exactly one node)
+    #pick-long           left 300 top 620 160x40, data-note holds 285 chars and the text 209 chars
+                         (H4c: outerHTML is collapsed + cut to 240, text to 160)
+    #pick-shadow-host    left 600 top 620 200x80, OPEN shadow root with one 120x30 button at (0,0)
+                         (H8c: shadow hit, root-scoped selector, shadowHost, closedShadow=false)
+    #pick-closed-host    left 600 top 720 200x80, CLOSED shadow root with one 120x30 button at (0,0)
+                         (H8c: closedShadow=true; document.querySelector(selector) must be null)
+    #pick-no-pointer     left 900 top 620 120x60, pointer-events:none (H5: ignorePointerEventsNone
+                         is false, so the hit test must skip it and answer no-hit for the page body)
+    #pick-frame          position:absolute left 600 top 300 220x140, srcdoc iframe with one
+                         button inside (H8: cross-frame hit is refused, never mis-mapped)
+    #pick-far            position:absolute left 60 top 2000 80x40 (off-screen for every probe)
+
+  Do not restyle this page without updating the expectations in pick-element-host.mjs.
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  body { height: 2400px; position: relative; }
+  #pick-fixed-btn, #pick-doc-target, #pick-detail, #pick-cased {
+    margin: 0; padding: 0; border: 0; box-sizing: border-box;
+    font: 14px/20px monospace; color: #000000; background: rgb(235, 235, 235); text-align: center;
+  }
+  #pick-target {
+    position: absolute; left: 300px; top: 300px; width: 160px; height: 44px;
+    margin: 0; padding: 0; border: 0; box-sizing: border-box;
+    font: 14px/20px monospace; background: rgb(225, 245, 225); color: #000000;
+  }
+  #pick-count { position: absolute; left: 900px; top: 1500px; width: 260px; font: 12px/16px monospace; color: #000000; }
+  #pick-fixed-btn { position: fixed; left: 220px; top: 320px; width: 120px; height: 40px; background: rgb(200, 230, 255); }
+  #pick-doc-target { position: absolute; left: 60px; top: 300px; width: 160px; height: 48px; }
+  #pick-detail { position: absolute; left: 60px; top: 420px; width: 200px; height: 44px; background: rgb(220, 245, 220); }
+  #pick-cased { position: absolute; left: 60px; top: 520px; width: 120px; height: 40px; }
+  #pick-list { position: absolute; left: 60px; top: 620px; width: 200px; height: 60px; margin: 0; padding: 0; list-style: none; }
+  #pick-list .pick-item { height: 30px; margin: 0; padding: 0; font: 14px/30px monospace; background: rgb(240, 240, 235); }
+  #pick-long { position: absolute; left: 300px; top: 620px; width: 160px; height: 40px; margin: 0; padding: 0; font: 14px/20px monospace; background: rgb(235, 240, 250); overflow: hidden; }
+  #pick-no-pointer { position: absolute; left: 900px; top: 620px; width: 120px; height: 60px; pointer-events: none; background: rgb(250, 240, 230); }
+  #pick-shadow-host, #pick-closed-host {
+    position: absolute; left: 600px; width: 200px; height: 80px; background: rgb(245, 235, 245);
+  }
+  #pick-shadow-host { top: 620px; }
+  #pick-closed-host { top: 720px; }
+  #pick-frame { position: absolute; left: 600px; top: 300px; width: 220px; height: 140px; border: 0; }
+  #pick-far { position: absolute; left: 60px; top: 2000px; width: 80px; height: 40px; background: rgb(220, 220, 220); }
+</style>
+</head>
+<body>
+  <button id="pick-target" type="button">Pick Target</button>
+  <button id="pick-fixed-btn" type="button">Fixed Button</button>
+  <div id="pick-doc-target" class="doc-target">Doc Target</div>
+  <button id="pick-detail" class="card primary" type="button">Detail Target</button>
+  <DIV ID="pick-cased" CLASS="Foo Bar">Cased Target</DIV>
+  <ul id="pick-list"><li class="pick-item">First Item</li><li class="pick-item">Second Item</li></ul>
+  <div id="pick-long" data-note="note:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy">LongText:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</div>
+  <iframe id="pick-frame" title="pick-frame" srcdoc='<body style="margin:0"><button id="inner-btn" type="button" style="position:absolute;left:20px;top:20px;width:100px;height:40px;margin:0;padding:0;border:0">Inner Button</button></body>'></iframe>
+  <div id="pick-no-pointer"></div>
+  <div id="pick-shadow-host"></div>
+  <div id="pick-closed-host"></div>
+  <div id="pick-far"></div>
+  <div id="pick-count" data-document="0" data-target="0">clicks: document=0 target=0</div>
+  <script>
+    // Shadow-DOM targets (H8c). The closed root is reachable only through the reference kept here,
+    // exactly like real page code: document.getElementById('pick-closed-host').shadowRoot is null.
+    (function () {
+      function make(host, mode) {
+        var root = host.attachShadow({ mode: mode });
+        var button = document.createElement('button');
+        button.id = 'shadow-' + mode + '-btn';
+        button.type = 'button';
+        button.textContent = 'Shadow ' + mode;
+        button.style.cssText = 'position:absolute;left:0;top:0;width:120px;height:30px;'
+          + 'margin:0;padding:0;border:0;font:14px/30px monospace';
+        root.appendChild(button);
+        return { root: root, button: button };
+      }
+      var open = make(document.getElementById('pick-shadow-host'), 'open');
+      var closed = make(document.getElementById('pick-closed-host'), 'closed');
+      window.__pickShadow = {
+        openRoot: open.root, openButton: open.button,
+        closedRoot: closed.root, closedButton: closed.button,
+      };
+
+      // GUI acceptance counters (task-4): the panel overlay lives in the DSH page, so hovering it
+      // must leave these at 0; a real click on #pick-target must increment both.
+      window.__pickClicks = { document: 0, target: 0 };
+      window.__pickTarget = document.getElementById('pick-target');
+      var countLabel = document.getElementById('pick-count');
+      function syncCount() {
+        countLabel.textContent = 'clicks: document=' + window.__pickClicks.document
+          + ' target=' + window.__pickClicks.target;
+        countLabel.setAttribute('data-document', String(window.__pickClicks.document));
+        countLabel.setAttribute('data-target', String(window.__pickClicks.target));
+      }
+      document.addEventListener('click', function (event) {
+        window.__pickClicks.document += 1;
+        if (event.target === window.__pickTarget) window.__pickClicks.target += 1;
+        syncCount();
+      }, true);
+      syncCount();
+    })();
+  </script>
+</body>
+</html>

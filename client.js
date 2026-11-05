@@ -22,6 +22,12 @@ window.__ModuleLoader__.load({
     /** 与 Host 半边的运行时通信（同源，走应用自身的鉴权）。 */
     const HOST_BASE = '/plugins/ui-testing';
     const SCOPE_VERSION = '1';
+    /**
+     * 根插件上下文（apply 时捕获）。面板组件定义在模块作用域，拿不到 apply 的闭包，因此通过
+     * 这个引用按需读取 DSH 服务（例如 conversation.input.shell 的聊天框追加）。服务缺失/读取
+     * 抛错时一律按“不可用”降级，不影响面板。
+     */
+    let pluginContext = null;
 
     /**
      * Immutable request identity for one panel generation.
@@ -44,6 +50,10 @@ window.__ModuleLoader__.load({
       const headers = { 'X-UI-Testing-Scope-Version': SCOPE_VERSION };
       if (scope.kind === 'session' && scope.sessionId) {
         headers['X-UI-Testing-Session-Id'] = scope.sessionId;
+        // P0-E: the panel renders its own selected tab. Without this hint the Host resolves a
+        // session scope through that Agent session's selectedTab, so the Agent switching tabs would
+        // silently redirect the preview while the strip stays where the user left it.
+        headers['X-UI-Testing-Scope-Tab'] = 'primary';
       } else if (scope.binding) {
         headers['X-UI-Testing-Scope-Binding'] = scope.binding;
       } else {
@@ -115,6 +125,48 @@ window.__ModuleLoader__.load({
       console.warn('ui-testing: Host does not expose workspace scope; the panel is using the shared legacy browser (no workspace isolation).');
     }
 
+    /** True when this GUI is served from the user's own loopback (v1 direct-CDP limitation). */
+    function guiHostIsLoopback() {
+      try {
+        const host = String(window.location.hostname || '').toLowerCase();
+        return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+      } catch (error) {
+        return false;
+      }
+    }
+
+    /**
+     * Strict validation of the Host-provided DevTools popup URL (docs/internal/devtools-popup.md §5).
+     *
+     * The URL is the only thing this panel navigates an external window to, so it accepts exactly:
+     * http, 127.0.0.1, a valid explicit port, `/devtools/inspector.html`, one `ws` query whose
+     * decoded value is the same host:port and `/devtools/page/<id>`. Credentials, fragments,
+     * extra parameters and any other scheme/host are refused (null) instead of normalised.
+     */
+    function validateDevtoolsUrl(raw) {
+      if (typeof raw !== 'string' || !raw || raw.length > 2048) return null;
+      let url;
+      try { url = new URL(raw); } catch (error) { return null; }
+      if (url.protocol !== 'http:') return null;
+      if (url.username || url.password || url.hash) return null;
+      if (url.hostname !== '127.0.0.1') return null;
+      const port = Number(url.port);
+      if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+      if (url.pathname !== '/devtools/inspector.html') return null;
+      const keys = [...url.searchParams.keys()];
+      if (keys.length !== 1 || keys[0] !== 'ws') return null;
+      const ws = url.searchParams.get('ws') || '';
+      // Decoded once by URLSearchParams above; a second scheme/authority/query is refused.
+      if (!ws || ws.includes('://') || /[?#@\\\s]/.test(ws)) return null;
+      let target;
+      try { target = new URL('ws://' + ws); } catch (error) { return null; }
+      if (target.hostname !== '127.0.0.1') return null;
+      if (Number(target.port) !== port) return null;
+      if (!/^\/devtools\/page\/[A-Za-z0-9_-]{1,128}$/.test(target.pathname)) return null;
+      if (target.search || target.hash || target.username || target.password) return null;
+      return url.href;
+    }
+
     /** 尺寸条左侧的分辨率预设。 */
     const PRESETS = [
       { id: 'wide', label: '宽屏', w: 1920, h: 1080 },
@@ -182,6 +234,133 @@ window.__ModuleLoader__.load({
     const GEOMETRY_WAIT_MS = 250;
     const POINTER_EPSILON = 0.001;
     const FRAME_WHEEL_LINE_CSS_PX = 16;
+    /* ---- 选元素发送到聊天框：纯函数与常量（无 DOM 依赖，可按 marker 提取做单测） ---------- */
+    const PICK_HOVER_MS = 80;
+    const PICK_WHEEL_DEBOUNCE_MS = 180;
+    const PICK_STATUS_MS = 4200;
+    function pickCollapseText(value) {
+      return String(value === undefined || value === null ? '' : value).replace(/\s+/g, ' ').trim();
+    }
+    function pickTagName(element) {
+      const raw = pickCollapseText(element && element.tag).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      return raw || 'element';
+    }
+    function pickClassList(element) {
+      const raw = element && element.classes;
+      const list = Array.isArray(raw) ? raw : String(raw === undefined || raw === null ? '' : raw).split(/\s+/);
+      return list.map((value) => pickCollapseText(value))
+        .filter((value) => /^[A-Za-z_][\w-]*$/.test(value)).slice(0, 3);
+    }
+    function pickId(element) {
+      return pickCollapseText(element && element.id).replace(/[^\w-]/g, '');
+    }
+    /** `<tag#id.class>` 兜底：Host 没给 outerHTML/selector 时仍能给出稳定标识。 */
+    function pickCompoundSelector(element) {
+      const id = pickId(element);
+      const classes = pickClassList(element);
+      return pickTagName(element) + (id ? '#' + id : '') + classes.map((name) => '.' + name).join('');
+    }
+    /** 左上角小标签：tag#id 或 tag.class。 */
+    function pickTagLabel(element) {
+      const id = pickId(element);
+      if (id) return pickTagName(element) + '#' + id;
+      const classes = pickClassList(element);
+      return pickTagName(element) + (classes.length ? '.' + classes[0] : '');
+    }
+    function pickNumberText(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '0';
+      return String(Math.round(number * 100) / 100);
+    }
+    /** 聊天框文本块（逐行；outerHTML 折叠空白后截断 240 字符）。 */
+    function pickElementText(element, fallbackUrl) {
+      const source = element && typeof element === 'object' ? element : {};
+      const compound = pickCompoundSelector(source);
+      const html = pickCollapseText(source.outerHTML);
+      const summary = html ? html.slice(0, 240) : '<' + compound + '>';
+      const selector = pickCollapseText(source.selector) || compound;
+      const role = pickCollapseText(source.role);
+      const name = pickCollapseText(source.name);
+      const rect = source.rect && typeof source.rect === 'object' ? source.rect : {};
+      const lines = ['[调试视图元素] ' + summary, 'selector: ' + selector];
+      if (role || name) lines.push('role: ' + role + ' · name: ' + name);
+      lines.push('rect(文档坐标): x=' + pickNumberText(rect.x) + ', y=' + pickNumberText(rect.y)
+        + ', ' + pickNumberText(rect.width) + '×' + pickNumberText(rect.height));
+      const page = pickCollapseText(source.page && source.page.url) || pickCollapseText(fallbackUrl);
+      if (page) lines.push('page: ' + page);
+      return lines.join('\n');
+    }
+    /** 归一化 Host 命中结果；无有效矩形时返回 null（不画框）。 */
+    function pickOverlayOf(element) {
+      if (!element || typeof element !== 'object') return null;
+      const rect = element.rect && typeof element.rect === 'object' ? element.rect : null;
+      const x = Number(rect && rect.x);
+      const y = Number(rect && rect.y);
+      const width = Number(rect && rect.width);
+      const height = Number(rect && rect.height);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)
+        || !(width > 0) || !(height > 0)) return null;
+      return {
+        rect: { x, y, width, height },
+        label: pickTagLabel(element),
+        selector: pickCollapseText(element.selector),
+        role: pickCollapseText(element.role),
+        name: pickCollapseText(element.name),
+        frameId: element.frameId === undefined || element.frameId === null ? '' : String(element.frameId),
+      };
+    }
+    /** 文档 CSS px → .utb-box 内相对屏幕矩形：geom.left + (d−C)/viewW*geom.width。 */
+    function pickScreenRect(overlay, geom, canvas, size, boxRect) {
+      if (!overlay || !overlay.rect || !geom || !canvas || !size || !boxRect) return null;
+      const viewW = Number(size.w);
+      const viewH = Number(size.h);
+      const paintedW = Number(geom.width);
+      const paintedH = Number(geom.height);
+      if (!(viewW > 0) || !(viewH > 0) || !(paintedW > 0) || !(paintedH > 0)) return null;
+      const left = Number(geom.left) + ((overlay.rect.x - Number(canvas.x)) / viewW) * paintedW - Number(boxRect.left);
+      const top = Number(geom.top) + ((overlay.rect.y - Number(canvas.y)) / viewH) * paintedH - Number(boxRect.top);
+      const width = Math.max(1, (overlay.rect.width / viewW) * paintedW);
+      const height = Math.max(1, (overlay.rect.height / viewH) * paintedH);
+      if (![left, top, width, height].every((value) => Number.isFinite(value))) return null;
+      return { left, top, width, height };
+    }
+    /** 左上角标签位置：默认贴在框上方，越界时夹紧到画布内。 */
+    function pickTagPosition(screen, boxW, boxH) {
+      if (!screen) return null;
+      const width = Math.max(0, Number(boxW) || 0);
+      const height = Math.max(0, Number(boxH) || 0);
+      const left = Math.min(Math.max(0, screen.left), Math.max(0, width - 8));
+      const top = screen.top - 18 >= 0
+        ? screen.top - 18
+        : Math.min(Math.max(0, screen.top + 2), Math.max(0, height - 18));
+      return { left, top };
+    }
+    function pickChatFailureText(reason) {
+      if (reason === 'busy') return '聊天框正在发送，稍后再试';
+      if (reason === 'not-retained') return '该会话未保留，无法加入聊天框（请在会话打开时操作）';
+      if (reason === 'stale-binding') return '会话已切换，请重试';
+      if (reason === 'no-session') return '当前面板未绑定会话，无法加入聊天框';
+      if (reason === 'unavailable') return '聊天框接口不可用，无法加入';
+      return '加入聊天框失败，请重试';
+    }
+    /** 旧 Host（未重启、没有 /element 路由）与普通读失败分开提示。 */
+    function pickElementFailureText(error) {
+      const code = String((error && error.code) || '');
+      const message = String((error && error.message) || '');
+      if (code === 'UNSUPPORTED' || code === 'NOT_FOUND' || code === 'TOOL_NOT_FOUND'
+        || /未知指令|unknown action|unsupported|not\s*found/i.test(message)) {
+        return '当前 Host 不支持选元素，请重启 DSH 后刷新面板';
+      }
+      return '获取元素失败，请稍后重试';
+    }
+    /** 输入框/可编辑区内的 Esc 不劫持（选元素模式退出监听用）。 */
+    function pickEditableTarget(target) {
+      if (!target || typeof target !== 'object') return false;
+      if (target.isContentEditable === true) return true;
+      const tag = String(target.tagName || '').toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select';
+    }
+    /* ---- end pick pure helpers ---- */
     /** P0-D annotation layer: SVG namespace for the imperative draft node. */
     const SVG_NS = 'http://www.w3.org/2000/svg';
     /** P0-D annotation defaults (docs/viewport-control.md). */
@@ -572,6 +751,25 @@ window.__ModuleLoader__.load({
 .utb-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; font: inherit; text-align: left; color: var(--dsw-alias-label-primary); background: transparent; border: 0; border-radius: 6px; cursor: pointer; }
 .utb-menu-item:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
 .utb-menu-item:disabled { color: var(--dsw-alias-label-secondary); opacity: .6; cursor: not-allowed; }
+/* 调试工具弹窗被拦截时的本地提示 + 可点击降级链接（不写 Runtime lastError）。 */
+.utb-devtools-note { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; padding: 6px 8px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.utb-devtools-note a { color: var(--dsw-alias-brand-primary); text-decoration: underline; }
+/* Canvas 同步/输入本地提示：纯客户端状态，不写 Runtime lastError，不伪造 view revision。 */
+.utb-sync-note { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; padding: 6px 8px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.utb-sync-note button { font: inherit; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); cursor: pointer; }
+/* 内部浏览器标签栏（同一个调试视图内，地址栏下方；仅由开关控制显隐，单标签也占行）。 */
+.utb-tabs { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 4px 6px; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); scrollbar-width: thin; }
+.utb-tab { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; max-width: 220px; padding: 3px 6px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font: 12px/1.5 inherit; white-space: nowrap; cursor: pointer; }
+.utb-tab[aria-selected="true"] { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-2)); }
+.utb-tab-label { overflow: hidden; text-overflow: ellipsis; }
+.utb-tab-close { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: 14px/18px inherit; cursor: pointer; }
+.utb-tab-close:hover { background: var(--dsw-alias-bg-layer-2); }
+.utb-tab-new { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 24px; height: 22px; padding: 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font: 16px/20px inherit; cursor: pointer; }
+.utb-tab-new:hover { color: var(--dsw-alias-label-primary); }
+.utb-tab-new:disabled { opacity: .45; cursor: default; }
+.utb-tab-note { border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); padding: 4px 8px; color: var(--dsw-alias-label-secondary); font: 12px/1.5 inherit; }
+.utb-agent-note { color: var(--dsw-alias-label-secondary); }
+.utb-tabs-glyph { font-size: 13px; line-height: 1; }
 .utb-size { display: flex; align-items: center; gap: 8px; padding: 6px 8px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
 /* P0-D 标注栏（用户 2026-11-02 要求）：独立横栏，正常单行 41px，窄面板换行不覆盖预览区。 */
 .utb-annot-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; min-height: 41px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
@@ -588,6 +786,13 @@ window.__ModuleLoader__.load({
 .utb-annot-layer { display: block; overflow: hidden; }
 .utb-annot-layer:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
 .utb-annot-text-input { position: absolute; margin: 0; padding: 0 2px; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-weight: 400; line-height: 1.2; background: var(--dsw-alias-bg-base); border: 1px dashed currentColor; border-radius: 2px; outline: none; z-index: 3; }
+/* 选元素模式：纯面板 DOM 的悬浮框（pointer-events:none，被 .utb-box 裁剪，不进 Host 截图）。 */
+.utb-pick-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 3; }
+.utb-pick-outline { position: absolute; pointer-events: none; border: 2px solid var(--dsw-alias-brand-primary); border-radius: 1px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); box-shadow: 0 0 0 1px rgba(0, 0, 0, .28); }
+.utb-pick-tag { position: absolute; max-width: 100%; padding: 1px 5px; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #fff; background: var(--dsw-alias-brand-primary); border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.utb-pick-note { color: var(--dsw-alias-brand-primary); }
+.utb-pick-note[data-utb-pick-status="ok"] { color: var(--dsw-alias-state-success-primary); }
+.utb-pick-note[data-utb-pick-status="error"] { color: var(--dsw-alias-state-error-primary); }
 .utb-num { width: 62px; height: 26px; padding: 0 6px; font: inherit; font-size: 12px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; }
 .utb-num:disabled { opacity: .55; cursor: not-allowed; }
 .utb-size-left { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; }
@@ -725,11 +930,20 @@ window.__ModuleLoader__.load({
     const SEED_DEBOUNCE_MS = 200;
     /** How long a canvas barrier must stay mismatched before the client refreshes the PNG seed. */
     const SEED_STALE_MS = 650;
+    /**
+     * Barrier reasons that may legitimately be repaired by one bounded composed-seed request.
+     * `frame-scroll-missing` / `no-frame` are new: without them a live page whose frame lost its
+     * scroll metadata stayed fail-closed forever. A request is only made while a target is running.
+     */
+    const SEED_REFRESH_REASONS = new Set([
+      'page-size-mismatch', 'scroll-mismatch', 'seed-stale', 'seed-provenance-missing',
+      'frame-scroll-missing', 'no-frame',
+    ]);
 
     function frameSocketUrl(scope) {
       const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
       let query = '?scopeVersion=' + SCOPE_VERSION;
-      if (scope && scope.kind === 'session' && scope.sessionId) query += '&sessionId=' + encodeURIComponent(scope.sessionId);
+      if (scope && scope.kind === 'session' && scope.sessionId) query += '&sessionId=' + encodeURIComponent(scope.sessionId) + '&tab=primary';
       else if (scope && scope.binding) query += '&binding=' + encodeURIComponent(scope.binding);
       else query += '&scope=recent';
       return scheme + '//' + location.host + HOST_BASE + '/frames' + query;
@@ -785,7 +999,8 @@ window.__ModuleLoader__.load({
       let seedWarnedKey = '';
       let seedPending = false;
       let seedTimer = 0;
-      const seedStats = { requested: 0, accepted: 0, stale: 0, invalid: 0, failed: 0, forced: 0 };
+      let lastManualSeedAt = 0;
+      const seedStats = { requested: 0, accepted: 0, stale: 0, invalid: 0, failed: 0, forced: 0, manual: 0 };
       const stats = {
         transport: 'poll',
         received: 0,
@@ -870,7 +1085,7 @@ window.__ModuleLoader__.load({
 
       /**
        * React asks for a fresh composed seed after a sustained barrier mismatch (page-size / scroll /
-       * seed-stale). This may run even after live frames were received, unlike the initial seed.
+       * seed-stale / missing frame evidence). This may run even after live frames were received.
        */
       function requestSeedRefresh(context) {
         if (closed || !context) return;
@@ -880,7 +1095,32 @@ window.__ModuleLoader__.load({
         scheduleSeed();
       }
 
+      /**
+       * Explicit user "retry sync": the one automatic attempt per shell signature is cleared, but
+       * the request stays single-flight and throttled. This never invents a view revision or writes
+       * Runtime lastError.
+       */
+      function retrySeedRefresh(context) {
+        if (closed || !context) return false;
+        const now = Date.now();
+        if (now - lastManualSeedAt < 1000) return false;
+        lastManualSeedAt = now;
+        seedContext = context;
+        seedKey = seedKeyOf(context);
+        seedRequestedKey = '';
+        seedWarnedKey = '';
+        seedForceKey = seedKey;
+        seedStats.manual += 1;
+        scheduleSeed();
+        return true;
+      }
+
+      function notifySeedStatus(status) {
+        try { if (handlers.onSeedStatus) handlers.onSeedStatus(status); } catch { /* UI must not break transport */ }
+      }
+
       function warnSeed(reason) {
+        notifySeedStatus({ state: 'failed', reason });
         if (seedWarnedKey === seedRequestedKey) return;
         seedWarnedKey = seedRequestedKey;
         console.warn('ui-testing: seed screenshot rejected (' + reason + '); canvas input stays fail-closed');
@@ -984,6 +1224,7 @@ window.__ModuleLoader__.load({
             };
             stats.seeded += 1;
             stats.lastMeta = meta;
+            notifySeedStatus({ state: 'ok', reason: null });
             try { handlers.onFrame({ blob: blobFromBase64(payload.image, 'image/png'), meta }); } catch { /* UI must not break transport */ }
             return;
           }
@@ -1021,10 +1262,12 @@ window.__ModuleLoader__.load({
           stats.seeded += 1;
           seedStats.accepted += 1;
           stats.lastMeta = meta;
+          notifySeedStatus({ state: 'ok', reason: null });
           try { handlers.onFrame({ blob: blobFromBase64(payload.image, 'image/png'), meta }); } catch { /* UI must not break transport */ }
         }).catch((error) => {
           if (error && error.name === 'AbortError') return;
           seedStats.failed += 1;
+          notifySeedStatus({ state: 'failed', reason: 'request-failed' });
         }).finally(() => {
           seedPending = false;
           if (closed) return;
@@ -1185,6 +1428,7 @@ window.__ModuleLoader__.load({
         noteState,
         updateSeedContext,
         requestSeedRefresh,
+        retrySeedRefresh,
         stats() {
           return {
             transport: kind,
@@ -1364,6 +1608,17 @@ window.__ModuleLoader__.load({
       const [room, setRoom] = React.useState({ w: 0, h: 0 });
       const [error, setError] = React.useState('');
       const [menu, setMenu] = React.useState(false);
+      // Local, panel-only result of the "open DevTools" click. Never written to Runtime lastError:
+      // a blocked popup is a browser decision, not a page failure.
+      const [devtoolsNotice, setDevtoolsNotice] = React.useState(null);
+      // Canvas sync (barrier) and input-failure feedback: panel-local only. `seedStatus` holds
+      // {reason} after a rejected/failed seed so the user gets a real retry entry.
+      const [syncMismatch, setSyncMismatch] = React.useState(false);
+      const [seedStatus, setSeedStatus] = React.useState(null);
+      const [blankHint, setBlankHint] = React.useState('');
+      const [inputNotice, setInputNotice] = React.useState('');
+      const [tabNotice, setTabNotice] = React.useState('');
+      const [tabOpening, setTabOpening] = React.useState(false);
       const [pending, setPending] = React.useState(false);
       const [navBusy, setNavBusy] = React.useState(false);
       const [mode, setMode] = React.useState('idle');
@@ -1407,6 +1662,12 @@ window.__ModuleLoader__.load({
       const seedRefreshTimerRef = React.useRef(0);
       const seedCheckKeyRef = React.useRef('');
       const seedAttemptKeyRef = React.useRef('');
+      // Local canvas sync / input status (never written to Runtime lastError).
+      const mismatchSinceRef = React.useRef(0);
+      const blankHintTimerRef = React.useRef(0);
+      const inputNoticeTimerRef = React.useRef(0);
+      const tabNoticeTimerRef = React.useRef(0);
+      const inputErrorAtRef = React.useRef(0);
       // A frame's scroll metadata only lands in the ref on load; this bump re-renders the preview
       // with the new displacement (the displayed frame itself is state-driven already).
       const [, setFrameVersion] = React.useState(0);
@@ -1544,22 +1805,71 @@ window.__ModuleLoader__.load({
       const annotChannelRef = React.useRef(false);
       const annotEraseRef = React.useRef({ active: false, pointerId: -1, map: null, last: null, changed: 0 });
       const annotHitCtxRef = React.useRef(null);
+      // ---- 选元素发送到聊天框 ----------------------------------------------------------------
+      // 同步真值在 pickRef（模式闸），React 状态只镜像渲染；悬浮命中 80ms 节流 + 单飞，
+      // 过期响应按序号 + scopeEpoch 丢弃。页面输入由 sendEvents / pointer 处理器统一闸掉。
+      const [pickOn, setPickOn] = React.useState(false);
+      const [pickOverlay, setPickOverlay] = React.useState(null);
+      const [pickStatus, setPickStatus] = React.useState(null);
+      const pickRef = React.useRef({
+        on: false,
+        hoverSeq: 0,
+        hoverInflight: false,
+        hoverQueued: false,
+        timer: 0,
+        wheelTimer: 0,
+        lastClient: null,
+        lastAt: 0,
+        detailSeq: 0,
+        detailInflight: false,
+      });
+      const pickStatusTimerRef = React.useRef(0);
+      const pickButtonRef = React.useRef(null);
 
       // Immutable scope/binding for this generation. A `recent` identity is pinned to the Host
       // runtime id returned by the first /state (or /ensure); `binding` is empty until then.
       const seatSessionId = props && typeof props.seatSessionId === 'string' ? props.seatSessionId : '';
       const visible = !props || props.visible !== false;
       const capture = props && props.capture ? props.capture : { sessionId: '', resolution: 'none' };
-      const identity = resolvePanelIdentity(seatSessionId, capture, props && props.liveCapture);
+      // Internal browser tabs (one Runtime per tab): the Host group list is the only source.
+      const panelViews = remote && remote.ui && remote.ui.version === 1 && Array.isArray(remote.ui.views)
+        ? remote.ui : null;
+      const [activeViewId, setActiveViewId] = React.useState('primary');
+      const [tabsVisible, setTabsVisible] = React.useState(true);
+      // A sibling tab switch is not a workspace retirement: do not poison retiredRuntimeRef.
+      const viewSwitchRef = React.useRef(false);
+      // The group list must survive the transient remote=null/idle snapshot while a child scope
+      // is being opened. Deriving it from the current scope's remote alone unmounts the strip and
+      // falls back to primary mid-switch (observed in the local smoke).
+      const stableViewsRef = React.useRef(null);
+      if (panelViews) {
+        stableViewsRef.current = {
+          views: panelViews.views, viewsRevision: panelViews.viewsRevision,
+          primaryRuntimeId: panelViews.primaryRuntimeId,
+          popupNotices: Array.isArray(panelViews.popupNotices) ? panelViews.popupNotices : [],
+        };
+      }
+      const stableViews = stableViewsRef.current;
+      const readyViewList = stableViews ? stableViews.views.filter((view) => view && view.status === 'ready') : [];
+      const activeView = readyViewList.find((view) => view.id === activeViewId)
+        || readyViewList.find((view) => view.kind === 'primary') || null;
+      const childBinding = activeView && activeView.kind === 'popup' ? String(activeView.runtimeId || '') : '';
+      const baseIdentity = resolvePanelIdentity(seatSessionId, capture, props && props.liveCapture);
+      // A child tab explicitly binds to its Runtime; primary keeps the original session/recent
+      // identity (never convert the session into the child, never re-resolve recent to it).
+      const identity = childBinding
+        ? { kind: 'recent', sessionId: '', key: 'view:' + childBinding, paused: false }
+        : baseIdentity;
       const identityKey = identity.key;
       const [bindingState, setBindingState] = React.useState({ identityKey: '', value: '' });
       const [legacyState, setLegacyState] = React.useState({ identityKey: '', value: false });
       const binding = bindingState.identityKey === identityKey ? bindingState.value : '';
       const legacyHost = legacyState.identityKey === identityKey ? legacyState.value : false;
-      const ready = identity.kind === 'session' || Boolean(binding) || legacyHost;
+      const activeBinding = childBinding || binding;
+      const ready = childBinding ? true : (identity.kind === 'session' || Boolean(binding) || legacyHost);
       const scope = React.useMemo(
-        () => scopeSnapshot(identity.kind, identity.sessionId, binding, legacyHost),
-        [identity.kind, identity.sessionId, binding, legacyHost],
+        () => scopeSnapshot(childBinding ? 'recent' : identity.kind, childBinding ? '' : identity.sessionId, activeBinding, childBinding ? false : legacyHost),
+        [identity.kind, identity.sessionId, activeBinding, legacyHost, childBinding],
       );
       const scopeKey = scope.kind + ':' + scope.sessionId + '|' + scope.binding + (scope.legacy ? '|legacy' : '');
       // Every scope/binding transition (including a discarded binding that re-resolves to the
@@ -1616,9 +1926,94 @@ window.__ModuleLoader__.load({
       }
 
       /** Pin a recent scope to the runtime id the Host reported (cold entry or ensure). */
+      const seenViewIdsRef = React.useRef(null);
+      React.useEffect(() => {
+        if (!stableViews) return;
+        const ids = new Set(stableViews.views.map((view) => view.id));
+        if (!seenViewIdsRef.current) { seenViewIdsRef.current = ids; return; }
+        const fresh = stableViews.views.find((view) => view.kind === 'popup' && view.status === 'ready'
+          && view.createdBy === 'gui' && !seenViewIdsRef.current.has(view.id));
+        seenViewIdsRef.current = ids;
+        // A new GUI popup becomes active once; existing tabs on a later mount do not replay.
+        if (fresh) { viewSwitchRef.current = true; retiredRuntimeRef.current = ''; setActiveViewId(fresh.id); }
+      }, [stableViews ? stableViews.viewsRevision : null]);
+      React.useEffect(() => {
+        if (!stableViews) return;
+        if (stableViews.views.some((view) => view.id === activeViewId)) return;
+        const primary = stableViews.views.find((view) => view.kind === 'primary');
+        if (primary) { viewSwitchRef.current = true; retiredRuntimeRef.current = ''; setActiveViewId(primary.id); }
+      }, [stableViews ? stableViews.viewsRevision : null, activeViewId]);
+
+      // A workspace/session identity change must not keep the previous workspace's tab group.
+      React.useEffect(() => {
+        stableViewsRef.current = null;
+        setActiveViewId('primary');
+      }, [baseIdentity.key]);
+      // A different primary binding in the same recent identity is a workspace change; a child
+      // selection itself (childBinding) must never wipe the stable group.
+      React.useEffect(() => {
+        if (childBinding || !binding || !stableViews) return;
+        if (stableViews.primaryRuntimeId && String(stableViews.primaryRuntimeId) !== String(binding)) {
+          stableViewsRef.current = null;
+          setActiveViewId('primary');
+        }
+      }, [binding, childBinding]);
+
+      function switchView(viewId) {
+        if (!viewId || viewId === activeViewId) return;
+        if (annotRef.current.on) toggleAnnotMode();
+        if (panModeRef.current) {
+          panModeRef.current = false;
+          setPanMode(false);
+          cancelPanDrag();
+          flushPanWrite();
+        }
+        viewSwitchRef.current = true;
+        retiredRuntimeRef.current = '';
+        setActiveViewId(viewId);
+      }
+
+      function newTab() {
+        if (!tabsSupported || tabOpening) return;
+        if (annotRef.current.on) toggleAnnotMode();
+        if (panModeRef.current) {
+          panModeRef.current = false;
+          setPanMode(false);
+          cancelPanDrag();
+          flushPanWrite();
+        }
+        setTabOpening(true);
+        setTabNotice('');
+        callHost('tabs', { action: 'open' }, { scope: scopeRef.current }).then(() => {
+          setTabOpening(false);
+        }).catch((error) => {
+          setTabOpening(false);
+          const code = String((error && error.code) || '');
+          const text = code === 'TAB_LIMIT'
+            ? '最多 4 个标签；请先关闭一个标签'
+            : '新建标签失败，请稍后重试';
+          setTabNotice(text);
+          window.clearTimeout(tabNoticeTimerRef.current);
+          tabNoticeTimerRef.current = window.setTimeout(() => setTabNotice(''), 4000);
+        });
+      }
+
+      function closeView(view) {
+        if (!view || view.kind === 'primary') return;
+        // Close with the child's own binding. The Host answer is the only success signal; on
+        // success an active child falls back locally (its own /state may already be gone).
+        callHost('close', {}, { scope: scopeSnapshot('recent', '', view.runtimeId, false) }).then(() => {
+          if (activeViewId === view.id) {
+            viewSwitchRef.current = true;
+            retiredRuntimeRef.current = '';
+            setActiveViewId('primary');
+          }
+        }).catch(() => { /* keep the current selection; the poll owns the real state */ });
+      }
+
       function noteHostScope(payload) {
         const current = scopeRef.current;
-        if (!current || current.kind !== 'recent') return;
+        if (!current || current.kind !== 'recent' || childBinding) return;
         if (!hasScopeEvidence(payload)) return;
         const runtimeId = runtimeIdOf(payload);
         if (!runtimeId) return;
@@ -1663,6 +2058,83 @@ window.__ModuleLoader__.load({
       })();
 
       /**
+       * DevTools menu state (docs/internal/devtools-popup.md §5). Enabled only when this accepted
+       * snapshot carries a strict loopback inspector URL for the live page, the GUI itself is on
+       * loopback, the Web view is active and annotation mode is off. A Host without the field is
+       * "unsupported" — the URL is never guessed from the page address.
+       */
+      const devtoolsInfo = (() => {
+        const devtools = ui && ui.devtools && typeof ui.devtools === 'object' ? ui.devtools : null;
+        if (!devtools) return { enabled: false, url: '', title: '当前运行时不支持调试工具' };
+        if (!guiHostIsLoopback()) {
+          return { enabled: false, url: '', title: '调试工具仅支持浏览器与 DSH 同机访问；远程 GUI 暂不支持' };
+        }
+        if (env !== 'web' || !running || devtools.available !== true) {
+          return { enabled: false, url: '', title: '请先在调试视图中打开页面' };
+        }
+        const validated = validateDevtoolsUrl(devtools.url);
+        if (!validated) return { enabled: false, url: '', title: '当前运行时不支持调试工具' };
+        return { enabled: true, url: validated, title: '在独立窗口中调试当前页面；修改页面或模拟设置会影响自动化' };
+      })();
+      const devtoolsRuntimeId = ui ? String(ui.runtimeId || '') : '';
+      // A scope/runtime switch drops the previous runtime's fallback link (its port may be gone).
+      React.useEffect(() => { setDevtoolsNotice(null); }, [devtoolsRuntimeId]);
+
+      /**
+       * Open one fresh external DevTools window inside the user-activation stack.
+       *
+       * `window.open` must run before any await/fetch, so the accepted URL is used directly. The
+       * features deliberately omit `noopener`: a blocked open and a successful `noopener` open both
+       * return null, which would misreport the result. Instead the blank child is severed from the
+       * opener synchronously. The navigation is performed by the child's own script with a
+       * no-referrer policy — an opener-initiated `location.replace` would still send the GUI URL as
+       * Referer. Only a null handle/exception falls back to a local aria-live hint + real link.
+       */
+      function openDevtools() {
+        setMenu(false);
+        // Same-tick guard: the menu is disabled in annotation mode; a stale render must not bypass it.
+        if (annotOn || !devtoolsInfo.enabled) return;
+        const validatedUrl = devtoolsInfo.url;
+        const unique = globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function'
+          ? globalThis.crypto.randomUUID()
+          : (Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
+        // Runtime-scoped and unique per click; never contains the page URL or a filesystem path.
+        const name = 'dsh-ui-testing-devtools-' + (devtoolsRuntimeId || 'runtime') + '-' + unique;
+        let child = null;
+        try {
+          child = window.open('about:blank', name, 'popup=yes,width=1200,height=800,resizable=yes,scrollbars=yes');
+        } catch (error) {
+          child = null;
+        }
+        if (!child) {
+          setDevtoolsNotice({
+            message: '浏览器未返回调试窗口，可允许弹出窗口后重试，或点击链接打开。',
+            url: validatedUrl,
+          });
+          return;
+        }
+        try {
+          child.opener = null;
+          const doc = child.document;
+          if (!doc) throw new Error('no blank document');
+          // `<` is escaped so the URL can never close the script element early.
+          const literal = JSON.stringify(validatedUrl).replace(/</g, '\\u003c');
+          doc.open();
+          doc.write('<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
+            + '<title>DevTools</title><scr' + 'ipt>location.replace(' + literal + ')</scr' + 'ipt>');
+          doc.close();
+          setDevtoolsNotice(null);
+        } catch (error) {
+          // Close only the blank window this click created; never touch an existing DevTools window.
+          try { child.close(); } catch (closeError) { /* ignore */ }
+          setDevtoolsNotice({
+            message: '无法打开调试窗口，可点击链接在新标签页打开调试工具。',
+            url: validatedUrl,
+          });
+        }
+      }
+
+      /**
        * Single entry point for every runtime snapshot (/state, /frame, navigation responses).
        * v1 snapshots are ordered by runtimeId + revision so a late response cannot move the
        * address bar backwards; a retired runtime is dropped. The visible draft is only replaced
@@ -1692,8 +2164,10 @@ window.__ModuleLoader__.load({
             // frozen identity, then retract this panel's view. Never send an empty release (§12.1).
             annotRetainDirty(true);
             annotDropLocalView({ exit: false, discard: true });
-            // Drop the old address source and ignore its late replies.
-            retiredRuntimeRef.current = String(previousUi.runtimeId || '');
+            // A sibling tab switch is a local selection, not a retirement. Retiring the old
+            // runtime would reject its later state when the user switches back.
+            if (!viewSwitchRef.current) retiredRuntimeRef.current = String(previousUi.runtimeId || '');
+            viewSwitchRef.current = false;
             dirtyRef.current = false;
             editVersionRef.current += 1;
             setError('');
@@ -1877,12 +2351,15 @@ window.__ModuleLoader__.load({
        * requested at most once per shell signature; the transport also dedups/fails closed.
        */
       function scheduleSeedRefreshCheck() {
-        if (!canvasActive()) return;
+        // A cold page must never be started just to satisfy a panel hint: only an already running
+        // target with a live transport may request a composed seed.
+        if (!canvasActive() || remoteRef.current?.running !== true) return;
+        if (typeof transportRef.current?.requestSeedRefresh !== 'function') return;
         const context = seedContext();
         const key = seedContextSignature(context);
         if (!key || key === seedAttemptKeyRef.current) return;
         const barrier = canvasBarrier();
-        if (barrier.ready || !['page-size-mismatch', 'scroll-mismatch', 'seed-stale', 'seed-provenance-missing'].includes(barrier.reason)) return;
+        if (barrier.ready || !SEED_REFRESH_REASONS.has(barrier.reason)) return;
         if (seedRefreshTimerRef.current) {
           if (seedCheckKeyRef.current === key) return;
           window.clearTimeout(seedRefreshTimerRef.current);
@@ -1891,12 +2368,12 @@ window.__ModuleLoader__.load({
         seedCheckKeyRef.current = key;
         seedRefreshTimerRef.current = window.setTimeout(() => {
           seedRefreshTimerRef.current = 0;
-          if (!canvasActive()) return;
+          if (!canvasActive() || remoteRef.current?.running !== true) return;
           const currentContext = seedContext();
           const currentKey = seedContextSignature(currentContext);
           if (!currentContext || currentKey !== key || currentKey === seedAttemptKeyRef.current) return;
           const currentBarrier = canvasBarrier();
-          if (currentBarrier.ready || !['page-size-mismatch', 'scroll-mismatch', 'seed-stale', 'seed-provenance-missing'].includes(currentBarrier.reason)) return;
+          if (currentBarrier.ready || !SEED_REFRESH_REASONS.has(currentBarrier.reason)) return;
           seedAttemptKeyRef.current = currentKey;
           const transport = transportRef.current;
           if (transport && typeof transport.requestSeedRefresh === 'function') {
@@ -2353,6 +2830,7 @@ window.__ModuleLoader__.load({
       function changePanMode(next) {
         const on = Boolean(next);
         if (on && annotRef.current.on) return; // annotation mode forbids drag mode
+        if (on && pickRef.current.on) return; // element pick mode forbids drag mode
         if (on && !canvasActive()) return; // old Host / no canvas: drag stays disabled
         panModeRef.current = on;
         setPanMode(on);
@@ -2366,7 +2844,7 @@ window.__ModuleLoader__.load({
 
       /** Closing the size bar must also leave drag mode, otherwise the pointer stays a grab hand. */
       function toggleSizing() {
-        if (annotRef.current.on) return;
+        if (annotRef.current.on || pickRef.current.on) return;
         const next = !sizing;
         sizingRef.current = next; // same tick: enterAnnotMode must never observe a stale false
         setSizing(next);
@@ -3688,6 +4166,8 @@ window.__ModuleLoader__.load({
       function enterAnnotMode() {
         // 用户 2026-11-03 第 2 条：尺寸调整模式内禁止进入标注（程序化/键盘同一道闸）。
         if (sizingRef.current) return;
+        // 选元素模式与标注互斥：同一道闸，程序化/键盘入口也不得越过。
+        if (pickRef.current.on) return;
         if (annotRef.current.on || !viewSync || !canvasOn) return;
         // Finish any page drag (release its button) *before* the mode gate is raised.
         if (dragRef.current.active) releaseFrameDrag();
@@ -3730,6 +4210,273 @@ window.__ModuleLoader__.load({
       function toggleAnnotMode() {
         if (annotRef.current.on) exitAnnotMode();
         else enterAnnotMode();
+      }
+
+      /* ---- 选元素发送到聊天框：模式 / 悬浮命中 / 加入聊天框 ------------------------------- */
+
+      /** 入口可用条件（与按钮 disabled 同源）：运行中 + 就绪 + 视口 + 画布 + 标注/尺寸互斥。 */
+      function pickAvailable() {
+        const current = remoteRef.current;
+        return Boolean(current && current.running === true && readyRef.current
+          && viewRef.current && canvasRef.current
+          && !annotRef.current.on && !sizingRef.current);
+      }
+
+      function pickSetStatus(text, kind) {
+        setPickStatus({ text: String(text || ''), kind: kind || 'info' });
+        window.clearTimeout(pickStatusTimerRef.current);
+        pickStatusTimerRef.current = window.setTimeout(() => setPickStatus(null), PICK_STATUS_MS);
+      }
+
+      /** 只清悬浮框（保留模式）：递增序号让在途的过期响应失效。 */
+      function pickClearOverlay() {
+        const ref = pickRef.current;
+        ref.hoverSeq += 1;
+        ref.hoverQueued = false;
+        if (ref.timer) {
+          window.clearTimeout(ref.timer);
+          ref.timer = 0;
+        }
+        // 一个待触发的滚动去抖不该在清框后把旧指针位置的框重新画回来。
+        if (ref.wheelTimer) {
+          window.clearTimeout(ref.wheelTimer);
+          ref.wheelTimer = 0;
+        }
+        setPickOverlay(null);
+      }
+
+      function exitPickMode() {
+        const ref = pickRef.current;
+        if (!ref.on) return;
+        ref.on = false;
+        // 让所有在途响应（悬浮/详情）按序号与模式双重条件丢弃。
+        ref.hoverSeq += 1;
+        ref.detailSeq += 1;
+        ref.hoverQueued = false;
+        ref.hoverInflight = false;
+        ref.detailInflight = false;
+        if (ref.timer) {
+          window.clearTimeout(ref.timer);
+          ref.timer = 0;
+        }
+        if (ref.wheelTimer) {
+          window.clearTimeout(ref.wheelTimer);
+          ref.wheelTimer = 0;
+        }
+        // 页面输入无需显式恢复：派发路径按 pickRef.current.on 实时判定。
+        setPickOn(false);
+        setPickOverlay(null);
+      }
+
+      function enterPickMode() {
+        const ref = pickRef.current;
+        if (ref.on) return;
+        // 与标注/尺寸调整互斥：任一在开时直接 no-op（程序化/键盘同一道闸）。
+        if (annotRef.current.on || sizingRef.current) return;
+        if (!pickAvailable()) return;
+        // Raise the gate only after the active page drag released its button.
+        if (dragRef.current.active) releaseFrameDrag();
+        const panWrite = panWriteRef.current;
+        if (panWrite.timer) {
+          window.clearTimeout(panWrite.timer);
+          panWrite.timer = 0;
+        }
+        panWrite.latest = null;
+        cancelPanDrag();
+        panModeRef.current = false;
+        setPanMode(false);
+        setPanDragging(false);
+        clearZoomIntent();
+        resetZoomAnchor();
+        setMenu(false);
+        ref.on = true;
+        ref.lastClient = null;
+        ref.hoverQueued = false;
+        setPickStatus(null);
+        setPickOverlay(null);
+        setPickOn(true);
+      }
+
+      function togglePickMode() {
+        if (pickRef.current.on) exitPickMode();
+        else enterPickMode();
+      }
+
+      /** 悬浮命中节流（≥80ms 间隔）并合并到最新指针位置；单飞，在途时只记一个待办。 */
+      function pickScheduleHover(clientX, clientY) {
+        const ref = pickRef.current;
+        if (!ref.on) return;
+        if (Number.isFinite(Number(clientX)) && Number.isFinite(Number(clientY))) {
+          ref.lastClient = { x: Number(clientX), y: Number(clientY) };
+        }
+        if (!ref.lastClient || ref.detailInflight) return;
+        if (ref.hoverInflight || ref.timer) {
+          ref.hoverQueued = true;
+          return;
+        }
+        const wait = PICK_HOVER_MS - (Date.now() - ref.lastAt);
+        if (wait <= 0) {
+          pickRequestHover();
+          return;
+        }
+        ref.timer = window.setTimeout(() => {
+          ref.timer = 0;
+          pickRequestHover();
+        }, wait);
+      }
+
+      function pickRequestHover() {
+        const ref = pickRef.current;
+        if (!ref.on || ref.hoverInflight || ref.detailInflight || !ref.lastClient) return;
+        const geom = frameGeometry();
+        if (!geom) return;
+        const point = mapEventPoint({ clientX: ref.lastClient.x, clientY: ref.lastClient.y }, geom);
+        if (!point.inside || point.blank) {
+          pickClearOverlay();
+          return;
+        }
+        const canvas = canvasPosition();
+        if (!canvas) return;
+        const requestC = { x: Number(canvas.x), y: Number(canvas.y) };
+        const epoch = scopeEpochRef.current;
+        const seq = ref.hoverSeq + 1;
+        ref.hoverSeq = seq;
+        ref.hoverInflight = true;
+        ref.hoverQueued = false;
+        ref.lastAt = Date.now();
+        callHost('element', { x: point.q.x + canvas.x, y: point.q.y + canvas.y, detail: false }, {
+          scope: scopeRef.current,
+          signal: abortRef.current ? abortRef.current.signal : undefined,
+        }).then((payload) => {
+          if (scopeEpochRef.current !== epoch || !ref.on || ref.hoverSeq !== seq) return;
+          // C 是框坐标的基准：响应回来时画布原点已移动（滚动/平移/Agent 改视口）→ 丢弃这次框，
+          // 按最后一次指针位置重取，绝不画出错位的框。
+          const current = canvasPosition();
+          if (!current
+            || Math.abs(Number(current.x) - requestC.x) > 0.5
+            || Math.abs(Number(current.y) - requestC.y) > 0.5) {
+            ref.hoverSeq += 1;
+            setPickOverlay(null);
+            if (ref.on) pickScheduleHover();
+            return;
+          }
+          setPickOverlay(pickOverlayOf(payload && payload.element));
+        }).catch(() => {
+          if (scopeEpochRef.current !== epoch || !ref.on || ref.hoverSeq !== seq) return;
+          setPickOverlay(null);
+        }).finally(() => {
+          ref.hoverInflight = false;
+          if (ref.on && ref.hoverQueued) pickScheduleHover();
+        });
+      }
+
+      /** 滚轮仍滚动目标页；滚动稳定（180ms 去抖）后按最后指针位置重取悬浮命中。 */
+      function pickAfterWheel(clientX, clientY) {
+        const ref = pickRef.current;
+        if (!ref.on) return;
+        ref.lastClient = { x: clientX, y: clientY };
+        if (ref.wheelTimer) window.clearTimeout(ref.wheelTimer);
+        ref.wheelTimer = window.setTimeout(() => {
+          ref.wheelTimer = 0;
+          if (ref.on) pickScheduleHover();
+        }, PICK_WHEEL_DEBOUNCE_MS);
+      }
+
+      /**
+       * 把文本块追加到 DSH 聊天框末尾。child tab 的 identity 不是聊天对象，始终用 baseIdentity。
+       *
+       * 公开路径是 `conversation.input.requestDraftInitialization(binding, {whenDraftExists:'append'})`：
+       * 空草稿 setDraft(text)，非空走编辑器 appendDraft（新段落追加、保留 @引用 chip/quote）。
+       * 注意 `shell.appendDraft` 不是公开面（SessionInputShell 上没有），因此绝不用 setDraft 拼接
+       * 作为降级——那会丢掉 chip/quote；接口缺失/未 retain 一律明确 unavailable。
+       * 返回 {ok} 或 {ok:false, reason: no-session|unavailable|busy|error}。
+       */
+      function pickAppendToChat(text) {
+        const sid = baseIdentity && baseIdentity.kind === 'session' ? String(baseIdentity.sessionId || '') : '';
+        if (!sid) return { ok: false, reason: 'no-session' };
+        const ctx = pluginContext;
+        if (!ctx || typeof ctx.get !== 'function') return { ok: false, reason: 'unavailable' };
+        let sessions = null;
+        let input = null;
+        try {
+          sessions = ctx.get('sessions');
+          const conversation = ctx.get('conversation');
+          input = conversation && conversation.input;
+        } catch {
+          return { ok: false, reason: 'unavailable' };
+        }
+        if (!input || typeof input.requestDraftInitialization !== 'function') return { ok: false, reason: 'unavailable' };
+        if (!sessions || typeof sessions.binding !== 'function') return { ok: false, reason: 'unavailable' };
+        // 只有已 retain 的 Session 才有 binding；未 retain 不 materialize（那是会话控制器的职责）。
+        let binding = null;
+        try {
+          binding = sessions.binding(sid);
+        } catch {
+          binding = null;
+        }
+        if (!binding) return { ok: false, reason: 'not-retained' };
+        let result = null;
+        try {
+          result = input.requestDraftInitialization(binding, { prompt: text, whenDraftExists: 'append' });
+        } catch {
+          // 同步 throw = binding 代次已失效（会话切换/retain 被释放）。
+          return { ok: false, reason: 'stale-binding' };
+        }
+        // blocked = disposed 或 phase ∈ {adjudicating, submitting, sending}；preserved 不该出现（append）。
+        if (result === 'blocked') return { ok: false, reason: 'busy' };
+        if (result !== 'applied') return { ok: false, reason: 'unavailable' };
+        // 焦点 best-effort：把键盘还给该会话的 composer（拿不到就静默忽略）。
+        try {
+          const face = typeof input.for === 'function' ? input.for(binding.ctx) : null;
+          if (face && typeof face.focus === 'function') face.focus();
+        } catch { /* focus 是 best-effort */ }
+        return { ok: true };
+      }
+
+      /** pointerdown：用当下坐标重新 detail:true 命中（绝不复用可能过期的悬浮结果）。 */
+      function pickCommitAt(event) {
+        const ref = pickRef.current;
+        if (!ref.on || ref.detailInflight) return;
+        const geom = frameGeometry();
+        if (!geom) return;
+        const point = mapEventPoint(event, geom);
+        if (!point.inside) return;
+        if (point.blank) {
+          showBlankHint();
+          return;
+        }
+        const canvas = canvasPosition();
+        if (!canvas) return;
+        const epoch = scopeEpochRef.current;
+        const seq = ref.detailSeq + 1;
+        ref.detailSeq = seq;
+        ref.detailInflight = true;
+        callHost('element', { x: point.q.x + canvas.x, y: point.q.y + canvas.y, detail: true }, {
+          scope: scopeRef.current,
+          signal: abortRef.current ? abortRef.current.signal : undefined,
+        }).then((payload) => {
+          if (scopeEpochRef.current !== epoch || !ref.on || ref.detailSeq !== seq) return;
+          const element = payload && payload.element;
+          if (!element) {
+            pickSetStatus('未命中页面元素（页面可能已变化）', 'error');
+            return;
+          }
+          const appended = pickAppendToChat(pickElementText(element, activeUrl));
+          if (!appended.ok) {
+            pickSetStatus(pickChatFailureText(appended.reason), 'error');
+            return;
+          }
+          pickSetStatus('已加入聊天框：' + (pickCollapseText(element.selector) || pickCompoundSelector(element)), 'ok');
+          exitPickMode();
+        }).catch((error) => {
+          if (scopeEpochRef.current !== epoch || !ref.on || ref.detailSeq !== seq) return;
+          if (error && error.name === 'AbortError') return;
+          pickSetStatus(pickElementFailureText(error), 'error');
+        }).finally(() => {
+          if (ref.detailSeq !== seq) return;
+          ref.detailInflight = false;
+          if (ref.on && ref.hoverQueued) pickScheduleHover();
+        });
       }
 
       function chooseAnnotTool(tool) {
@@ -4182,8 +4929,41 @@ window.__ModuleLoader__.load({
         };
       }
 
+      /** One-shot, low-disturbance canvas-blank hint; never a modal or a Runtime error. */
+      function showBlankHint() {
+        setBlankHint('此处是画布空白，请在页面区域操作');
+        window.clearTimeout(blankHintTimerRef.current);
+        blankHintTimerRef.current = window.setTimeout(() => setBlankHint(''), 2400);
+      }
+
+      /**
+       * A blank band can be the .utb-box itself when the live frame is translated away by O. That
+       * surface has no page target, so it only gets the one-shot hint (never a dispatch).
+       */
+      function onBoxPointerDown(event) {
+        if (annotRef.current.on || panMode) return;
+        if (event.button !== 0) return;
+        if (event.target && event.target.closest && event.target.closest('.utb-frame')) return;
+        // 选元素模式：点画布空白 = 清悬浮框（零页面派发，也不弹空白提示抢注意力）。
+        if (pickRef.current.on) {
+          pickClearOverlay();
+          return;
+        }
+        const geom = frameGeometry();
+        if (!geom) return;
+        const point = mapEventPoint(event, geom);
+        if (point.blank) showBlankHint();
+      }
+
       function onFramePointerDown(event) {
         if (annotRef.current.on) return; // annotation mode: zero page input
+        // 选元素模式：pointerdown 只做一次 detail 命中，绝不派发页面 mousePressed。
+        if (pickRef.current.on) {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          pickCommitAt(event);
+          return;
+        }
         if (event.button !== 0) return;
         if (panMode) {
           // Pan is the recovery path: it must start even when page input is fail-closed (stale
@@ -4216,7 +4996,8 @@ window.__ModuleLoader__.load({
         if (!geom) return;
         const point = mapEventPoint(event, geom);
         if (!point.inside) return; // letterbox: zero dispatch
-        if (point.blank) return; // canvas blank / outside content: zero dispatch
+        if (point.blank) { showBlankHint(); return; } // canvas blank: zero dispatch
+        setBlankHint('');
         event.preventDefault();
         event.currentTarget.focus();
         dragRef.current = { active: true, pointerId: event.pointerId, x: point.x, y: point.y };
@@ -4226,6 +5007,11 @@ window.__ModuleLoader__.load({
 
       function onFramePointerMove(event) {
         if (annotRef.current.on) return; // annotation mode: zero page input
+        // 选元素模式：悬浮只更新节流命中请求，零页面 hover 派发。
+        if (pickRef.current.on) {
+          pickScheduleHover(event.clientX, event.clientY);
+          return;
+        }
         if (!readyRef.current || writesPausedRef.current) return;
         const pan = panDragRef.current;
         if (pan.active && pan.pointerId === event.pointerId) {
@@ -4254,6 +5040,7 @@ window.__ModuleLoader__.load({
       /** The release is dispatched even when the pointer left the image (no stuck button). */
       function onFramePointerUp(event) {
         if (annotRef.current.on) return; // annotation mode: zero page input
+        if (pickRef.current.on) return; // pick mode: action already committed on pointerdown
         const pan = panDragRef.current;
         if (pan.active && pan.pointerId === event.pointerId) {
           const moved = Math.abs(event.clientX - pan.startClientX) > 0.5 || Math.abs(event.clientY - pan.startClientY) > 0.5;
@@ -4289,6 +5076,13 @@ window.__ModuleLoader__.load({
       /** Best-effort release for pointercancel / lost capture / blur while dragging. */
       function releaseFrameDrag() {
         if (annotRef.current.on) return; // annotation mode: never dispatch a page release
+        // 选元素模式：只取消本地拖拽状态，绝不派发页面 release。
+        if (pickRef.current.on) {
+          cancelPanDrag();
+          const pendingDrag = dragRef.current;
+          if (pendingDrag.active) dragRef.current = { active: false, pointerId: -1, x: pendingDrag.x, y: pendingDrag.y };
+          return;
+        }
         if (panDragRef.current.active) {
           flushPanWrite();
           cancelPanDrag();
@@ -4526,8 +5320,19 @@ window.__ModuleLoader__.load({
         queueViewPatch(patch);
       }
 
+      /**
+       * Page wheel dispatch. Only a point that passes geometry, blank and input gates reaches the
+       * target page. The ordinary-wheel default is consumed by the stage handler before every early
+       * return; this guard keeps a direct caller fail-closed as well.
+       */
       function onFrameWheel(event) {
         if (annotRef.current.on) return; // annotation mode: the stage listener consumes it
+        const pickMode = pickRef.current.on;
+        const shellZoom = Boolean(event.ctrlKey || event.metaKey);
+        if (!shellZoom && !event.defaultPrevented) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
         if (panMode) {
           zoomCanvasByWheel(event);
           return;
@@ -4536,11 +5341,12 @@ window.__ModuleLoader__.load({
         const geom = frameGeometry();
         if (!geom) return;
         const point = mapEventPoint(event, geom);
-        if (!point.inside) return; // only inside the painted frame prevents host scrolling
-        if (point.blank) return; // canvas blank: zero dispatch, host scrolling untouched
+        if (!point.inside) return; // only inside the painted frame dispatches
+        if (point.blank) return; // canvas blank: zero dispatch, host scrolling already consumed
         event.preventDefault();
         event.stopPropagation();
         markHuman();
+        setBlankHint('');
         const size = acceptedViewSize();
         sendEvents([{
           kind: 'wheel',
@@ -4548,9 +5354,20 @@ window.__ModuleLoader__.load({
           y: point.y,
           deltaX: frameWheelDelta(event.deltaX, event.deltaMode, geom.width, size.w),
           deltaY: frameWheelDelta(event.deltaY, event.deltaMode, geom.height, size.h),
-        }]);
+        }], pickMode ? { wheel: true } : undefined);
+        // 选元素模式：滚动仍作用于目标页；稳定后按最后指针位置重取悬浮命中。
+        if (pickMode) pickAfterWheel(event.clientX, event.clientY);
       }
 
+      /**
+       * Native non-passive stage wheel listener.
+       *
+       * Ordinary wheel (no Ctrl/Meta) anywhere inside the stage is consumed here, before any
+       * geometry/blank/readiness early return, so the stage overflow and every scrollable ancestor
+       * can never scroll the preview/host. Only after that does the event flow to onFrameWheel, which
+       * may dispatch exactly one target-page wheel for a validated content point. Ctrl/Meta keeps the
+       * shell/browser zoom semantics outside pan; pan/annotation keep their existing wheel behaviour.
+       */
       function onStageWheel(event) {
         // Annotation mode owns every preview wheel (blank/letterbox/Ctrl/Meta included): consume it
         // without scrolling the page, changing C/scale or scrolling the host.
@@ -4560,21 +5377,28 @@ window.__ModuleLoader__.load({
           return;
         }
         const target = event.target;
+        const shellZoom = Boolean(event.ctrlKey || event.metaKey);
+        // Core fix: consume ordinary wheel before *all* early returns (blank, letterbox, stage
+        // margin, frameInputReady=false, missing geometry, target outside the image).
+        if (!shellZoom) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
         if (!target || !target.closest) return;
         if (panMode) {
-          // Drag mode zooms the canvas; this works on the composited blank too (overlay/box target).
-          if (!target.closest('.utb-box')) return;
-          if (event.ctrlKey || event.metaKey) {
+          if (shellZoom) {
             // Consume so the shell/browser does not zoom while the user is in drag mode.
             event.preventDefault();
             event.stopPropagation();
             return;
           }
+          // Drag mode zooms the canvas; this works on the composited blank too (overlay/box target).
+          if (!target.closest('.utb-box')) return; // ordinary wheel already consumed
           onFrameWheel(event);
           return;
         }
-        if (!target.closest('.utb-frame')) return;
-        if (event.ctrlKey || event.metaKey) return; // host/browser zoom stays with the shell
+        if (shellZoom) return; // host/browser zoom stays with the shell
+        // Ordinary wheel was consumed above; onFrameWheel decides whether this point dispatches.
         onFrameWheel(event);
       }
 
@@ -4734,6 +5558,14 @@ window.__ModuleLoader__.load({
           } catch (error) {
             if (cancelled || (error && error.name === 'AbortError')) return;
             if (generation !== requestGenerationRef.current) return;
+            // A child binding can disappear (window.close/Host retire/other panel close). Do not
+            // keep the dead child selected or loop on its 404: fall back to the stable primary.
+            if (activeViewId !== 'primary' && scopeNow.binding && error && error.code === 'SCOPE_NOT_FOUND') {
+              viewSwitchRef.current = true;
+              retiredRuntimeRef.current = '';
+              setActiveViewId('primary');
+              return;
+            }
             retry();
           }
         }
@@ -4773,6 +5605,12 @@ window.__ModuleLoader__.load({
           },
           onState(state) { if (mounted) ingestHostState(state); },
           onTransport(kind) { if (mounted) setTransportKind(kind); },
+          onSeedStatus(status) {
+            if (!mounted) return;
+            setSeedStatus(status && status.state === 'failed'
+              ? { reason: String(status.reason || 'unknown') }
+              : null);
+          },
           canWrite() { return !writesPausedRef.current && visibleRef.current; },
         }, scopeNow);
         transportRef.current = transport;
@@ -4967,11 +5805,39 @@ window.__ModuleLoader__.load({
         return () => node.removeEventListener('wheel', listener);
       }, [annotOn]);
 
-      function sendEvents(events) {
+      /**
+       * Local feedback for a rejected /input. The click/text is never replayed automatically; a
+       * successful Host 200 with no page reaction is a page fact, not a plugin failure.
+       */
+      function noteInputError(error) {
+        if (error && error.name === 'AbortError') return;
+        const now = Date.now();
+        if (now - inputErrorAtRef.current < 1200) return;
+        inputErrorAtRef.current = now;
+        const code = String((error && error.code) || '');
+        const owner = error && error.payload && error.payload.details && error.payload.details.owner;
+        const text = /BUSY|LEASE|OWNER/i.test(code)
+          ? 'Agent 正在操作此标签' + (owner ? '（' + String(owner) + '）' : '') + '，输入暂不可用；可切换到其他标签'
+          : '输入发送失败，请检查连接后重试';
+        setInputNotice(text);
+        window.clearTimeout(inputNoticeTimerRef.current);
+        inputNoticeTimerRef.current = window.setTimeout(() => setInputNotice(''), 3200);
+      }
+
+      function sendEvents(events, options) {
         if (annotRef.current.on) return; // single gate: annotation mode never dispatches page input
+        // 选元素模式零页面交互：唯一例外是滚轮（契约要求继续滚动目标页）。
+        if (pickRef.current.on && !(options && options.wheel === true)) return;
         if (!readyRef.current || writesPausedRef.current) return;
         const signal = abortRef.current ? abortRef.current.signal : undefined;
-        callHost('input', { events }, { scope: scopeRef.current, signal }).catch(() => {});
+        const clearsNotice = (events || []).some((entry) => entry
+          && (entry.kind !== 'mouse' || ['mousePressed', 'mouseReleased', 'mouseClicked'].includes(String(entry.type))));
+        callHost('input', { events }, { scope: scopeRef.current, signal }).then(() => {
+          // Only a real content action clears the notice; hover moves must not erase a BUSY hint.
+          if (clearsNotice) setInputNotice('');
+        }).catch((error) => {
+          noteInputError(error);
+        });
       }
 
       // 人类接管：真实输入后 4 秒内标记，其余时间回落到空闲
@@ -5202,22 +6068,34 @@ window.__ModuleLoader__.load({
       const manualPercent = clampNumber(Number(zoom) || 100, VIEW_LIMITS.scalePercent[0], VIEW_LIMITS.scalePercent[1]);
       const scale = fit ? fitScale : manualPercent / 100;
       // P0-C v2 preview compositing (docs/viewport-control.md): the W*scale × H*scale box is the
-      // clipping viewport; the current frame is translated by -(C - frame.scroll) * displayScale.
-      // O=0 with frame.scroll=S yields exactly 0, so the old pixels are unchanged.
+      // clipping viewport. The live frame is translated by the Host's retained residual
+      // O = C - S (the same accepted projection that owns canvasInfo), never by
+      // (C - frame.scroll): F belongs to the barrier/provenance, and mixing a new S with an old F
+      // while a page wheel scrolls produces a transient extra shift / exposed blank band (A2).
+      // T = -O * paintedScale. O=0 gives T=0 and keeps the old pixels; a seed is already composed
+      // at C and must not be shifted again (T=0).
       const canvasOn = Boolean(canvasInfo && viewRef.current);
+      const pickRunning = Boolean(remote && remote.running === true);
       const frameGeom = frameGeomRef.current;
       let frameShiftX = 0;
       let frameShiftY = 0;
-      if (canvasOn && frameGeom && Number.isFinite(Number(canvasInfo.x)) && Number.isFinite(Number(canvasInfo.y))
+      if (canvasOn && frameGeom && !frameGeom.seed
         && frameGeom.naturalW > 0 && frameGeom.naturalH > 0 && w > 0 && ht > 0) {
-        const scrollX = finiteOrNull(frameGeom.scrollX);
-        const scrollY = finiteOrNull(frameGeom.scrollY);
-        if (scrollX !== null && scrollY !== null) {
+        const view = viewRef.current;
+        const offsetX = finiteOrNull(canvasInfo.offsetX) !== null
+          ? Number(canvasInfo.offsetX)
+          : (view && finiteOrNull(view.canvasX) !== null && finiteOrNull(view.x) !== null
+            ? Number(view.canvasX) - Number(view.x) : null);
+        const offsetY = finiteOrNull(canvasInfo.offsetY) !== null
+          ? Number(canvasInfo.offsetY)
+          : (view && finiteOrNull(view.canvasY) !== null && finiteOrNull(view.y) !== null
+            ? Number(view.canvasY) - Number(view.y) : null);
+        if (offsetX !== null && offsetY !== null) {
           const k = Math.min((w * scale) / frameGeom.naturalW, (ht * scale) / frameGeom.naturalH);
           const displayScaleX = (frameGeom.naturalW * k) / w;
           const displayScaleY = (frameGeom.naturalH * k) / ht;
-          frameShiftX = -(Number(canvasInfo.x) - scrollX) * displayScaleX;
-          frameShiftY = -(Number(canvasInfo.y) - scrollY) * displayScaleY;
+          frameShiftX = -offsetX * displayScaleX;
+          frameShiftY = -offsetY * displayScaleY;
         }
       }
       const frameShift = Boolean(frameShiftX || frameShiftY);
@@ -5249,11 +6127,64 @@ window.__ModuleLoader__.load({
       }
       const canvasBarrierState = canvasOn ? canvasBarrier() : null;
       const canvasInputReady = Boolean(canvasBarrierState && canvasBarrierState.ready);
+      // Visible sync state is a pure local projection: a sustained barrier mismatch shows after
+      // 650ms (the same bound as the bounded seed retry), recovery clears it immediately.
+      React.useEffect(() => {
+        if (!canvasOn) {
+          mismatchSinceRef.current = 0;
+          setSyncMismatch(false);
+          return undefined;
+        }
+        if (canvasInputReady) {
+          mismatchSinceRef.current = 0;
+          setSyncMismatch(false);
+          return undefined;
+        }
+        if (!mismatchSinceRef.current) mismatchSinceRef.current = Date.now();
+        const remaining = Math.max(0, SEED_STALE_MS - (Date.now() - mismatchSinceRef.current));
+        const timer = window.setTimeout(() => setSyncMismatch(true), remaining);
+        return () => window.clearTimeout(timer);
+      }, [canvasOn, canvasInputReady]);
+      React.useEffect(() => {
+        if (canvasInputReady) setSeedStatus(null);
+      }, [canvasInputReady]);
+      React.useEffect(() => {
+        setSeedStatus(null);
+        setSyncMismatch(false);
+        setBlankHint('');
+        setInputNotice('');
+        mismatchSinceRef.current = 0;
+      }, [scopeEpoch]);
+      React.useEffect(() => () => {
+        window.clearTimeout(blankHintTimerRef.current);
+        window.clearTimeout(inputNoticeTimerRef.current);
+      }, []);
       const posRange = canvasOn ? VIEW_LIMITS.canvas : VIEW_LIMITS.scroll;
       // P0-D annotation render facts. The SVG covers the *untranslated* painted rect; the viewBox is
       // the accepted canvas window. Committed geometry stays in canvas CSS px, so C/scale changes
       // move the drawing with the content instead of re-basing it.
       const annotReady = viewSync && canvasOn;
+      // 选元素入口状态（数据属性供 GUI 验收读取）：on/ready/annot/sizing/unsupported/cold。
+      const pickReadyNow = Boolean(pickRunning && ready && viewSync && canvasOn && !annotOn && !sizing);
+      const pickEntryState = pickOn ? 'on'
+        : annotOn ? 'annot'
+          : sizing ? 'sizing'
+            : !pickRunning ? 'cold'
+              : pickReadyNow ? 'ready' : 'unsupported';
+      const pickEntryTitle = pickOn ? '退出选元素模式（Esc）'
+        : annotOn ? '标注模式下不可选元素（先关闭标注）'
+          : sizing ? '尺寸调整模式下不可选元素（先关闭尺寸调整）'
+            : !pickRunning ? '需先启动内嵌浏览器'
+              : !ready ? '运行环境未就绪'
+                : !viewSync ? '等待视口同步'
+                  : !canvasOn ? '当前 Host 不支持画布框选'
+                    : '选择元素发送到聊天框（点击画面中的元素，加入聊天框）';
+      const pickEntryDisabled = !pickOn && !pickReadyNow;
+      const pickBoxRect = pickOn && frameBoxRef.current ? frameBoxRef.current.getBoundingClientRect() : null;
+      const pickScreenNow = pickOn && pickOverlay
+        ? pickScreenRect(pickOverlay, frameGeometry(), canvasPosition(), acceptedViewSize(), pickBoxRect)
+        : null;
+      const pickTagNow = pickScreenNow ? pickTagPosition(pickScreenNow, w * scale, ht * scale) : null;
       // 用户 2026-11-03 追加：三选一 panfit 状态（恰好一个 pressed；default = 既非拖拽也非适应窗口）。
       const panfitState = panMode ? 'pan' : fit ? 'fit' : 'default';
       const annotMapNow = canvasOn && shot ? annotMap() : null;
@@ -5383,6 +6314,61 @@ window.__ModuleLoader__.load({
         if (entry) entry.activeDKey = '';
         annotUnsubscribePublisher();
         annotPublisherRef.current = null;
+      }, []);
+
+      // 选元素模式的同步闸镜像：进入/退出已同步写 ref，这里只处理任何其它状态变化路径。
+      React.useEffect(() => {
+        pickRef.current.on = pickOn;
+      }, [pickOn]);
+
+      // 画布原点 C 变了（页面滚动/平移/视口变化）：旧框的文档坐标不再属于当前窗口，清掉并重取。
+      React.useEffect(() => {
+        if (!pickOn) return;
+        const ref = pickRef.current;
+        if (!ref.on) return;
+        ref.hoverSeq += 1;
+        ref.hoverQueued = false;
+        setPickOverlay(null);
+        pickScheduleHover();
+      }, [pickOn, canvasInfo]);
+
+      // 选元素模式：Esc 退出（输入框/可编辑区内不劫持），焦点还给入口按钮。
+      React.useEffect(() => {
+        if (!pickOn) return undefined;
+        const onKeyDown = (event) => {
+          if (event.key !== 'Escape' || event.isComposing) return;
+          if (pickEditableTarget(event.target) || pickEditableTarget(document.activeElement)) return;
+          event.preventDefault();
+          // 不把 Esc 传给 DSH 的弹层/命令面板（它们各自监听 document keydown）。
+          event.stopPropagation();
+          exitPickMode();
+          const button = pickButtonRef.current;
+          if (button) {
+            try { button.focus({ preventScroll: true }); } catch { /* ignore */ }
+          }
+        };
+        document.addEventListener('keydown', onKeyDown, true);
+        return () => document.removeEventListener('keydown', onKeyDown, true);
+      }, [pickOn]);
+
+      // 生命周期闸：运行中/就绪/视口/画布/互斥/scope/active tab 任一失效即退出并清框。
+      React.useEffect(() => {
+        if (!pickOn) return;
+        const alive = Boolean(pickRunning && ready && viewSync && canvasOn && !annotOn && !sizing);
+        if (!alive) exitPickMode();
+      }, [pickOn, pickRunning, ready, viewSync, canvasOn, annotOn, sizing, scopeEpoch, activeViewId]);
+
+      // 导航/换标签/换 scope：悬浮框立即失效（模式本身由上面的生命周期闸决定）。
+      React.useEffect(() => {
+        if (pickRef.current.on) pickClearOverlay();
+      }, [activeViewId, scopeEpoch, remote.url]);
+
+      // 组件卸载：清掉所有选元素定时器，绝不留下后台请求/提示。
+      React.useEffect(() => () => {
+        window.clearTimeout(pickStatusTimerRef.current);
+        const ref = pickRef.current;
+        if (ref.timer) window.clearTimeout(ref.timer);
+        if (ref.wheelTimer) window.clearTimeout(ref.wheelTimer);
       }, []);
       /** 手动改比例时关闭自动适配并同步共享比例；重新勾选“适应窗口”只恢复本地自动适配。 */
       function changeFit(checked) {
@@ -5514,8 +6500,50 @@ window.__ModuleLoader__.load({
           onClick: () => chooseAnnotTool(tool),
         }, h(IconAnnotTool, { tool }));
 
+      // Status priority: a failed seed is more actionable than the generic syncing hint; an input
+      // rejection is more urgent than the one-shot blank hint. All are panel-local.
+      const syncNotice = (() => {
+        if (seedStatus) return { kind: 'seed-failed', text: '画面未同步，请重试同步或重新加载页面', retry: true, reason: seedStatus.reason };
+        if (canvasOn && syncMismatch) return { kind: 'syncing', text: '画面同步中，暂时无法操作', retry: true, reason: canvasBarrierState ? canvasBarrierState.reason : '' };
+        if (inputNotice) return { kind: 'input-error', text: inputNotice, retry: false, reason: '' };
+        if (blankHint) return { kind: 'blank', text: blankHint, retry: false, reason: '' };
+        return null;
+      })();
+      const tabsSupported = Boolean(stableViews);
+      // The strip is a user preference, never a side effect of the tab count: one tab can show
+      // the strip (and its `+`) just like many. Hiding the strip only hides the row; the `+`
+      // lives inside it, so the toolbar never carries a second new-tab entry.
+      const showTabs = tabsSupported && tabsVisible;
+      const tabText = (view) => {
+        const text = String((view && (view.title || view.hostLabel)) || '新页面').replace(/[\u0000-\u001f\u007f]/gu, '');
+        return text.slice(0, 80) || '新页面';
+      };
+      const POPUP_REASON_TEXT = {
+        'no-opener': '无法确认来源', 'no-source': '无法确认来源', 'no-human-input': '需要真人点击',
+        'automatic-popup': '自动弹窗已拦截', 'source-stale': '来源已过期', 'target-forbidden': '目标地址不允许',
+        'popup-limit': '子页数量已达上限', 'busy': 'Agent 正在操作', 'initialize-failed': '页面初始化失败',
+      };
+      const activeBusy = Boolean(activeView && activeView.busy);
+      const latestPopupNotice = stableViews && Array.isArray(stableViews.popupNotices) && stableViews.popupNotices.length
+        ? stableViews.popupNotices[stableViews.popupNotices.length - 1] : null;
+      function retrySync() {
+        if (remoteRef.current?.running !== true) return;
+        const transport = transportRef.current;
+        if (!transport || typeof transport.retrySeedRefresh !== 'function') return;
+        try { transport.retrySeedRefresh(seedContext()); } catch { /* transport must not break UI */ }
+      }
+
       return h('div', {
         className: 'utb',
+        'data-utb-tabs-supported': tabsSupported ? 'true' : 'false',
+        'data-utb-tabs-visible': showTabs ? 'true' : 'false',
+        'data-utb-active-view': activeView ? String(activeView.id) : '',
+        'data-utb-runtime-id': ui ? String(ui.runtimeId || '') : '',
+        'data-utb-scope-binding': String(scope.binding || ''),
+        'data-utb-views-count': stableViews ? String(stableViews.views.length) : '0',
+        'data-utb-ready-views': String(readyViewList.length),
+        'data-utb-tabs-pref': tabsVisible ? 'true' : 'false',
+        'data-utb-active-busy': activeBusy ? 'true' : 'false',
         onPointerDown: markHuman,
         onKeyDown: markHuman,
         onWheel: markHuman,
@@ -5542,14 +6570,21 @@ window.__ModuleLoader__.load({
           button('刷新', h(IconReload, null), reload, reloadDisabled),
           h('form', { onSubmit: submit, style: { flex: '1 1 auto', minWidth: 0, display: 'flex' } },
             h('input', { className: 'utb-addr', type: 'text', value: draft, spellCheck: false, 'aria-label': '网址', placeholder: '输入网址，例如 https://example.com', 'aria-invalid': error ? 'true' : undefined, 'data-invalid': error ? 'true' : 'false', title: error || undefined, disabled: annotOn, onChange: changeAddress, onFocus: () => { focusedRef.current = true; dirtyRef.current = false; }, onBlur: blurAddress, onKeyDown: keyAddress })),
-          button('标注', h(IconAnnot, null), toggleAnnotMode, !annotReady || sizing, {
+          tabsSupported && button('标签页', h('span', { className: 'utb-tabs-glyph', 'aria-hidden': true }, '▤'), () => setTabsVisible((value) => !value), false, {
+            'aria-pressed': tabsVisible,
+            'data-utb-tabs-toggle': tabsVisible ? 'on' : 'off',
+            title: tabsVisible ? '隐藏标签页（页面保持）' : '显示标签页',
+          }),
+          button('标注', h(IconAnnot, null), toggleAnnotMode, !annotReady || sizing || pickOn, {
             ref: annotButtonRef,
-            title: sizing
-              ? '尺寸调整模式下不可进入标注（先关闭尺寸调整）'
-              : '标注（标注按工作区保留，导航/刷新会清除当前页面标注）',
+            title: pickOn
+              ? '选择元素模式下不可进入标注（先退出选元素）'
+              : sizing
+                ? '尺寸调整模式下不可进入标注（先关闭尺寸调整）'
+                : '标注（标注按工作区保留，导航/刷新会清除当前页面标注）',
             'aria-pressed': annotOn,
             'aria-controls': annotPanelId,
-            'data-utb-annot-entry': annotOn ? 'on' : sizing ? 'sizing' : annotReady ? 'ready' : 'unsupported',
+            'data-utb-annot-entry': annotOn ? 'on' : pickOn ? 'pick' : sizing ? 'sizing' : annotReady ? 'ready' : 'unsupported',
             // Closing the mode via this button must cancel an active text edit *before* the
             // focus change blurs the editor (otherwise the blur would submit it).
             onPointerDown: () => {
@@ -5559,16 +6594,101 @@ window.__ModuleLoader__.load({
               setAnnotText(null);
             },
           }),
-          button('尺寸调整', h(IconSize, null), toggleSizing, annotOn, { 'aria-pressed': sizing }),
+          button('尺寸调整', h(IconSize, null), toggleSizing, annotOn || pickOn, {
+            'aria-pressed': sizing,
+            title: pickOn ? '选择元素模式下不可调整尺寸（先退出选元素）' : '尺寸调整',
+            'data-utb-size-entry': sizing ? 'on' : pickOn ? 'pick' : 'ready',
+          }),
           h('span', { className: 'utb-sr', role: 'alert' }, error || ''),
-          button('选择元素发送到聊天框（需浏览器运行时）', h(IconInspect, null), null, true),
+          button('选择元素发送到聊天框', h(IconInspect, null), togglePickMode, pickEntryDisabled, {
+            ref: pickButtonRef,
+            title: pickEntryTitle,
+            'aria-pressed': pickOn,
+            'data-utb-pick-entry': pickEntryState,
+          }),
           h('div', { className: 'utb-more' },
             button('更多', h(IconMore, null), () => setMenu((v) => !v), annotOn, { 'aria-expanded': menu, 'aria-haspopup': 'menu' }),
             menu && h('div', { className: 'utb-pop', role: 'menu' },
-              h('button', { type: 'button', className: 'utb-menu-item', role: 'menuitem', disabled: true, title: '需要浏览器运行时' }, '打开调试工具（暂不可用）'),
+              h('button', {
+                type: 'button',
+                className: 'utb-menu-item',
+                role: 'menuitem',
+                disabled: !devtoolsInfo.enabled,
+                title: devtoolsInfo.title,
+                'data-utb-devtools': devtoolsInfo.enabled ? 'ready' : 'disabled',
+                onClick: openDevtools,
+              }, '打开调试工具'),
               openUrl
                 ? h('a', { className: 'utb-menu-item', role: 'menuitem', href: openUrl, target: '_blank', rel: 'noopener noreferrer', style: { textDecoration: 'none' }, onClick: () => setMenu(false) }, '在默认浏览器中打开')
                 : h('button', { type: 'button', className: 'utb-menu-item', role: 'menuitem', disabled: true }, '在默认浏览器中打开')))),
+        showTabs && h('div', {
+          className: 'utb-tabs',
+          role: 'tablist',
+          'aria-label': '浏览器标签页',
+          'data-utb-tabs': 'true',
+        }, readyViewList.map((view) => h('div', {
+          key: view.id,
+          id: 'utb-tab-' + view.id,
+          className: 'utb-tab',
+          role: 'tab',
+          'aria-selected': activeView && activeView.id === view.id,
+          'aria-label': tabText(view),
+          'data-utb-tab': String(view.id),
+          tabIndex: activeView && activeView.id === view.id ? 0 : -1,
+          title: tabText(view),
+          onClick: () => switchView(view.id),
+        },
+          h('span', { className: 'utb-tab-label' }, tabText(view)),
+          view.kind === 'popup' && h('button', {
+            type: 'button',
+            className: 'utb-tab-close',
+            'aria-label': '关闭标签 ' + tabText(view),
+            title: '关闭标签',
+            'data-utb-tab-close': String(view.id),
+            onClick: (event) => { event.stopPropagation(); closeView(view); },
+          }, '×'))),
+          h('button', {
+            type: 'button',
+            className: 'utb-tab-new',
+            'data-utb-tab-new': 'strip',
+            'aria-label': '新建标签页',
+            title: '新建空白标签页',
+            disabled: tabOpening,
+            onClick: newTab,
+          }, '+')),
+        tabNotice && h('div', { className: 'utb-sync-note utb-tab-note', role: 'status', 'aria-live': 'polite', 'data-utb-tab-notice': 'true' }, tabNotice),
+        activeBusy && h('div', { className: 'utb-sync-note utb-agent-note', role: 'status', 'aria-live': 'polite', 'data-utb-agent-busy': 'true' }, 'Agent 正在操作此标签；预览继续，输入暂不可用'),
+        latestPopupNotice && h('div', {
+          className: 'utb-sync-note utb-popup-note',
+          role: 'status',
+          'aria-live': 'polite',
+          'data-utb-popup-notice': String(latestPopupNotice.reason || ''),
+          'data-utb-popup-notice-id': String(latestPopupNotice.id || ''),
+        }, h('span', null, '已阻止新页面：' + (POPUP_REASON_TEXT[latestPopupNotice.reason] || '来源或目标不允许'))),
+        // Local popup-blocked fallback: aria-live text + a real link that loads the same front end.
+        // No automatic retry, no Runtime lastError, no claim that DevTools connected.
+        devtoolsNotice && h('div', { className: 'utb-devtools-note', role: 'status', 'aria-live': 'polite' },
+          h('span', null, devtoolsNotice.message),
+          devtoolsNotice.url && h('a', {
+            href: devtoolsNotice.url,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            onClick: () => setDevtoolsNotice(null),
+          }, '在新标签页打开调试工具')),
+        syncNotice && h('div', {
+          className: 'utb-sync-note',
+          role: 'status',
+          'aria-live': 'polite',
+          'data-utb-sync-state': syncNotice.kind,
+          'data-utb-sync-reason': String(syncNotice.reason || ''),
+        },
+          h('span', null, syncNotice.text),
+          syncNotice.retry && h('button', {
+            type: 'button',
+            className: 'utb-sync-retry',
+            title: '重新请求画面同步',
+            onClick: retrySync,
+          }, '重试同步')),
         annotOn && h('div', { className: 'utb-annot-bar', id: annotPanelId, role: 'group', 'aria-label': '标注工具', ref: annotBarRef },
           h('div', { className: 'utb-annot-group', role: 'group', 'aria-label': '标注工具选择' },
             ANNOT_TOOLS.map((tool) => annotToolButton(tool.id, tool.label))),
@@ -5796,6 +6916,12 @@ window.__ModuleLoader__.load({
               onKeyDown: (e) => sizeFieldKey(e, 'scale'),
             }),
             h('span', { className: 'utb-dim', 'aria-hidden': true }, '%'))),
+        (pickOn || pickStatus) && h('div', {
+          className: 'utb-sync-note utb-pick-note',
+          role: 'status',
+          'aria-live': 'polite',
+          'data-utb-pick-status': pickStatus ? pickStatus.kind : 'mode',
+        }, pickStatus ? pickStatus.text : '选元素模式：点击画面中的元素加入聊天框 · 滚轮可滚动页面 · Esc 退出'),
         h('div', { className: 'utb-stage', ref: stage },
           activeUrl
             ? (shot
@@ -5818,6 +6944,7 @@ window.__ModuleLoader__.load({
                 'data-utb-canvas-checker': canvasOn
                   ? `${CANVAS_CHECKER.size}px ${CANVAS_CHECKER.dark} ${CANVAS_CHECKER.light}`
                   : 'off',
+                onPointerDown: onBoxPointerDown,
                 // Diagnostic reason for the fail-closed barrier (never a page fact).
                 'data-utb-canvas-barrier': canvasOn ? String(canvasBarrierState.reason || '') : 'off',
                 // Bounded diagnostic numbers for acceptance failures (safe, no page content).
@@ -5880,7 +7007,7 @@ window.__ModuleLoader__.load({
                     display: 'block', width: '100%', height: '100%', objectFit: 'contain', objectPosition: '50% 50%',
                     userSelect: 'none', touchAction: 'none',
                     position: 'relative', zIndex: 1,
-                    cursor: panMode ? (panDragging ? 'grabbing' : 'grab') : 'auto',
+                    cursor: pickOn ? 'crosshair' : panMode ? (panDragging ? 'grabbing' : 'grab') : 'auto',
                     transform: frameShift ? `translate(${frameShiftX}px, ${frameShiftY}px)` : 'none',
                     clipPath: seedClip || undefined,
                   },
@@ -5889,8 +7016,12 @@ window.__ModuleLoader__.load({
                   onPointerMove: onFramePointerMove,
                   onPointerCancel: releaseFrameDrag,
                   onLostPointerCapture: releaseFrameDrag,
+                  onPointerLeave: () => {
+                    if (pickRef.current.on) pickClearOverlay();
+                  },
                   onKeyDown: (event) => {
                     if (annotRef.current.on) return; // annotation mode: zero page input
+                    if (pickRef.current.on) return; // pick mode: zero page keyboard input
                     if (event.metaKey || event.ctrlKey || event.altKey) return;
                     event.preventDefault();
                     if (event.key.length === 1) {
@@ -5966,7 +7097,32 @@ window.__ModuleLoader__.load({
                   onBlur: () => commitAnnotText(),
                   onCompositionStart: () => { annotComposingRef.current = true; },
                   onCompositionEnd: () => { annotComposingRef.current = false; },
-                }) : null)
+                }) : null,
+                // 选元素悬浮框：纯面板 DOM，pointer-events:none，被 .utb-box 裁剪，不进 Host 截图。
+                pickOn ? h('div', {
+                  className: 'utb-pick-layer',
+                  'data-utb-pick-layer': 'true',
+                  'data-utb-pick-state': pickOverlay ? 'hover' : 'idle',
+                  'aria-hidden': 'true',
+                },
+                  pickScreenNow && pickOverlay ? h('div', {
+                    className: 'utb-pick-outline',
+                    'data-utb-pick-outline': 'true',
+                    'data-utb-pick-selector': pickOverlay.selector || '',
+                    'data-utb-pick-rect': JSON.stringify(pickOverlay.rect),
+                    style: {
+                      left: pickScreenNow.left,
+                      top: pickScreenNow.top,
+                      width: pickScreenNow.width,
+                      height: pickScreenNow.height,
+                    },
+                  }) : null,
+                  pickTagNow && pickOverlay ? h('span', {
+                    className: 'utb-pick-tag',
+                    'data-utb-pick-tag': pickOverlay.label,
+                    title: pickOverlay.selector || pickOverlay.label,
+                    style: { left: pickTagNow.left, top: pickTagNow.top },
+                  }, pickOverlay.label) : null) : null)
               : h('div', { className: 'utb-empty' },
                 h('strong', null, '正在启动内嵌浏览器'),
                 '首次打开需要启动无头 Chromium，通常一两秒；完成后这里会显示实时画面。'))
@@ -5999,6 +7155,8 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
+        // 面板组件在模块作用域定义，这里把根 ctx 交给它按需读取 DSH 服务（聊天框追加）。
+        pluginContext = ctx;
 
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: ID }, DebugView));
 

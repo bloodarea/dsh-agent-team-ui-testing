@@ -139,6 +139,23 @@ export const NET_ISSUES = Object.freeze([
   'workers-not-attributable', 'workers-shared-attribution', 'response-modification-unsupported',
 ]);
 
+/**
+ * TOOL-P1-04：body 不可得原因码（稳定枚举，只做加法，不替换既有 `reason:"NET_BODY_UNAVAILABLE"`）。
+ *
+ *  - `not-captured`：采集期 `captureBodies:false`，从未尝试读取（不是 CDP 失败）。
+ *  - `cdp-no-resource`：CDP 里已没有该请求的资源（requestId 未知 / 跨 target / 生命周期已结束）。
+ *  - `cdp-evicted`：资源还在但 body 缓冲已被 CDP 淘汰或本地配额淘汰（cache/重定向中途/超预算）。
+ *  - `cdp-timeout`：受限时长的 CDP body 读取超时。
+ *  - `cdp-invalid-params`：CDP 拒绝参数（requestId 形态不合法等）。
+ *  - `cdp-disconnected`：CDP 连接或子会话已断开/关闭。
+ *  - `cdp-error`：其它明确来自 CDP 协议的错误（不细分，避免自造原因）。
+ *  - `cdp-unknown`：无法分类；不猜、不伪造、不回显错误原文。
+ */
+export const NET_BODY_REASON_CODES = Object.freeze([
+  'not-captured', 'cdp-no-resource', 'cdp-evicted', 'cdp-timeout',
+  'cdp-invalid-params', 'cdp-disconnected', 'cdp-error', 'cdp-unknown',
+]);
+
 /** §5.6 默认关联规则。 */
 export const DEFAULT_CORRELATION_RULES = Object.freeze([
   Object.freeze({ from: 'header', key: 'traceparent', path: null, name: 'traceparent' }),
@@ -397,6 +414,55 @@ export function scrubTextSecrets(text, maskRules = []) {
     return prefix + quote + '***' + quote;
   });
   return { text: out, applied };
+}
+
+/**
+ * TOOL-P1-04：把一次 body 读取失败（`cdp.send` 抛出的 BrowserError / CDP 协议错误 / 传输错误）
+ * 映射为稳定原因码。只读取 `code`/`message` 做匹配，返回值只有枚举本身，**不回显错误原文**；
+ * `reasonDetail` 由 `normalizeBodyReasonDetail` 单独脱敏。未知/空输入一律 `cdp-unknown`。
+ */
+export function classifyBodyFailure(error) {
+  if (error === undefined || error === null || error === '') return 'cdp-unknown';
+  const code = typeof error === 'string' ? '' : String(error.code || '').toUpperCase();
+  const message = typeof error === 'string' ? error : String(error.message || error || '');
+  if (code === 'CDP_TIMEOUT' || code === 'NET_CONTROL_TIMEOUT' || /(?:timed?\s*out|timeout)/i.test(message)) return 'cdp-timeout';
+  if (code === 'CDP_DISCONNECTED' || /(?:disconnect|connection (?:closed|lost)|not attached|target (?:closed|detached)|session (?:closed|detached))/i.test(message)) return 'cdp-disconnected';
+  // Order matters: "No data found for resource with given identifier" means the buffered body was
+  // dropped, not that the request id is unknown.
+  if (/(?:no data found for resource|data (?:is )?(?:not|no longer) available|resource (?:was )?evicted|buffer(?:s|ing)? (?:evicted|dropped)|body (?:evicted|dropped|discarded))/i.test(message)) return 'cdp-evicted';
+  if (/(?:no resource (?:with|for)|resource with given|request (?:id )?(?:not found|unknown)|unknown request)/i.test(message)) return 'cdp-no-resource';
+  if (code === 'INVALID_ARGUMENT' || code === 'NET_INVALID_ARGUMENT' || /(?:invalid (?:params|parameters|argument))/i.test(message)) return 'cdp-invalid-params';
+  if (typeof error.code === 'number') return error.code === -32602 ? 'cdp-invalid-params' : 'cdp-error';
+  if (code === 'INTERNAL' || code === 'CDP_ERROR' || /(?:cdp error|protocol error|\[internal\])/i.test(message)) return 'cdp-error';
+  return 'cdp-unknown';
+}
+
+/** `reasonCode` 归一化：省略/未知取值回落到 `cdp-unknown`，保持枚举稳定（不写入自造词）。 */
+function normalizeBodyReasonCode(reasonCode) {
+  if (reasonCode === undefined || reasonCode === null || reasonCode === '') return 'cdp-unknown';
+  const value = String(reasonCode);
+  return NET_BODY_REASON_CODES.includes(value) ? value : 'cdp-unknown';
+}
+
+/**
+ * `reasonDetail`：单行、≤160 字节、脱敏（URL userinfo/敏感 query + 敏感字段值 + 控制字符）。
+ * 空值/全空白 → null（不伪造占位文本）。
+ */
+export function normalizeBodyReasonDetail(reasonDetail, maskRules = []) {
+  if (reasonDetail === undefined || reasonDetail === null) return null;
+  let text = String(reasonDetail);
+  if (text === '') return null;
+  text = text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (text === '') return null;
+  const scrubbed = scrubTextSecrets(text, maskRules);
+  // Text bodies only scrub quoted `name:"…"` values; an error detail may also carry bare
+  // `name=value` pairs (e.g. `token=…` outside a URL), so mask those here too before bounding.
+  const masked = scrubbed.text.replace(
+    /((?:[A-Za-z0-9_$.-]*(?:token|secret|pass|passwd|authorization|auth|cookie|api[-_]?key|session|credential)[A-Za-z0-9_$.-]*)\s*[:=]\s*)([^\s,;&"']+)/gi,
+    '$1***',
+  );
+  const bounded = truncateBytes(redactText(masked), 160).trim();
+  return bounded === '' ? null : bounded;
 }
 
 export function bodyKindOf(contentType) {
@@ -840,9 +906,42 @@ export function emptyCounters() {
   };
 }
 
+/** 归属字段的字符预算（id 截断而非猜测）。 */
+const ATTRIBUTION_BYTES = 128;
+
+function normalizeAttributionValue(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const text = typeof value === 'string' ? value : (typeof value === 'number' && Number.isFinite(value) ? String(value) : null);
+  if (text === null) return null;
+  return truncateBytes(text, ATTRIBUTION_BYTES) || null;
+}
+
+/**
+ * TOOL-P1-04 会话归属：`{scopeId, runtimeId, tabId}`。缺失字段一律 `null`；不从 cdpSessionId/
+ * targetId 反推 tabId（不猜）。构造器给了 `scopeId` 时它是已知事实，作为 attribution.scopeId 回传。
+ */
+function normalizeAttribution(input, scopeId = null) {
+  const out = { scopeId: normalizeAttributionValue(scopeId), runtimeId: null, tabId: null };
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    for (const key of ['scopeId', 'runtimeId', 'tabId']) {
+      if (Object.prototype.hasOwnProperty.call(input, key)) out[key] = normalizeAttributionValue(input[key]);
+    }
+  }
+  return out;
+}
+
+/** 只读投影：给 `#sessionView` / `status()` / `evidenceBlock` 共用，保证三处形状一致。 */
+function attributionView(store) {
+  const source = store && store.attribution ? store.attribution : null;
+  if (source) return { scopeId: source.scopeId ?? null, runtimeId: source.runtimeId ?? null, tabId: source.tabId ?? null };
+  const scopeId = store && store.scopeId !== undefined && store.scopeId !== null ? normalizeAttributionValue(store.scopeId) : null;
+  return { scopeId, runtimeId: null, tabId: null };
+}
+
 export class NetworkStore {
-  constructor({ scopeId = null, now = () => Date.now(), monotonic } = {}) {
+  constructor({ scopeId = null, now = () => Date.now(), monotonic, attribution = null } = {}) {
     this.scopeId = scopeId;
+    this.attribution = normalizeAttribution(attribution, scopeId);
     this.now = typeof now === 'function' ? now : () => Date.now();
     this.monotonic = typeof monotonic === 'function' ? monotonic : () => Number(process.hrtime.bigint() / 1000n) / 1000;
     this.config = normalizeSessionConfig(null);
@@ -855,6 +954,8 @@ export class NetworkStore {
     this.chains = new Map();
     this.hops = new Map();
     this.bodies = new Map();
+    /** TOOL-P1-04：读不到 body 时的原因记录（与 `bodies` 分开，避免污染导出/计数/配额口径）。 */
+    this.bodyFailures = new Map();
     this.headers = new Map();
     this.bodyBytes = 0;
     this.headerBytes = 0;
@@ -944,6 +1045,7 @@ export class NetworkStore {
     this.chains.clear();
     this.hops.clear();
     this.bodies.clear();
+    this.bodyFailures.clear();
     this.headers.clear();
     this.bodyBytes = 0;
     this.headerBytes = 0;
@@ -984,6 +1086,8 @@ export class NetworkStore {
       id: this.session.id,
       name: this.session.name,
       state: this.state,
+      // TOOL-P1-04：会话归属（缺失为 null，不从 cdpSessionId/targetId 反推 tabId）。
+      attribution: attributionView(this),
       startedAt: this.session.startedAt,
       stoppedAt: this.session.stoppedAt,
       config: { ...this.config },
@@ -1002,8 +1106,32 @@ export class NetworkStore {
     };
   }
 
+  /**
+   * TOOL-P1-04：更新会话归属 `{scopeId,runtimeId,tabId}`。
+   * - `setAttribution(null)` 重置为 `{scopeId:构造器 scopeId, runtimeId:null, tabId:null}`；
+   * - 传对象时只覆盖显式给出的字段（显式 `null`/`''` 清空该字段），缺失字段保持不变——供切 tab
+   *   时只更新 `tabId`；任何字段都不推测。
+   */
+  setAttribution(input = null) {
+    if (input === null || input === undefined) {
+      this.attribution = normalizeAttribution(null, this.scopeId);
+      return { attribution: attributionView(this) };
+    }
+    const current = attributionView(this);
+    const next = { ...current };
+    if (typeof input === 'object' && !Array.isArray(input)) {
+      for (const key of ['scopeId', 'runtimeId', 'tabId']) {
+        if (Object.prototype.hasOwnProperty.call(input, key)) next[key] = normalizeAttributionValue(input[key]);
+      }
+    }
+    this.attribution = next;
+    return { attribution: attributionView(this) };
+  }
+
   status() {
     return {
+      // TOOL-P1-04：会话归属与当前会话视图同源，status.session.attribution 与顶层一致。
+      attribution: attributionView(this),
       session: this.session ? this.#sessionView() : null,
       sessions: this.sessions.map((entry) => ({
         id: entry.session.id, name: entry.session.name, state: entry.session.state,
@@ -1111,6 +1239,9 @@ export class NetworkStore {
       this.bodyBytes -= record.buffer.length;
       this.counters.bodyEvicted += 1;
       if (!this.issues.includes('bodies-evicted')) this.issues.push('bodies-evicted');
+      // TOOL-P1-04：淘汰后 detail 仍能回答"为什么读不到"——reasonCode 是 `cdp-evicted`（本地
+      // 配额淘汰），而不是笼统的 unavailable。原因记录不占字节、不改事件保留。
+      this.#rememberBodyFailure(oldestKey, { ...record, reasonCode: 'cdp-evicted', reasonDetail: null });
     }
     while (this.accountedBytes() > this.config.maxTotalBytes && this.events.length > 1) this.#evictOldestEvent('max-total-bytes');
   }
@@ -1240,13 +1371,33 @@ export class NetworkStore {
   /**
    * body 三态（R1-11）：`captured`（有内容）/`empty`（合法空体，如 HEAD/204/304/GET 无 postData）/
    * `unavailable`（失败、缓存、重定向中途、已淘汰）。`payloadOmitted` 表示二进制或无法安全解析。
+   *
+   * TOOL-P1-04：`unavailable` 必须带稳定原因码（`reasonCode`，见 `NET_BODY_REASON_CODES`）与可选
+   * 脱敏细节（`reasonDetail` ≤160 字节）。原因记录与真实 body 分表存储，不进入 body 配额/计数/
+   * JSONL/HAR 口径；读取仍是纯只读（不补抓、不重试、不伪造）。
    */
-  addBody({ targetId = null, cdpSessionId = null, requestId = null, hopId = null, kind = 'response', state = 'captured', data = '', base64Encoded = false, contentType = null, redacted = 'none', payloadOmitted = false } = {}) {
+  addBody({ targetId = null, cdpSessionId = null, requestId = null, hopId = null, kind = 'response', state = 'captured', data = '', base64Encoded = false, contentType = null, redacted = 'none', payloadOmitted = false, reasonCode = null, reasonDetail = null } = {}) {
     if (!requestId) return null;
-    if (state === 'unavailable') { this.noteBodyUnavailable(); return null; }
+    const key = this.#key(kind, { targetId, cdpSessionId, requestId, hopId });
+    if (state === 'unavailable') {
+      this.noteBodyUnavailable();
+      const code = normalizeBodyReasonCode(reasonCode);
+      const detail = normalizeBodyReasonDetail(reasonDetail, this.config.maskRules);
+      // The latest attempt is authoritative: an earlier captured/empty record for the same request
+      // key must not outlive a later proven failure (otherwise the reason would be silently lost).
+      const previous = this.bodies.get(key);
+      if (previous) {
+        this.bodies.delete(key);
+        this.bodyBytes -= previous.buffer.length;
+      }
+      this.#rememberBodyFailure(key, {
+        requestId, targetId, cdpSessionId, hopId, kind, reasonCode: code, reasonDetail: detail,
+      });
+      return { state: 'unavailable', bytes: null, reasonCode: code, reasonDetail: detail };
+    }
     if (state === 'empty') {
       this.noteBodyEmpty();
-      const key = this.#key(kind, { targetId, cdpSessionId, requestId, hopId });
+      this.bodyFailures.delete(key);
       this.bodies.set(key, {
         requestId: String(requestId), targetId, cdpSessionId, hopId, kind, state: 'empty',
         buffer: Buffer.alloc(0), originalBytes: 0, truncated: false, base64Encoded: false,
@@ -1265,10 +1416,10 @@ export class NetworkStore {
       if (this.state === 'running') this.counters.truncated += 1;
       if (!this.issues.includes('bodies-truncated')) this.issues.push('bodies-truncated');
     }
-    const key = this.#key(kind, { targetId, cdpSessionId, requestId, hopId });
     const previous = this.bodies.get(key);
     if (previous) this.bodyBytes -= previous.buffer.length;
     this.bodies.delete(key);
+    this.bodyFailures.delete(key);
     this.bodies.set(key, {
       requestId: String(requestId), targetId, cdpSessionId, hopId, kind, state: 'captured',
       buffer, originalBytes, truncated, base64Encoded: base64Encoded === true, contentType,
@@ -1285,18 +1436,40 @@ export class NetworkStore {
   }
 
   bodyRecord({ targetId = null, cdpSessionId = null, requestId = null, hopId = null, kind = 'response' } = {}) {
-    return this.bodies.get(this.#key(kind, { targetId, cdpSessionId, requestId, hopId })) || null;
+    const key = this.#key(kind, { targetId, cdpSessionId, requestId, hopId });
+    return this.bodies.get(key) || this.bodyFailures.get(key) || null;
   }
 
-  /** 只读（不补抓、不启动 CDP，§2.3 / R1-11）。 */
+  /** 只读（不补抓、不启动 CDP，§2.3 / R1-11）。不可得时回放原因码，仍不读取页面/网络。 */
   readBody(options = {}, { maxBytes = NET_LIMITS.detailBodyBytes } = {}) {
     const record = this.bodyRecord(options);
     if (!record) return null;
+    if (record.state === 'unavailable') {
+      return {
+        kind: record.kind,
+        state: 'unavailable',
+        available: false,
+        encoding: null,
+        bytes: null,
+        originalBytes: null,
+        truncated: null,
+        base64Encoded: false,
+        redacted: null,
+        payloadOmitted: null,
+        contentType: null,
+        storedAt: record.storedAt,
+        data: null,
+        reason: 'NET_BODY_UNAVAILABLE',
+        reasonCode: record.reasonCode || 'cdp-unknown',
+        reasonDetail: record.reasonDetail ?? null,
+      };
+    }
     const limit = clampInt(maxBytes, NET_LIMITS.detailBodyMinBytes, NET_LIMITS.detailBodyBytes);
     const slice = record.buffer.subarray(0, limit);
     return {
       kind: record.kind,
       state: record.state,
+      available: true,
       encoding: record.base64Encoded ? 'base64' : 'utf8',
       bytes: slice.length,
       originalBytes: record.originalBytes,
@@ -1307,19 +1480,70 @@ export class NetworkStore {
       contentType: record.contentType,
       storedAt: record.storedAt,
       data: record.payloadOmitted ? '' : (record.base64Encoded ? slice.toString('base64') : slice.toString('utf8')),
+      reason: null,
+      reasonCode: null,
+      reasonDetail: null,
     };
   }
 
+  /**
+   * 三态 + 原因：`captured`/`empty` 保持原语义（`reason:null`）；`unavailable` 保留兼容字段
+   * `reason:"NET_BODY_UNAVAILABLE"`，并给出 `reasonCode`/`reasonDetail`。
+   * `captureBodies:false` 且无任何记录时明确 `reasonCode:"not-captured"`（不是 CDP 错误）；
+   * 采集中但没有任何失败记录的缺失（如导入的历史事件）保持 `reasonCode:null`——不猜测。
+   */
   bodyState(event) {
     const options = { targetId: event.targetId, cdpSessionId: event.cdpSessionId, requestId: event.requestId, hopId: event.hopId };
+    const fallbackCode = this.config.captureBodies === true ? null : 'not-captured';
     const state = {};
     for (const kind of ['request', 'response']) {
       const record = this.bodyRecord({ ...options, kind });
-      state[kind] = record
-        ? { state: record.state, available: record.state !== 'unavailable', bytes: record.buffer.length, originalBytes: record.originalBytes, truncated: record.truncated, payloadOmitted: record.payloadOmitted }
-        : { state: 'unavailable', available: false, bytes: null, originalBytes: null, truncated: null, payloadOmitted: null, reason: 'NET_BODY_UNAVAILABLE' };
+      if (!record) {
+        state[kind] = {
+          state: 'unavailable', available: false, bytes: null, originalBytes: null,
+          truncated: null, payloadOmitted: null,
+          reason: 'NET_BODY_UNAVAILABLE', reasonCode: fallbackCode, reasonDetail: null,
+        };
+      } else if (record.state === 'unavailable') {
+        state[kind] = {
+          state: 'unavailable', available: false, bytes: null, originalBytes: null,
+          truncated: null, payloadOmitted: null,
+          reason: 'NET_BODY_UNAVAILABLE',
+          reasonCode: record.reasonCode || 'cdp-unknown',
+          reasonDetail: record.reasonDetail ?? null,
+        };
+      } else {
+        state[kind] = {
+          state: record.state, available: true, bytes: record.buffer.length,
+          originalBytes: record.originalBytes, truncated: record.truncated,
+          payloadOmitted: record.payloadOmitted,
+          reason: null, reasonCode: null, reasonDetail: null,
+        };
+      }
     }
     return state;
+  }
+
+  /**
+   * TOOL-P1-04：记录一条 body 不可得原因。独立于 `bodies` 的 FIFO 表（容量 = 2 × 本次会话
+   * maxEvents，每个事件最多 request/response 两条），只保留原因码/脱敏细节，不占 body 配额、
+   * 不进入 JSONL/HAR、不影响 integrity 的 body 计数口径。
+   */
+  #rememberBodyFailure(key, record) {
+    this.bodyFailures.set(key, {
+      requestId: String(record.requestId),
+      targetId: record.targetId ?? null,
+      cdpSessionId: record.cdpSessionId ?? null,
+      hopId: record.hopId ?? null,
+      kind: record.kind || 'response',
+      state: 'unavailable',
+      reasonCode: normalizeBodyReasonCode(record.reasonCode),
+      reasonDetail: record.reasonDetail ?? null,
+      storedAt: this.now(),
+    });
+    const maxEvents = Number.isInteger(this.config.maxEvents) ? this.config.maxEvents : NET_LIMITS.maxEvents;
+    const capacity = Math.max(64, 2 * maxEvents);
+    while (this.bodyFailures.size > capacity) this.bodyFailures.delete(this.bodyFailures.keys().next().value);
   }
 
   /* ---------------- markers / steps / links ---------------- */
@@ -1621,7 +1845,7 @@ function searchableText(store, event, fields) {
   if (wanted.includes('body')) {
     for (const kind of ['request', 'response']) {
       const body = store.readBody({ targetId: event.targetId, cdpSessionId: event.cdpSessionId, requestId: event.requestId, hopId: event.hopId, kind });
-      if (body && !body.payloadOmitted) parts.push(body.data);
+      if (body && body.state !== 'unavailable' && !body.payloadOmitted) parts.push(body.data);
     }
   }
   if (wanted.includes('ws') && event.ws && !event.ws.payloadOmitted) parts.push(event.ws.payload);
@@ -1773,6 +1997,8 @@ export function evidenceBlock(store, operation, extra = {}) {
     version: NET_VERSION,
     operation,
     sessionId: store.session ? store.session.id : null,
+    // TOOL-P1-04：证据块回传同一份归属投影（缺失为 null，不推断）。
+    attribution: attributionView(store),
     fromSeq: Number.isInteger(extra.fromSeq) ? extra.fromSeq : (integrity.firstSeq === null ? 0 : integrity.firstSeq),
     toSeq: Number.isInteger(extra.toSeq) ? extra.toSeq : (integrity.lastSeq === null ? 0 : integrity.lastSeq),
     counters: { events: store.counters.events, bodies: store.counters.bodies, bytes: store.counters.bytes, ...(extra.counters || {}) },
@@ -1984,13 +2210,25 @@ function normalizeInclude(include) {
   return set;
 }
 
-/** §2.3 body 块：三态 + 不伪造（detail 不补读、不重试）。 */
-function bodyBlock(body) {
-  if (!body) {
+/** 采集配置决定的"从未尝试采集"原因码；采集开启但无记录 → null（无证据，不猜）。 */
+function bodyFallbackCode(store) {
+  return store && store.config && store.config.captureBodies === true ? null : 'not-captured';
+}
+
+/**
+ * §2.3 body 块：三态 + 不伪造（detail 不补读、不重试）。
+ * TOOL-P1-04：不可得时保留 `reason:"NET_BODY_UNAVAILABLE"` 兼容字段，并回传
+ * `reasonCode`/`reasonDetail`；`fallbackReasonCode` 用于"从未尝试采集"（`captureBodies:false`
+ * → `not-captured`）或调用方已知的缺失原因，`null` 表示无证据、不猜测。
+ */
+function bodyBlock(body, fallbackReasonCode = null) {
+  if (!body || body.state === 'unavailable') {
     return {
       available: false, state: 'unavailable', encoding: null, bytes: null, originalBytes: null,
       truncated: null, redacted: null, source: 'unavailable', payloadOmitted: null, data: null,
       reason: 'NET_BODY_UNAVAILABLE',
+      reasonCode: (body && body.reasonCode) || fallbackReasonCode || null,
+      reasonDetail: body && body.reasonDetail !== undefined ? body.reasonDetail : null,
     };
   }
   return {
@@ -2006,6 +2244,8 @@ function bodyBlock(body) {
     contentType: body.contentType,
     data: body.data,
     reason: null,
+    reasonCode: null,
+    reasonDetail: null,
   };
 }
 
@@ -2062,9 +2302,15 @@ export function detailEvent(store, params = {}) {
       queryString: parseQueryString(event.url),
       headers: store.readHeaders({ ...options, kind: 'request' }).headers,
       resourceType: event.resourceType,
-      postData: requestBody
+      // TOOL-P1-04：不可得（含带原因码的失败记录）时 postData 仍是 available:false，并回传原因码。
+      postData: requestBody && requestBody.state !== 'unavailable'
         ? { kind: bodyKindOf(requestBody.contentType), bytes: requestBody.originalBytes, state: requestBody.state, parseError: false }
-        : { kind: 'unknown', bytes: null, state: 'unavailable', available: false },
+        : {
+          kind: 'unknown', bytes: null, state: 'unavailable', available: false,
+          reason: 'NET_BODY_UNAVAILABLE',
+          reasonCode: (requestBody && requestBody.reasonCode) || bodyFallbackCode(store),
+          reasonDetail: requestBody ? (requestBody.reasonDetail ?? null) : null,
+        },
     };
   }
   if (include.has('response')) {
@@ -2094,8 +2340,9 @@ export function detailEvent(store, params = {}) {
     };
   }
   if (include.has('body')) {
-    result.requestBody = bodyBlock(store.readBody({ ...options, kind: 'request' }, { maxBytes }));
-    result.responseBody = bodyBlock(store.readBody({ ...options, kind: 'response' }, { maxBytes }));
+    const fallback = bodyFallbackCode(store);
+    result.requestBody = bodyBlock(store.readBody({ ...options, kind: 'request' }, { maxBytes }), fallback);
+    result.responseBody = bodyBlock(store.readBody({ ...options, kind: 'response' }, { maxBytes }), fallback);
     // Contract §2.3 names the parts `body.requestBody`/`body.responseBody`; the flat aliases above
     // are kept for callers that read them directly.
     result.body = { request: result.requestBody, response: result.responseBody };
@@ -2475,7 +2722,7 @@ function readObjectValue(store, event, rule) {
       if (!event.requestId) return null;
       for (const kind of ['response', 'request']) {
         const body = store.readBody({ ...bodyOptions, kind });
-        if (!body || body.payloadOmitted || body.originalBytes === 0) continue;
+        if (!body || body.state === 'unavailable' || body.payloadOmitted || body.originalBytes === 0) continue;
         let parsed;
         try { parsed = JSON.parse(body.data); } catch { continue; }
         const found = readJsonPath(parsed, rule.path || rule.key);
@@ -2510,7 +2757,7 @@ function objectAppearsIn(store, event, value) {
   if (Object.values(headers.headers).some((headerValue) => String(headerValue).includes(value))) return 'header';
   for (const kind of ['request', 'response']) {
     const body = store.readBody({ ...options, kind });
-    if (body && !body.payloadOmitted && body.data.includes(value)) return 'body';
+    if (body && body.state !== 'unavailable' && !body.payloadOmitted && body.data.includes(value)) return 'body';
   }
   return null;
 }
@@ -3263,9 +3510,16 @@ export function toJsonl(store, { includeBodies = false } = {}) {
       const options = { targetId: event.targetId, cdpSessionId: event.cdpSessionId, requestId: event.requestId, hopId: event.hopId };
       const request = store.readBody({ ...options, kind: 'request' });
       const response = store.readBody({ ...options, kind: 'response' });
+      // TOOL-P1-04：不把 `unavailable` 原因记录写成占用 body 行（否则导入端会把它误读成
+      // captured/empty 的 body）。JSONL 只内联真实 captured/empty body，保持既有格式。
+      const inlineBody = (body) => (body && body.state !== 'unavailable'
+        ? { state: body.state, encoding: body.encoding, bytes: body.bytes, truncated: body.truncated, payloadOmitted: body.payloadOmitted, redacted: body.redacted, data: body.data }
+        : null);
+      const requestInline = inlineBody(request);
+      const responseInline = inlineBody(response);
       const inline = {
-        ...(request ? { request: { state: request.state, encoding: request.encoding, bytes: request.bytes, truncated: request.truncated, payloadOmitted: request.payloadOmitted, redacted: request.redacted, data: request.data } } : {}),
-        ...(response ? { response: { state: response.state, encoding: response.encoding, bytes: response.bytes, truncated: response.truncated, payloadOmitted: response.payloadOmitted, redacted: response.redacted, data: response.data } } : {}),
+        ...(requestInline ? { request: requestInline } : {}),
+        ...(responseInline ? { response: responseInline } : {}),
       };
       if (Object.keys(inline).length) record.body = inline;
     }
@@ -3359,6 +3613,7 @@ export function loadImported(store, imported, { name = null, source = null } = {
   store.chains.clear();
   store.hops.clear();
   store.bodies.clear();
+  if (store.bodyFailures) store.bodyFailures.clear();
   store.headers.clear();
   store.bodyBytes = 0;
   store.headerBytes = 0;
@@ -3976,6 +4231,7 @@ export function networkCapabilities(store, { control = null, subTargets = null }
 
 export default {
   NetworkStore, ControlState, NET_VERSION, NET_LIMITS, NET_DEFAULTS,
+  NET_BODY_REASON_CODES, classifyBodyFailure, normalizeBodyReasonDetail,
   queryEvents, detailEvent, traceNetwork, evidenceBlock, networkCapabilities,
   toJsonl, fromJsonl, toHar, fromHar, loadImported, parseImportedEvidence,
   resolveEvidencePath, publishEvidence, registerArtifact, listArtifacts, searchArtifacts,

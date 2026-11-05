@@ -685,6 +685,56 @@ async function probeC2({ harness, check, notRun }) {
   notRun('二进制响应体 base64', 'fixture 的 /n/* 路由全部返回文本/JSON，没有二进制路由；不做伪造断言。');
 }
 
+/**
+ * TOOL-P1-04 (C2): body 不可得原因码。
+ *  - captureBodies:false -> detail body 明确 reasonCode:"not-captured"（不是 CDP 错误，不补抓）；
+ *  - 恢复 captureBodies:true -> 真实请求 body 正常捕获无回归（reasonCode:null）。
+ */
+async function probeC2BodyReason({ harness, check }) {
+  const exec = execOf('c2-reason');
+  await freshSession(harness, { exec, name: 'c2-reason-off', config: { captureBodies: false } });
+  await pageValue(harness, "fetch('/n/json?from=page&n=1').then((r) => r.json())", exec);
+  const offFinished = await waitEvents(harness, (event) => urlHas('/n/json')(event) && event.phase === 'finished',
+    { exec, label: '/n/json finished (captureBodies:false)' });
+  const offDetail = await detail(harness, { requestId: offFinished[offFinished.length - 1].requestId, include: ['body'] }, exec);
+  const offResponse = offDetail.value?.body?.response || {};
+  const offRequest = offDetail.value?.body?.request || {};
+  check('captureBodies:false → detail body 明确 reasonCode=not-captured（不是 CDP 错误、不补抓）',
+    offResponse.available === false && offResponse.state === 'unavailable'
+      && offResponse.reason === 'NET_BODY_UNAVAILABLE' && offResponse.reasonCode === 'not-captured'
+      && offRequest.available === false && offRequest.reasonCode === 'not-captured',
+    { expected: { state: 'unavailable', reason: 'NET_BODY_UNAVAILABLE', reasonCode: 'not-captured' },
+      actual: {
+        response: { state: offResponse.state, available: offResponse.available, reason: offResponse.reason,
+          reasonCode: offResponse.reasonCode, reasonDetail: offResponse.reasonDetail, data: offResponse.data },
+        requestReasonCode: offRequest.reasonCode,
+      } });
+  check('captureBodies:false 的 detail evidence 仍带 per-tab attribution（tabId=primary）',
+    offDetail.value?.evidence?.attribution?.tabId === 'primary',
+    { expected: { tabId: 'primary' }, actual: offDetail.value?.evidence?.attribution });
+
+  // Restore the documented default so later probes see captureBodies:true again.
+  await sessionStop(harness, exec);
+  const restored = await sessionStart(harness, { name: 'c2-reason-on', exec });
+  check('探针自清理：恢复 captureBodies:true（后续批次前置）',
+    restored.value?.session?.config?.captureBodies === true,
+    { expected: { captureBodies: true }, actual: restored.value?.session?.config });
+  await gotoWebNetwork(harness, { exec });
+  await resetPageTruth(harness, exec);
+  await pageValue(harness, "fetch('/n/json?from=page&n=1').then((r) => r.json())", exec);
+  const onFinished = await waitEvents(harness, (event) => urlHas('/n/json')(event) && event.phase === 'finished',
+    { exec, label: '/n/json finished (captureBodies:true)' });
+  const onDetail = await detail(harness, { requestId: onFinished[onFinished.length - 1].requestId, include: ['body'] }, exec);
+  const onResponse = onDetail.value?.body?.response || {};
+  check('captureBodies:true 正常 body 捕获无回归（available:true/state:captured/reasonCode:null）',
+    onResponse.available === true && onResponse.state === 'captured'
+      && String(onResponse.data || '').includes('net-fixture-ok')
+      && onResponse.reason === null && onResponse.reasonCode === null,
+    { expected: { available: true, state: 'captured', reason: null, reasonCode: null },
+      actual: { state: onResponse.state, available: onResponse.available, bytes: onResponse.bytes,
+        reason: onResponse.reason, reasonCode: onResponse.reasonCode, dataHead: String(onResponse.data || '').slice(0, 80) } });
+}
+
 /** C3 — G1.3 WebSocket handshake, server push, echo, close. */
 async function probeC3({ harness, check }) {
   const exec = execOf('c3');
@@ -1772,6 +1822,51 @@ async function probeC34({ harness, check }) {
     && reset.value?.counters?.dropped === 0, { expected: { events: 0, dropped: 0 }, actual: reset.value?.counters });
 }
 
+/**
+ * TOOL-P1-04 (C34): per-tab attribution + status/events consistency.
+ *  - session/status 回传同一份 {scopeId,runtimeId,tabId}（主标签 tabId="primary"，缺失不推断）；
+ *  - evidence.attribution 与 session.attribution 同源；
+ *  - status 新增 activeSessionId/bufferedEvents，events 的 sessionId/证据与 status 一致。
+ */
+async function probeC34Attribution({ harness, check }) {
+  const exec = execOf('c34-p104');
+  await freshSession(harness, { exec, name: 'c34-p104' });
+  const value = (await sessionStatus(harness, exec)).value || {};
+  const attr = value.attribution || {};
+  const sessionAttr = value.session?.attribution || {};
+  const attrProblems = [];
+  for (const [field, source] of [['attribution', attr], ['session.attribution', sessionAttr]]) {
+    if (typeof source.scopeId !== 'string' || !source.scopeId) attrProblems.push(field + '.scopeId');
+    if (typeof source.runtimeId !== 'string' || !source.runtimeId) attrProblems.push(field + '.runtimeId');
+    if (source.tabId !== 'primary') attrProblems.push(field + '.tabId=' + String(source.tabId));
+  }
+  check('session/status 回传 per-tab attribution{scopeId,runtimeId,tabId=primary}（缺失不推断）',
+    attrProblems.length === 0,
+    { expected: { scopeId: 'non-empty string', runtimeId: 'non-empty string', tabId: 'primary' },
+      actual: { problems: attrProblems, attribution: attr, sessionAttribution: sessionAttr } });
+  const evidenceAttr = value.evidence?.attribution || {};
+  check('session.status evidence 与 session.attribution 同一份 attribution',
+    evidenceAttr.scopeId === attr.scopeId && evidenceAttr.runtimeId === attr.runtimeId && evidenceAttr.tabId === attr.tabId,
+    { expected: { sameRuntimeId: true, tabId: 'primary' }, actual: { evidence: evidenceAttr, topLevel: attr } });
+  check('status 增加 activeSessionId（=session.id）与 bufferedEvents（整数）',
+    value.activeSessionId === value.session?.id && Number.isInteger(value.bufferedEvents),
+    { expected: { activeSessionId: 'session.id', bufferedEvents: 'integer' },
+      actual: { activeSessionId: value.activeSessionId, sessionId: value.session?.id, bufferedEvents: value.bufferedEvents } });
+
+  await clickAndAwait(harness, '#net-fetch-json', 'fetch-json', { exec });
+  const eventsValue = (await netEvents(harness, { limit: 20, view: 'summary' }, exec)).value || {};
+  const eventAttr = eventsValue.evidence?.attribution || {};
+  check('browser_network_events 证据回传同一 attribution，sessionId 与 status 一致',
+    eventAttr.scopeId === attr.scopeId && eventAttr.runtimeId === attr.runtimeId && eventAttr.tabId === 'primary'
+      && eventsValue.sessionId === value.session?.id,
+    { expected: { tabId: 'primary', sameRuntimeId: true, sessionId: 'status.session.id' },
+      actual: { attribution: eventAttr, sessionId: eventsValue.sessionId, statusSessionId: value.session?.id } });
+  const again = (await sessionStatus(harness, exec)).value || {};
+  check('主标签 attribution 稳定（再次 status 仍为同一 tabId/runtimeId）',
+    again.attribution?.tabId === 'primary' && again.attribution?.runtimeId === attr.runtimeId,
+    { expected: { tabId: 'primary', runtimeId: attr.runtimeId }, actual: again.attribution });
+}
+
 /** C35 — G5.2 on-demand detail with honest body states. */
 async function probeC35({ harness, check, notRun }) {
   const exec = execOf('c35');
@@ -2240,12 +2335,15 @@ async function probeC50({ harness, check }) {
   const names = harness.toolNames();
   const networkNames = module.NETWORK_TOOLS.map((tool) => tool.name);
   const legacyNames = module.LEGACY_TOOLS.map((tool) => tool.name);
-  // 35 tools since the T4 round: 23 legacy (22 pre-network + browser_viewport) + 7 network + 5 T4.
+  // Expected tool surface is derived from the harness registry, never hard-coded: P0-E
+  // `browser_tabs` moved the surface 35 -> 36, and a fixed number here silently drifts again on
+  // the next additive tool. Groups: legacy (T1/T2/T3/P0-E) + 7 network + 5 T4.
+  const expectedTotal = (module.EXPECTED_TOOLS && module.EXPECTED_TOOLS.length) || names.length;
   const t4Names = (module.T4_TOOLS || []).map((tool) => tool.name);
-  check('注册表恰好 35 个工具（23 旧 + 7 network + 5 T4），名称与契约一致', names.length === 35
+  check('注册表工具数与 harness EXPECTED_TOOLS 一致（legacy + 7 network + 5 T4），名称与契约一致', names.length === expectedTotal
     && networkNames.every((name) => names.includes(name)) && legacyNames.every((name) => names.includes(name))
     && t4Names.every((name) => names.includes(name)),
-    { expected: { total: 35, network: 7, legacy: 23, t4: 5 }, actual: { total: names.length, missingNetwork: networkNames.filter((n) => !names.includes(n)), missingT4: t4Names.filter((n) => !names.includes(n)) } });
+    { expected: { total: expectedTotal, network: 7, legacy: legacyNames.length, t4: 5 }, actual: { total: names.length, missingNetwork: networkNames.filter((n) => !names.includes(n)), missingT4: t4Names.filter((n) => !names.includes(n)) } });
   const schemaProblems = [];
   for (const tool of module.NETWORK_TOOLS) {
     const definition = harness.tools.get(tool.name);
@@ -2327,9 +2425,11 @@ const BEARER = ['Bearer', 'SECRET', 'netfixture02'].join(' ');
 /** C52 — non-regression invariants that can be proven inside this process. */
 async function probeC52({ harness, check, notRun }) {
   const exec = execOf('c52');
-  check('本套件所有探针使用的工具都在 35 个注册工具内（无 CDP shim）', harness.toolNames().length === 35
+  const module = await harnessModule();
+  const expectedTotal = (module.EXPECTED_TOOLS && module.EXPECTED_TOOLS.length) || harness.toolNames().length;
+  check('本套件所有探针使用的工具都在 harness EXPECTED_TOOLS 注册表内（无 CDP shim）', harness.toolNames().length === expectedTotal
     && harness.toolNames().every((name) => name.startsWith('browser_')),
-    { expected: 35, actual: harness.toolNames().length });
+    { expected: expectedTotal, actual: harness.toolNames().length });
   await freshSession(harness, { exec, name: 'c52' });
   await clickAndAwait(harness, '#net-fetch-json', 'fetch-json', { exec });
   const legacy = await call(harness, 'browser_network', { limit: 20 }, exec);
@@ -2366,6 +2466,7 @@ async function probeC52({ harness, check, notRun }) {
 B_PROBES.push(
   { id: 'C1-http-capture', criteria: ['C1'], title: 'HTTP 捕获与 HTTPS 边界', expected: '/n/json、/n/echo、/n/status/404、/n/slow、/n/redirect/* 的 request/response/finished 与页面真值一致；HTTPS 记 NOT_RUN 且能力 https=mechanism-identical', body: probeC1 },
   { id: 'C2-bodies', criteria: ['C2'], title: '请求/响应体捕获与截断', expected: 'JSON/form/multipart/gzip 体可读；GET 体不伪造；maxBodyBytes 截断计数；二进制 NOT_RUN', body: probeC2 },
+  { id: 'C2-body-reason-codes', criteria: ['C2'], title: 'TOOL-P1-04 body 不可得原因码', expected: 'captureBodies:false → detail body reasonCode=not-captured（reason=NET_BODY_UNAVAILABLE）；恢复后真实 body 仍 captured 且 reasonCode=null', body: probeC2BodyReason },
   { id: 'C3-websocket', criteria: ['C3'], title: 'WebSocket 双向', expected: 'handshake、server-push-1、echo 双向帧、opcode=1、关闭事件、wsFrames 计数', body: probeC3 },
   { id: 'C4-sse', criteria: ['C4'], title: 'SSE 三条消息与 error', expected: 'sse-1..3 每条一个事件、eventName/eventId/data 正确、客户端 1 次 error 不崩', body: probeC4 },
   { id: 'C5-subtargets', criteria: ['C5'], title: 'iframe/worker（partial）与 popup', expected: 'same-origin iframe + dedicated worker 必测、targetId/frameId 可区分、OOPIF/SW 按环境 NOT_RUN、popup 仍阻断、能力 partial', body: probeC5 },
@@ -2398,6 +2499,7 @@ B_PROBES.push(
   { id: 'C32-causality', criteria: ['C32'], title: '因果元数据', expected: 'explicit/redirect 派生、默认不含 temporal', body: probeC32 },
   { id: 'C33-evidence-links', criteria: ['C33'], title: '证据关联', expected: 'link 幂等、detail.evidenceIds、截图 actionId 关联', body: probeC33 },
   { id: 'C34-start-stop', criteria: ['C34'], title: '启停控制', expected: 'stop 后不入会话、stop 不关页面、restart、reset 归零', body: probeC34 },
+  { id: 'C34-p104-attribution', criteria: ['C34'], title: 'TOOL-P1-04 会话 attribution 与 status/events 一致性', expected: 'status/session/evidence/events 回传同一 {scopeId,runtimeId,tabId=primary}；status.activeSessionId=session.id、bufferedEvents 为整数；events.sessionId 与 status 一致', body: probeC34Attribution },
   { id: 'C35-detail-body', criteria: ['C35'], title: '按需详情', expected: '默认不读 body、include 读取、上限、淘汰 seq 报 NET_EVENT_NOT_FOUND', body: probeC35 },
   { id: 'C36-intercept', criteria: ['C36'], title: '拦截', expected: 'block→failed、fail 规则、命中计数、导航守卫仍生效', body: probeC36 },
   { id: 'C37-modify', criteria: ['C37'], title: '请求/响应修改', expected: 'modify-request 头被回显、fulfill 418、modify-response 按能力 NOT_RUN', body: probeC37 },

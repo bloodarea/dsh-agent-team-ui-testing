@@ -13,5 +13,7 @@ state/capabilities 不启动、不占租约；capabilities 报实际三态与 wo
 - BLOCKED：权限/环境/能力缺失。
 - INCONCLUSIVE：已执行但证据不足。
 
+判定前先过 [verdict-gate.md](verdict-gate.md)：五元组（expected_contract/observation/evidence_ids/counterexamples/verdict）+ 6 项交叉校验；反例词出现即复核；写了 limitation 不得判 PASS。报告字段与同源模板见 [reporting.md](reporting.md)、[report-template.md](report-template.md)；合成正反例见 [verdict-examples.md](verdict-examples.md)。
+
 
 截图/eval 内容可能敏感，URL 脱敏也非全覆盖；分享前检查。

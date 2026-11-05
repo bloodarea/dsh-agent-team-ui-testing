@@ -30,6 +30,42 @@ browser_network_session { action:"stop" }
 - 同名 `start` 幂等（`changed:false`）；运行中换名返回 `NET_SESSION_ACTIVE`。
 - 配额由 `maxEvents`/`maxBodyBytes`/`maxTotalBytes`/`maxWsFrames` 控制，淘汰与截断一律计数，可在 `integrity` 中查。
 - `sessionId` 省略时使用当前 scope 的当前会话；无会话时只读工具返回空并置 `session:null`。
+- `status`/`start`/`stop`/`reset` 回传 `activeSessionId` 与 `bufferedEvents`：后者是会话启动前观察到的候选缓冲，不会被 `browser_network_events` 当作会话事件返回。
+- 每个标签页一个采集会话；会话与证据块都带 `attribution:{scopeId,runtimeId,tabId}`（见「会话归属」）。
+
+## Body 三态与原因码
+
+`browser_network_detail` 的 `body.request`/`body.response` 固定三态：
+
+| 状态 | 含义 |
+| --- | --- |
+| `captured` | 有内容可读（`available:true`） |
+| `empty` | 合法空体（HEAD/204/304/GET 无 postData 等），`bytes:0`，不伪造内容 |
+| `unavailable` | 读不到（失败/缓存/重定向中途/已淘汰/未捕获） |
+
+`unavailable` 时 `available:false`，并给出原因：
+
+| 字段 | 语义 |
+| --- | --- |
+| `reason` | 兼容字段，固定 `"NET_BODY_UNAVAILABLE"` |
+| `reasonCode` | 稳定原因码：`not-captured` / `cdp-no-resource` / `cdp-evicted` / `cdp-timeout` / `cdp-invalid-params` / `cdp-disconnected` / `cdp-error` / `cdp-unknown` |
+| `reasonDetail` | 可选、单行、≤160 字节、脱敏（URL userinfo/敏感 query、敏感字段值、控制字符）；不回显 CDP 错误全文 |
+
+- `captureBodies:false`：从未尝试读取 → `reasonCode:"not-captured"`（不是 CDP 错误）；detail 仍返回 `available:false`，**绝不补抓**。
+- 请求体与响应体分别记录原因；本地配额淘汰 body 后读为 `cdp-evicted`；无法归类的错误稳定回落 `cdp-unknown`，不猜测。
+- `empty` 语义保持不变；`reasonCode`/`reasonDetail` 的加入不改变三态判定，也不触发重试或二次读取。
+
+## 会话归属
+
+- 每个 Runtime（= 每个 scope 的每个标签页）一个采集 store；`browser_network_session` 的 `status`/`start`/`stop`/`reset` 结果与各工具 `evidence` 块回传 `attribution:{scopeId,runtimeId,tabId}`。
+- 主标签 `tabId="primary"`，子标签用其 view/tab id；缺失字段为 `null`，**不从 `cdpSessionId`/`targetId` 反推**。
+- 切换 selectedTab 后，网络工具操作该标签自己的会话；不同标签 attribution 不同且稳定。**不做跨标签/跨 scope 聚合**，也不把两个标签的事件合并进同一会话。
+- `status` 另提供 `activeSessionId` 与 `bufferedEvents`，用于区分「没有会话」与「有会话但本页没有事件」。
+
+## 状态一致性
+
+- 本轮未能复现「`status.session=null` 但 events 仍有数据」的现场：当前 store 在会话边界同时清空事件 ring，events wrapper 还有「无会话不得返回事件窗口」的防御（返回空并明示 `session:null`）。
+- 因此该现象的根因按 **UNKNOWN** 记录，不写「已修复」；显式传 `sessionId` 时仍要求会话存在，否则 `NET_SESSION_NOT_FOUND`。
 
 ## 时序与分析
 
@@ -74,7 +110,8 @@ browser_network_session { action:"stop" }
 
 ## 限制
 
-- OOPIF 为部分覆盖；shared/service worker 不采集；popup 不采集；不做跨 scope 聚合与多标签工具。
+- OOPIF 为部分覆盖；shared/service worker 不采集；GUI 内部标签页可打开真人触发的 `target=_blank`（child Runtime 有独立网络缓冲），Agent 网络工具默认操作当前会话 selectedTab（无选择 primary），多标签见 [multi-tab.md](multi-tab.md)；自动/未授权 popup 仍阻断，不做跨 scope 聚合。
 - HTTPS 未独立验收，能力报告标记 `limits.network.https:"mechanism-identical"`。
 - 不做 MITM、不装 CA、不读 TLS 密钥；限速是 CDP 网络条件模拟，不是真实链路整形。
+- 多标签之间只共享浏览器 profile，不共享网络会话；attribution 按标签独立，不聚合。
 - 脱敏是默认规则集，不是通用密钥检测器；正文与头可能仍含敏感信息。

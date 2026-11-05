@@ -522,12 +522,12 @@ async function main() {
   ]);
 
   /* ---------------------------------------------------------------- V1: tool surface */
-  await runProbe('V1-tool-surface', '工具注册与 schema（30 工具，browser_viewport required=[action]）',
-    '注册表恰好 30 个 browser_* 工具；browser_viewport schema required=[action]、additionalProperties=false、action enum get/set、mode enum 四预设；description 非空；render 可用', async () => {
+  await runProbe('V1-tool-surface', '工具注册与 schema（当前工具面，browser_viewport required=[action]）',
+    '注册表恰好与 EXPECTED_TOOLS 一致；browser_viewport schema required=[action]、additionalProperties=false、action enum get/set、mode enum 四预设；description 非空；render 可用', async () => {
       const names = harness.toolNames();
-      check(`注册表恰好 ${EXPECTED_TOOLS.length} 个工具（10 T1 + 7 T2 + 6 T3 + 7 network）`,
+      check(`注册表恰好 ${EXPECTED_TOOLS.length} 个工具（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4）`,
         names.length === EXPECTED_TOOLS.length, { count: names.length }, { count: EXPECTED_TOOLS.length });
-      check('browser_viewport 已注册（工具面 29→30）', names.includes('browser_viewport'), { names }, 'browser_viewport in names');
+      check('browser_viewport 已注册', names.includes('browser_viewport'), { names }, 'browser_viewport in names');
 
       const definition = harness.tools.get('browser_viewport');
       const parameters = definition?.parameters || {};
@@ -875,7 +875,7 @@ async function main() {
   await runProbe('H4b-scroll-echo', '页面/面板滚动后的 X/Y 实时观测（合并节流读回，静置零读）',
     '页面脚本 scrollTo 与连续 rAF 滚动后 ≤1.5s 内 /state 的 ui.observed.x/y 等于页面 scrollX/Y、view.y 同步、source=page、revision 递增；面板 /input 滚轮后同样刷新；同值不再增 revision；无请求静置 1s 不产生 Page.getLayoutMetrics 读', async () => {
       // /state 的 ui.* 只在已认证同源 GUI 响应里出现：H4b 断言的是 Client 实际读到的投影。
-      const connection = harnessModule.createFakeConnectionService({ rejection: undefined });
+      const connection = ownerConnection();
       harness.setConnection(connection);
       try {
         // Drive the legacy:default scope: an UNscoped /state reads that very runtime, so the
@@ -949,11 +949,25 @@ async function main() {
         await harness.invoke('browser_eval', { expression: 'window.scrollTo(0, 0); "ok"' });
         await sleep(120);
         await readStateQuiet();
-        const inputResponse = await harness.request({
-          method: 'POST', path: '/plugins/ui-testing/input',
+        const inputRuntime = (await readState())?.ui?.runtimeId;
+        const inputHeaders = inputRuntime
+          ? { 'x-ui-testing-scope-version': '1', 'x-ui-testing-scope-binding': inputRuntime }
+          : scopedHeadersA;
+        const busyInput = await harness.request({
+          method: 'POST', path: '/plugins/ui-testing/input', headers: inputHeaders,
           body: { events: [{ kind: 'wheel', type: 'mouseWheel', x: 200, y: 200, deltaX: 0, deltaY: 200, button: 'none' }] },
         });
-        check('/input 滚轮派发成功', inputResponse.statusCode === 200 && inputResponse.json?.applied === 1,
+        check('P0-E: 页面工具 lease 下 GUI /input 返回 409 BUSY（不派发）',
+          busyInput.statusCode === 409 && busyInput.json?.code === 'BUSY',
+          { status: 409, code: 'BUSY' }, { status: busyInput.statusCode, body: busyInput.json });
+        // Release the Agent lease by waiting for its bounded idle hold; the same page must then
+        // accept the GUI wheel. This keeps BUSY strict instead of bypassing the guard.
+        await sleep(15500);
+        const inputResponse = await harness.request({
+          method: 'POST', path: '/plugins/ui-testing/input', headers: inputHeaders,
+          body: { events: [{ kind: 'wheel', type: 'mouseWheel', x: 200, y: 200, deltaX: 0, deltaY: 200, button: 'none' }] },
+        });
+        check('/input 滚轮派发成功（lease 释放后）', inputResponse.statusCode === 200 && inputResponse.json?.applied === 1,
           { status: inputResponse.statusCode, body: inputResponse.json }, { status: 200, applied: 1 });
         // The wheel is asynchronous from the caller's point of view: converge on the observed value
         // and compare it with the page's own scroll position read in the same iteration.
@@ -1836,14 +1850,14 @@ async function main() {
     });
 
   /* ---------------------------------------------------------------- A1: annotation surface */
-  await runProbe('A1-annotation-surface', '标注 Agent 可见面：工具面仍 30、capabilities/limits、冷态投影、拒绝与零副作用',
-    '注册表仍 30 工具且无标注工具；capabilities.annotations 声明 readTool/writeSurface/source/trusted/screenshotOverlay/坐标/复位，limits.annotations 八项一致；冷态 state.annotations 为空形状且 stale=not-running；冷态发布 400 annotation-runtime-not-running 零写入；未 scoped 403；未认证 401；读 state/capabilities 不建页面、零 CDP', async () => {
+  await runProbe('A1-annotation-surface', '标注 Agent 可见面：工具面不变、capabilities/limits、冷态投影、拒绝与零副作用',
+    '注册表仍与 EXPECTED_TOOLS 一致且无标注工具；capabilities.annotations 声明 readTool/writeSurface/source/trusted/screenshotOverlay/坐标/复位，limits.annotations 八项一致；冷态 state.annotations 为空形状且 stale=not-running；冷态发布 400 annotation-runtime-not-running 零写入；未 scoped 403；未认证 401；读 state/capabilities 不建页面、零 CDP', async () => {
       const names = harness.toolNames();
-      check('工具面仍 30 个 browser_* 工具，且没有新增标注工具（不是第 31 个工具）',
-        names.length === EXPECTED_TOOLS.length && names.length === 30
+      check(`工具面仍 ${EXPECTED_TOOLS.length} 个 browser_* 工具，且没有新增标注工具`,
+        names.length === EXPECTED_TOOLS.length
           && !names.some((name) => /annot/u.test(name))
           && names.includes('browser_state') && names.includes('browser_capabilities'),
-      { count: names.length, annotTools: names.filter((name) => /annot/u.test(name)) }, { count: 30, annotTools: [] });
+      { count: names.length, annotTools: names.filter((name) => /annot/u.test(name)) }, { count: EXPECTED_TOOLS.length, annotTools: [] });
 
       const capabilities = await harness.invoke('browser_capabilities');
       const annotations = capabilities.value?.annotations || {};

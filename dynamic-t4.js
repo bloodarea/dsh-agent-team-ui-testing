@@ -1654,6 +1654,227 @@ const THRESHOLD_RANGES = Object.freeze({
   maxStep: { min: 1, max: 1000000 },
 });
 
+/* ------------------------------------------------------------------ */
+/* 断言规格（机器可读，TOOL-P1-06）                                    */
+/* 唯一真值来源：T4_THRESHOLDS（阈值 allowed/defaults）、THRESHOLD_RANGES、 */
+/* 以及 validateMotionAssertions/validateTrajectoryQuery 实际执行的规则。   */
+/* MOTION_ASSERTION_SCHEMA 与校验器都从下面的规则派生，不复制第二套字段表。 */
+/* ------------------------------------------------------------------ */
+
+const MOTION_ASSERTION_BASE_FIELDS = Object.freeze(['id', 'type', 'region', 'masks', 'thresholds']);
+const MOTION_CONDITIONAL_FIELDS = Object.freeze(['expectedIntervalMs', 'query', 'expectation']);
+
+/**
+ * 每类断言的额外字段规则：
+ *  - `required`：必须出现（缺失为 missing-required-field）；
+ *  - `conditional`：该类型允许出现的额外字段（出现其它额外字段为 not-applicable-for-type）。
+ * 校验器与 MOTION_ASSERTION_SCHEMA 共用这份表。
+ */
+const MOTION_TYPE_RULES = Object.freeze({
+  'frame-diff': Object.freeze({ required: Object.freeze([]), conditional: Object.freeze([]) }),
+  'region-change': Object.freeze({ required: Object.freeze([]), conditional: Object.freeze([]) }),
+  flicker: Object.freeze({ required: Object.freeze([]), conditional: Object.freeze([]) }),
+  freeze: Object.freeze({ required: Object.freeze(['expectation']), conditional: Object.freeze(['expectation']) }),
+  jank: Object.freeze({
+    required: Object.freeze(['expectedIntervalMs']),
+    conditional: Object.freeze(['expectedIntervalMs']),
+  }),
+  trajectory: Object.freeze({ required: Object.freeze(['query']), conditional: Object.freeze(['query']) }),
+  transition: Object.freeze({ required: Object.freeze([]), conditional: Object.freeze([]) }),
+});
+
+const MOTION_EXPECTATION_LIMITS = Object.freeze({
+  maxEventIdBytes: 128,
+  maxReferenceIds: 16,
+});
+
+/** trajectory.query 两个 variant 的字段边界/默认值（校验器与 schema 共用）。 */
+const MOTION_QUERY_VARIANTS = Object.freeze({
+  color: Object.freeze({
+    method: 'color',
+    required: Object.freeze(['method', 'color']),
+    allowed: Object.freeze(['method', 'color', 'tolerance', 'minArea', 'maxResults']),
+    fields: Object.freeze({
+      color: Object.freeze({
+        type: 'rgb', channels: 3, min: 0, max: 255, integer: true,
+      }),
+      tolerance: Object.freeze({
+        type: 'number', min: 0, max: 255, integer: true, default: 16,
+      }),
+      minArea: Object.freeze({
+        type: 'number', min: 1, max: 16000000, integer: true, default: 4,
+      }),
+      maxResults: Object.freeze({
+        type: 'number', min: 1, max: 20, integer: true, default: 20,
+      }),
+    }),
+  }),
+  template: Object.freeze({
+    method: 'template',
+    required: Object.freeze(['method', 'productId']),
+    allowed: Object.freeze(['method', 'productId', 'minScore', 'stride', 'maxResults']),
+    fields: Object.freeze({
+      productId: Object.freeze({
+        type: 'string', pattern: '^v1_[0-9a-f]{32}$', maxBytes: 128,
+      }),
+      minScore: Object.freeze({
+        type: 'number', min: 0, max: 1, default: 0.95,
+      }),
+      stride: Object.freeze({ type: 'number', min: 1, max: 16, integer: true, default: 1 }),
+      maxResults: Object.freeze({ type: 'number', min: 1, max: 20, integer: true, default: 20 }),
+    }),
+  }),
+});
+
+const MOTION_PIXEL_RECT_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  required: Object.freeze(['x', 'y', 'width', 'height']),
+  properties: Object.freeze({
+    x: Object.freeze({ type: 'integer', minimum: 0 }),
+    y: Object.freeze({ type: 'integer', minimum: 0 }),
+    width: Object.freeze({ type: 'integer', minimum: 1 }),
+    height: Object.freeze({ type: 'integer', minimum: 1 }),
+  }),
+});
+
+const MOTION_FIELD_SPECS = Object.freeze({
+  id: Object.freeze({
+    type: 'string', required: true, minBytes: 1, maxBytes: 64,
+  }),
+  type: Object.freeze({ type: 'enum', required: true, values: MOTION_TYPES }),
+  region: Object.freeze({ type: 'object', nullable: false, schema: MOTION_PIXEL_RECT_SCHEMA }),
+  masks: Object.freeze({
+    type: 'array',
+    maxItems: T4_LIMITS.maxMasks,
+    items: Object.freeze({
+      type: 'object',
+      additionalProperties: false,
+      required: Object.freeze(['id', 'region']),
+      properties: Object.freeze({
+        id: Object.freeze({ type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$' }),
+        region: MOTION_PIXEL_RECT_SCHEMA,
+      }),
+    }),
+  }),
+  thresholds: Object.freeze({
+    type: 'object',
+    additionalProperties: false,
+    valueType: 'finite-number',
+    note: 'allowed keys/defaults are per-type (see byType[type].thresholds)',
+  }),
+  expectedIntervalMs: Object.freeze({
+    type: 'number',
+    exclusiveMinimum: 0,
+    requiredFor: Object.freeze(['jank']),
+    allowedFor: Object.freeze(['jank']),
+  }),
+  query: Object.freeze({
+    type: 'object',
+    nullable: false,
+    requiredFor: Object.freeze(['trajectory']),
+    allowedFor: Object.freeze(['trajectory']),
+    variants: Object.freeze([MOTION_QUERY_VARIANTS.color, MOTION_QUERY_VARIANTS.template]),
+  }),
+  expectation: Object.freeze({
+    type: 'object',
+    requiredFor: Object.freeze(['freeze']),
+    allowedFor: Object.freeze(['freeze']),
+    additionalProperties: false,
+    required: Object.freeze(['motionExpected', 'sourceEventId', 'referenceEventIds']),
+    fields: Object.freeze({
+      motionExpected: Object.freeze({ type: 'boolean', const: true }),
+      sourceEventId: Object.freeze({
+        type: 'string', minBytes: 1, maxBytes: MOTION_EXPECTATION_LIMITS.maxEventIdBytes,
+      }),
+      referenceEventIds: Object.freeze({
+        type: 'array',
+        itemType: 'string',
+        itemMinBytes: 1,
+        itemMaxBytes: MOTION_EXPECTATION_LIMITS.maxEventIdBytes,
+        minItems: 1,
+        maxItems: MOTION_EXPECTATION_LIMITS.maxReferenceIds,
+        uniqueItems: true,
+      }),
+    }),
+  }),
+});
+
+/**
+ * 时间分辨率窗口（TOOL-P1-03）：该断言“最短需要分辨的事件时长”。
+ * 实测中位采样间隔大于该窗口时，只能说明采样太粗、不能证明“异常未发生”；
+ * buildMotionResult 会如实写入 metrics.sampling 与 limitations，且不改变 PASS/FAIL 语义。
+ */
+const MOTION_SAMPLING_WINDOWS = Object.freeze({
+  'frame-diff': Object.freeze({ kind: 'none' }),
+  'region-change': Object.freeze({ kind: 'none' }),
+  flicker: Object.freeze({
+    kind: 'threshold',
+    key: 'maxDurationMs',
+    defaultMs: T4_THRESHOLDS.flicker.defaults.maxDurationMs,
+  }),
+  freeze: Object.freeze({
+    kind: 'threshold',
+    key: 'minDurationMs',
+    defaultMs: T4_THRESHOLDS.freeze.defaults.minDurationMs,
+  }),
+  jank: Object.freeze({
+    kind: 'derived',
+    formula: 'expectedIntervalMs*intervalFactor',
+    intervalFactor: T4_THRESHOLDS.jank.defaults.intervalFactor,
+  }),
+  trajectory: Object.freeze({ kind: 'none' }),
+  transition: Object.freeze({ kind: 'none' }),
+});
+const MOTION_SAMPLING_TYPES = Object.freeze(['flicker', 'freeze', 'jank', 'transition']);
+const SAMPLING_COARSER_THAN_WINDOW = 'sampling-coarser-than-assertion-window';
+
+function motionAssertionAllowedFields(type) {
+  return Object.freeze([...MOTION_ASSERTION_BASE_FIELDS, ...MOTION_TYPE_RULES[type].conditional]);
+}
+
+function motionAssertionRequiredFields(type) {
+  return Object.freeze(['id', 'type', ...MOTION_TYPE_RULES[type].required]);
+}
+
+function thresholdFieldSpec(type, key) {
+  const range = THRESHOLD_RANGES[key];
+  return Object.freeze({
+    type: 'number',
+    min: range.min,
+    max: range.max,
+    integer: range.integer === true,
+    default: T4_THRESHOLDS[type].defaults[key],
+  });
+}
+
+/**
+ * 机器可读的断言规格（供 browser_capabilities.dynamic.assertions 直接投影）。
+ * `byType[type].thresholds.allowed/defaults` 直接引用 T4_THRESHOLDS 的冻结对象，
+ * `allowed/required` 由 MOTION_TYPE_RULES 派生 —— 与 validateMotionAssertions 同源。
+ */
+export const MOTION_ASSERTION_SCHEMA = Object.freeze({
+  version: 1,
+  algorithmVersion: T4_ALGORITHM_VERSION,
+  maxAssertions: T4_LIMITS.maxAssertions,
+  idMaxBytes: 64,
+  types: MOTION_TYPES,
+  fields: MOTION_FIELD_SPECS,
+  byType: Object.freeze(Object.fromEntries(MOTION_TYPES.map((type) => [type, Object.freeze({
+    allowed: motionAssertionAllowedFields(type),
+    required: motionAssertionRequiredFields(type),
+    thresholds: Object.freeze({
+      allowed: T4_THRESHOLDS[type].allowed,
+      defaults: T4_THRESHOLDS[type].defaults,
+      fields: Object.freeze(Object.fromEntries(
+        T4_THRESHOLDS[type].allowed.map((key) => [key, thresholdFieldSpec(type, key)]),
+      )),
+    }),
+    samplingWindow: MOTION_SAMPLING_WINDOWS[type],
+    samplingDisclosure: MOTION_SAMPLING_TYPES.includes(type),
+  })]))),
+});
+
 function budgetFailure(kind) {
   const error = new Error(kind);
   error.budgetKind = kind;
@@ -1790,6 +2011,137 @@ function frameTimes(frames) {
     return { times: frames.map((frame) => frame.sourceTimestamp * 1000), source: 'source' };
   }
   return { times: null, source: null };
+}
+
+/* ------------------------------------------------------------------ */
+/* 采样真实性（TOOL-P1-03）：实测帧间隔统计                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 采样时间基准：sourceTimestamp（秒→毫秒）优先；否则 receivedMonoMs；否则 timelineMs。
+ * 只使用“整段帧都有”的基准，不把不同时钟拼成一条时间轴（那会伪造均匀间隔）。
+ * 与 frameTimes 的优先级不同是刻意的：frameTimes 服务于时长语义，采样统计要的是
+ * 采集侧真实间隔（sourceTimestamp 为采集时间戳，screenshot-loop 则缺省为 receivedMonoMs）。
+ */
+function samplingTimeBase(frames) {
+  if (frames.length === 0) return { times: null, source: null };
+  if (frames.every((frame) => Number.isFinite(frame.sourceTimestamp))) {
+    return { times: frames.map((frame) => frame.sourceTimestamp * 1000), source: 'source-timestamp' };
+  }
+  if (frames.every((frame) => Number.isFinite(frame.receivedMonoMs))) {
+    return { times: frames.map((frame) => frame.receivedMonoMs), source: 'received-mono' };
+  }
+  if (frames.every((frame) => Number.isFinite(frame.timelineMs))) {
+    return { times: frames.map((frame) => frame.timelineMs), source: 'timeline' };
+  }
+  return { times: null, source: null };
+}
+
+/** 有 seq 就按 seq 排（与 normalizeAnalysisFrames 一致），否则保留调用方顺序。 */
+function orderFramesForSampling(frames) {
+  for (let index = 0; index < frames.length; index += 1) {
+    if (!isPlainObject(frames[index])) badArgument(`frames[${index}]`, 'not-an-object', 'computeFrameSampling');
+  }
+  if (frames.length <= 1) return [...frames];
+  const seqs = frames.map((item) => item.seq);
+  if (seqs.every((seq) => Number.isInteger(seq)) && new Set(seqs).size === seqs.length) {
+    return [...frames].sort((left, right) => left.seq - right.seq);
+  }
+  return [...frames];
+}
+
+function intervalStatsOf(intervals) {
+  if (intervals.length === 0) return { count: 0, p50: null, p95: null, min: null, max: null, mean: null };
+  const sorted = [...intervals].sort((left, right) => left - right);
+  const sum = intervals.reduce((total, value) => total + value, 0);
+  return {
+    count: intervals.length,
+    p50: percentile(intervals, 50),
+    p95: percentile(intervals, 95),
+    min: sorted[0],
+    max: sorted[sorted.length - 1],
+    mean: sum / intervals.length,
+  };
+}
+
+/**
+ * 计算帧序列的实测采样间隔（TOOL-P1-03 内核，冻结/卡顿/过渡/闪烁共用）。
+ *
+ * @param {Array<object>} frames 帧记录（可用 `seq` 排序；时间基准见 samplingTimeBase）
+ * @param {{ assertionWindowMs?: number|null }} [options]
+ *   assertionWindowMs：该断言“最短需分辨的事件时长”；实测中位间隔大于它时 sufficient=false
+ *   （insufficientReason='sampling-coarser-than-assertion-window'）。缺省只要求至少一个可测间隔。
+ * @returns {{
+ *   source: 'source-timestamp'|'received-mono'|'timeline'|null,
+ *   frameCount: number,
+ *   intervals: { count:number, p50:number|null, p95:number|null, min:number|null, max:number|null, mean:number|null },
+ *   windowMs: number|null,
+ *   firstMs: number|null,
+ *   lastMs: number|null,
+ *   effectiveFps: number|null,
+ *   assertionWindowMs: number|null,
+ *   sufficient: boolean,
+ *   insufficientReason: 'no-interval'|'sampling-coarser-than-assertion-window'|null
+ * }}
+ * 只输出实测值，不把“没看到异常”升级成“未发生”；调用方必须结合 verdict/limitations 解读。
+ */
+export function computeFrameSampling(frames, options = {}) {
+  if (!Array.isArray(frames)) badArgument('frames', 'not-an-array', 'computeFrameSampling');
+  if (!isPlainObject(options)) badArgument('options', 'not-an-object', 'computeFrameSampling');
+  const assertionWindowMs = hasOwn(options, 'assertionWindowMs') ? options.assertionWindowMs : null;
+  if (assertionWindowMs !== null
+    && (typeof assertionWindowMs !== 'number' || !Number.isFinite(assertionWindowMs) || assertionWindowMs < 0)) {
+    badArgument('assertionWindowMs', 'must-be-a-non-negative-finite-number-or-null', 'computeFrameSampling');
+  }
+  const ordered = orderFramesForSampling(frames);
+  const base = samplingTimeBase(ordered);
+  const intervals = [];
+  if (base.times !== null) {
+    for (let index = 1; index < base.times.length; index += 1) {
+      intervals.push(base.times[index] - base.times[index - 1]);
+    }
+  }
+  const stats = intervalStatsOf(intervals);
+  const windowMs = base.times !== null && base.times.length >= 2
+    ? base.times[base.times.length - 1] - base.times[0]
+    : null;
+  const sufficient = stats.count > 0 && (assertionWindowMs === null || stats.p50 <= assertionWindowMs);
+  return {
+    source: base.source,
+    frameCount: ordered.length,
+    intervals: stats,
+    windowMs,
+    firstMs: base.times !== null ? base.times[0] : null,
+    lastMs: base.times !== null ? base.times[base.times.length - 1] : null,
+    effectiveFps: windowMs !== null && windowMs > 0 ? (stats.count / windowMs) * 1000 : null,
+    assertionWindowMs,
+    sufficient,
+    insufficientReason: stats.count === 0
+      ? 'no-interval'
+      : (sufficient ? null : SAMPLING_COARSER_THAN_WINDOW),
+  };
+}
+
+/** 断言的采样窗口（毫秒）：阈值类取 resolvedThresholds，jank 取 expectedIntervalMs×factor。 */
+function resolveSamplingWindowMs(type, thresholds, metrics) {
+  const window = MOTION_SAMPLING_WINDOWS[type];
+  if (!window || window.kind === 'none') return null;
+  if (window.kind === 'threshold') {
+    const value = thresholds && Number.isFinite(thresholds[window.key])
+      ? thresholds[window.key]
+      : window.defaultMs;
+    return Number.isFinite(value) ? value : null;
+  }
+  if (window.kind === 'derived') {
+    const factor = thresholds && Number.isFinite(thresholds.intervalFactor)
+      ? thresholds.intervalFactor
+      : window.intervalFactor;
+    const expected = metrics && Number.isFinite(metrics.expectedIntervalMs)
+      ? metrics.expectedIntervalMs
+      : null;
+    return Number.isFinite(expected) && Number.isFinite(factor) ? expected * factor : null;
+  }
+  return null;
 }
 
 function sequenceGap(frames) {
@@ -1952,6 +2304,16 @@ function buildMotionResult(type, frames, options) {
   const mergedClassifications = [...new Set([...frameClassifications(frames), ...classifications])];
   const mergedLimitations = [...new Set(limitations)];
   if (!precision.precise) mergedLimitations.push('jpeg-compression-noise');
+  // TOOL-P1-03：只对时间语义断言附实测采样统计；采样不足如实标注 limitation，不改 verdict。
+  let mergedMetrics = metrics;
+  if (isPlainObject(metrics) && MOTION_SAMPLING_TYPES.includes(type)) {
+    const sampling = computeFrameSampling(frames, {
+      assertionWindowMs: resolveSamplingWindowMs(type, resolvedThresholds, metrics),
+    });
+    mergedMetrics = { ...metrics, sampling };
+    // BLOCKED(no-frames) 已由 reasons 说明没有样本，不再叠加“采样过粗”的噪声。
+    if (!sampling.sufficient && verdict !== 'BLOCKED') mergedLimitations.push(SAMPLING_COARSER_THAN_WINDOW);
+  }
   let resolvedStatus = status;
   if (!resolvedStatus) {
     if (verdict === 'PASS' || verdict === 'WARN' || verdict === 'FAIL') resolvedStatus = 'resolved';
@@ -1973,7 +2335,7 @@ function buildMotionResult(type, frames, options) {
     region: region ?? null,
     masks,
     resolvedThresholds,
-    metrics,
+    metrics: mergedMetrics,
     evidenceIds: [...new Set([...frames.map((frame) => frame.frameId), ...evidenceIds])],
     reasons: [...new Set(reasons)],
     limitations: mergedLimitations,
@@ -2427,6 +2789,24 @@ export function analyzeFlicker(input) {
       metrics,
     });
   }
+  // TOOL-P1-03：没有候选不等于“无闪烁”。两种阴性结论都不成立：
+  //  1) 实测中位采样间隔粗于断言窗口（maxDurationMs）：短于采样间隔的闪白无法被覆盖；
+  //  2) 完全没有可测时间基准（sourceTimestamp/receivedMonoMs/timelineMs 全缺）：
+  //     源时钟缺失时无法排除采样间隙里的短闪，不能 PASS。
+  // 慢脉冲（flicker-too-long）与低亮度（brightness-below-threshold）分支在上方先返回，
+  // 它们有可测间隔且观察到变化，PASS 语义保持不变。
+  const sampling = computeFrameSampling(frames, { assertionWindowMs: thresholds.maxDurationMs });
+  if (!sampling.sufficient) {
+    return buildMotionResult('flicker', frames, {
+      verdict: 'INCONCLUSIVE',
+      reasons: ['insufficient-temporal-resolution'],
+      limitations,
+      region,
+      masks,
+      resolvedThresholds: thresholds,
+      metrics,
+    });
+  }
   return buildMotionResult('flicker', frames, {
     verdict: 'PASS',
     reasons: ['no-flicker'],
@@ -2451,15 +2831,19 @@ function validateFreezeExpectation(expectation) {
   if (!isPlainObject(expectation)) badArgument('expectation', 'not-an-object', 'freeze');
   assertAllowedKeys(expectation, ['motionExpected', 'sourceEventId', 'referenceEventIds'], 'expectation');
   if (expectation.motionExpected !== true) badArgument('motionExpected', 'must-be-true', 'expectation');
-  const sourceEventId = readString(expectation, 'sourceEventId', 'expectation', { required: true, maxBytes: 128 });
+  const sourceEventId = readString(expectation, 'sourceEventId', 'expectation', {
+    required: true, maxBytes: MOTION_EXPECTATION_LIMITS.maxEventIdBytes,
+  });
   const referenceEventIds = expectation.referenceEventIds;
   if (!Array.isArray(referenceEventIds) || referenceEventIds.length === 0) {
     badArgument('referenceEventIds', 'empty-array', 'expectation');
   }
-  if (referenceEventIds.length > 16) badArgument('referenceEventIds', 'too-many-items', 'expectation');
+  if (referenceEventIds.length > MOTION_EXPECTATION_LIMITS.maxReferenceIds) {
+    badArgument('referenceEventIds', 'too-many-items', 'expectation');
+  }
   const unique = [];
   for (const id of referenceEventIds) {
-    if (typeof id !== 'string' || id.length === 0 || id.length > 128) {
+    if (typeof id !== 'string' || id.length === 0 || id.length > MOTION_EXPECTATION_LIMITS.maxEventIdBytes) {
       badArgument('referenceEventIds', 'invalid-id', 'expectation');
     }
     if (!unique.includes(id)) unique.push(id);
@@ -2867,35 +3251,38 @@ export function analyzeJank(input) {
 
 function validateTrajectoryQuery(query) {
   if (!isPlainObject(query)) badArgument('query', query === undefined ? 'missing-required-field' : 'not-an-object', 'trajectory');
-  const method = query.method;
-  if (method !== 'color' && method !== 'template') badArgument('method', 'invalid-enum', 'trajectory.query');
-  if (method === 'color') {
-    assertAllowedKeys(query, ['method', 'color', 'tolerance', 'minArea', 'maxResults'], 'trajectory.query');
+  if (!hasOwn(MOTION_QUERY_VARIANTS, query.method)) badArgument('method', 'invalid-enum', 'trajectory.query');
+  const variant = MOTION_QUERY_VARIANTS[query.method];
+  assertAllowedKeys(query, variant.allowed, 'trajectory.query');
+  const normalized = { method: variant.method };
+  if (variant.method === 'color') {
+    const colorSpec = variant.fields.color;
     const color = query.color;
-    if (!Array.isArray(color) || color.length !== 3) badArgument('color', 'invalid-rgb', 'trajectory.query');
+    if (!Array.isArray(color) || color.length !== colorSpec.channels) badArgument('color', 'invalid-rgb', 'trajectory.query');
     for (const channel of color) {
-      if (!Number.isInteger(channel) || channel < 0 || channel > 255) {
+      if (!Number.isInteger(channel) || channel < colorSpec.min || channel > colorSpec.max) {
         badArgument('color', 'invalid-rgb-channel', 'trajectory.query');
       }
     }
-    return {
-      method,
-      color: [...color],
-      tolerance: readNumber(query, 'tolerance', 'trajectory.query', { min: 0, max: 255, integer: true, fallback: 16 }),
-      minArea: readNumber(query, 'minArea', 'trajectory.query', { min: 1, max: 16000000, integer: true, fallback: 4 }),
-      maxResults: readNumber(query, 'maxResults', 'trajectory.query', { min: 1, max: 20, integer: true, fallback: 20 }),
-    };
+    normalized.color = [...color];
+  } else {
+    const productIdSpec = variant.fields.productId;
+    const productId = readString(query, 'productId', 'trajectory.query', {
+      required: true, maxBytes: productIdSpec.maxBytes,
+    });
+    if (!new RegExp(productIdSpec.pattern).test(productId)) {
+      badArgument('productId', 'invalid-product-id', 'trajectory.query');
+    }
+    normalized.productId = productId;
   }
-  assertAllowedKeys(query, ['method', 'productId', 'minScore', 'stride', 'maxResults'], 'trajectory.query');
-  const productId = readString(query, 'productId', 'trajectory.query', { required: true, maxBytes: 128 });
-  if (!/^v1_[0-9a-f]{32}$/.test(productId)) badArgument('productId', 'invalid-product-id', 'trajectory.query');
-  return {
-    method,
-    productId,
-    minScore: readNumber(query, 'minScore', 'trajectory.query', { min: 0, max: 1, fallback: 0.95 }),
-    stride: readNumber(query, 'stride', 'trajectory.query', { min: 1, max: 16, integer: true, fallback: 1 }),
-    maxResults: readNumber(query, 'maxResults', 'trajectory.query', { min: 1, max: 20, integer: true, fallback: 20 }),
-  };
+  for (const key of Object.keys(variant.fields)) {
+    if (key === 'color' || key === 'productId') continue;
+    const spec = variant.fields[key];
+    normalized[key] = readNumber(query, key, 'trajectory.query', {
+      min: spec.min, max: spec.max, integer: spec.integer === true, fallback: spec.default,
+    });
+  }
+  return normalized;
 }
 
 export function analyzeTrajectory(input) {
@@ -3297,28 +3684,30 @@ export function validateMotionAssertions(assertions) {
       }
     }
     const thresholds = resolveThresholds(type, item.thresholds);
+    // 条件字段规则与 MOTION_ASSERTION_SCHEMA 同源（MOTION_TYPE_RULES）：
+    // 只允许该类型的额外字段出现，且 null 一律拒绝。
+    const conditional = MOTION_TYPE_RULES[type].conditional;
+    for (const key of MOTION_CONDITIONAL_FIELDS) {
+      if (!hasOwn(item, key)) continue;
+      if (!conditional.includes(key)) badArgument(key, 'not-applicable-for-type', label);
+      if (item[key] === null) badArgument(key, 'null-not-allowed', label);
+    }
     let expectedIntervalMs = null;
     if (hasOwn(item, 'expectedIntervalMs')) {
-      if (type !== 'jank') badArgument('expectedIntervalMs', 'not-applicable-for-type', label);
-      if (item.expectedIntervalMs === null) badArgument('expectedIntervalMs', 'null-not-allowed', label);
       expectedIntervalMs = readNumber(item, 'expectedIntervalMs', label, { required: true });
       if (!(expectedIntervalMs > 0)) badArgument('expectedIntervalMs', 'must-be-positive', label);
     }
     let query = null;
-    if (hasOwn(item, 'query')) {
-      if (type !== 'trajectory') badArgument('query', 'not-applicable-for-type', label);
-      if (item.query === null) badArgument('query', 'null-not-allowed', label);
-      query = validateTrajectoryQuery(item.query);
-    }
+    if (hasOwn(item, 'query')) query = validateTrajectoryQuery(item.query);
     let expectation = null;
     if (type === 'freeze') {
       if (!hasOwn(item, 'expectation')) badArgument('expectation', 'missing-required-field', label);
       expectation = validateFreezeExpectation(item.expectation);
-    } else if (hasOwn(item, 'expectation')) {
-      badArgument('expectation', 'not-applicable-for-type', label);
     }
-    if (type === 'jank' && expectedIntervalMs === null) badArgument('expectedIntervalMs', 'missing-required-field', label);
-    if (type === 'trajectory' && query === null) badArgument('query', 'missing-required-field', label);
+    for (const key of MOTION_TYPE_RULES[type].required) {
+      if (key === 'expectation') continue; // 已在上面按 freeze 规则校验
+      if (!hasOwn(item, key)) badArgument(key, 'missing-required-field', label);
+    }
     const normalized = { id, type, region, masks, thresholds };
     if (type === 'freeze') normalized.expectation = expectation;
     if (type === 'jank') normalized.expectedIntervalMs = expectedIntervalMs;
