@@ -4001,6 +4001,62 @@ function normalizeDynamicSummary(value, results) {
   return counts;
 }
 
+/**
+ * Split requested computed-style names into what CDP already answered and what it cannot answer.
+ *
+ * `CSS.getComputedStyleForNode` reports longhands only, so shorthands such as `border-color`,
+ * `margin` or `font` never appear in its map even when the page has a value. Anything absent is
+ * collected into `missing` for the page-side fallback instead of being returned as `undefined`.
+ */
+export function pickComputedStyle(map, properties) {
+  const picked = {};
+  const missing = [];
+  for (const name of properties) {
+    if (Object.prototype.hasOwnProperty.call(map, name)) picked[name] = map[name];
+    else missing.push(name);
+  }
+  return { picked, missing };
+}
+
+/**
+ * Ask the page for the property names CDP did not report. `getComputedStyle().getPropertyValue()`
+ * understands both longhands and shorthands; an unknown name resolves to an empty string and stays
+ * omitted (never a fabricated value). A resolve failure or a single failed evaluation degrades to
+ * "not reported" instead of failing the whole read.
+ *
+ * @param {(method: string, params: object, signal?: AbortSignal) => Promise<any>} send CDP send
+ * @param {number} nodeId CDP node id
+ * @param {string[]} names property names to resolve
+ * @returns {Promise<Record<string, string>>} the names the page could answer
+ */
+export async function readComputedStyleFallback(send, nodeId, names, signal) {
+  const out = {};
+  let objectId;
+  try {
+    const resolved = await send('DOM.resolveNode', { nodeId }, signal);
+    objectId = resolved && resolved.object && resolved.object.objectId;
+  } catch {
+    return out;
+  }
+  if (!objectId) return out;
+  for (const name of names) {
+    try {
+      const call = await send('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: 'function (name) { const value = getComputedStyle(this).getPropertyValue(name); return value === "" ? null : value; }',
+        arguments: [{ value: name }],
+        returnByValue: true,
+        silent: true,
+      }, signal);
+      const value = call && call.result ? call.result.value : null;
+      if (typeof value === 'string' && value !== '') out[name] = value;
+    } catch {
+      // A single property must not fail the whole read; it simply stays unreported.
+    }
+  }
+  return out;
+}
+
 export class Runtime {
   /**
    * @param log logger
@@ -7123,8 +7179,13 @@ export class Runtime {
     const map = {};
     for (const entry of computed.computedStyle) map[entry.name] = entry.value;
     if (!properties || !properties.length) return { ok: true, style: map };
-    const picked = {};
-    for (const name of properties) picked[name] = map[name];
+    const { picked, missing } = pickComputedStyle(map, properties);
+    if (missing.length) {
+      // CSS.getComputedStyleForNode reports longhands only: `border-color`, `margin`, `font`, …
+      // are absent even when the page has a value. Ask the page for exactly those names.
+      const send = (method, params, innerSignal) => this.send(method, params, innerSignal);
+      Object.assign(picked, await readComputedStyleFallback(send, node.nodeId, missing, signal));
+    }
     return { ok: true, style: picked };
   }
 

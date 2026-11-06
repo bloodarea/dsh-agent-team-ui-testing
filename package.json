@@ -2,7 +2,6 @@
   "name": "dsh-agent-team-ui-testing",
   "version": "0.1.0",
   "description": "Web/Chromium UI testing for DeepSeekHarness agents: 36 browser_* tools for structured GUI automation, visual comparison, dynamic frame analysis and network debugging, plus a debug panel.",
-  "private": true,
   "type": "module",
   "keywords": ["deepseek-harness", "dsh-plugin", "ui-testing", "gui-testing", "test-automation", "browser-automation", "visual-regression", "network-debugging"],
   "repository": { "type": "git", "url": "https://github.com/bloodarea/dsh-agent-team-ui-testing.git" },
@@ -13,7 +12,7 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.png"
   },
-  "files": ["index.js", "client.js", "frame-source.js", "frame-push.js", "browser-safety.js", "capture-p0.js", "vision-t3.js", "vision-baseline.js", "network-p0.js", "dynamic-t4.js", "cordis.patch.yml", "locale/*.json", "icon.png", "skills/**"],
+  "files": ["index.js", "client.js", "frame-source.js", "frame-push.js", "browser-safety.js", "capture-p0.js", "vision-t3.js", "vision-baseline.js", "network-p0.js", "dynamic-t4.js", "cordis.patch.yml", "locale/*.json", "icon.png", "banner.png", "banner_zh.png", "docs/*.md", "skills/**"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": { "platform": "web", "immediately": true, "inject": [] }

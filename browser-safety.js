@@ -78,7 +78,18 @@ const TAXONOMY = {
   DYNAMIC_LIMIT_EXCEEDED: ['resource', false], DYNAMIC_TIMEOUT: ['timeout', true],
   DYNAMIC_CONTROL_CONFLICT: ['state', false], DYNAMIC_RESTORE_FAILED: ['state', false],
   DYNAMIC_MAPPING_INCOMPATIBLE: ['evidence', false],
+  // P0-E page group (docs/multi-tab.md): a tab that is gone (`scope`), a tab owned by another
+  // workspace (`authorization`), the per-workspace/global page capacity (`resource`) and a popup
+  // whose first document cannot be hosted (`capability`). None of them may read as INTERNAL.
+  TAB_NOT_FOUND: ['scope', false], TAB_FORBIDDEN: ['authorization', false],
+  TAB_LIMIT: ['resource', false], POPUP_UNSUPPORTED: ['capability', false],
+  // T4 extend on a stopped/retained session: the session is gone but starting a new one may
+  // recover, hence scope + retryable (docs/t4-dynamic-behavior.md §extend).
+  DYNAMIC_SESSION_NOT_ACTIVE: ['scope', true],
 };
+
+/** Frozen copy of the error taxonomy: every thrown code must have an entry (tests enforce it). */
+export const ERROR_TAXONOMY = Object.freeze({ ...TAXONOMY });
 export class BrowserError extends Error {
   constructor(code, message, details = {}) {
     super(`[${code}] ${redactText(message)}`);

@@ -32,7 +32,7 @@
 | `browser_screenshot` | `scale` `region` `persist` `out` | 显式 scale 0.1–4；省略时跟随共享 `view.scale`；`region` 为 canvas CSS px（`O=0` 时与文档坐标相同）；PNG 经结构/尺寸校验 |
 | `browser_input` | `events[]` | 原始鼠标/滚轮/键盘事件；`applied` 只是数组长度，不能证明生效 |
 | `browser_network` | `limit` | 轻量请求列表（默认 50、上限 300）；深度分析用网络 P0 七工具 |
-| `browser_computed_style` | `selector` `properties` | 首个匹配元素的计算样式；不证明视觉结果 |
+| `browser_computed_style` | `selector` `properties` | 首个匹配元素的计算样式；简写属性（如 `border-color`/`margin`/`font`）经页面 `getComputedStyle` 回退读取，未知属性不返回；不证明视觉结果 |
 | `browser_http_request` | `url` `method` `headers` `body` `timeoutMs` `maxBytes` … | 独立 HTTP(S) 客户端，不启动浏览器、不占页面租约；`ok:true` **不等于 2xx** |
 | `browser_viewport` | `action:"get"\|"set"` `mode` `x` `y` `canvasX` `canvasY` `width` `height` `scale` `expectedRevision` | `get` 是只读缓存诊断；`set` 是页面操作，走队列与租约 |
 | `browser_state` | — | URL、标题、视口、错误、标注等诊断信息；不保证新鲜 |
