@@ -8,7 +8,7 @@
 
 [English](README.md) | **简体中文**
 
-> **状态：预发布。** Web / Chromium 通道四个层级均已实现：36 个 Agent 工具 + 调试面板，覆盖程序化检查、结构化 GUI 操作、静态视觉分析、动态帧/时序分析、网络抓包、多标签页页面组、共享视口控制、混合画布、选元素与客户端标注。其他运行环境仍在规划中，运行时选择器保持禁用。插件目前以本地链接方式接入，尚未发布安装包。能力、限制与验证方式见 [docs/capability-tiers.md](docs/capability-tiers.md) 与 [docs/verification.md](docs/verification.md)。
+> **状态：预发布。** Web / Chromium 通道四个层级均已实现：36 个 Agent 工具 + 调试面板，覆盖程序化检查、结构化 GUI 操作、静态视觉分析、动态帧/时序分析、网络抓包、多标签页页面组、共享视口控制、混合画布、选元素与客户端标注。其他运行环境仍在规划中，运行时选择器保持禁用。**安装：** `dsh plugin --profile web add dsh-agent-team-ui-testing`。能力、限制与验证方式见 [docs/capability-tiers.md](docs/capability-tiers.md) 与 [docs/verification.md](docs/verification.md)。
 
 ## 这是什么项目？
 
@@ -106,12 +106,25 @@ T1 调用成功不能被当成视觉验收通过。涉及界面的验收标准�
 
 **要求：** 已安装 DSH，并有本地 Chrome/Chromium。插件不自带浏览器、也不会在安装时自动下载，运行时启动的是系统里解析到的可执行文件（见 [docs/getting-started.md](docs/getting-started.md)）；有头模式在 POSIX 宿主上还需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，Windows 宿主自带窗口系统、无需该变量。插件自身要求 Node.js 22+（原生 `WebSocket`）；当前 DSH 发行版要求 Node.js 24.9+，实际以更严格的一项为准。
 
-插件目前以本地链接方式接入 DSH profile，还没有发布 npm 包或兼容性矩阵。
+插件以 DSH 插件 bundle 的形式提供，npm 包名为 `dsh-agent-team-ui-testing`；除上文的 Node.js 与 DSH 要求外，没有额外的兼容性矩阵。
 
-1. 把仓库链接或复制到开发用的 DSH profile。
+```sh
+# npm 形式（推荐）：按 semver 走，dsh-market 可以提示更新
+dsh plugin --profile web add dsh-agent-team-ui-testing
+
+# 浮动 GitHub 形式：也能收到更新，但只有 package.json 的 version 变化时才提示
+dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing
+
+# 固定 tag 形式：精确复现某一个版本，但永远不会收到更新提示
+dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
+```
+
+1. 把包安装进要使用的 DSH profile。
 2. 首次安装后重启 DSH，让插件 bundle 完成注册。
 3. 从 **更多 → 调试视图** 打开调试面板，或从右侧边栏的插件卡片进入。
 4. 只改 `client.js` 时刷新面板即可；改 `index.js`、工具面或内置 Skill 需要重启 DSH。
+
+开发插件时改为把本仓库链接或复制进 profile，不必安装 npm 包。
 
 安装要求、接入步骤与面板用法见 [docs/getting-started.md](docs/getting-started.md)。
 

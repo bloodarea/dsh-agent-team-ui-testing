@@ -17,14 +17,26 @@
 - **有头模式额外要求**：POSIX 宿主需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，否则返回 `DISPLAY_UNAVAILABLE` 并保持无头；Windows 宿主本身有窗口系统，不需要这两个变量。Linux/X11 想彻底隐藏窗口/任务栏/Alt-Tab 需要 `xdotool`（未安装时退化为离屏位置）；Windows 上通过给窗口加 `WS_EX_TOOLWINDOW` 移除任务栏与 Alt-Tab 条目，依赖系统自带的 `powershell.exe`（不可用时退化为"离屏位置 + 任务栏可见"，不影响功能）。默认离屏无可见窗口，设 `DSH_UI_TESTING_HEADED_VISIBLE=1` 可显示窗口；持久 profile 默认 `$DSH_HOME/ui-testing/headed-profile`，可用 `DSH_UI_TESTING_PROFILE_DIR` 覆盖。
 - Node.js 24.9 及以上（当前 DSH 发行版的 engines 要求；插件自身使用原生 WebSocket）。
 
-插件目前以本地链接方式接入 DSH profile，尚未发布 npm 包，也没有兼容性矩阵。
+插件以 DSH 插件 bundle 的形式提供，npm 包名为 `dsh-agent-team-ui-testing`；除上文的 Node.js 与 DSH 要求外，没有额外的兼容性矩阵。
 
 ## 安装与生效
 
-1. 把本仓库链接或复制进 DSH profile。
+```sh
+# npm 形式（推荐）：按 semver 走，dsh-market 可以提示更新
+dsh plugin --profile web add dsh-agent-team-ui-testing
+
+# 浮动 GitHub 形式：也能收到更新，但只有 package.json 的 version 变化时才提示
+dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing
+
+# 固定 tag 形式：精确复现某一个版本，但永远不会收到更新提示
+dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
+```
+
+1. 把包安装进要使用的 DSH profile。
 2. 首次安装后**重启 DSH**，让插件 bundle 完成注册。
 3. 从 **更多 → 调试视图** 打开面板，或从右侧边栏的插件卡片进入。
-4. 生效范围：
+4. 插件开发时改为把本仓库链接或复制进 profile，不必安装 npm 包。
+5. 生效范围：
 
 | 改动 | 生效方式 |
 | --- | --- |

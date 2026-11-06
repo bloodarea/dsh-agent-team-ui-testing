@@ -8,7 +8,7 @@ Let AI agents operate, inspect, test and verify real user interfaces — with ev
 
 **English** | [简体中文](README_zh.md)
 
-> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 36 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, multi-tab page groups, shared viewport control, a hybrid canvas, an element picker and client-side annotations. Other environments are planned and stay disabled in the runtime picker. The plugin is linked locally during development; there is no published package yet. Capabilities, limits and verification are documented in [docs/capability-tiers.md](docs/capability-tiers.md) and [docs/verification.md](docs/verification.md).
+> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 36 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, multi-tab page groups, shared viewport control, a hybrid canvas, an element picker and client-side annotations. Other environments are planned and stay disabled in the runtime picker. **Install:** `dsh plugin --profile web add dsh-agent-team-ui-testing`. Capabilities, limits and verification are documented in [docs/capability-tiers.md](docs/capability-tiers.md) and [docs/verification.md](docs/verification.md).
 
 ## What is this?
 
@@ -106,12 +106,25 @@ A successful T1 call is never treated as a visual pass. UI-specific acceptance c
 
 **Requirements:** a DSH installation and a local Chrome/Chromium binary. The plugin does not bundle or install a browser; it launches the system binary it resolves (see [docs/getting-started.md](docs/getting-started.md)). A headed Web view additionally needs `DISPLAY` or `WAYLAND_DISPLAY` on POSIX hosts; Windows hosts always provide a window system, so headed mode needs no such variable there. The plugin requires Node.js 22+ (native `WebSocket`); the current DSH release itself requires Node.js 24.9+, so a real DSH host follows the stricter version.
 
-The plugin is currently used as a local link into a DSH profile; there is no published npm package or compatibility matrix yet.
+The plugin ships as a DSH plugin bundle and is published on npm as `dsh-agent-team-ui-testing`. There is no compatibility matrix beyond the Node.js and DSH requirements above.
 
-1. Link or copy the repository into the DSH profile used for development.
+```sh
+# npm form (recommended): follows semver, so dsh-market can prompt for updates
+dsh plugin --profile web add dsh-agent-team-ui-testing
+
+# floating GitHub form: also receives updates, but only when package.json version is bumped
+dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing
+
+# pinned tag: reproduces exactly one release and never receives update prompts
+dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
+```
+
+1. Install the package into the DSH profile being used.
 2. Restart DSH after the first install so the plugin bundle is registered.
 3. Open the debug view from **更多 → 调试视图**, or from the plugin card in the right sidebar.
 4. Changes to `client.js` only need a panel refresh; changes to `index.js`, the tool surface or bundled skills need a DSH restart.
+
+For plugin development, link or copy this repository into the profile instead of installing the npm package.
 
 Requirements, install steps and panel usage are in [docs/getting-started.md](docs/getting-started.md).
 
