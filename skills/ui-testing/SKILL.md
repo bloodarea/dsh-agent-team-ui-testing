@@ -7,7 +7,7 @@ description: 使用 browser_* 工具调试与测试已授权的 Web 页面：T1 
 
 ## 何时使用
 
-用于已授权 HTTP(S) 网页的调试、UI 测试、元素定位与交互、计算样式、网络元数据、截图和运行态诊断。**T1 = 程序化接口**（导航/JS/输入/网络/CSSOM/截图/独立 HTTP）；**T2 = 结构化 GUI**（AX 语义快照 + ref 定位 + 可信输入 + 节点状态 + 条件等待）；**T3 = 静态视觉**（对有限张静态 PNG 做裁剪/缩放/预处理/标注/确定性识别/坐标输入/像素差异/受管基线/回归与缺陷用例；无 VLM、无 OCR、无语义命名，不主动读 DOM）；**网络 P0 = 网络调试引擎**（HTTP/HTTPS 请求响应与头/体、WebSocket/SSE、iframe/OOPIF/Worker 采集，统一时间轴、分析与聚合、业务步骤链路、拦截/限速/断连/重放/Mock、JSONL+HAR 证据与多 Agent 独立订阅）；**T4 = 动态行为**（真实 screencast/截图循环帧序列、时间轴、七类运动分析、WAAPI 控制与恢复、六向动态事件关联；帧证据带 sourceTimestamp/encoded+rgba 双 hash/dropped-evicted 计数，关联区分 explicit/redirect/initiator（confirmed-causal）与 observed/temporal（默认过滤））。宿主 OS 支持 Linux / macOS / Windows；尚未定义或实现的目标环境是桌面应用、Android、TUI、HarmonyOS、游戏与 3D。
+用于已授权 HTTP(S) 网页的调试、UI 测试、元素定位与交互、计算样式、网络元数据、截图和运行态诊断。**T1 = 程序化接口**（导航/JS/输入/网络/CSSOM/截图/独立 HTTP）；**T2 = 结构化 GUI**（AX 语义快照 + ref 定位 + 可信输入 + 节点状态 + 条件等待）；**T3 = 静态视觉**（对有限张静态 PNG 做裁剪/缩放/预处理/标注/确定性识别/坐标输入/像素差异/受管基线/回归与缺陷用例；无 VLM、无 OCR、无语义命名，不主动读 DOM）；**网络 P0 = 网络调试引擎**（HTTP/HTTPS 请求响应与头/体、WebSocket/SSE、iframe/OOPIF/Worker 采集，统一时间轴、分析与聚合、业务步骤链路、拦截/限速/断连/重放/Mock、JSONL+HAR 证据与多 Agent 独立订阅）；**T4 = 动态行为**（真实 screencast/截图循环帧序列、时间轴、七类运动分析、WAAPI 控制与恢复、六向动态事件关联；帧证据带 sourceTimestamp/encoded+rgba 双 hash/dropped-evicted 计数，关联区分 explicit/redirect/initiator（confirmed-causal）与 observed/temporal（默认过滤））。宿主 OS 支持 Linux / macOS / Windows；尚未定义或实现的目标环境是桌面应用、Android、TUI、HarmonyOS、小程序、游戏与 3D。
 
 ## 事实来源与边界
 

@@ -2,7 +2,7 @@ Repository name:
 dsh-agent-team-ui-testing
 
 Description (GitHub About):
-Frontend GUI debugging and testing for DeepSeekHarness agents: Web/Chromium is implemented with 36 browser_* tools for structured GUI automation, visual comparison, dynamic frame analysis and network debugging; Windows/Linux/macOS desktop, Android, TUI, HarmonyOS, games and 3D (eight environments) are planned.
+Frontend GUI debugging and testing for DeepSeekHarness agents: Web/Chromium is implemented with 36 browser_* tools for structured GUI automation, visual comparison, dynamic frame analysis and network debugging; Windows/Linux/macOS desktop, Android, TUI, HarmonyOS, mini programs, games and 3D (nine environments) are planned.
 
 Topics (16):
 deepseek-harness, dsh-plugin, ai-agents, agent-teams, multi-agent, ui-testing, gui-testing, test-automation, cross-platform, browser-automation, desktop-automation, android-automation, end-to-end-testing, visual-testing, visual-regression, human-in-the-loop

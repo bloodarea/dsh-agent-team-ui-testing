@@ -76,6 +76,15 @@ browser_screenshot {out}        # 留一张可复核的 PNG
 - **调试工具**：「更多 → 打开调试工具」为当前页面请求一个独立窗口，加载 Chrome 自带的 DevTools（与 F12 等价）。需要当前工作区的浏览器运行时已启动；只有 GUI 与 DSH 同机、且通过 loopback（127.0.0.1/localhost）访问时可用，远程 GUI 暂不支持。弹窗被浏览器拦截时，面板会显示提示和「在新标签页打开调试工具」链接。
 - **共享状态**：面板与 Agent 使用同一 `expectedRevision`，冲突会明确报告而不是静默覆盖。
 
+## 设置页
+
+打开 DSH 的「设置」，左侧导航里的 `UI 测试` 就是「目标环境配置」：
+
+- 按环境视图分组，每个环境列出候选前端技术栈：Web视图 Chrome / Edge / Firefox；Linux视图 Electron（调试 Electron 应用）/ Tauri / GTK / Qt / Flutter；Windows视图 WinUI 3 / WPF / WinForms / Electron / Tauri / Qt / Flutter；macOS视图 SwiftUI / AppKit / Electron / Tauri / Qt / Flutter；Android视图 Jetpack Compose / Android Views / Flutter / React Native / Capacitor / Cordova；TUI视图 Textual / Ink / Bubble Tea / Ratatui / blessed；HarmonyOS视图 ArkUI / ArkUI-X / Flutter / React Native / uni-app；小程序视图 微信小程序 / 支付宝小程序 / 抖音小程序 / QQ小程序 / 百度智能小程序 / 快手小程序 / 京东小程序 / 美团小程序 / 小红书小程序 / 淘宝小程序 / 钉钉小程序；游戏视图 Unity / Unreal Engine / Godot / Cocos Creator / Phaser；3D视图 Three.js / Babylon.js / PlayCanvas / WebGL / WebGPU / Unity。
+- 十个环境分组**默认收起**，点分组标题展开该环境的候选技术栈卡片，再点一次收起；标题右侧显示目标数量。
+- 每张目标卡片显示「环境是否有效：」与版本占位、以及「是否启用：」开关；未支持/未接入的目标禁用开关，并在卡片内部底部显示灰色标签（Edge、Firefox 为「未支持」，其余未接入目标为「未接入」）。
+- 当前只做前端：不探测本机环境、不保存启用状态，也不新增 Host 接口；开关只在当前页面内切换，重新打开即复位。
+
 ## 安全边界
 
 - 页面访问按 DSH 工作区隔离，写操作串行化并通过 single-owner lease 授权。

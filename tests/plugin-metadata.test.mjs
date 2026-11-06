@@ -36,7 +36,7 @@ test('the icon is shipped with the package', () => {
 
 test('locale display metadata exists and the title is not browser-only', () => {
   // Reported bug: the plugin card said "UI Testing Browser" / "UI 测试浏览器" although the runtime
-  // targets frontend GUI debugging across nine environments (Web implemented, eight planned).
+  // targets frontend GUI debugging across ten environments (Web implemented, nine planned).
   for (const language of ['en', 'zh']) {
     const file = new URL(`../locale/${language}.json`, import.meta.url);
     const meta = JSON.parse(readFileSync(file, 'utf8')).meta;

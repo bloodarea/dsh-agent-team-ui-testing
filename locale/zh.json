@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "UI 测试",
-    "description": "面向 DeepSeekHarness 的前端 GUI 调试与测试插件：Web / Chromium 已实现；Windows/Linux/macOS 桌面、Android、TUI、HarmonyOS、游戏与 3D 共八种调试环境规划中。"
+    "description": "面向 DeepSeekHarness 的前端 GUI 调试与测试插件：Web / Chromium 已实现；Windows/Linux/macOS 桌面、Android、TUI、HarmonyOS、小程序、游戏与 3D 共九种调试环境规划中。"
   }
 }

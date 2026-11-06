@@ -18,6 +18,7 @@ window.__ModuleLoader__.load({
       { id: 'harmonyos', label: 'HarmonyOS 视图', ready: false },
       { id: 'game', label: '游戏视图', ready: false },
       { id: 'three-d', label: '3D 视图', ready: false },
+      { id: 'miniprogram', label: '小程序视图', ready: false },
     ];
     /** 与 Host 半边的运行时通信（同源，走应用自身的鉴权）。 */
     const HOST_BASE = '/plugins/ui-testing';
@@ -188,6 +189,7 @@ window.__ModuleLoader__.load({
       harmonyos: { preset: 'phone', fit: true },
       game: { preset: 'wide', fit: true },
       'three-d': { preset: 'wide', fit: true },
+      miniprogram: { preset: 'phone', fit: true },
     });
     function envDefaultSize(id) {
       const def = ENV_DEFAULTS[id] || ENV_DEFAULTS.web;
@@ -7660,6 +7662,271 @@ window.__ModuleLoader__.load({
             remote.activity || activity)));
     }
 
+    /* =====================================================================================
+     * DSH 设置页：设置 → UI 测试 → 目标环境配置
+     * -------------------------------------------------------------------------------------
+     * 用户 2026-11-06 要求（标注草图 + 两轮补充）：设置页按「环境视图」分组列出可调试的目标，
+     * 每个环境都给出候选前端技术栈卡片；Web 视图为 Chrome / Edge / Firefox（Edge、Firefox 标
+     * 「未支持」）；Linux 视图的 Electron 指「调试 Electron 应用」，另含 Tauri / GTK / Qt /
+     * Flutter。灰色状态标签（未支持 / 未接入）放在**卡片内部底部**。
+     *
+     * 本轮只做前端：数据是静态占位，不探测环境、不保存启用状态、不新增 Host 路由或工具。
+     * 开关只在组件内切换（关闭重开即复位），未接入任何检测/持久化能力。
+     * ===================================================================================== */
+    /** 一张目标卡片的默认形态：未接入（规划中），无有效环境、不可启用。 */
+    function plannedTarget(id, name, note) {
+      return { id, name, note: note || null, state: 'planned', valid: false, text: '—', enabled: false };
+    }
+
+    const TARGET_ENV_GROUPS = [
+      {
+        id: 'web', title: 'Web视图',
+        targets: [
+          { id: 'chrome', name: 'Chrome', state: 'supported', valid: true, text: 'Chrome x.x.x', enabled: true },
+          Object.assign(plannedTarget('edge', 'Edge'), { state: 'unsupported' }),
+          Object.assign(plannedTarget('firefox', 'Firefox'), { state: 'unsupported' }),
+        ],
+      },
+      {
+        id: 'linux', title: 'Linux视图',
+        targets: [
+          plannedTarget('electron', 'Electron', '调试 Electron 应用'),
+          plannedTarget('tauri', 'Tauri', 'WebKitGTK'),
+          plannedTarget('gtk', 'GTK', 'GTK 4 / GTK 3'),
+          plannedTarget('qt', 'Qt', 'C++ / QML'),
+          plannedTarget('flutter', 'Flutter', 'Flutter Linux 桌面'),
+        ],
+      },
+      {
+        id: 'windows', title: 'Windows视图',
+        targets: [
+          plannedTarget('winui3', 'WinUI 3', 'Windows App SDK'),
+          plannedTarget('wpf', 'WPF', '.NET 桌面'),
+          plannedTarget('winforms', 'WinForms', '.NET 桌面'),
+          plannedTarget('win-electron', 'Electron'),
+          plannedTarget('win-tauri', 'Tauri', 'WebView2'),
+          plannedTarget('win-qt', 'Qt', 'C++ / QML'),
+          plannedTarget('win-flutter', 'Flutter', 'Flutter Windows 桌面'),
+        ],
+      },
+      {
+        id: 'macos', title: 'macOS视图',
+        targets: [
+          plannedTarget('swiftui', 'SwiftUI', 'Swift'),
+          plannedTarget('appkit', 'AppKit', 'Cocoa'),
+          plannedTarget('mac-electron', 'Electron'),
+          plannedTarget('mac-tauri', 'Tauri', 'WKWebView'),
+          plannedTarget('mac-qt', 'Qt', 'C++ / QML'),
+          plannedTarget('mac-flutter', 'Flutter', 'Flutter macOS 桌面'),
+        ],
+      },
+      {
+        id: 'android', title: 'Android视图',
+        targets: [
+          plannedTarget('compose', 'Jetpack Compose', 'Kotlin'),
+          plannedTarget('android-views', 'Android Views', 'XML 布局'),
+          plannedTarget('android-flutter', 'Flutter'),
+          plannedTarget('react-native', 'React Native'),
+          plannedTarget('capacitor', 'Capacitor', 'WebView'),
+          plannedTarget('cordova', 'Cordova', 'WebView'),
+        ],
+      },
+      {
+        id: 'tui', title: 'TUI视图',
+        targets: [
+          plannedTarget('textual', 'Textual', 'Python'),
+          plannedTarget('ink', 'Ink', 'React / Node.js'),
+          plannedTarget('bubbletea', 'Bubble Tea', 'Go'),
+          plannedTarget('ratatui', 'Ratatui', 'Rust'),
+          plannedTarget('blessed', 'blessed', 'Node.js'),
+        ],
+      },
+      {
+        id: 'harmonyos', title: 'HarmonyOS视图',
+        targets: [
+          plannedTarget('arkui', 'ArkUI', 'ArkTS'),
+          plannedTarget('arkui-x', 'ArkUI-X', '跨平台'),
+          plannedTarget('harmony-flutter', 'Flutter'),
+          plannedTarget('harmony-rn', 'React Native'),
+          plannedTarget('uniapp', 'uni-app', 'Vue'),
+        ],
+      },
+      {
+        id: 'game', title: '游戏视图',
+        targets: [
+          plannedTarget('unity', 'Unity'),
+          plannedTarget('unreal', 'Unreal Engine'),
+          plannedTarget('godot', 'Godot'),
+          plannedTarget('cocos', 'Cocos Creator'),
+          plannedTarget('phaser', 'Phaser'),
+        ],
+      },
+      {
+        id: 'three-d', title: '3D视图',
+        targets: [
+          plannedTarget('threejs', 'Three.js'),
+          plannedTarget('babylon', 'Babylon.js'),
+          plannedTarget('playcanvas', 'PlayCanvas'),
+          plannedTarget('webgpu', 'WebGL / WebGPU'),
+          plannedTarget('three-unity', 'Unity'),
+        ],
+      },
+      {
+        id: 'miniprogram', title: '小程序视图',
+        targets: [
+          plannedTarget('wechat', '微信小程序'),
+          plannedTarget('alipay', '支付宝小程序'),
+          plannedTarget('douyin', '抖音小程序'),
+          plannedTarget('qq', 'QQ小程序'),
+          plannedTarget('baidu', '百度智能小程序'),
+          plannedTarget('kuaishou', '快手小程序'),
+          plannedTarget('jd', '京东小程序'),
+          plannedTarget('meituan', '美团小程序'),
+          plannedTarget('xiaohongshu', '小红书小程序'),
+          plannedTarget('taobao', '淘宝小程序'),
+          plannedTarget('dingtalk', '钉钉小程序'),
+        ],
+      },
+    ];
+
+    /** 设置页样式：只作用于 `.uts-*`，不覆盖宿主设置页的其它样式。 */
+    const TARGET_ENV_CSS = `
+.uts-settings { display: flex; flex-direction: column; gap: 20px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); }
+.uts-head { display: flex; flex-direction: column; gap: 4px; }
+.uts-page-title { margin: 0; font-size: 16px; font-weight: 500; line-height: 24px; }
+.uts-page-desc { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }
+.uts-body { display: flex; flex-direction: column; gap: 12px; }
+.uts-title { margin: 0; font-size: 14px; font-weight: 600; line-height: 20px; }
+.uts-groups { display: flex; flex-direction: column; gap: 18px; }
+.uts-group { display: flex; flex-direction: column; gap: 8px; }
+.uts-group-heading { margin: 0; font-size: 13px; font-weight: 600; line-height: 20px; }
+.uts-group-toggle { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0; padding: 4px 8px; font: inherit; font-weight: 600; line-height: 20px; color: var(--dsw-alias-label-primary); text-align: left; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
+.uts-group-toggle:hover { background: var(--dsw-alias-bg-layer-2); }
+.uts-group-toggle:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.uts-group-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uts-group-count { flex: 0 0 auto; color: var(--dsw-alias-label-tertiary); font-size: 12px; font-weight: 400; }
+.uts-group-chevron { flex: 0 0 auto; margin-left: auto; display: grid; place-items: center; color: var(--dsw-alias-label-secondary); transform: rotate(-90deg); transition: transform .15s ease; }
+.uts-group[data-uts-expanded="true"] .uts-group-chevron { transform: rotate(0deg); }
+.uts-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px 20px; }
+.uts-item { display: flex; flex-direction: column; min-width: 0; }
+.uts-card { box-sizing: border-box; width: 100%; flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: .5px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }
+.uts-card-name { font-size: 13px; font-weight: 600; line-height: 20px; }
+.uts-card-note { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+.uts-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.uts-field-inline { flex-direction: row; align-items: center; gap: 8px; }
+.uts-field-label { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+.uts-field-value { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.uts-field-value[data-uts-valid="false"] { color: var(--dsw-alias-label-tertiary); }
+.uts-empty { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+.uts-tag { align-self: flex-start; margin-top: auto; display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 6px; font-size: 11px; line-height: 1; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-2); border: .5px solid var(--dsw-alias-border-l2); }
+.uts-switch { position: relative; display: inline-flex; align-items: center; width: 32px; height: 18px; flex: 0 0 auto; cursor: pointer; }
+.uts-switch-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+.uts-switch-input:disabled { cursor: not-allowed; }
+.uts-switch-track { position: relative; display: block; width: 32px; height: 18px; border-radius: 999px; background: var(--dsw-alias-bg-layer-3, color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent)); transition: background-color .15s ease; }
+.uts-switch-thumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .28); transition: transform .15s ease; }
+.uts-switch-input:checked + .uts-switch-track { background: var(--dsw-alias-brand-primary); }
+.uts-switch-input:checked + .uts-switch-track .uts-switch-thumb { transform: translateX(14px); }
+.uts-switch-input:disabled + .uts-switch-track { opacity: .45; }
+.uts-switch-input:focus-visible + .uts-switch-track { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .uts-switch-track, .uts-switch-thumb, .uts-group-chevron { transition: none; } }
+`;
+
+    /**
+     * 「是否启用」开关：纯前端占位，只在组件内切换，不写配置、不通知 Host。
+     * 未支持/未接入的目标保持禁用（灰态），避免让人以为已经可启用。
+     */
+    function TargetEnvSwitch(props) {
+      const [on, setOn] = React.useState(props.checked === true);
+      return h('label', {
+        className: 'uts-switch',
+        title: props.disabled ? '当前不可启用' : '前端预览：启用状态暂不保存',
+      },
+        h('input', {
+          type: 'checkbox',
+          role: 'switch',
+          className: 'uts-switch-input',
+          'aria-label': props.label,
+          checked: on,
+          disabled: props.disabled,
+          onChange: (event) => setOn(event.target.checked),
+        }),
+        h('span', { className: 'uts-switch-track', 'aria-hidden': true }, h('span', { className: 'uts-switch-thumb' })));
+    }
+
+    /** 一个目标卡片；未支持/未接入的灰色标签渲染在卡片内部底部（用户 2026-11-06 指定位置）。 */
+    function TargetEnvCard(props) {
+      const target = props.target || {};
+      const tag = target.state === 'unsupported' ? '未支持' : target.state === 'planned' ? '未接入' : '';
+      return h('div', {
+        className: 'uts-item',
+        'data-uts-target': target.id,
+        'data-uts-state': target.state,
+      },
+        h('div', { className: 'uts-card' },
+          h('div', { className: 'uts-card-name' }, target.name),
+          target.note ? h('div', { className: 'uts-card-note' }, target.note) : null,
+          h('div', { className: 'uts-field' },
+            h('span', { className: 'uts-field-label' }, '环境是否有效：'),
+            h('span', { className: 'uts-field-value', 'data-uts-valid': target.valid ? 'true' : 'false' }, target.text)),
+          h('div', { className: 'uts-field uts-field-inline' },
+            h('span', { className: 'uts-field-label' }, '是否启用：'),
+            h(TargetEnvSwitch, {
+              label: '是否启用：' + target.name,
+              checked: target.enabled === true,
+              disabled: target.state !== 'supported',
+            })),
+          tag ? h('span', { className: 'uts-tag', 'data-uts-tag': target.state }, tag) : null));
+    }
+
+    /**
+     * 一个环境分组：默认收齐（用户 2026-11-07 要求），点分组标题展开/收起该环境的候选卡片。
+     * 标题是 h4 里的 button（`aria-expanded`/`aria-controls`），卡片区域按需渲染为 region。
+     */
+    function TargetEnvGroup(props) {
+      const group = props.group;
+      const [expanded, setExpanded] = React.useState(false);
+      const regionId = 'uts-group-' + group.id;
+      return h('div', {
+        className: 'uts-group',
+        'data-uts-group': group.id,
+        'data-uts-expanded': expanded ? 'true' : 'false',
+      },
+        h('h4', { className: 'uts-group-heading' },
+          h('button', {
+            type: 'button',
+            className: 'uts-group-toggle',
+            'aria-expanded': expanded,
+            'aria-controls': regionId,
+            'data-uts-group-toggle': group.id,
+            onClick: () => setExpanded((value) => !value),
+          },
+            h('span', { className: 'uts-group-title' }, group.title),
+            h('span', { className: 'uts-group-count' }, group.targets.length + ' 个目标'),
+            h('span', { className: 'uts-group-chevron', 'aria-hidden': true }, h(IconChevron, null)))),
+        expanded
+          ? h('div', { className: 'uts-cards', id: regionId, role: 'region', 'aria-label': group.title },
+              group.targets.length
+                ? group.targets.map((target) => h(TargetEnvCard, { key: target.id, target }))
+                : h('p', { className: 'uts-empty' }, '暂未接入'))
+          : null);
+    }
+
+    /**
+     * 设置页正文（DSH 设置弹层的独立分区）。标题/描述在这里渲染，因为 settings.section
+     * 只提供导航标签，不提供页面标题；下面才是「目标环境配置」分组。
+     */
+    function TargetEnvSettingsPage() {
+      return h('section', { className: 'uts-settings', 'data-uts-settings': 'page' },
+        h('style', null, TARGET_ENV_CSS),
+        h('header', { className: 'uts-head' },
+          h('h2', { className: 'uts-page-title' }, 'UI 测试'),
+          h('p', { className: 'uts-page-desc' }, '面向 DeepSeekHarness 的前端 GUI 调试与测试插件：Web / Chromium 已实现；Windows/Linux/macOS 桌面、Android、TUI、HarmonyOS、小程序、游戏与 3D 共九种调试环境规划中。')),
+        h('div', { className: 'uts-body' },
+          h('h3', { className: 'uts-title' }, '目标环境配置'),
+          h('div', { className: 'uts-groups' }, TARGET_ENV_GROUPS.map((group) =>
+            h(TargetEnvGroup, { key: group.id, group })))));
+    }
+
     return {
       inject: ['slots'],
       apply(ctx) {
@@ -7671,6 +7938,15 @@ window.__ModuleLoader__.load({
         registerUserTextElementReference(ctx);
 
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: ID }, DebugView));
+
+        // 用户 2026-11-06：在 DSH 设置弹层里注册独立设置页（设置 → UI 测试 → 目标环境配置）。
+        // 只注册前端页面；本轮不探测环境、不写配置、不新增 Host 路由或工具。
+        ctx.slots.inject('settings.section', () => ctx.slots.register({
+          name: 'settings.section',
+          id: 'ui-testing',
+          order: 50,
+          label: () => 'UI 测试',
+        }, TargetEnvSettingsPage));
 
         // 左侧「更多」下拉里的一行：打开调试视图，不再占用左侧图标栏
         function MoreRow(props) {
