@@ -1,5 +1,7 @@
 # dsh-agent-team-ui-testing
 
+<img src="banner_zh.png" alt="dsh-agent-team-ui-testing — 多终端 GUI 自动化测试插件" width="100%">
+
 **面向 DeepSeekHarness 的 AI 原生 UI 测试能力。**
 
 让 AI Agent 真正操作、检查、测试并验证用户界面，并留下人类可复核的证据。
