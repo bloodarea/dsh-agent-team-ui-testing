@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "UI Testing Browser",
-    "description": "UI testing panel for DeepSeekHarness: structured GUI actions, visual comparison, dynamic frame analysis, network debugging and multi-tab page groups."
+    "title": "UI Testing",
+    "description": "Frontend GUI debugging and testing for DeepSeekHarness: Web/Chromium is implemented; Windows/Linux/macOS desktop, Android, TUI, HarmonyOS, games and 3D (eight environments) are planned."
   }
 }

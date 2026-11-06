@@ -2,7 +2,7 @@
 
 <img src="banner.png" alt="dsh-agent-team-ui-testing — multi-platform GUI automation testing for DeepSeekHarness" width="100%">
 
-**AI-native UI testing for DeepSeekHarness.**
+**AI-native frontend GUI testing for DeepSeekHarness.**
 
 Let AI agents operate, inspect, test and verify real user interfaces — with evidence humans can review.
 
