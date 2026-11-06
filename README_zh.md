@@ -71,36 +71,158 @@
 - 运行时访问按 DSH 工作区隔离；页面写操作通过租约和串行队列串行化。
 - 导航限制在授权目标内（默认允许 loopback，私网需显式放开），并校验 DNS、重定向和弹窗。
 
-## 工作方式
+## 架构设计理念
 
-```text
-DSH Agent / Agent Team
-        │
-        ▼
-UI 测试插件运行时
-  ├─ 共享 Chromium（默认无头；Web 视图可切有头）
-  ├─ 每个 DSH 工作区独立页面（URL、视口、历史、网络、租约）
-  ├─ 36 个 Agent 工具
-  └─ 调试面板（预览、尺寸栏、画布、标注）
-        │
-        ▼
-观察结果、证据与结论
+> **一句话理解：** AI Agent 决定「测什么、如何判断」，插件负责「连接目标、执行调试、采集证据」，目标运行时负责「真正运行应用」。当前可用的实现是 **Web / Chromium**；下文的跨环境接口与 `core/`、`targets/`、`engines/` 划分是**下一阶段的设计目标**，不是声称已经完成的重构。
+
+### 三个维度，看懂同一次调试
+
+```mermaid
+mindmap
+  root((UI 自动化调试))
+    执行架构
+      五节点控制链路
+      命令下发与结果回传
+      人类共享调试视图
+    能力架构
+      T1 程序化检查
+      T2 结构化 GUI
+      T3 静态视觉
+      T4 动态视觉
+    基础设施架构
+      P0-A 图像采集
+      P0-B 网络证据
+      P0-C 视口控制
+      P0-D 混合画布与标注
+      P0-E 页面组与会话目标
 ```
 
-目前只实现了 Web / Chromium 适配器。桌面、Android、TUI、HarmonyOS、游戏和 3D 适配器仍在规划中；每个适配器都必须如实报告自己的能力，而不是假装支持同样的操作。
-
-## 能力分层
-
-工具面按**选择与回退层级**组织，不是必须逐层执行的流水线。优先选择成本最低且可靠的路径；当前层级无法产出所需证据时再升级。
-
-| 层级 | 关注点 | 典型用途 |
+| 维度 | 回答的问题 | 在已实现 Web 通道中的体现 |
 | --- | --- | --- |
-| **T1** 程序化 | CDP、HTTP、JavaScript、网络、控制台 | 接口检查、网络故障、页面状态、性能数据 |
-| **T2** 结构化 GUI | DOM、无障碍树、快照/ref、可信输入 | 按钮、表单、导航、交互测试 |
-| **T3** 静态视觉 | 截图、确定性像素分析、坐标操作 | 布局、颜色、遮挡、Canvas、图表与样式缺陷 |
-| **T4** 动态视觉 | 帧序列、时序、运动推理 | 动画、过渡、拖拽与时间相关行为——单张图证明不了运动时从 T3 升级 |
+| **执行架构（Execution）** | 谁发出命令、谁执行、结果怎么回来？ | DSH Agent → 插件 → CDP → Chromium → 页面；结果反向返回 |
+| **能力架构（Capabilities）** | 面对不同问题，采用哪种测试方法？ | T1 程序化、T2 结构化 GUI、T3 单帧视觉、T4 时序/帧视觉 |
+| **基础设施架构（Infrastructure）** | 截图、网络、视口、证据与协作状态如何可靠共享？ | P0-A～P0-E，以及工作区会话、租约、安全与证据机制 |
 
-T1 调用成功不能被当成视觉验收通过。涉及界面的验收标准仍然需要 UI 层观察。
+这三个维度**不是三套独立程序，也不是按顺序经过的三层网络**。一次 `browser_click` 同时穿过执行链路、使用 T2 能力，并依赖 P0 或其他公共机制保存可复核信息。
+
+### 五节点调试链路：从 Agent 到真实程序
+
+```mermaid
+flowchart TB
+    A["① AI Agent<br/>DeepSeek / Agent Team"]
+    C["② Debug Controller<br/>插件统一调试控制端"]
+    P["③ Communication Interface<br/>CDP / ADB / RPC / IPC"]
+    B["④ Debug Backend<br/>内置、第三方或自研执行端"]
+    R["⑤ Target Runtime<br/>真正运行的浏览器 / 应用 / 设备"]
+    A <-->|"任务、观察与结论"| C
+    C <-->|"控制命令、事件与证据"| P
+    P <-->|"协议命令与结果"| B
+    B <-->|"操作与读取"| R
+```
+
+1. **AI Agent**：理解测试意图、选择 T1～T4、判断证据是否满足验收标准。它可以是 DSH 中的 DeepSeek，也可以是 Agent Team。
+2. **Debug Controller（调试控制端）**：插件管理工具入口、权限、工作区、目标、会话、并发、状态和证据。它不要求自己实现所有平台的底层操作。
+3. **Communication Interface（通信接口）**：CDP、ADB、RPC、IPC 等，承载命令和事件。**不同平台可以使用不同协议；统一的是插件上层的能力契约。**
+4. **Debug Backend（调试执行端）**：将命令真正落实到目标运行时。它可以是 Chromium 自带的 DevTools 后端、系统现成的自动化服务，也可以是未来自研的辅助程序。
+5. **Target Runtime（目标运行时）**：真正承载被测试应用的 Chromium、Android、桌面系统、游戏等；通常是插件之外的环境。
+
+这五个节点是**逻辑职责**，不是必须分别部署的五个进程。命令向下，观察、帧、日志和错误向上。人类的**调试视图是旁路观察与交互界面**：它连接同一个受控会话，并不会再启动一套独立的被测试网页。
+
+### 跨环境复用：`core`、`targets`、`engines`
+
+五节点链路描述「运行时谁与谁通信」；下面三个模块描述「插件源码如何组织和复用」，两者不是逐项一一对应。
+
+```mermaid
+flowchart TB
+    AI["DSH Agent / Agent Team"] --> CORE["core · 统一控制端<br/>会话、工具、权限、证据、能力编排"]
+    CORE --> CONTRACT["统一 Target Capability Contract<br/>请求 / 结果 / 错误 / 能力发现"]
+    CONTRACT --> WEB["targets/web · Web Adapter"]
+    CONTRACT --> AND["targets/android · Android Adapter（规划）"]
+    CONTRACT --> MINI["targets/mini-program · 小程序 Adapter（规划）"]
+    WEB --> CDP["CDP"] --> CHROME["Chromium 内置 Debug Backend"] --> PAGE["Web Runtime"]
+    AND --> ADB["ADB / RPC"] --> AUTOMATE["UI Automator / 可选自研 APK"] --> PHONE["Android Runtime"]
+    MINI --> API["平台自动化接口"] --> MP["平台调试后端"] --> MINIAPP["Mini Program Runtime"]
+    ENGINES["engines · 自研执行端源码（按需）"] -. "构建/提供可选 APK" .-> AUTOMATE
+```
+
+| 模块（建议的源码边界） | 责任 | 与五节点的关系 |
+| --- | --- | --- |
+| **`core/`** | 统一工具入口、会话/租约、能力选择、P0 公共处理、证据、错误、权限与调试视图状态 | 主要承载第②节点 |
+| **`targets/`** | 各环境 Adapter：把公共能力请求翻译成 CDP/ADB 等调用，再将结果标准化；声明环境支持和不支持的能力 | 连接第②节点与第③～⑤节点，封装环境差异 |
+| **`engines/`** | **仅存放自研**、需要单独构建或部署的执行端，例如未来 Android 无障碍 Companion APK | 在需要时提供第④节点的一种实现；没有也完全正常 |
+
+`targets/web` 不表示把 Chrome/Playwright 的源码复制进仓库，`engines/android` 也不意味着 Android 必须安装 APK：ADB / UI Automator 可先作为现成执行路径。**`core/`、`targets/`、`engines/` 是未来重构的模块责任示意，不是目前仓库已存在的目录承诺。** 目前 Web 的控制、CDP 接入和工具实现仍以现有插件代码为准。
+
+### 能力架构：T1 / T2 / T3 / T4 按需选路
+
+能力分级描述的是**调试方法及其证据类型**，不是必须从 T1 顺序跑到 T4 的流水线。优先选择成本低、信息充分的方式；只有当前证据无法回答问题时才升级或组合。
+
+| 层级 | 要解决的问题 | 已实现的 Web 例子 | 典型 Agent 工具 |
+| --- | --- | --- | --- |
+| **T1 · 程序化** | 程序、接口、运行状态是否符合预期？ | CDP/HTTP/JavaScript、控制台、计算样式和页面状态 | `browser_eval`、`browser_http_request`、`browser_network` |
+| **T2 · 结构化 GUI** | 页面上「哪个元素」能否被正确操作？ | DOM/无障碍快照、`ref` 定位、表单与可信输入 | `browser_snapshot`、`browser_click`、`browser_fill_form` |
+| **T3 · 静态视觉** | 单张画面是否存在颜色、布局或像素差异？ | PNG 预处理、模板/颜色识别、受管基线与差异断言 | `browser_vision_find`、`browser_vision_compare`、`browser_vision_check` |
+| **T4 · 动态视觉** | 动画、过渡、拖拽等随时间变化的行为是否正确？ | CDP screencast / screenshot-loop、帧时序、确定性运动分析、帧↔网络关联 | `browser_dynamic_session`、`browser_motion_analyze`、`browser_dynamic_correlate` |
+
+**T1 成功不代表 UI 通过；点击命令已派发也不代表登录成功。** 应根据验收问题检查相应的界面、状态或网络证据。T3/T4 的底层分析目前为确定性算法，没有内置 VLM/OCR；Agent 可对返回证据做进一步语义判断。各目标环境只需如实声明可实现的能力，不能为了凑齐四级而伪造 UI 树或网络数据。
+
+### 基础设施架构：P0 是跨能力的公共底座
+
+P0 服务于多种 T 层级；例如 T3/T4 共用图像采集，T1/T4 可以共同利用网络事件。**P0-A～P0-E 是当前 Web 实现的设施名称，后续跨平台复用时，需要区分通用模型和 Web 专属语义。**
+
+| 基础设施 | 已实现的 Web 形式 | 可复用的抽象 / 不能直接照搬之处 |
+| --- | --- | --- |
+| **P0-A · 图像采集** | CDP 截图、有效 PNG 校验、画布区域、尺寸与证据存储 | 通用 `capture`/Frame 与坐标映射；采集指令由目标适配器提供 |
+| **P0-B · 网络证据** | CDP 网络事件、时间线/链路、JSONL/HAR、限速/Mock 等 | 通用网络事件和证据模型；真机或其他进程不一定可抓取同等数据 |
+| **P0-C · 视口控制** | 共享视口尺寸、显示缩放、版本冲突与输入坐标约束 | 通用显示空间/坐标变换；物理屏幕通常不能像浏览器视口一样自由调整 |
+| **P0-D · 混合画布与标注** | 预览画布、拖拽/缩放、坐标标注、Agent 读取标注 | 人类与 Agent 的共享观察/标注模型；必须维护采集图像到输入坐标的映射 |
+| **P0-E · 页面组管理** | 工作区 primary + 最多 3 个 child 标签、独立租约及 `selectedTab` | 抽象为受控目标/窗口/会话选择；其他平台未必有浏览器标签页 |
+
+此外，工作区授权、写操作串行化、证据校验、错误分类、状态版本与人类可复核性属于贯穿能力与执行链路的公共约束。
+
+### 用一个已经实现的 Web 测试走完链路
+
+例子：用户请 DeepSeek「检查登录表单是否可操作、提交后是否产生预期反馈，并保留证据」。以下是**调用路径示意**，不是声称一次真实测试已通过。
+
+```mermaid
+sequenceDiagram
+    actor Human as 人类
+    participant AI as DSH / DeepSeek
+    participant Core as 插件工具与控制逻辑
+    participant CDP as CDP / Chromium Backend
+    participant Web as Web 页面
+    participant Panel as 调试视图
+    Human->>AI: 测试登录界面
+    AI->>Core: browser_navigate
+    Core->>CDP: 导航命令
+    CDP->>Web: 加载页面
+    AI->>Core: browser_snapshot (T2)
+    Core->>CDP: 读取 DOM / 无障碍信息
+    CDP-->>Core: 节点快照和引用
+    Core-->>AI: 可定位的元素
+    AI->>Core: browser_click / browser_fill_form (T2)
+    Core->>CDP: 输入与操作
+    CDP->>Web: 触发页面交互
+    Web-->>CDP: 状态、网络、画面事件
+    CDP-->>Core: 观察与采集数据
+    Core-->>AI: 结构化操作证据
+    AI->>Core: browser_vision_check (T3，按需)
+    Core-->>AI: 像素检查结果与证据
+    Core-->>Panel: 同一会话的帧与状态
+    AI-->>Human: 结论、证据与未验证项
+```
+
+对照三个维度看：**执行架构**负责把 `browser_*` 调用送到 Chromium 并带回结果；**能力架构**在这里选用 T2，必要时补充 T1 网络检查、T3 单帧视觉或 T4 时序分析；**基础设施架构**保存截图、网络与共享状态，面板则让人类观察同一浏览器会话。实际实现中，`browser_http_request` 是独立 HTTP 路径，并非所有 T1 操作都经过 CDP；面板预览经 screencast 和 WebSocket 推送，HTTP 轮询兜底。
+
+### 为下一个目标环境保留哪些不变量？
+
+- **保持上层接口稳定**：Agent 面向通用的操作、观察、截图、事件和证据语义；Web 特有功能可作为环境扩展。
+- **适配器负责翻译，不能虚报能力**：未来 Android 可以通过 ADB / UI Automator 或可选辅助 APK，Mini Program 可以通过平台开发者工具和自动化接口；缺失能力应明确标记为不支持。
+- **公共算法复用，采集手段各异**：T3 像素比较、T4 帧分析、P0 证据模型尽量复用；CDP 截图与 Android 截屏是不同采集实现。
+- **区分源码组织与部署形态**：`targets/` 是宿主侧适配器，`engines/` 是可选自研执行端源码，真实 Chrome / Android / 小程序运行时在仓库之外。
+- **按环境启用工具与 Skill**：未来应避免把未启用目标环境的专用工具 schema、Skill 内容和运行依赖无谓加载进 Agent 上下文。
+
+**实现状态边界：** Web / Chromium 的 36 个工具、T1～T4 及 P0 相关能力已有实现，但验证与覆盖范围仍以 [能力文档](docs/capability-tiers.md)、[架构文档](docs/architecture.md) 和 [验证记录](docs/verification.md) 为准；T4 仍有未完成验收。跨环境 `core/targets/engines` 契约、Android / Mini Program 等适配器属于后续演进方向。
 
 ## 快速开始
 
@@ -132,7 +254,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 
 ## 当前限制
 
-- **仅 Web 目标环境。** Web / Chromium 是唯一实现的目标环境，可运行在 Linux、macOS 与 Windows 宿主上。桌面应用、Android、TUI、HarmonyOS、游戏和 3D 是规划中的目标环境，运行时选择器保持禁用。
+- **仅 Web 目标环境。** Web / Chromium 是唯一实现的目标环境，可运行在 Linux、macOS 与 Windows 宿主上。桌面应用、Android、Mini Program（小程序）、TUI、HarmonyOS、游戏和 3D 是规划中的目标环境，运行时选择器保持禁用。
 - **视觉是确定性的，不是语义的。** T3 判断单张 PNG，T4 判断帧序列，两者都用确定性算法：没有 VLM/OCR、没有语义命名，所以「这段文字是什么意思」「人看着对不对」不在范围内。
 - **T4 验收是部分的。** 动态行为 44 条门槛中 12 条通过、20 条部分通过、0 条失败、12 条未运行——套件非零退出只表示有必需项未运行，不代表失败。close/dispose 恢复、WebGPU 渲染、媒体 seek/stall、header-verified 身份、16ms 闪白覆盖与长连接稳定性仍未验证。
 - **共享浏览器 profile。** Cookie 和存储由 Chromium profile 共享；只有页面、URL、视口、历史、网络缓冲和租约按工作区隔离。
@@ -145,8 +267,8 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 ## Roadmap
 
 - 加固 Web 通道，收口剩余的动态行为门槛（12 条未运行、20 条部分通过）。
-- 增加跨环境测试核心：类型化会话、观察、断言与报告。
-- 按需求和平台可行性验证桌面（Windows/Linux/macOS）、Android、TUI、HarmonyOS、游戏和 3D 适配器。
+- 在保持现有 Web 工具兼容的前提下，逐步提取统一能力契约和 `core/targets/engines` 模块边界，建设跨环境测试核心（类型化会话、观察、断言与报告）。
+- 按需求和平台可行性验证桌面（Windows/Linux/macOS）、Android、Mini Program（小程序）、TUI、HarmonyOS、游戏和 3D 适配器。
 - 增加多 Agent 调度、人类接管与发布加固。
 
 ## 文档

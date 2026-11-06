@@ -71,36 +71,158 @@ The panel is the human window into the same runtime the agent uses.
 - Runtime access is scoped to a DSH workspace; mutating page work is serialized through a lease and a serial queue.
 - Navigation is restricted to approved targets (loopback by default; private ranges blocked unless explicitly enabled), with DNS, redirect and popup checks.
 
-## How it works
+## Architecture design philosophy
 
-```text
-DSH Agent / Agent Team
-        │
-        ▼
-UI testing plugin runtime
-  ├─ shared Chromium (headless by default; headed available in Web view)
-  ├─ one page per DSH workspace (URL, viewport, history, network, lease)
-  ├─ agent tool surface (36 tools)
-  └─ debug panel (preview, size bar, canvas, annotations)
-        │
-        ▼
-Observations, evidence and verdicts
+> **In one sentence:** the AI agent decides *what to test and how to judge it*; the plugin *connects, controls, observes, and preserves evidence*; and the target runtime *actually runs the application*. **Web / Chromium is the implemented target today.** The cross-environment contracts and `core/`, `targets/`, `engines/` boundaries below describe the **next-stage architecture**, not a refactor claimed to be complete.
+
+### Three perspectives on the same test
+
+```mermaid
+mindmap
+  root((UI automation testing))
+    Execution architecture
+      Five-node control chain
+      Commands and observations
+      Shared human debug view
+    Capability architecture
+      T1 Programmatic
+      T2 Structured GUI
+      T3 Static vision
+      T4 Dynamic vision
+    Infrastructure architecture
+      P0-A Image capture
+      P0-B Network evidence
+      P0-C Viewport control
+      P0-D Canvas and annotations
+      P0-E Page groups and targets
 ```
 
-Only the Web/Chromium adapter is implemented. Desktop, Android, TUI, HarmonyOS, game and 3D adapters are planned; each must report its real capabilities instead of pretending to support the same operations.
-
-## Capability tiers
-
-The tool surface is organized as **selection and fallback levels**, not a mandatory pipeline. Pick the lowest-cost reliable path; escalate when it cannot produce the required evidence.
-
-| Level | Focus | Typical use |
+| Perspective | Question it answers | Implemented Web example |
 | --- | --- | --- |
-| **T1** Programmatic | CDP, HTTP, JavaScript, network, console | API checks, network faults, page state, performance data |
-| **T2** Structured GUI | DOM, accessibility tree, snapshot/ref, trusted input | Buttons, forms, navigation, interaction tests |
-| **T3** Static vision | Screenshots, deterministic pixel analysis, coordinate actions | Layout, colour, occlusion, canvas, chart and style defects |
-| **T4** Dynamic vision | Frame sequences, timing, motion reasoning | Animation, transitions, dragging and time-dependent behavior — escalates from T3 when a single image cannot prove motion |
+| **Execution architecture** | Who requests an action, who executes it, and how does the result return? | DSH Agent → plugin → CDP → Chromium → page, with results flowing back |
+| **Capability architecture** | Which method provides sufficient evidence for the question? | T1 programmatic, T2 structured GUI, T3 single-frame vision, T4 temporal/frame vision |
+| **Infrastructure architecture** | How are capture, network data, viewports, evidence, and shared state managed reliably? | P0-A–P0-E plus workspace sessions, leases, safety, and evidence mechanisms |
 
-A successful T1 call is never treated as a visual pass. UI-specific acceptance criteria still require UI-level observations.
+These are **three views of one system**, not three separate applications or sequential network layers. A single `browser_click` travels through the execution chain, exercises a T2 capability, and relies on shared infrastructure to retain reviewable information.
+
+### The five-node debug chain: from agent to running application
+
+```mermaid
+flowchart TB
+    A["① AI Agent<br/>DeepSeek / Agent Team"]
+    C["② Debug Controller<br/>Unified plugin-side control"]
+    P["③ Communication Interface<br/>CDP / ADB / RPC / IPC"]
+    B["④ Debug Backend<br/>Built-in, third-party, or self-developed"]
+    R["⑤ Target Runtime<br/>Actual browser / application / device"]
+    A <-->|"Tasks, observations, verdicts"| C
+    C <-->|"Commands, events, evidence"| P
+    P <-->|"Protocol messages"| B
+    B <-->|"Operations and state"| R
+```
+
+1. **AI Agent** interprets the goal, selects T1–T4 methods, and evaluates whether evidence satisfies acceptance criteria. It may be DeepSeek in DSH or a coordinated Agent Team.
+2. **Debug Controller** is the plugin's unified entry point for tools, authorization, workspace and target selection, sessions, concurrency, state, and evidence.
+3. **Communication Interface** transports commands and events using CDP, ADB, RPC, IPC, or other platform-specific mechanisms. **The upper-level capability contract is standardized; the wire protocol need not be.**
+4. **Debug Backend** executes commands and observes the runtime. It may be Chromium's built-in DevTools backend, an existing OS automation facility, or a future self-developed companion program.
+5. **Target Runtime** actually hosts the application under test: Chromium, Android, desktop OS, game runtime, etc. It normally exists outside the plugin.
+
+These are **logical responsibilities, not five mandatory processes**. Commands flow down; observations, frames, logs, and errors flow up. The human **debug panel is a side-channel view and control surface** for the same managed session, rather than a second independent copy of the tested page.
+
+### Cross-environment reuse: `core`, `targets`, and `engines`
+
+The five-node chain describes runtime responsibilities. These three module boundaries describe code ownership and reuse; they do **not** correspond one-to-one with the five nodes.
+
+```mermaid
+flowchart TB
+    AI["DSH Agent / Agent Team"] --> CORE["core · Unified controller<br/>Sessions, tools, permissions, evidence"]
+    CORE --> CONTRACT["Target Capability Contract<br/>Requests / results / errors / discovery"]
+    CONTRACT --> WEB["targets/web · Web Adapter"]
+    CONTRACT --> AND["targets/android · Android Adapter (planned)"]
+    CONTRACT --> MINI["targets/mini-program · Mini Program Adapter (planned)"]
+    WEB --> CDP["CDP"] --> CHROME["Chromium built-in Debug Backend"] --> PAGE["Web Runtime"]
+    AND --> ADB["ADB / RPC"] --> AUTOMATE["UI Automator / optional custom APK"] --> PHONE["Android Runtime"]
+    MINI --> API["Platform automation API"] --> MP["Platform debug backend"] --> MINIAPP["Mini Program Runtime"]
+    ENGINES["engines · Self-developed executors, if needed"] -. "Builds / supplies optional APK" .-> AUTOMATE
+```
+
+| Proposed module boundary | Responsibility | Relationship to the five nodes |
+| --- | --- | --- |
+| **`core/`** | Unified tools, session/lease control, capability selection, shared P0 processing, evidence, errors, permissions, debug-view state | Primarily node ② |
+| **`targets/`** | Environment adapters translate common capability requests into CDP/ADB/etc., normalize results, and honestly report supported/unsupported operations | Bridges node ② to nodes ③–⑤ |
+| **`engines/`** | **Self-developed** executors that need separate builds or deployment, such as a possible Android accessibility Companion APK | Optional implementation of node ④ |
+
+`targets/web` does not mean vendoring Chrome or Playwright. Nor does `engines/android` imply an APK is required: ADB / UI Automator may be sufficient for initial Android automation. **These directories are proposed module responsibilities, not a claim that the current repository already has this layout.** Existing Web logic remains governed by the current plugin implementation.
+
+### Capability architecture: choose T1 / T2 / T3 / T4 as needed
+
+Tiers classify **testing methods and the evidence they can supply**. They are **selection and fallback levels**, not a mandatory T1→T2→T3→T4 pipeline. Prefer the least expensive reliable method; escalate or combine methods only when the evidence is insufficient.
+
+| Tier | Question | Implemented Web example | Representative agent tools |
+| --- | --- | --- | --- |
+| **T1 · Programmatic** | Is the API, program state, or runtime behavior correct? | CDP/HTTP/JavaScript, console, computed styles, page state | `browser_eval`, `browser_http_request`, `browser_network` |
+| **T2 · Structured GUI** | Which element is present, and can it be operated correctly? | DOM/accessibility snapshots, `ref` targeting, forms, trusted input | `browser_snapshot`, `browser_click`, `browser_fill_form` |
+| **T3 · Static vision** | Does one frame show a layout, color, or pixel-level defect? | PNG preprocessing, color/template matching, managed baselines and diffs | `browser_vision_find`, `browser_vision_compare`, `browser_vision_check` |
+| **T4 · Dynamic vision** | Are transitions, animations, drags, and time-dependent behavior correct? | CDP screencast / screenshot loop, frame timing, deterministic motion analysis, frame↔network correlation | `browser_dynamic_session`, `browser_motion_analyze`, `browser_dynamic_correlate` |
+
+**A successful T1 call is not a UI pass; a dispatched click is not proof of a successful login.** Select the observations relevant to the acceptance criteria. Current T3/T4 algorithms are deterministic and do not embed VLM/OCR; the AI agent can reason over the returned evidence. Adapters must report what their runtimes actually support, not invent UI trees or network telemetry to fill all four tiers.
+
+### Infrastructure architecture: P0 is the shared foundation
+
+P0 supports multiple tiers. T3 and T4 both depend on image capture; T1 and T4 can consume network events. **P0-A–P0-E are the names of today's Web facilities; cross-platform reuse requires separating portable data models from browser-specific semantics.**
+
+| Infrastructure | Implemented Web form | Portable boundary / important caveat |
+| --- | --- | --- |
+| **P0-A · Image capture** | CDP screenshots, validated PNGs, canvas-space regions, dimensions, evidence storage | Common capture/Frame model and coordinate mapping; acquisition remains adapter-specific |
+| **P0-B · Network evidence** | CDP events, timelines/traces, JSONL/HAR, throttling and mocks | Common event/evidence model; other devices/processes may expose less traffic |
+| **P0-C · Viewport control** | Shared viewport dimensions and display scale, revisions/conflicts, input-coordinate constraints | Common display-space/coordinate mapping; physical screens cannot always be freely resized |
+| **P0-D · Hybrid canvas and annotations** | Preview canvas, pan/zoom, anchored annotations readable by agents | Shared human/agent observations; capture-to-input coordinate mapping must remain accurate |
+| **P0-E · Page group management** | Workspace primary + up to three child tabs, leases, `selectedTab` | Generalize target/window/session selection; other platforms may have no browser tabs |
+
+Workspace authorization, serialized mutations, evidence validation, typed errors, state revisions, and human reviewability are further cross-cutting concerns shared by the execution and capability layers.
+
+### Walk through an implemented Web testing path
+
+Example request: “Check that the login form can be operated, observe feedback after submission, and retain evidence.” This is an **illustrative call path**, not a claim that a real login test has passed.
+
+```mermaid
+sequenceDiagram
+    actor Human as Human
+    participant AI as DSH / DeepSeek
+    participant Core as Plugin tools and controller
+    participant CDP as CDP / Chromium Backend
+    participant Web as Web page
+    participant Panel as Debug panel
+    Human->>AI: Test login UI
+    AI->>Core: browser_navigate
+    Core->>CDP: Navigate
+    CDP->>Web: Load page
+    AI->>Core: browser_snapshot (T2)
+    Core->>CDP: Inspect DOM / accessibility
+    CDP-->>Core: Snapshot and element refs
+    Core-->>AI: Targetable elements
+    AI->>Core: browser_click / browser_fill_form (T2)
+    Core->>CDP: Dispatch input
+    CDP->>Web: Trigger interaction
+    Web-->>CDP: State, network, frame events
+    CDP-->>Core: Observations and capture
+    Core-->>AI: Structured action evidence
+    AI->>Core: browser_vision_check (T3, if needed)
+    Core-->>AI: Visual verdict and evidence
+    Core-->>Panel: Same-session frames and state
+    AI-->>Human: Findings, evidence, unknowns
+```
+
+Mapped to the three perspectives: **execution** carries `browser_*` calls to Chromium and observations back; **capabilities** select T2 here and optionally T1 network checks, T3 single-frame vision, or T4 temporal analysis; **infrastructure** preserves captures, network evidence, and shared state so the human can inspect the same session. In the real implementation, `browser_http_request` uses an independent HTTP path—not every T1 operation goes through CDP. Panel preview is delivered via screencast and WebSocket, with HTTP polling as a fallback.
+
+### What stays invariant for the next target?
+
+- **Stable upper-level semantics:** agents request operations, observations, captures, events, and evidence through a common vocabulary; Web-only features remain target-specific extensions.
+- **Adapters translate, never pretend:** Android may use ADB / UI Automator or an optional companion APK; Mini Program may use a platform's developer tools and automation interfaces. Unsupported capabilities must be reported explicitly.
+- **Reuse analysis, vary acquisition:** T3 pixel comparison, T4 frame analysis, and P0 evidence models are candidates for reuse; CDP capture and Android screen capture use different backends.
+- **Distinguish code ownership from deployment:** `targets/` lives on the controller side, `engines/` holds optional self-developed executors, and real Chrome / Android / Mini Program runtimes live outside the repository.
+- **Load targets on demand:** future target selection should avoid needlessly injecting disabled platforms' tool schemas, skill content, or runtime dependencies into the AI agent's context.
+
+**Implementation boundary:** Web / Chromium currently provides 36 tools and T1–T4/P0-related features, subject to the coverage and limitations in [capability tiers](docs/capability-tiers.md), [architecture](docs/architecture.md), and [verification](docs/verification.md). T4 acceptance is still partial. Cross-environment `core/targets/engines` contracts and Android / Mini Program adapters remain proposed work.
 
 ## Getting started
 
@@ -132,7 +254,7 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 
 ## Current limits
 
-- **Web target only.** Web/Chromium is the only implemented target environment and runs on Linux, macOS and Windows hosts. Desktop applications, Android, TUI, HarmonyOS, games and 3D are planned targets and stay disabled in the runtime picker.
+- **Web target only.** Web/Chromium is the only implemented target environment and runs on Linux, macOS and Windows hosts. Desktop applications, Android, Mini Program, TUI, HarmonyOS, games and 3D are planned targets and stay disabled in the runtime picker.
 - **Vision is deterministic, not semantic.** T3 judges single PNGs and T4 judges frame sequences with deterministic algorithms: no VLM/OCR, no semantic naming, so "what does this text mean" and "looks right to a human" stay out of scope.
 - **T4 verification is partial.** Of the 44 dynamic-behavior criteria, 12 pass, 20 are partial, 0 fail and 12 were not run — the suite exits non-zero only because required checks were not run, not because they failed. Close/dispose restore, WebGPU rendering, media seeking/stalling, header-verified identity, 16 ms flicker coverage and long-lived connections remain unverified.
 - **Shared browser profile.** Cookies and storage are shared by the Chromium profile; only page, URL, viewport, history, network buffer and leases are isolated per workspace.
@@ -145,8 +267,8 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 ## Roadmap
 
 - Harden the Web channel and close the remaining dynamic-behavior criteria (12 not run, 20 partial).
-- Add the cross-environment test core: typed sessions, observations, assertions and reports.
-- Validate desktop (Windows/Linux/macOS), Android, TUI, HarmonyOS, game and 3D adapters by demand and platform feasibility.
+- Gradually extract a common capability contract and `core/targets/engines` module boundaries while preserving existing Web tools; build the cross-environment test core (typed sessions, observations, assertions, reports).
+- Validate desktop (Windows/Linux/macOS), Android, Mini Program, TUI, HarmonyOS, game and 3D adapters by demand and platform feasibility.
 - Add multi-agent scheduling, human takeover and release hardening.
 
 ## Documentation
