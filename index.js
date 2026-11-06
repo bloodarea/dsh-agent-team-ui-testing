@@ -306,6 +306,12 @@ const PROFILE_RM_RETRY_DELAY_MS = process.platform === 'win32' ? 150 : 50;
 const COMMIT_TIMEOUT_MS = 10000;
 /** Upper bound of one `browser_input` batch (schema maxItems mirrors this number). */
 const INPUT_EVENT_LIMIT = 200;
+/**
+ * Upper bound of the inline base64 fallback returned by `browser_screenshot`. The attachment is
+ * still delivered when the host provides one; above this many base64 characters the inline text is
+ * omitted and `capture.warnings` carries `image_base64_omitted` (24 MiB).
+ */
+export const IMAGE_INLINE_BASE64_LIMIT = 24 * 1024 * 1024;
 /** Throttle for the merged background title/url/history read (UI polls at 500ms / 80ms). */
 const METADATA_THROTTLE_MS = 250;
 const SKILL_NAME = 'ui-testing';
@@ -512,6 +518,9 @@ function projectAttachment(attachment) {
 const CAPTURE_WARNING_VOCABULARY = Object.freeze([
   'content_uniform', 'content_transparent', 'model_image_downscaled', 'attachment_reencoded',
   'blank_check_skipped', 'capture_file_unavailable', 'attachment_unavailable', 'capture_beyond_viewport',
+  // A 16M-pixel PNG can encode to tens of MiB of base64; above the inline cap only the attachment
+  // (when one exists) is delivered and the fallback text is omitted.
+  'image_base64_omitted',
 ]);
 
 function addCaptureWarning(warnings, code) {
@@ -4061,6 +4070,24 @@ export async function readComputedStyleFallback(send, nodeId, names, signal) {
     }
   }
   return out;
+}
+
+/**
+ * Bound the inline base64 fallback of a capture.
+ *
+ * The value is a base64 string (4/3 of the PNG bytes); a 16M-pixel capture can exceed 40 MiB of
+ * text, which the fallback render would hand to the model as one giant string. Above `limit`
+ * characters the inline copy is omitted (`image: null`) while the attachment fields stay intact;
+ * `omitted` lets the caller record the warning without guessing.
+ *
+ * @param {string|null|undefined} base64 inline base64 payload
+ * @param {number} [limit] character budget (defaults to 24 MiB)
+ * @returns {{image: string|null, omitted: boolean, bytes: number}}
+ */
+export function inlineImageDelivery(base64, limit = IMAGE_INLINE_BASE64_LIMIT) {
+  const bytes = typeof base64 === 'string' ? base64.length : 0;
+  if (bytes > limit) return { image: null, omitted: true, bytes };
+  return { image: typeof base64 === 'string' ? base64 : null, omitted: false, bytes };
 }
 
 export class Runtime {
@@ -15255,13 +15282,16 @@ export function apply(ctx) {
       const networkWindow = runtime.net
         ? runtime.net.window({ frameTimeMs: networkStart.frameTimeMs, captureEndMs: Date.now(), highWater: networkStart.highWater })
         : { sessionId: null, fromSeq: null, toSeq: null, frameTimeMs: networkStart.frameTimeMs, captureEndMs: Date.now(), nearest: null, count: 0 };
+      // 12) Bound the inline fallback text: the attachment (when present) stays authoritative.
+      const inline = inlineImageDelivery(shot.base64);
+      if (inline.omitted) addCaptureWarning(warnings, 'image_base64_omitted');
       return {
         // Historical field kept verbatim: the CSS viewport actually captured (P7/P16 assert it).
         viewport: { width: captured.viewport.width, height: captured.viewport.height },
         // Top-level alias of `capture.networkWindow` (same object; additive only).
         networkWindow,
         bytes: data.length,
-        image: shot.base64,
+        image: inline.image,
         capturedAt: captured.capturedAt,
         sha256,
         attachment,
@@ -15282,6 +15312,7 @@ export function apply(ctx) {
           delivery,
           warnings,
           // Additive only: capture.version stays 1 and every existing field is untouched.
+          image: { inline: inline.omitted ? 'omitted' : 'included', base64Bytes: inline.bytes, limitBytes: IMAGE_INLINE_BASE64_LIMIT },
           networkWindow,
         },
       };

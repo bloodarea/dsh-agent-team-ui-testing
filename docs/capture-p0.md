@@ -13,7 +13,7 @@
 
 ## 输出与证据
 
-返回体包含 PNG 的 base64、`sha256`、尺寸、附件元数据，以及 `capture.version=1` 的结构化证据：
+返回体包含 PNG 的 base64、`sha256`、尺寸、附件元数据，以及 `capture.version=1` 的结构化证据。内联 base64 上限 24 MiB：超过时 `image` 置 `null`、`capture.warnings` 记 `image_base64_omitted`、`capture.image` 给出 `inline:"omitted"` 与字节数，附件字段不受影响。
 
 | 字段 | 内容 |
 | --- | --- |
