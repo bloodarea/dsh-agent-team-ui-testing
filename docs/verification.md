@@ -4,7 +4,7 @@
 
 ## 环境
 
-- Node.js 22 及以上。
+- Node.js 24.9 及以上（当前 DSH 发行版的 engines 要求；插件自身依赖原生 `WebSocket`）。
 - 本地 Chrome / Chromium（可用 `DSH_UI_TESTING_CHROME` 指定）。
 - 验收套件**自己启动**无头 Chromium 与本地靶机（只监听 `127.0.0.1`），不会驱动你正在使用的 DSH 实例。
 
@@ -37,7 +37,7 @@ node tests/acceptance/check-skill-registry.mjs # 真实 SkillRegistry 注册与�
 
 ## 判读结果
 
-每个套件把报告写到 `tests/acceptance/runs/<时间>-<pid>/`，包含 `run-report.json` 与日志。判读规则：
+每个套件把报告写到 `tests/acceptance/runs/<时间>-<pid>/`，文件名按套件是 `run-report.json` 或 `report.json`，并附日志。判读规则：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -84,14 +84,12 @@ node tests/acceptance/verify-3081.mjs      # 隔离宿主 HTTP 集成
 
 ## 本地生成物
 
-以下内容属于本地产物，不纳入版本控制：
+以下内容由运行/验收产生或属于本机资料，不纳入版本控制：
 
 ```text
-tests/acceptance/runs/       验收报告与日志
-tests/acceptance/evidence/   人工留存的证据与截图
-docs/internal/               开发过程记录
-output/                      插件运行输出
-reference/                   本地参考资料
+tests/acceptance/runs/       验收报告与日志（运行时生成）
+tests/acceptance/evidence/   人工留存的证据与截图（运行时生成）
+output/                      插件运行输出（运行时生成）
 ```
 
 ## 提交前检查

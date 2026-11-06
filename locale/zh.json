@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "UI 测试浏览器",
-    "description": "用于预览网页和响应式布局的浏览器面板。"
+    "description": "面向 DeepSeekHarness 的 UI 测试面板：结构化 GUI 操作、视觉对比、动态帧分析、网络调试与多标签页。"
   }
 }

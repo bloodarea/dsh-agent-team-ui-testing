@@ -2,7 +2,7 @@ Repository name:
 dsh-agent-team-ui-testing
 
 Description (GitHub About):
-Cross-platform UI testing for DeepSeekHarness agents: Web, Windows/Linux desktop, and Android, with structured automation, evidence, and human takeover.
+Web/Chromium UI testing for DeepSeekHarness agents, running on Linux, macOS and Windows hosts: structured automation, visual and network evidence, and human takeover. Desktop, Android, TUI, HarmonyOS, game and 3D targets are planned.
 
 Topics (16):
 deepseek-harness, dsh-plugin, ai-agents, agent-teams, multi-agent, ui-testing, gui-testing, test-automation, cross-platform, browser-automation, desktop-automation, android-automation, end-to-end-testing, visual-testing, visual-regression, human-in-the-loop
@@ -14,7 +14,7 @@ Repository:
 https://github.com/bloodarea/dsh-agent-team-ui-testing
 
 Suggested status:
-Architecture / pre-release. Roadmap items are planned capabilities and must not be presented as released functionality.
+Pre-release. The Web/Chromium target is implemented across T1–T4; planned targets and roadmap items must not be presented as released functionality.
 
 Banners and logo:
-The README now embeds banner.png (English, README.md) and banner_zh.png (Chinese, README_zh.md); both are the reviewed cross-platform design and stay at the repository root. The plugin logo is icon.png, exported as "./icon" in package.json, replacing the earlier placeholder icon.svg. Banners are concept artwork, not screenshots of a released build.
+README.md embeds banner.png (English) and README_zh.md embeds banner_zh.png (Chinese); both are the reviewed cross-platform design and stay at the repository root. The plugin logo is icon.png, exported as "./icon" in package.json. Banners are concept artwork, not screenshots of a released build.

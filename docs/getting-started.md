@@ -15,7 +15,7 @@
   找不到时第一个页面工具报 `UNSUPPORTED` 并列出候选路径；显式覆盖无效时如实报错，不会静默回退到别的浏览器。Windows 上**不探测注册表**：Chrome 装在非标准目录、或使用 scoop/choco 的 `.cmd` shim 时，请用 `DSH_UI_TESTING_CHROME` 直接指向 `chrome.exe`。
 - 安装参考：Chrome 官方下载 <https://www.google.com/chrome/>；Debian/Ubuntu 也可 `sudo apt install chromium`（或发行版提供的 `chromium-browser`）；macOS 可 `brew install --cask google-chrome`。Windows 用官方安装包（默认装在 `C:\Program Files\Google\Chrome\Application`）。以发行版实际包名为准。
 - **有头模式额外要求**：POSIX 宿主需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，否则返回 `DISPLAY_UNAVAILABLE` 并保持无头；Windows 宿主本身有窗口系统，不需要这两个变量。Linux/X11 想彻底隐藏窗口/任务栏/Alt-Tab 需要 `xdotool`（未安装时退化为离屏位置）；Windows 上通过给窗口加 `WS_EX_TOOLWINDOW` 移除任务栏与 Alt-Tab 条目，依赖系统自带的 `powershell.exe`（不可用时退化为"离屏位置 + 任务栏可见"，不影响功能）。默认离屏无可见窗口，设 `DSH_UI_TESTING_HEADED_VISIBLE=1` 可显示窗口；持久 profile 默认 `$DSH_HOME/ui-testing/headed-profile`，可用 `DSH_UI_TESTING_PROFILE_DIR` 覆盖。
-- Node.js 22 及以上（运行时使用原生 WebSocket）。
+- Node.js 24.9 及以上（当前 DSH 发行版的 engines 要求；插件自身使用原生 WebSocket）。
 
 插件目前以本地链接方式接入 DSH profile，尚未发布 npm 包，也没有兼容性矩阵。
 

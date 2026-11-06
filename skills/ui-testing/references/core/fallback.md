@@ -51,7 +51,7 @@
 
 | 结果 | 语义 | 合法下一步 |
 |---|---|---|
-| `UNSUPPORTED` | 当前插件明确没有该能力（如 T3/T4、iframe/OOPIF 内部、closed shadow、contenteditable 编辑器、下载/上传/Cookie 导出、Agent 多标签页选择（GUI 内部标签页另有支持）、原生 select popup、Agent 视口工具） | 报告 `BLOCKED`，不要找不存在的方法 |
+| `UNSUPPORTED` | 当前插件明确没有该能力（如 iframe/OOPIF 内部元素、closed shadow 内部、contenteditable 编辑器、下载/上传/Cookie 导出、Agent 多 target/frame 选择、原生 select popup） | 报告 `BLOCKED`，不要找不存在的方法 |
 | `UNAVAILABLE` | 工具存在但当前不可用（浏览器启动失败、CDP 连接断开、30s 超时） | 检查 `browser_state.error`；可重试一次并记录，不要越权绕过 |
 | `INCONCLUSIVE` | 执行了部分操作，但证据不足以得出结论（例如截图无法分析、导航未等待加载） | 换 T1 观察方法；仍不足则 `INCONCLUSIVE` |
 | `ACTION_UNKNOWN` | 输入/导航超时或断连，副作用不确定 | **先查页面状态**，不得盲重放提交、删除、支付等动作 |

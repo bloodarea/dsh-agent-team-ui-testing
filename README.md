@@ -8,7 +8,7 @@ Let AI agents operate, inspect, test and verify real user interfaces — with ev
 
 **English** | [简体中文](README_zh.md)
 
-> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 36 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, shared viewport control, a hybrid canvas and client-side annotations. Other environments are planned and stay disabled in the runtime picker. The plugin is linked locally during development; there is no published package yet. Capabilities, limits and verification are documented in [docs/capability-tiers.md](docs/capability-tiers.md) and [docs/verification.md](docs/verification.md).
+> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 36 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, multi-tab page groups, shared viewport control, a hybrid canvas, an element picker and client-side annotations. Other environments are planned and stay disabled in the runtime picker. The plugin is linked locally during development; there is no published package yet. Capabilities, limits and verification are documented in [docs/capability-tiers.md](docs/capability-tiers.md) and [docs/verification.md](docs/verification.md).
 
 ## What is this?
 
@@ -33,9 +33,11 @@ This project focuses on:
 ## What works today
 
 - **Shared browser runtime** — one Chromium per host (the system Chrome/Chromium binary; the plugin does not bundle or install a browser), headless by default with an optional headed mode in the Web view (off-screen hidden window + persistent profile); each DSH workspace gets its own page, URL, viewport, history, network buffer and lease. Cookies and storage are shared by the active Chromium profile.
-- **36 agent tools** across programmatic, structured GUI, static vision, dynamic behavior and network debugging.
+- **36 agent tools** across programmatic, structured GUI, static vision, dynamic behavior, network debugging and per-workspace tab management.
+- **Multi-tab page group (P0-E)** — each workspace keeps a primary page plus up to three child tabs, with per-tab leases, per-agent tab selection and popup adoption kept under the same isolation rules.
 - **Dynamic behavior (T4)** — real CDP screencast plus a screenshot-loop path, a bounded frame store with integrity counters, seven deterministic motion analyses, WAAPI motion control with restore, region-only frame delivery, and six-direction frame↔network event correlation.
 - **Debug panel** — live preview, responsive size controls, shared viewport state, a hybrid canvas, and a client-side annotation layer that agents can read back.
+- **Element picker** — select an element in the panel preview to append its node description to the chat as an `@` reference chip; the model receives the full text block and the page is not modified.
 - **Evidence and safety** — typed errors, structured action evidence, validated PNG capture, managed visual baselines, network evidence and optimistic concurrency for shared state.
 
 ### Agent tools
@@ -43,6 +45,7 @@ This project focuses on:
 | Group | Tools | What it covers |
 | --- | --- | --- |
 | **Programmatic** (10) | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_viewport` `browser_state` `browser_capabilities` | Navigation, JavaScript, console/network inspection, independent HTTP requests, computed styles, screenshots, raw mouse/wheel/keyboard input, shared viewport state and capability reporting |
+| **Page group** (1) | `browser_tabs` | Primary + up to three child tabs per workspace, per-tab leases, agent tab selection and tab lifecycle (list/current/select/open/close/wait) |
 | **Structured GUI** (7) | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | Snapshot → ref targeting, trusted input, forms, node state and waits, with structured evidence and typed errors |
 | **Static vision** (6) | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | Crop/zoom/preprocess/annotate PNGs, deterministic colour/component/edge/template finders, YIQ diff, coordinate input, managed baselines and visual assertions |
 | **Dynamic** (5) | `browser_dynamic_session` `browser_motion_observe` `browser_motion_analyze` `browser_motion_control` `browser_dynamic_correlate` | Bounded frame capture with integrity counters, region-only frame delivery, seven motion/transition analyses, WAAPI pause/seek/rate/restore, and six-direction frame↔network correlation |
@@ -101,7 +104,7 @@ A successful T1 call is never treated as a visual pass. UI-specific acceptance c
 
 ## Getting started
 
-**Requirements:** a DSH installation and a local Chrome/Chromium binary. The plugin does not bundle or install a browser; it launches the system binary it resolves (see [docs/getting-started.md](docs/getting-started.md)). A headed Web view additionally needs `DISPLAY` or `WAYLAND_DISPLAY`.
+**Requirements:** a DSH installation and a local Chrome/Chromium binary. The plugin does not bundle or install a browser; it launches the system binary it resolves (see [docs/getting-started.md](docs/getting-started.md)). A headed Web view additionally needs `DISPLAY` or `WAYLAND_DISPLAY` on POSIX hosts; Windows hosts always provide a window system, so headed mode needs no such variable there. The plugin requires Node.js 22+ (native `WebSocket`); the current DSH release itself requires Node.js 24.9+, so a real DSH host follows the stricter version.
 
 The plugin is currently used as a local link into a DSH profile; there is no published npm package or compatibility matrix yet.
 
@@ -116,9 +119,9 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 
 ## Current limits
 
-- **Web only.** Windows, Linux, macOS desktop, Android, TUI, HarmonyOS, games and 3D are planned and disabled in the runtime picker.
+- **Web target only.** Web/Chromium is the only implemented target environment and runs on Linux, macOS and Windows hosts. Desktop applications, Android, TUI, HarmonyOS, games and 3D are planned targets and stay disabled in the runtime picker.
 - **Vision is deterministic, not semantic.** T3 judges single PNGs and T4 judges frame sequences with deterministic algorithms: no VLM/OCR, no semantic naming, so "what does this text mean" and "looks right to a human" stay out of scope.
-- **T4 verification is partial.** Of the 40 dynamic-behavior criteria, 8 pass, 20 are partial, 0 fail and 12 were not run — the suite exits non-zero only because required checks were not run, not because they failed. Main real-host paths were re-verified after DSH restarts with the defects they exposed fixed; close/dispose restore, WebGPU rendering, media seeking/stalling, header-verified identity, 16 ms flicker coverage and long-lived connections remain unverified.
+- **T4 verification is partial.** Of the 44 dynamic-behavior criteria, 12 pass, 20 are partial, 0 fail and 12 were not run — the suite exits non-zero only because required checks were not run, not because they failed. Close/dispose restore, WebGPU rendering, media seeking/stalling, header-verified identity, 16 ms flicker coverage and long-lived connections remain unverified.
 - **Shared browser profile.** Cookies and storage are shared by the Chromium profile; only page, URL, viewport, history, network buffer and leases are isolated per workspace.
 - **Screenshots are not redacted.** Review their content before sharing.
 - **Attachments are not provider visibility.** A returned image attachment does not prove the model received it at full resolution.
@@ -143,6 +146,8 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 | [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 selection model, P0 infrastructure and known limits |
 | [docs/viewport-control.md](docs/viewport-control.md) | Shared viewport, hybrid canvas and annotations |
 | [docs/capture-p0.md](docs/capture-p0.md) | Screenshots, image delivery and file lifecycle |
+| [docs/multi-tab.md](docs/multi-tab.md) | Per-workspace tab group, per-tab leases and agent tab selection |
+| [docs/element-picker.md](docs/element-picker.md) | Panel element picking and `@` element reference chips |
 | [docs/network-p0.md](docs/network-p0.md) | Network capture, tracing, control and evidence |
 | [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | Snapshot/ref, trusted input and form filling |
 | [docs/t3-vision.md](docs/t3-vision.md) | Static vision algorithms, baselines and verdicts |

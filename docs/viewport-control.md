@@ -12,7 +12,7 @@ view = { version, mode, x, y, canvasX, canvasY, width, height, scale, source, re
 
 | 字段 | 含义 | 范围 |
 | --- | --- | --- |
-| `x` / `y` | 页面顶层滚动位置（文档 CSS px） | 非负，超出内容范围会被 clamp |
+| `x` / `y` | 页面顶层滚动位置（文档 CSS px） | set 只接受非负，超出内容范围会被 clamp；RTL 页面的观测值可为负 |
 | `canvasX` / `canvasY` | 视口左上角在文档画布上的位置 | ±10,000,000，可为负 |
 | `width` / `height` | 页面 CSS 视口尺寸 | 整数 200–4096 |
 | `scale` | 显示比例，也是省略 scale 时的截图默认密度 | 0.1–2（10%–200%） |

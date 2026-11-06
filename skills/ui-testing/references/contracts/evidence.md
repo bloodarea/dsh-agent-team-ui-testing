@@ -1,6 +1,6 @@
 # 证据契约（M0–M2 + T2）
 
-每次工具调用返回并 render `actionId/sessionId/startedAt/finishedAt/target/args` 摘要，关联业务结果；失败 BrowserError 的 `[CODE]` message 含该次证据。不能只留在 execute value：只有 render 内容可进入 durable transcript。实际字段与附件必须来自本轮工具，不伪造路径/ID。
+每次工具调用返回并 render `actionId/sessionId/startedAt/finishedAt/target/args` 摘要，关联业务结果；失败 BrowserError 的 `[CODE]` message 含该次证据。不能只留在 execute value：只有 render 内容可进入 durable transcript。实际字段与附件必须来自本次工具调用，不伪造路径/ID。
 
 | 证据 | 能说明什么 | 限制 |
 | --- | --- | --- |
@@ -36,6 +36,6 @@ escalation{tier:"T3"|"T4"|null,reason}, incomplete[], truncated
 
 P0的 `capture.version=1` 与T2 evidence独立：含request/environment/png/expected/sizeCheck/mapping/anomaly/file/delivery/warnings，mapping仅JSON+公式；DPR未知null、DSF来源runtime-override，headlessSource来自product/userAgent。原图尺寸/hash/文件是采集事实，delivery仅附件metadata，不自证provider。默认staging（绝对path/ephemeral=true，插件dispose清理）；out/persist:true/非空env才persistent（env或cwd根相对path/ephemeral=false）。file含pathKind/persistence/root/ephemeral，暂存不能当持久证据；observed.file只含persistence/relativePath|null不公开绝对路径。仅file非null且hash匹配可声明已有文件，暂存失败file=null+既有warning。路径规则见 [安全边界](../core/safety.md)。≤16M像素全量均匀/透明统计不替代视觉判定；C13前后布局相同不排除瞬时LBI，canvas位图细节不增加，TOCTOU未解决。真实宿主与 provider 行为需单独证据。
 
-没有独立JSONL证据包、自动assertion_status、帧序列或视觉差异分析；原始PNG落盘不等于独立证据包。`/metrics` 是预览管线诊断，不能替代页面断言。close 清空网络/URL/标题/帧缓存**与 T2 的 snapshot/ref 表**；引用记录仍要核对本轮 action 时序。
+没有独立JSONL证据包、自动assertion_status、帧序列或视觉差异分析；原始PNG落盘不等于独立证据包。`/metrics` 是预览管线诊断，不能替代页面断言。close 清空网络/URL/标题/帧缓存**与 T2 的 snapshot/ref 表**；引用记录仍要核对本次 action 时序。
 
-原始截图可见也不把 T3/T4 升为已实现；T2 断言必须给出 `snapshotId/digest` + `targets[].resolved` + `dispatch` 与页面真值读数：**`dispatched:true` 不是 PASS**，`dispatch.completed` 也只说明派发过程。
+原始截图可见不构成 T3/T4 结论（二者已实现，但需各自工具的确定性证据）；T2 断言必须给出 `snapshotId/digest` + `targets[].resolved` + `dispatch` 与页面真值读数：**`dispatched:true` 不是 PASS**，`dispatch.completed` 也只说明派发过程。

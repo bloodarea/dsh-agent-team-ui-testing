@@ -90,7 +90,7 @@
 - `includeImages:true` 最多命中 **3 帧**；`fresh:true` 是唯一显式采样动作，只允许当前活动的视觉会话。
 - `region`：只交付该矩形（crop-on-delivery，需同时 `includeImages:true`），**坐标是帧图像像素（整数）**，越界/缺 `includeImages` → `DYNAMIC_INVALID_ARGUMENT`；裁剪结果附 `crop{region,sourceSha256,sourceDimensions,sourceEncoding,roiSha256,outputBytes}`，`roiSha256` 与整帧 `encodedSha256` **不是一回事**。
 - 只读查询不 ensure、不续租、不启动浏览器；帧被淘汰/丢弃/截断要写在结论里，不能静默忽略。
-- ⚠ **实现不一致（待核实）**：当前注册 schema 未列 `region` 字段，但 handler 校验与 `references/scenarios/visual-motion.md` 支持它。若宿主按 schema 拒绝未知字段，按调用错误处理：换 `browser_screenshot` 的文档 region 裁剪 + `vision_image`，并记 `INCONCLUSIVE(region-schema-unverified)`，不要假定成功。
+- `region` 已在 `browser_motion_observe` 的注册 schema 中声明，按上述规则使用即可，不需要假设宿主会拒绝该字段。
 
 ## 5. `browser_dynamic_correlate`
 

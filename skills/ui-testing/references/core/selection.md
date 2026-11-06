@@ -13,9 +13,9 @@
 | 页面 JS 状态 | browser_eval | 可序列化值，不冒充点击/网络/CSSOM/动画；不冒充 T2 结构化协议 |
 | 页面请求成功或失败 | browser_network | 响应及 loadingFailed、脱敏 URL，无头/正文；其他 owner BUSY |
 | 元素计算样式 | browser_computed_style | 首匹配值，不证明像素/遮挡 |
-| PNG采集/局部高密度证据 | browser_screenshot | 显式scale 0.1–4（省略跟随共享view.scale）/region文档CSS/out相对.png；PNG校验、capture映射/文件/附件metadata/warnings；observed不等于本次图，provider另验；无T3/T4分析 |
+| PNG采集/局部高密度证据 | browser_screenshot | 显式scale 0.1–4（省略跟随共享view.scale）/region画布CSS（O=0时同文档）/out相对.png；PNG校验、capture映射/文件/附件metadata/warnings；observed不等于本次图，provider另验；无T3/T4分析 |
 | 原始事件序列（多点/组合键/滚轮） | browser_input | 事件数量，不证明生效；另查状态 |
-| 颜色/遮挡成因/可读性/像素差异 | **无 T3** | BLOCKED/INCONCLUSIVE；T2 的 hit-test 只证明坐标命中 |
+| 颜色/遮挡成因/可读性/像素差异 | **T3**（`browser_vision_*`） | 用确定性算法取像素证据；T2 的 hit-test 只证明坐标命中 |
 | 动画/时序/帧连续性 | **无 T4** | BLOCKED；单帧截图与 JS 读值不能冒充 |
 
 1. 拆分状态、样式、网络、副作用、视觉与动画断言。

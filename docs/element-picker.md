@@ -4,7 +4,7 @@
 
 ## 前置
 
-- DSH 0.2.2-rc.1 及以上（本机验证版本；Host 需要 `POST /plugins/ui-testing/element` 路由，旧宿主会提示「当前 Host 不支持选元素，请重启 DSH 后刷新面板」）。
+- DSH 0.2.2-rc.1 及以上（Host 需要 `POST /plugins/ui-testing/element` 路由，旧宿主会提示「当前 Host 不支持选元素，请重启 DSH 后刷新面板」）。
 - Host 改动后需要重启 DSH；面板需要刷新以加载新的 `client.js`。
 - 面板必须已绑定会话；聊天框最好同时可见，推荐从右侧边栏的 guide 页打开 `debug-view`（会话绑定由右侧栏提供，聊天框留在中间）。主面板在身份解析为 `recent` 时没有可写入的会话，会提示「当前面板未绑定会话，无法加入聊天框」。
 
@@ -118,8 +118,8 @@ outerHTML: 截断 <显示>/<原始> 码点（末尾 …，完整文本未取得�
 ## 验证
 
 ```bash
-node tests/acceptance/pick-element-host.mjs   # Host：坐标空间/命中/detail/只读语义/边界（137 checks）
-node tests/acceptance/pick-element-gui.mjs    # GUI：隔离 DSH + 无头 Chrome 的真实面板操作（54 checks）
+node tests/acceptance/pick-element-host.mjs   # Host：坐标空间/命中/detail/只读语义/边界（140 checks）
+node tests/acceptance/pick-element-gui.mjs    # GUI：隔离 DSH + 无头 Chrome 的真实面板操作（58 checks）
 ```
 
 两个套件都自启资源：Host 套件使用 fake-Cordis harness + 插件自己的无头 Chromium；GUI 套件自建隔离 DSH（临时 `DSH_HOME`、随机端口，绝不用 3080/3081）并另开无头 Chrome 驱动真实面板。报告与截图分别写入 `tests/acceptance/runs/`、`tests/acceptance/evidence/`；`NOT_RUN` 原样保留，不当作通过。

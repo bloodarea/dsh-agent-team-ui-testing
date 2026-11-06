@@ -64,7 +64,7 @@ browser_network_session { action:"stop" }
 
 ## 状态一致性
 
-- 本轮未能复现「`status.session=null` 但 events 仍有数据」的现场：当前 store 在会话边界同时清空事件 ring，events wrapper 还有「无会话不得返回事件窗口」的防御（返回空并明示 `session:null`）。
+- 当前实现未复现「`status.session=null` 但 events 仍有数据」的现场：store 在会话边界同时清空事件 ring，events wrapper 还有「无会话不得返回事件窗口」的防御（返回空并明示 `session:null`）。
 - 因此该现象的根因按 **UNKNOWN** 记录，不写「已修复」；显式传 `sessionId` 时仍要求会话存在，否则 `NET_SESSION_NOT_FOUND`。
 
 ## 时序与分析
@@ -94,7 +94,7 @@ browser_network_session { action:"stop" }
 | `mock` | 直接返回指定状态/头/正文 |
 | `reset` | 恢复网络条件、清规则、放行 held；**不关闭导航守卫** |
 
-`behavior.kind` 支持 `block`/`fail`/`modify-request`/`fulfill`/`delay`/`hold`；`modify-response` 只在 Chrome 实测支持时可用，否则如实报不支持。
+`behavior.kind` 支持 `block`/`fail`/`modify-request`/`fulfill`/`delay`/`hold`；`modify-response` 在本构建不可用——`responseModification` 固定为 `false`（不做 CDP 能力探测），尝试该 kind 会如实报不支持。
 
 ## 证据
 

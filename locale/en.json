@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "UI Testing Browser",
-    "description": "A browser panel for previewing pages and responsive layouts."
+    "description": "UI testing panel for DeepSeekHarness: structured GUI actions, visual comparison, dynamic frame analysis, network debugging and multi-tab page groups."
   }
 }

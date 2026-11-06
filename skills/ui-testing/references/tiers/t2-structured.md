@@ -16,7 +16,7 @@
 
 组合出的交互流程：`snapshot → ref/selector → 动作 → before/after 证据 → wait_for/node_state → 页面真值断言`。派发成功与业务断言分开记录，没有自动 PASS 字段。
 
-## 交付条件（本轮已满足的部分）
+## 交付条件
 
 - **注册面**：7 个工具经既有 `register()` 注册，目标用字符串 `ref`/`selector`（无 Target 对象），共用 action envelope 与 lossless JSON 投影。
 - **语义来源**：`Accessibility.getFullAXTree`（主 frame）+ `DOM.describeNode/resolveNode` + `Runtime.callFunctionOn` 做身份校验；几何用 rect/quads/命中测试；输入用 `Input.dispatchMouseEvent/dispatchKeyEvent/insertText`。
@@ -24,7 +24,7 @@
 - **证据**：version=1 evidence（provenance/targets/before/after/dispatch/networkDelta/escalation/incomplete），成功在 `result.evidence`，失败在 `BrowserError.details.evidence`。
 - **错误**：`REF_STALE`/`TARGET_NOT_FOUND`/`TARGET_NOT_UNIQUE`/`NOT_INTERACTABLE`/`WAIT_TIMEOUT`/`INVALID_ARGUMENT` 全部抛错（不再走 T1 legacy `{ok:false,error}`）。
 - **零依赖**：只用现有 CDP 与 Node 内建库，不引入 Playwright/Puppeteer；不改面板视觉。
-`declared-capabilities.json` tier `T1+T2`（T3 收口后 `T1+T2+T3`）、unsupported 仅 T4。
+`declared-capabilities.json` tier 为 `T1+T2+T3+T4`，`unsupported_tiers` 为空。
 
 ## 压缩与滚动行为（契约 §3.1/§4.3）
 
@@ -38,7 +38,7 @@
 
 ## 仍然存在的限制
 
-- **主 frame only**：same-origin iframe 也只显示边界叶子，cross-origin/OOPIF 不遍历、不查内部 selector、不产生内部 ref；动作不能送入 iframe 内部。跨帧需要 renderer `sessionId`+`frameId`+`documentEpoch` 联合身份，本轮不做。
+- **主 frame only**：same-origin iframe 也只显示边界叶子，cross-origin/OOPIF 不遍历、不查内部 selector、不产生内部 ref；动作不能送入 iframe 内部。跨帧需要 renderer `sessionId`+`frameId`+`documentEpoch` 联合身份；当前不支持跨帧操作。
 - **shadow**：只支持 open shadow 的 AX-backed ref；CSS 不穿透 shadow root；closed shadow 或无 backend 身份时拒绝，不落到相似节点。
 - **定位**：selector 仅原生 CSS、仅主文档、必须唯一；无 XPath/文本 DSL/`getByRole`/`getByText`/Locator；不自动推导 CSS locator。
 - **无 force / 无 JS click / 无 hover 工具**；overlay 命中失败即动作失败，不搜索其它点击点。
@@ -51,7 +51,7 @@
 
 `browser_eval` 里的 `document.querySelector(...)`、读 DOM 属性、`element.click()` 仍然只是**页面 JS 状态/页面内合成事件**：没有节点身份、没有可信派发、没有 before/after 证据，也不能证明 ARIA role/name 或命中正确。T2 工具缺失或抛 `UNSUPPORTED` 时才回落到 T1，并如实说明回落理由与证据强度差异——**不得**用 T1 结果声称结构化语义已通过。
 
-## 验收门槛（本轮达成情况）
+## 验收门槛
 
 覆盖注册面、冷启动能力、工作区隔离、快照、ref 生命周期（含 LRU 与跨快照保留）、唯一 selector、可信动作、表单、滚动、等待、错误码、证据、租约、取消。
 2. 能力状态声明见 `manifests/declared-capabilities.json`。

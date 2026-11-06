@@ -108,7 +108,7 @@
       "canvas/WebGL 内部源位图细节不会增加",
       "本地恶意进程 TOCTOU 未解决，非完整文件系统隔离"
     ],
-    "tiers_unchanged": "T3 与 T4 已实现；T4 的 40 条门槛尚未全覆盖；无 VLM/OCR/语义命名"
+    "tiers_unchanged": "T3 与 T4 已实现；T4 的 44 条门槛中 12 通过 / 20 部分 / 12 未运行；无 VLM/OCR/语义命名"
   },
   "notice": "开发事实快照，不是运行时可用性声明。注册表与 browser_capabilities 的实际结果优先；静态状态不能映射成 available。",
   "platform": "web",
@@ -572,7 +572,7 @@
       "status": "unsupported",
       "tool": null,
       "source_lines": null,
-      "constraints": "无下载/上传/Cookie 导出；Agent 无多标签页/frame 级目标（GUI 内部真人 target=_blank 标签页已支持，但工具仍只操作 primary）；无 hover 专用工具、无 drag/drop、无原生 select popup/文件选择/JSDialog 接管/IME/composition/contenteditable 编辑器协议/截图 diff。"
+      "constraints": "无下载/上传/Cookie 导出；Agent 无 frame 级（iframe 内部）目标；多标签页与共享视口已支持（browser_tabs / browser_viewport，按会话 selectedTab 路由，GUI active 独立）；无 hover 专用工具、无 drag/drop、无原生 select popup/文件选择/JSDialog 接管/IME/composition/contenteditable 编辑器协议/截图 diff。"
     },
     {
       "id": "web.t3.image",
@@ -663,7 +663,7 @@
       "status": "verified",
       "tool": "browser_network_session",
       "source_lines": "Runtime 网络会话管理（契约 docs/network-p0.md） §2.1",
-      "constraints": "action 必填 start|stop|status|reset；唯一的网络懒启动动作（仅 start）；同名 start 幂等 changed:false，运行中不同名 NET_SESSION_ACTIVE；status/reset 不启动浏览器；reset 只清内存并关闭本 scope 全部订阅（磁盘证据不动）；config 仅 start 生效（captureBodies/captureWebSocket/captureSse/captureWorkers、maxEvents/maxBodyBytes/maxTotalBytes/maxWsFrames、businessStatusPath、maskRules≤16）；启动走该工作区串行队列与 single-owner-lease，其他 owner 占用 BUSY。状态为验收前工程状态，维护者 复跑 network-p0.mjs 后再改 verified。 子目标采集按 R1-21：same-origin iframe + dedicated worker 已实证；OOPIF partial（未单独验证）"
+      "constraints": "action 必填 start|stop|status|reset；唯一的网络懒启动动作（仅 start）；同名 start 幂等 changed:false，运行中不同名 NET_SESSION_ACTIVE；status/reset 不启动浏览器；reset 只清内存并关闭本 scope 全部订阅（磁盘证据不动）；config 仅 start 生效（captureBodies/captureWebSocket/captureSse/captureWorkers、maxEvents/maxBodyBytes/maxTotalBytes/maxWsFrames、businessStatusPath、maskRules≤16）；启动走该工作区串行队列与 single-owner-lease，其他 owner 占用 BUSY。状态为验收前工程状态，改动后需重跑 network-p0.mjs 才能改 verified。 子目标采集按 R1-21：same-origin iframe + dedicated worker 已实证；OOPIF partial（未单独验证）"
     },
     {
       "id": "web.network.events",
@@ -711,7 +711,7 @@
       "id": "web.network.p0",
       "status": "verified",
       "source_lines": "网络 P0 聚合能力（采集/时序/分析/链路/控制/证据/订阅）+ docs/network-p0.md §1、§12、§13",
-      "constraints": "聚合声明：7 个 browser_network_* 工具面 22→29 后的网络层，旧 22 工具参数/返回/语义不变；只读/离线动作不启动浏览器（session.start 与需 page 的 control 才懒启动），session/control 变更走该工作区队列与 single-owner-lease；默认脱敏、配额与完整性计数公开、跨 scope 拒绝、订阅 owner-only；边界：G1.5 为 partial（自动/未授权 popup 仍被目标策略阻断；GUI 内部真人 target=_blank child page 已支持，但 Agent 网络仍只操作 primary、不做跨标签聚合）、HTTPS 未独立验收（能力报 https:\"mechanism-identical\"）、responseModification 条件支持、不做 MITM/CA/真实限速、HAR 仅 1.2 子集；真实宿主行为需单独证据。"
+      "constraints": "聚合声明：7 个 browser_network_* 工具面 22→29 后的网络层，旧 22 工具参数/返回/语义不变；只读/离线动作不启动浏览器（session.start 与需 page 的 control 才懒启动），session/control 变更走该工作区队列与 single-owner-lease；默认脱敏、配额与完整性计数公开、跨 scope 拒绝、订阅 owner-only；边界：G1.5 为 partial（自动/未授权 popup 仍被目标策略阻断；GUI 内部真人 target=_blank child page 已支持，Agent 网络按会话 selectedTab 路由、不做跨标签聚合）、HTTPS 未独立验收（能力报 https:\"mechanism-identical\"）、responseModification 固定 false（modify-response 不可用）、不做 MITM/CA/真实限速、HAR 仅 1.2 子集；真实宿主行为需单独证据。"
     },
     {
       "id": "web.t4.dynamic-session",
@@ -869,10 +869,10 @@
       "input": "viewport-css-px"
     },
     "evidence": {
-      "suite": "tests/acceptance/t3-vision.mjs（维护者 串行复跑，同一最终代码）",
+      "suite": "tests/acceptance/t3-vision.mjs（串行执行，同一最终代码）",
       "report": "",
       "executor_rerun": "",
-      "result": "两次复跑结果一致",
+      "result": "结果可重复",
       "regression": {
         "t1": "",
         "t2": "",
@@ -886,7 +886,7 @@
       "无 VLM/OCR/语义命名；不跨 frame 坐标输入；不跨重启恢复 product；T4 帧序列/时序/关联已实现，见 web.t4.* 与 docs/t4-dynamic-behavior.md"
     ],
     "unverified": [
-      "真实宿主重载：需要隔离 DSH 实例加载终版 index.js 并在真实 Agent 会话复跑 T3 工具（本进程套件不能代替）",
+      "真实宿主重载：需在隔离 DSH 实例加载终版 index.js，并在真实 Agent 会话运行 T3 工具（本进程套件不能代替）",
       "provider 图像可见性：附件元数据不能证明模型实际看到原分辨率图像",
       "T4 动态视觉（帧序列/动画时序/连续视觉推理）仍 unsupported",
       "3 条 notApplicable：C25 DOM 小数 / Blink 截断行为、C30 inert 子树不参与 hit-test（elementFromPoint 与 CDP 均返回 BODY）、C31 页面级 downs/ups 计数（原因均已记录）",

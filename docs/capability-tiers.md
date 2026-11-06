@@ -47,10 +47,10 @@ P0 是四项互相独立的能力，不能相互顶替：
 
 ## 已知限制
 
-- **仅 Web。** Windows、Linux、macOS 桌面、Android、TUI、HarmonyOS、游戏与 3D 尚无适配器，运行时选择器保持禁用。
+- **仅 Web 目标环境。** Web / Chromium 是唯一实现的目标环境，可运行在 Linux、macOS 与 Windows 宿主上；桌面应用、Android、TUI、HarmonyOS、游戏与 3D 尚无适配器，运行时选择器保持禁用。
 - **视觉是确定性的，不是语义的。** 没有 VLM/OCR、没有语义命名；「这段文字是什么意思」「人看着对不对」不在范围内。
-- **T4 验收未全覆盖。** 44 条动态行为门槛中 12 条通过、20 条部分通过、12 条未运行、0 条失败。主要路径已在真实宿主复验并修掉暴露的缺陷，但 close/dispose 恢复、WebGPU 渲染、媒体 seek/stall、header 校验身份、16 ms 闪白覆盖与长连接稳定性仍未验证。
-- **网络采集边界不完整。** OOPIF 为部分覆盖；shared/service worker 不采集；GUI 内部标签页可打开真人触发的 `target=_blank`（每个标签独立页面/Runtime），但 Agent 工具默认操作当前会话 selectedTab（无选择 primary），多标签详见 [multi-tab.md](multi-tab.md)，自动/未授权 popup 仍阻断，也不做跨标签聚合；HTTPS 未独立验收；`responseModification` 视 Chrome 实测能力而定；HAR 只保证 1.2 子集。
+- **T4 验收未全覆盖。** 44 条动态行为门槛中 12 条通过、20 条部分通过、12 条未运行、0 条失败。close/dispose 恢复、WebGPU 渲染、媒体 seek/stall、header 校验身份、16 ms 闪白覆盖与长连接稳定性仍未验证。
+- **网络采集边界不完整。** OOPIF 为部分覆盖；shared/service worker 不采集；GUI 内部标签页可打开真人触发的 `target=_blank`（每个标签独立页面/Runtime），Agent 工具操作当前会话 selectedTab（未选择时 primary），多标签详见 [multi-tab.md](multi-tab.md)，自动/未授权 popup 仍阻断，也不做跨标签聚合；HTTPS 未独立验收；`responseModification` 在本构建固定为 `false`（`modify-response` 不可用，不做 CDP 能力探测）；HAR 只保证 1.2 子集。
 - **共享浏览器 profile。** Cookie 与存储由 Chromium profile 共享；只有页面、URL、视口、历史、网络缓冲与租约按工作区隔离，**不是登录态隔离**。
 - **截图不脱敏。** 分享前请检查内容；附件返回也不等于 provider 一定以原始分辨率收到图像。
 - **共享状态是乐观并发。** `browser_viewport get` 是缓存诊断，`stale` 表示「最近没观测」；`expectedRevision` 竞争失败返回 `VIEWPORT_CONFLICT` 且不自动重放。

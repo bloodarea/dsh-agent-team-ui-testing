@@ -111,7 +111,7 @@
 - 工具栏“Web 视图”环境选择器的左侧有 **无头 / 有头** 分段选择器，仅 Web 视图显示；默认 **无头**。
 - **有头** = 同一个共享 Chromium 以**离屏窗口**启动，并在 Linux/X11 上尽力用 `xdotool windowunmap` 从窗口管理器/任务栏/Alt-Tab 隐藏（`ui.display.window="offscreen"`、`ui.display.hidden=true`）；默认**无可见窗口、不抢焦点**。浏览器的进程本身仍出现在系统进程列表里（无法在不使用特权手段的情况下隐藏进程）。持久 profile（默认 `$DSH_HOME/ui-testing/headed-profile`，可用 `DSH_UI_TESTING_PROFILE_DIR` 覆盖）保留登录态 / 站点 Cookie；无头模式仍使用每次启动的临时 profile。
 - 切换模式会**关闭共享 Chromium 及其所有页面**（运行模式是整个插件共享的，跨 workspace）。切换成功后需要重新打开页面；面板会提示并回到空态。
-- 有头模式需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，否则返回 `DISPLAY_UNAVAILABLE` 并保持无头。设置 `DSH_UI_TESTING_HEADED_VISIBLE=1` 可让有头窗口正常显示（调试/手动登录用）；未安装 `xdotool` 时退化为离屏位置，不保证从任务栏隐藏。
+- 有头模式在 POSIX 宿主上需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，否则返回 `DISPLAY_UNAVAILABLE` 并保持无头；Windows 宿主自带窗口系统，不需要这两个变量（任务栏/Alt-Tab 隐藏走 `WS_EX_TOOLWINDOW`，依赖系统 `powershell.exe`，不可用时退化为离屏位置）。设置 `DSH_UI_TESTING_HEADED_VISIBLE=1` 可让有头窗口正常显示（调试/手动登录用）；未安装 `xdotool` 时（仅 Linux/X11）退化为离屏位置，不保证从任务栏隐藏。
 - 有头不等于通过站点反自动化：Cloudflare / Turnstile 等仍可能挑战甚至拒绝自动化浏览器；需要人工交互时设 `DSH_UI_TESTING_HEADED_VISIBLE=1` 显示窗口再完成挑战，且不承诺一定通过。
 
 ## 能力发现

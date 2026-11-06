@@ -5,7 +5,7 @@ T3 对**有限张静态 PNG** 做确定性处理、识别、坐标输入与比�
 ## 源图
 
 ```text
-Source = { kind:"live", scale?:0.1–4, region?:文档CSS Rect }
+Source = { kind:"live", scale?:0.1–4, region?:画布CSS Rect（O=0 时与文档相同） }
        | { kind:"product", productId:"v1_<32hex>" }
        | { kind:"baseline", name, revision? }
 ```

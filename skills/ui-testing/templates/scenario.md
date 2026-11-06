@@ -6,7 +6,7 @@
 - 可观测的验收条件：
 - 每个断言使用的工具与参数：
 - 同层替代与限制：
-- 未实现能力（T3/T4、iframe/OOPIF 内部、closed shadow、contenteditable、原生 select popup、下载/上传等）的处理：BLOCKED / INCONCLUSIVE
+- 未实现能力（iframe/OOPIF 内部、closed shadow、contenteditable、原生 select popup、下载/上传等）的处理：BLOCKED / INCONCLUSIVE
 - 副作用/清理：
 - 证据要求（实际返回值、脱敏）：
 - 正例与负例：

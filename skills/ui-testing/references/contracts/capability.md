@@ -28,7 +28,7 @@
 ```
 
 - `web.network.session/events/detail/trace/control/evidence/subscribe` 与聚合 `web.network.p0` 逐一报 `available|unavailable|unsupported`；其他会话持有租约时 `control`/`session` 变更报 `unavailable(BUSY)`，只读仍 `available`；会话未启动时 `session.start` 仍 `available`（懒启动，constraint 说明可能失败）。
-- **`capabilities.network.limits.network.https` 是必报标量字段，取值只能是 `"mechanism-identical"`**（与 `responseModification` 并列同层；同一 CDP 机制、未独立验收，**不得写 `verified`/`https-captured`/`true`**）。`responseModification` 紧随其后，按 Chrome 实测支持与否报 `true|false`；`responseModification` 按 Chrome 实测支持与否报 `true|false`，不支持时 `modify-response` 不可用；`G1.5`（iframe/OOPIF/Worker）在台账记 **partial**；自动/未授权 popup 不采，GUI 内部真人 `target=_blank` 的 child page 已支持，但 Agent 网络仍只操作 primary、不做跨标签聚合。
+- **`capabilities.network.limits.network.https` 是必报标量字段，取值只能是 `"mechanism-identical"`**（与 `responseModification` 并列同层；同一 CDP 机制、未独立验收，**不得写 `verified`/`https-captured`/`true`**）。`responseModification` 紧随其后，本构建固定为 `false`（不做 CDP 能力探测，`modify-response` 不可用）；`G1.5`（iframe/OOPIF/Worker）在台账记 **partial**；自动/未授权 popup 不采，GUI 内部真人 `target=_blank` 的 child page 已支持；Agent 网络工具按会话 selectedTab 路由，不做跨标签聚合。
 - `observed` 只来自真实调用（`lastCallAt`/`lastOperation`），不含事件内容、正文、绝对路径或页面文本；`limits` 必须与 §2.1/§4.2/§8.7 的契约数值一致，任何新增限额都要在这里公开。
 - 静态台账/清单里的 `implemented-not-verified`/`partial` 是**工程状态**，不能映射成运行时 `available`；反向也不能：`available` 不等于行为已验收。
 

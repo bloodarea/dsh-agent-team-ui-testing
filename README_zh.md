@@ -8,7 +8,7 @@
 
 [English](README.md) | **简体中文**
 
-> **状态：预发布。** Web / Chromium 通道四个层级均已实现：36 个 Agent 工具 + 调试面板，覆盖程序化检查、结构化 GUI 操作、静态视觉分析、动态帧/时序分析、网络抓包、共享视口控制、混合画布与客户端标注。其他运行环境仍在规划中，运行时选择器保持禁用。插件目前以本地链接方式接入，尚未发布安装包。能力、限制与验证方式见 [docs/capability-tiers.md](docs/capability-tiers.md) 与 [docs/verification.md](docs/verification.md)。
+> **状态：预发布。** Web / Chromium 通道四个层级均已实现：36 个 Agent 工具 + 调试面板，覆盖程序化检查、结构化 GUI 操作、静态视觉分析、动态帧/时序分析、网络抓包、多标签页页面组、共享视口控制、混合画布、选元素与客户端标注。其他运行环境仍在规划中，运行时选择器保持禁用。插件目前以本地链接方式接入，尚未发布安装包。能力、限制与验证方式见 [docs/capability-tiers.md](docs/capability-tiers.md) 与 [docs/verification.md](docs/verification.md)。
 
 ## 这是什么项目？
 
@@ -33,9 +33,11 @@
 ## 当前已实现
 
 - **共享浏览器运行时**——每台主机一个 Chromium（使用系统安装的 Chrome/Chromium，插件不自带、也不会自动安装）；默认无头，Web 视图可切有头（离屏隐藏窗口 + 持久 profile）。每个 DSH 工作区拥有独立的页面、URL、视口、历史、网络缓冲与租约；Cookie 和存储由当前 Chromium profile 共享。
-- **36 个 Agent 工具**，覆盖程序化调试、结构化 GUI、静态视觉、动态行为与网络调试。
+- **36 个 Agent 工具**，覆盖程序化调试、结构化 GUI、静态视觉、动态行为、网络调试与按工作区的多标签页管理。
+- **多标签页页面组（P0-E）**——每个工作区一个 primary 槽位 + 最多 3 个 child 标签，每个标签独立租约；每个执行会话独立保存 selectedTab，popup 接管与页面隔离沿用同一套规则。
 - **动态行为（T4）**——真实 CDP screencast 与 screenshot-loop 两条帧源、带完整性计数的有界帧存储、七类确定性运动分析、WAAPI 运动控制与恢复、只交付指定区域的帧，以及六向「帧↔网络」事件关联。
 - **调试面板**——实时预览、响应式尺寸控制、共享视口状态、混合画布，以及 Agent 可读回的客户端标注层。
+- **选元素加入聊天框**——在面板预览里选中页面元素，把节点描述以 `@` 元素引用 chip 追加到聊天框；模型收到完整文本块，页面不被修改。
 - **证据与安全**——类型化错误、结构化操作证据、经过校验的 PNG 截图、受管视觉基线、网络证据，以及共享状态的乐观并发控制。
 
 ### Agent 工具
@@ -43,6 +45,7 @@
 | 分组 | 工具 | 能力 |
 | --- | --- | --- |
 | **程序化**（10） | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_viewport` `browser_state` `browser_capabilities` | 导航、JavaScript、控制台/网络检查、独立 HTTP 请求、计算样式、截图、原始鼠标/滚轮/键盘输入、共享视口状态与能力发现 |
+| **页面组**（1） | `browser_tabs` | 每工作区 primary + 最多 3 个 child 标签、每标签独立租约、Agent selectedTab 与标签生命周期（list/current/select/open/close/wait） |
 | **结构化 GUI**（7） | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | 快照 → ref 定位、可信输入、表单、节点状态与等待，返回结构化证据和类型化错误 |
 | **静态视觉**（6） | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | PNG 裁剪/缩放/预处理/标注，颜色/组件/边缘/模板确定性识别，YIQ 差异，坐标输入，受管基线与视觉断言 |
 | **动态行为**（5） | `browser_dynamic_session` `browser_motion_observe` `browser_motion_analyze` `browser_motion_control` `browser_dynamic_correlate` | 带完整性计数的有界帧采集、只交付指定区域的帧、七类运动/过渡分析、WAAPI 暂停/跳转/变速/恢复，以及六向「帧↔网络」关联 |
@@ -101,7 +104,7 @@ T1 调用成功不能被当成视觉验收通过。涉及界面的验收标准�
 
 ## 快速开始
 
-**要求：** 已安装 DSH，并有本地 Chrome/Chromium。插件不自带浏览器、也不会在安装时自动下载，运行时启动的是系统里解析到的可执行文件（见 [docs/getting-started.md](docs/getting-started.md)）；有头模式还需要 `DISPLAY` 或 `WAYLAND_DISPLAY`。
+**要求：** 已安装 DSH，并有本地 Chrome/Chromium。插件不自带浏览器、也不会在安装时自动下载，运行时启动的是系统里解析到的可执行文件（见 [docs/getting-started.md](docs/getting-started.md)）；有头模式在 POSIX 宿主上还需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，Windows 宿主自带窗口系统、无需该变量。插件自身要求 Node.js 22+（原生 `WebSocket`）；当前 DSH 发行版要求 Node.js 24.9+，实际以更严格的一项为准。
 
 插件目前以本地链接方式接入 DSH profile，还没有发布 npm 包或兼容性矩阵。
 
@@ -116,9 +119,9 @@ T1 调用成功不能被当成视觉验收通过。涉及界面的验收标准�
 
 ## 当前限制
 
-- **仅 Web。** Windows、Linux、macOS 桌面、Android、TUI、HarmonyOS、游戏和 3D 仍在规划中，运行时选择器保持禁用。
+- **仅 Web 目标环境。** Web / Chromium 是唯一实现的目标环境，可运行在 Linux、macOS 与 Windows 宿主上。桌面应用、Android、TUI、HarmonyOS、游戏和 3D 是规划中的目标环境，运行时选择器保持禁用。
 - **视觉是确定性的，不是语义的。** T3 判断单张 PNG，T4 判断帧序列，两者都用确定性算法：没有 VLM/OCR、没有语义命名，所以「这段文字是什么意思」「人看着对不对」不在范围内。
-- **T4 验收是部分的。** 动态行为 44 条门槛中 12 条通过、20 条部分通过、0 条失败、12 条未运行——套件非零退出只表示有必需项未运行，不代表失败。主要真实宿主路径在重启后已复验，并修掉了它暴露的缺陷；close/dispose 恢复、WebGPU 渲染、媒体 seek/stall、header-verified 身份、16ms 闪白覆盖与长连接稳定性仍未验证。
+- **T4 验收是部分的。** 动态行为 44 条门槛中 12 条通过、20 条部分通过、0 条失败、12 条未运行——套件非零退出只表示有必需项未运行，不代表失败。close/dispose 恢复、WebGPU 渲染、媒体 seek/stall、header-verified 身份、16ms 闪白覆盖与长连接稳定性仍未验证。
 - **共享浏览器 profile。** Cookie 和存储由 Chromium profile 共享；只有页面、URL、视口、历史、网络缓冲和租约按工作区隔离。
 - **截图不脱敏。** 分享前请检查截图内容。
 - **附件不等于 provider 可见。** 返回图片附件不代表模型一定以原始分辨率收到了它。
@@ -143,6 +146,8 @@ T1 调用成功不能被当成视觉验收通过。涉及界面的验收标准�
 | [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 选路模型、P0 基础设施与已知限制 |
 | [docs/viewport-control.md](docs/viewport-control.md) | 共享视口、混合画布与标注 |
 | [docs/capture-p0.md](docs/capture-p0.md) | 截图、图片交付与文件生命周期 |
+| [docs/multi-tab.md](docs/multi-tab.md) | 每工作区标签组、每标签租约与 Agent selectedTab |
+| [docs/element-picker.md](docs/element-picker.md) | 面板选元素与 `@` 元素引用 chip |
 | [docs/network-p0.md](docs/network-p0.md) | 网络采集、链路、控制与证据 |
 | [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | snapshot/ref、可信输入与表单 |
 | [docs/t3-vision.md](docs/t3-vision.md) | 静态视觉算法、基线与结论规则 |
