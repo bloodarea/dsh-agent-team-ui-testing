@@ -8,6 +8,17 @@
 
 [English](README.md) | **简体中文**
 
+<p>
+  <a href="https://www.npmjs.com/package/dsh-agent-team-ui-testing"><img src="https://img.shields.io/npm/v/dsh-agent-team-ui-testing?style=flat-square&amp;logo=npm&amp;logoColor=white" alt="npm version"></a>
+  <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/stargazers"><img src="https://img.shields.io/github/stars/bloodarea/dsh-agent-team-ui-testing?style=flat-square&amp;logo=github" alt="GitHub stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Node.js >= 22"></a>
+  <a href="docs/getting-started.md"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Platforms"></a>
+  <a href="docs/tools.md"><img src="https://img.shields.io/badge/tools-36-brightgreen?style=flat-square" alt="Agent tools"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-plugin-4B32C3?style=flat-square" alt="DSH plugin"></a>
+  <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="Status"></a>
+</p>
+
 > **状态：预发布。** Web / Chromium 通道四个层级均已实现：36 个 Agent 工具 + 调试面板，覆盖程序化检查、结构化 GUI 操作、静态视觉分析、动态帧/时序分析、网络抓包、多标签页页面组、共享视口控制、混合画布、选元素与客户端标注。其他运行环境仍在规划中，运行时选择器保持禁用。**安装：** `dsh plugin --profile web add dsh-agent-team-ui-testing`。能力、限制与验证方式见 [docs/capability-tiers.md](docs/capability-tiers.md) 与 [docs/verification.md](docs/verification.md)。
 
 ## 这是什么项目？
@@ -308,7 +319,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 
 ## 许可证
 
-仓库目前尚未声明许可证。再分发或复用前请先补充明确的许可证；后续引入的第三方代码必须保留其适用的声明。
+本项目采用 [MIT 许可证](LICENSE)。Copyright (c) 2026 bloodarea。后续引入的第三方代码必须保留其适用的声明。
 
 ---
 

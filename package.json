@@ -2,6 +2,7 @@
   "name": "dsh-agent-team-ui-testing",
   "version": "0.1.1",
   "description": "Frontend GUI debugging and testing for DeepSeekHarness agents: Web/Chromium is implemented with 36 browser_* tools for structured GUI automation, visual comparison, dynamic frame analysis and network debugging; Windows/Linux/macOS desktop, Android, TUI, HarmonyOS, mini programs, games and 3D (nine environments) are planned.",
+  "license": "MIT",
   "type": "module",
   "keywords": ["deepseek-harness", "dsh-plugin", "ui-testing", "gui-testing", "test-automation", "browser-automation", "visual-regression", "network-debugging"],
   "repository": { "type": "git", "url": "https://github.com/bloodarea/dsh-agent-team-ui-testing.git" },

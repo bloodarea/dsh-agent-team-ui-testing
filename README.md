@@ -8,6 +8,17 @@ Let AI agents operate, inspect, test and verify real user interfaces — with ev
 
 **English** | [简体中文](README_zh.md)
 
+<p>
+  <a href="https://www.npmjs.com/package/dsh-agent-team-ui-testing"><img src="https://img.shields.io/npm/v/dsh-agent-team-ui-testing?style=flat-square&amp;logo=npm&amp;logoColor=white" alt="npm version"></a>
+  <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/stargazers"><img src="https://img.shields.io/github/stars/bloodarea/dsh-agent-team-ui-testing?style=flat-square&amp;logo=github" alt="GitHub stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Node.js >= 22"></a>
+  <a href="docs/getting-started.md"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Platforms"></a>
+  <a href="docs/tools.md"><img src="https://img.shields.io/badge/tools-36-brightgreen?style=flat-square" alt="Agent tools"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-plugin-4B32C3?style=flat-square" alt="DSH plugin"></a>
+  <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="Status"></a>
+</p>
+
 > **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 36 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, multi-tab page groups, shared viewport control, a hybrid canvas, an element picker and client-side annotations. Other environments are planned and stay disabled in the runtime picker. **Install:** `dsh plugin --profile web add dsh-agent-team-ui-testing`. Capabilities, limits and verification are documented in [docs/capability-tiers.md](docs/capability-tiers.md) and [docs/verification.md](docs/verification.md).
 
 ## What is this?
@@ -308,7 +319,7 @@ When filing an issue, include the DSH version/commit, platform and runtime versi
 
 ## License
 
-The repository does not currently declare a license. Add an explicit license before redistribution or reuse; third-party code incorporated later must retain its applicable notices.
+Released under the [MIT License](LICENSE). Copyright (c) 2026 bloodarea. Third-party code incorporated later must retain its applicable notices.
 
 ---
 
