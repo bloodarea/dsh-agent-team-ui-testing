@@ -304,16 +304,17 @@ const PROFILE_RM_RETRIES = process.platform === 'win32' ? 20 : 5;
 const PROFILE_RM_RETRY_DELAY_MS = process.platform === 'win32' ? 150 : 50;
 /** How long a reload / history command may take to commit its main-frame navigation. */
 const COMMIT_TIMEOUT_MS = 10000;
+/** Upper bound of one `browser_input` batch (schema maxItems mirrors this number). */
+const INPUT_EVENT_LIMIT = 200;
 /** Throttle for the merged background title/url/history read (UI polls at 500ms / 80ms). */
 const METADATA_THROTTLE_MS = 250;
 const SKILL_NAME = 'ui-testing';
 const SKILL_DIR = fileURLToPath(new URL('./skills/ui-testing/', import.meta.url));
 const SKILL_FALLBACK_DESCRIPTION =
-  'Web T1 browser debugging through the bundled structured tools (browser_navigate, browser_eval, ' +
-  'browser_input, browser_network, browser_computed_style, browser_screenshot, browser_state, browser_capabilities, ' +
-  'browser_http_request) plus the Web T2 structured GUI tools (browser_snapshot, browser_click, browser_type, ' +
-  'browser_scroll, browser_fill_form, browser_node_state, browser_wait_for). Use for authorized web UI inspection, ' +
-  'interaction, API requests and verification; T3-T4 are not implemented.';
+  'Web/Chromium UI testing through 36 bundled browser_* tools: T1 programmatic (navigation, eval, input, ' +
+  'network, computed style, screenshots, independent HTTP, viewport, state, capabilities), T2 structured GUI, ' +
+  'T3 static vision, T4 dynamic behavior, network P0 capture/control/evidence, and the P0-E page group ' +
+  '(browser_tabs). Use for authorized web UI inspection, interaction, API requests and verification.';
 
 /**
  * CDP Input modifier bitmask: Alt=1, Ctrl=2, Meta=4, Shift=8 (see Input.dispatchKeyEvent).
@@ -986,7 +987,7 @@ function sha256Short(value, length = 16) {
  * The Host stores exactly one "last accepted" document per Runtime and exposes it through
  * `Runtime.state()` (→ `browser_state.annotations`) and the authenticated `ui.annotations`. The
  * panel writes it over its *only* write surface, `POST /plugins/ui-testing/annotations`; there is
- * deliberately no 31st tool (the tool surface stays 30).
+ * deliberately no 37th tool (the tool surface stays 36).
  *
  * Everything below is pure data handling: annotations never touch the page DOM/CSS, never enter a
  * screenshot or a T3 source, never start Chromium, never take the page lease and never write the
@@ -1697,6 +1698,11 @@ class BrowserHost {
     this.autoAttached.clear();
     this.pendingAttach.clear();
     this.popupSessions.clear();
+    // Popup admission tickets and windowOpen intents belong to this browser generation: a ticket
+    // minted before close must never be redeemable after the next start.
+    this.popupTickets.clear();
+    this.windowIntents.clear();
+    this.popupInFlight.clear();
     if (browserCdp && !browserCdp.closed) {
       for (const targetId of targetIds) {
         try { await browserCdp.send('Target.closeTarget', { targetId }, { timeoutMs: 1000 }); } catch { /* ignore */ }
@@ -3423,7 +3429,7 @@ const T4_LIMITS = Object.freeze({
   maxIds: 200,
   maxMasks: 64,
 });
-const DYNAMIC_LIMITS = T4_LIMITS;
+export const DYNAMIC_LIMITS = T4_LIMITS;
 /** Host-only delivery/query budgets (not part of the frozen T4_LIMITS projection). */
 const DYNAMIC_INTERNAL = Object.freeze({
   observeLimit: 50,
@@ -6699,6 +6705,9 @@ export class Runtime {
   async input(events, signal) {
     if (!Array.isArray(events) || events.some((event) => !event || !['mouse', 'wheel', 'key', 'text'].includes(event.kind))) {
       throw new BrowserError('INVALID_ARGUMENT', '输入事件 kind 无效');
+    }
+    if (events.length > INPUT_EVENT_LIMIT) {
+      throw new BrowserError('INVALID_ARGUMENT', `单批输入事件过多：${events.length} > ${INPUT_EVENT_LIMIT}`, { maxItems: INPUT_EVENT_LIMIT });
     }
     // Normalize/validate the whole batch first: a bad modifiers value must not start Chromium.
     const prepared = events.map((event) => prepareInputEvent(event));
@@ -10483,7 +10492,7 @@ export class Runtime {
         : network.toJsonl(store, { includeBodies: args.includeBodies === true });
       const published = network.publishEvidence(resolved.dir, resolved.absolutePath, bytes);
       if (!published.ok) {
-        throw new BrowserError(published.code === 'OUTPUT_EXISTS' ? 'NET_OUTPUT_WRITE_FAILED' : 'NET_OUTPUT_WRITE_FAILED', '证据写入失败', {
+        throw new BrowserError('NET_OUTPUT_WRITE_FAILED', '证据写入失败', {
           reason: published.code, name: resolved.relativePath,
         });
       }
@@ -13113,6 +13122,12 @@ export class RuntimeRegistry {
 
   releaseSession(sessionId) {
     for (const entry of this.entries.values()) entry.runtime.release(sessionId);
+    // Selection keys are `<primaryKey>\u0000<sessionId>`: drop the records of a session that ended,
+    // otherwise every closed agent session pins one small record per workspace it touched.
+    const suffix = '\u0000' + String(sessionId || 'anonymous');
+    for (const key of [...this.selectedBySession.keys()]) {
+      if (key.endsWith(suffix)) this.selectedBySession.delete(key);
+    }
   }
 
   capabilities() {
@@ -14352,7 +14367,7 @@ export function apply(ctx) {
       }
       if (action === '/annotations') {
         // P0-D annotations (docs/viewport-control.md): the ONLY write surface of the
-        // human panel's annotation document — not a tool (the surface stays 30 tools).
+        // human panel's annotation document — not a tool (the surface stays 36 tools).
         //   * scoped only: a legacy/unscoped request would have to guess a workspace, so it is
         //     refused instead of being mapped to `legacy:default`;
         //   * its own 262144-byte bounded body read (the other routes keep the 8MiB default);
@@ -14433,6 +14448,9 @@ export function apply(ctx) {
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
+        // A URL here is a page write, not a warm-up: gate it exactly like /navigate so a GUI
+        // caller cannot navigate a tab an Agent owns.
+        if (body.url && scoped) assertGuiPageWrite(entry.runtime, scopeRequest.mode === 'session' ? scopeRequest.sessionId : null);
         await entry.runtime.run(async () => {
           await entry.runtime.ensure();
           if (body.url) await entry.runtime.navigate(String(body.url));
@@ -15279,6 +15297,8 @@ export function apply(ctx) {
       properties: {
         events: {
           type: 'array',
+          maxItems: 200,
+          description: '单批上限 200 条；超出报 INVALID_ARGUMENT。逐条串行派发，超大数组只会长时间占用页面队列。',
           items: {
             type: 'object',
             properties: {
