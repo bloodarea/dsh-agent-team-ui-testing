@@ -204,7 +204,7 @@ async function pageHostFetch(path, { method = 'GET', headers = {}, body } = {}) 
   })()`;
   return evaluate(expression);
 }
-async function invokeTest(tool, args, agentId, cwd = '<local-path>') {
+async function invokeTest(tool, args, agentId, cwd = process.cwd()) {
   const response = await fetch(state.dsh.base + '/plugins/ui-testing/test/invoke', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-ui-testing-test-token': TEST_TOKEN },

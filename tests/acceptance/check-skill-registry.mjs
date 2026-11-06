@@ -24,6 +24,7 @@
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -31,7 +32,8 @@ const REPO_ROOT = dirname(dirname(HERE));
 const SKILL_DIR = join(REPO_ROOT, 'skills', 'ui-testing');
 const SKILL_FILE = join(SKILL_DIR, 'SKILL.md');
 const INDEX_FILE = join(REPO_ROOT, 'index.js');
-const DSH_ROOT = process.env.DSH_ROOT || '<local-path>/.local/share/node/lib/node_modules/@deepseek-ai/dsh';
+// DSH_ROOT defaults to the per-user global install; never a machine-specific absolute path.
+const DSH_ROOT = process.env.DSH_ROOT || join(homedir(), '.local/share/node/lib/node_modules/@deepseek-ai/dsh');
 const DSH_MODULES = join(DSH_ROOT, 'node_modules', '@deepseek-ai');
 
 const results = [];

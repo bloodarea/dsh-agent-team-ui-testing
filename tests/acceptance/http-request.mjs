@@ -13,12 +13,13 @@ import { createServer as createHttpServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { EXPECTED_TOOLS, createHarness, scanPluginChromeProcesses, snapshotProfileDirs } from './harness.mjs';
 
-const DSH_ROOT = process.env.DSH_ROOT || '<local-path>/.local/share/node/lib/node_modules/@deepseek-ai/dsh';
+// DSH_ROOT defaults to the per-user global install; never a machine-specific absolute path.
+const DSH_ROOT = process.env.DSH_ROOT || join(homedir(), '.local/share/node/lib/node_modules/@deepseek-ai/dsh');
 const DSH_MODULES = join(DSH_ROOT, 'node_modules', '@deepseek-ai');
 const REPO_ROOT = pathToFileURL(join(import.meta.dirname, '../../')).href;
 

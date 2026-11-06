@@ -16,9 +16,11 @@
  */
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
-const DSH_ROOT = process.env.DSH_ROOT || '<local-path>/.local/share/node/lib/node_modules/@deepseek-ai/dsh';
+// DSH_ROOT defaults to the per-user global install; never a machine-specific absolute path.
+const DSH_ROOT = process.env.DSH_ROOT || join(homedir(), '.local/share/node/lib/node_modules/@deepseek-ai/dsh');
 const DSH_MODULES = join(DSH_ROOT, 'node_modules', '@deepseek-ai');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
