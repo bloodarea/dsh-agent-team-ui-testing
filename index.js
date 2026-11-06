@@ -515,7 +515,7 @@ function projectAttachment(attachment) {
  * ------------------------------------------------------------------------------------------- */
 
 /** Closed warning vocabulary: deduplicated, order preserving, never silently dropped. */
-const CAPTURE_WARNING_VOCABULARY = Object.freeze([
+export const CAPTURE_WARNING_VOCABULARY = Object.freeze([
   'content_uniform', 'content_transparent', 'model_image_downscaled', 'attachment_reencoded',
   'blank_check_skipped', 'capture_file_unavailable', 'attachment_unavailable', 'capture_beyond_viewport',
   // A 16M-pixel PNG can encode to tens of MiB of base64; above the inline cap only the attachment

@@ -9,10 +9,16 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { IMAGE_INLINE_BASE64_LIMIT, inlineImageDelivery } from '../index.js';
+import { CAPTURE_WARNING_VOCABULARY, IMAGE_INLINE_BASE64_LIMIT, inlineImageDelivery } from '../index.js';
 
 test('the documented limit is 24 MiB', () => {
   assert.equal(IMAGE_INLINE_BASE64_LIMIT, 24 * 1024 * 1024);
+});
+
+test('the capture warning vocabulary registers the omission code', () => {
+  // addCaptureWarning() throws INTERNAL for an unregistered code, so a missing entry would turn a
+  // successful capture into a failure exactly on the over-budget path.
+  assert.ok(CAPTURE_WARNING_VOCABULARY.includes('image_base64_omitted'));
 });
 
 test('a small payload is returned unchanged', () => {
