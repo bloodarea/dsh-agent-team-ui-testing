@@ -5,7 +5,15 @@
 ## 要求
 
 - 已安装 [DeepSeekHarness（DSH）](https://github.com/deepseek-ai/deepseek-harness)。
-- 本地有 Chrome 或 Chromium。解析顺序：`DSH_UI_TESTING_CHROME`（显式覆盖）→ `/opt/google/chrome/chrome` → `PATH` 中的 `chrome` / `chromium` 等命令名。显式覆盖无效时如实报 `UNSUPPORTED`，不会静默回退。
+- **本地已安装 Chrome 或 Chromium：插件不自带浏览器，也不会在安装时自动下载/安装。** 运行时懒解析（第一次真正需要页面时才执行），顺序为：
+  1. `DSH_UI_TESTING_CHROME`：显式覆盖，接受绝对路径或 `PATH` 中的单个命令名；
+  2. `/opt/google/chrome/chrome`；
+  3. `PATH` 中的 `google-chrome-stable`、`google-chrome`、`chromium`、`chromium-browser`；
+  4. macOS 的 `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`、`Google Chrome Canary.app/...`、`Chromium.app/...`。
+
+  找不到时第一个页面工具报 `UNSUPPORTED` 并列出候选路径；显式覆盖无效时如实报错，不会静默回退到别的浏览器。
+- 安装参考：Chrome 官方下载 <https://www.google.com/chrome/>；Debian/Ubuntu 也可 `sudo apt install chromium`（或发行版提供的 `chromium-browser`）；macOS 可 `brew install --cask google-chrome`。以发行版实际包名为准。
+- **有头模式额外要求**：`DISPLAY` 或 `WAYLAND_DISPLAY`，否则返回 `DISPLAY_UNAVAILABLE` 并保持无头；Linux/X11 想彻底隐藏窗口/任务栏/Alt-Tab 需要 `xdotool`（未安装时退化为离屏位置）。默认离屏无可见窗口，设 `DSH_UI_TESTING_HEADED_VISIBLE=1` 可显示窗口；持久 profile 默认 `$DSH_HOME/ui-testing/headed-profile`，可用 `DSH_UI_TESTING_PROFILE_DIR` 覆盖。
 - Node.js 22 及以上（运行时使用原生 WebSocket）。
 
 插件目前以本地链接方式接入 DSH profile，尚未发布 npm 包，也没有兼容性矩阵。

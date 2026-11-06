@@ -30,7 +30,7 @@
 
 ## 当前已实现
 
-- **共享浏览器运行时**——每台主机一个无头 Chromium；每个 DSH 工作区拥有独立的页面、URL、视口、历史、网络缓冲与租约。Cookie 和存储由 Chromium profile 共享。
+- **共享浏览器运行时**——每台主机一个 Chromium（使用系统安装的 Chrome/Chromium，插件不自带、也不会自动安装）；默认无头，Web 视图可切有头（离屏隐藏窗口 + 持久 profile）。每个 DSH 工作区拥有独立的页面、URL、视口、历史、网络缓冲与租约；Cookie 和存储由当前 Chromium profile 共享。
 - **36 个 Agent 工具**，覆盖程序化调试、结构化 GUI、静态视觉、动态行为与网络调试。
 - **动态行为（T4）**——真实 CDP screencast 与 screenshot-loop 两条帧源、带完整性计数的有界帧存储、七类确定性运动分析、WAAPI 运动控制与恢复、只交付指定区域的帧，以及六向「帧↔网络」事件关联。
 - **调试面板**——实时预览、响应式尺寸控制、共享视口状态、混合画布，以及 Agent 可读回的客户端标注层。
@@ -73,7 +73,7 @@ DSH Agent / Agent Team
         │
         ▼
 UI 测试插件运行时
-  ├─ 共享无头 Chromium
+  ├─ 共享 Chromium（默认无头；Web 视图可切有头）
   ├─ 每个 DSH 工作区独立页面（URL、视口、历史、网络、租约）
   ├─ 36 个 Agent 工具
   └─ 调试面板（预览、尺寸栏、画布、标注）
@@ -99,7 +99,7 @@ T1 调用成功不能被当成视觉验收通过。涉及界面的验收标准�
 
 ## 快速开始
 
-**要求：** 已安装 DSH，并有本地 Chrome/Chromium。
+**要求：** 已安装 DSH，并有本地 Chrome/Chromium。插件不自带浏览器、也不会在安装时自动下载，运行时启动的是系统里解析到的可执行文件（见 [docs/getting-started.md](docs/getting-started.md)）；有头模式还需要 `DISPLAY` 或 `WAYLAND_DISPLAY`。
 
 插件目前以本地链接方式接入 DSH profile，还没有发布 npm 包或兼容性矩阵。
 

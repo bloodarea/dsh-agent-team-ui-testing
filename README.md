@@ -30,7 +30,7 @@ This project focuses on:
 
 ## What works today
 
-- **Shared browser runtime** — one Chromium per host, headless by default with an optional headed mode in the Web view (visible window + persistent profile); each DSH workspace gets its own page, URL, viewport, history, network buffer and lease. Cookies and storage are shared by the active Chromium profile.
+- **Shared browser runtime** — one Chromium per host (the system Chrome/Chromium binary; the plugin does not bundle or install a browser), headless by default with an optional headed mode in the Web view (off-screen hidden window + persistent profile); each DSH workspace gets its own page, URL, viewport, history, network buffer and lease. Cookies and storage are shared by the active Chromium profile.
 - **36 agent tools** across programmatic, structured GUI, static vision, dynamic behavior and network debugging.
 - **Dynamic behavior (T4)** — real CDP screencast plus a screenshot-loop path, a bounded frame store with integrity counters, seven deterministic motion analyses, WAAPI motion control with restore, region-only frame delivery, and six-direction frame↔network event correlation.
 - **Debug panel** — live preview, responsive size controls, shared viewport state, a hybrid canvas, and a client-side annotation layer that agents can read back.
@@ -99,7 +99,7 @@ A successful T1 call is never treated as a visual pass. UI-specific acceptance c
 
 ## Getting started
 
-**Requirements:** a DSH installation and a local Chrome/Chromium binary.
+**Requirements:** a DSH installation and a local Chrome/Chromium binary. The plugin does not bundle or install a browser; it launches the system binary it resolves (see [docs/getting-started.md](docs/getting-started.md)). A headed Web view additionally needs `DISPLAY` or `WAYLAND_DISPLAY`.
 
 The plugin is currently used as a local link into a DSH profile; there is no published npm package or compatibility matrix yet.
 
