@@ -75,7 +75,10 @@ const DEFAULT_DIFF_OPTIONS = Object.freeze({ threshold: 0.1, includeAA: false, m
 const DEFAULT_THRESHOLDS = Object.freeze({ warnRatio: 0.001, failRatio: 0.01 });
 
 /** 目录 fsync 在这些 errno 下视为“平台不支持目录 fsync”，与 P0 publishCapture 一样按尽力而为处理。 */
-const TOLERATED_DIR_FSYNC = new Set(['EINVAL', 'ENOTSUP', 'EISDIR', 'EBADF', 'ENOSYS', 'ENOTTY']);
+const TOLERATED_DIR_FSYNC = new Set(['EINVAL', 'ENOTSUP', 'EISDIR', 'EBADF', 'ENOSYS', 'ENOTTY',
+  // win32 has no directory fsync: Node surfaces EPERM/EACCES instead of EINVAL, so without this a
+  // successfully published baseline PNG is unlinked again and reported as a write failure.
+  ...(process.platform === 'win32' ? ['EPERM', 'EACCES'] : [])]);
 
 const DEFAULT_FS_OPS = Object.freeze({
   realpathSync: nodeFs.realpathSync,

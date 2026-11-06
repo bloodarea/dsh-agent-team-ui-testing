@@ -584,9 +584,14 @@ test('publishCapture: 成功写出、0600、字节一致、无临时残留', () 
     assert.equal(published.bytes, bytes.length);
     assert.equal(published.mode, '0600');
     assert.ok(Number.isInteger(published.createdAt) && published.createdAt > 0);
-    assert.deepEqual(published.cleanup, { tempRemoved: true, dirFsync: true });
+    // win32 cannot fsync a directory and ignores POSIX permission bits at create time: the
+    // cleanup flag stays truthful (false) and the file mode is the NTFS default.
+    assert.deepEqual(published.cleanup, {
+      tempRemoved: true,
+      dirFsync: process.platform !== 'win32',
+    });
     assert.deepEqual(readFileSync(resolved.absolutePath), bytes);
-    assert.equal(statSync(resolved.absolutePath).mode & 0o777, 0o600);
+    if (process.platform !== 'win32') assert.equal(statSync(resolved.absolutePath).mode & 0o777, 0o600);
     assert.equal(lstatSync(resolved.absolutePath).isFile(), true);
     assert.deepEqual(readdirSync(resolved.dir), ['shot.png'], 'no temp file left behind');
     // 内容 sha256 与源字节一致
@@ -674,7 +679,8 @@ test('publishCapture: link 成功后清理失败不误报（目录被移除的�
     assert.deepEqual(readFileSync(finalPath), bytes);
     // 主路径断言：返回成功、final 存在且内容正确、cleanup 两个字段都是布尔真值。
     assert.equal(published.cleanup.tempRemoved, true);
-    assert.equal(published.cleanup.dirFsync, true);
+    // win32 has no directory fsync (EPERM): false is the truthful value, not a cleanup failure.
+    assert.equal(published.cleanup.dirFsync, process.platform !== 'win32');
     // 未覆盖：无法在不破坏沙箱的前提下安全模拟 unlink/fsync 失败，记录为未覆盖。
   } finally {
     rmSync(root, { recursive: true, force: true });

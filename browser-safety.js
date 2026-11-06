@@ -6,6 +6,8 @@ const TAXONOMY = {
   CDP_DISCONNECTED: ['disconnected', true], TARGET_NOT_FOUND: ['action', false],
   EVAL_ERROR: ['app', false], INVALID_ARGUMENT: ['input', false], BUSY: ['concurrency', true],
   UNSUPPORTED: ['capability', false], INTERNAL: ['internal', false], ABORTED: ['cancelled', true],
+  // Headed mode without a window system is a capability refusal; it must never degrade to INTERNAL.
+  DISPLAY_UNAVAILABLE: ['capability', false],
   // Independent HTTP client (docs/tools.md): HTTP timeouts are not CDP timeouts
   // (they must never trigger the page "close the browser before releasing the queue" path).
   HTTP_TIMEOUT: ['timeout', true], HTTP_FAILED: ['network', true], HTTP_REDIRECT_LIMIT: ['network', false],

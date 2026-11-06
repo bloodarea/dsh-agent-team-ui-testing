@@ -622,7 +622,8 @@ check('C41', 'publishEvidence 落盘 0600 且不覆盖已有文件', async () =>
     ok(resolved.ok !== false || typeof resolved.absolutePath === 'string', `resolve=${JSON.stringify(resolved).slice(0, 160)}`);
     await publishEvidence(root, target, Buffer.from('line\n', 'utf8'));
     const info = await stat(target);
-    ok((info.mode & 0o777) === 0o600, `mode=${(info.mode & 0o777).toString(8)}`);
+    // NTFS has no POSIX mode: 0600 is requested at create time, Windows keeps the ACL default.
+    ok(process.platform === 'win32' || (info.mode & 0o777) === 0o600, `mode=${(info.mode & 0o777).toString(8)}`);
     const second = await publishEvidence(root, target, Buffer.from('second\n', 'utf8'));
     ok(second && second.ok === false && String(second.code) === 'OUTPUT_EXISTS', `second write refused (${JSON.stringify(second && second.code)})`);
     ok(String((await readFile(target, 'utf8'))).trim() === 'line', 'content preserved');

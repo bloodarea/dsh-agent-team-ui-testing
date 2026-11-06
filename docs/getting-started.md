@@ -6,14 +6,15 @@
 
 - 已安装 [DeepSeekHarness（DSH）](https://github.com/deepseek-ai/deepseek-harness)。
 - **本地已安装 Chrome 或 Chromium：插件不自带浏览器，也不会在安装时自动下载/安装。** 运行时懒解析（第一次真正需要页面时才执行），顺序为：
-  1. `DSH_UI_TESTING_CHROME`：显式覆盖，接受绝对路径或 `PATH` 中的单个命令名；
-  2. `/opt/google/chrome/chrome`；
-  3. `PATH` 中的 `google-chrome-stable`、`google-chrome`、`chromium`、`chromium-browser`；
-  4. macOS 的 `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`、`Google Chrome Canary.app/...`、`Chromium.app/...`。
+  1. `DSH_UI_TESTING_CHROME`：显式覆盖，接受绝对路径或 `PATH` 中的单个命令名（Windows 上按 `PATHEXT` 展开）；
+  2. `/opt/google/chrome/chrome`（仅 POSIX 宿主）；
+  3. `PATH` 中的 `google-chrome-stable`、`google-chrome`、`chromium`、`chromium-browser`；Windows 上另查 `chrome.exe`、`google-chrome-stable.exe`、`google-chrome.exe`、`chromium.exe`、`chromium-browser.exe`；
+  4. macOS 的 `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`、`Google Chrome Canary.app/...`、`Chromium.app/...`；
+  5. Windows 的 `%ProgramFiles%`、`%ProgramFiles(x86)%`、`%ProgramW6432%`、`%LOCALAPPDATA%` 下的 `Google\Chrome\Application\chrome.exe`（stable / Beta / Dev / SxS）与 `Chromium\Application\chrome.exe`。
 
-  找不到时第一个页面工具报 `UNSUPPORTED` 并列出候选路径；显式覆盖无效时如实报错，不会静默回退到别的浏览器。
-- 安装参考：Chrome 官方下载 <https://www.google.com/chrome/>；Debian/Ubuntu 也可 `sudo apt install chromium`（或发行版提供的 `chromium-browser`）；macOS 可 `brew install --cask google-chrome`。以发行版实际包名为准。
-- **有头模式额外要求**：`DISPLAY` 或 `WAYLAND_DISPLAY`，否则返回 `DISPLAY_UNAVAILABLE` 并保持无头；Linux/X11 想彻底隐藏窗口/任务栏/Alt-Tab 需要 `xdotool`（未安装时退化为离屏位置）。默认离屏无可见窗口，设 `DSH_UI_TESTING_HEADED_VISIBLE=1` 可显示窗口；持久 profile 默认 `$DSH_HOME/ui-testing/headed-profile`，可用 `DSH_UI_TESTING_PROFILE_DIR` 覆盖。
+  找不到时第一个页面工具报 `UNSUPPORTED` 并列出候选路径；显式覆盖无效时如实报错，不会静默回退到别的浏览器。Windows 上**不探测注册表**：Chrome 装在非标准目录、或使用 scoop/choco 的 `.cmd` shim 时，请用 `DSH_UI_TESTING_CHROME` 直接指向 `chrome.exe`。
+- 安装参考：Chrome 官方下载 <https://www.google.com/chrome/>；Debian/Ubuntu 也可 `sudo apt install chromium`（或发行版提供的 `chromium-browser`）；macOS 可 `brew install --cask google-chrome`。Windows 用官方安装包（默认装在 `C:\Program Files\Google\Chrome\Application`）。以发行版实际包名为准。
+- **有头模式额外要求**：POSIX 宿主需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，否则返回 `DISPLAY_UNAVAILABLE` 并保持无头；Windows 宿主本身有窗口系统，不需要这两个变量。Linux/X11 想彻底隐藏窗口/任务栏/Alt-Tab 需要 `xdotool`（未安装时退化为离屏位置）；Windows 上通过给窗口加 `WS_EX_TOOLWINDOW` 移除任务栏与 Alt-Tab 条目，依赖系统自带的 `powershell.exe`（不可用时退化为"离屏位置 + 任务栏可见"，不影响功能）。默认离屏无可见窗口，设 `DSH_UI_TESTING_HEADED_VISIBLE=1` 可显示窗口；持久 profile 默认 `$DSH_HOME/ui-testing/headed-profile`，可用 `DSH_UI_TESTING_PROFILE_DIR` 覆盖。
 - Node.js 22 及以上（运行时使用原生 WebSocket）。
 
 插件目前以本地链接方式接入 DSH profile，尚未发布 npm 包，也没有兼容性矩阵。

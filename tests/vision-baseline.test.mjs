@@ -321,6 +321,11 @@ export async function runBaselineChecks(check) {
     if (typeof process.getuid === 'function' && process.getuid() === 0) {
       return 'skipped: running as root (permission bits are bypassed)';
     }
+    // NTFS has ACLs, not POSIX mode bits: chmod 0500 on a directory does not make it read-only,
+    // so this check has no premise on Windows.
+    if (process.platform === 'win32') {
+      return 'skipped: win32 has no POSIX read-only directory bit';
+    }
     return withRoot((root) => {
       chmodSync(root, 0o500);
       try {
@@ -363,7 +368,7 @@ export async function runBaselineChecks(check) {
     const meta = store.update(updateInput(blue, 1));
     assert.equal(meta.revision, 2);
     assert.deepEqual(readdirSorted(paths.images('card')), ['2-act-2.png']);
-    assert.equal(statSync(paths.images('card')).mode & 0o777, 0o700);
+    if (process.platform !== 'win32') assert.equal(statSync(paths.images('card')).mode & 0o777, 0o700);
     assert.deepEqual(store.get('card').pngBytes, blue);
   }));
 
@@ -396,9 +401,12 @@ export async function runBaselineChecks(check) {
       paths.heads('card'),
       paths.images('card'),
     ];
-    for (const dir of dirs) assert.equal(statSync(dir).mode & 0o777, 0o700, `mode of ${dir}`);
-    assert.equal(statSync(join(paths.heads('card'), '0000000001.json')).mode & 0o777, 0o600);
-    assert.equal(statSync(join(paths.images('card'), '1-act-1.png')).mode & 0o777, 0o600);
+    // Windows has ACLs, not POSIX modes: the 0700/0600 requests cannot be observed there.
+    if (process.platform !== 'win32') {
+      for (const dir of dirs) assert.equal(statSync(dir).mode & 0o777, 0o700, `mode of ${dir}`);
+      assert.equal(statSync(join(paths.heads('card'), '0000000001.json')).mode & 0o777, 0o600);
+      assert.equal(statSync(join(paths.images('card'), '1-act-1.png')).mode & 0o777, 0o600);
+    }
     assert.equal(meta.image.relativePath, 'card/images/1-act-1.png');
   }));
 

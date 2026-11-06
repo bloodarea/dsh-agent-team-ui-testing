@@ -6,7 +6,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { accessSync, constants as fsConstants, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { delimiter, isAbsolute, join, sep } from 'node:path';
+import { delimiter, extname, isAbsolute, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FrameSource } from './frame-source.js';
 import { attachFramePush } from './frame-push.js';
@@ -49,6 +49,20 @@ const CHROME_ENV = 'DSH_UI_TESTING_CHROME';
 const CHROME_DEFAULT_CANDIDATE = '/opt/google/chrome/chrome';
 /** Per-directory PATH order is fixed: stable package first. */
 const CHROME_PATH_NAMES = Object.freeze(['google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser']);
+/** Windows PATH shims carry an extension, so the POSIX names above can never match there. */
+const CHROME_WIN_PATH_NAMES = Object.freeze([
+  'chrome.exe', 'google-chrome-stable.exe', 'google-chrome.exe', 'chromium.exe', 'chromium-browser.exe',
+]);
+/** Known Windows install tails, resolved under each program root (no registry probing). */
+const CHROME_WIN_INSTALL_TAILS = Object.freeze([
+  'Google\\Chrome\\Application\\chrome.exe',
+  'Google\\Chrome Beta\\Application\\chrome.exe',
+  'Google\\Chrome Dev\\Application\\chrome.exe',
+  'Google\\Chrome SxS\\Application\\chrome.exe',
+  'Chromium\\Application\\chrome.exe',
+]);
+/** Windows cannot execute these through CreateProcess; X_OK would accept any readable file. */
+const WIN_EXECUTABLE_EXTENSIONS = Object.freeze(['.exe', '.cmd', '.bat', '.com']);
 /** Platform-adaptive tail (macOS application bundles); Linux is covered by the paths above. */
 const CHROME_MAC_CANDIDATES = Object.freeze([
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -59,25 +73,59 @@ const CHROME_MAC_CANDIDATES = Object.freeze([
 const CHROME_CANDIDATE_LIMIT = 24;
 let chromeResolution;
 
-function isExecutableFile(candidate) {
+function isExecutableFile(candidate, platform = process.platform) {
   try {
-    return statSync(candidate).isFile() && (accessSync(candidate, fsConstants.X_OK), true);
+    if (!statSync(candidate).isFile()) return false;
+    // On Windows X_OK is a no-op (any readable file "passes"), so the extension decides.
+    if (platform === 'win32' && !WIN_EXECUTABLE_EXTENSIONS.includes(extname(candidate).toLowerCase())) return false;
+    return (accessSync(candidate, fsConstants.X_OK), true);
   } catch {
     return false;
   }
 }
 
 /** PATH directories: deduped, empty entries dropped (an empty entry must never mean cwd). */
-function searchDirsFrom(pathDirs) {
+function searchDirsFrom(pathDirs, platform = process.platform) {
   const dirs = pathDirs === undefined ? String(process.env.PATH || '').split(delimiter) : pathDirs;
-  return [...new Set(dirs.filter(Boolean))];
+  // Windows PATH entries are often quoted; a quoted root would never match a joined candidate.
+  const cleaned = platform === 'win32' ? dirs.map((dir) => String(dir).replace(/^"(.*)"$/, '$1')) : dirs;
+  return [...new Set(cleaned.filter(Boolean))];
 }
 
-function chromeCandidates(defaultCandidate, dirs, macCandidates) {
+/** Known Windows install locations for Chrome/Chromium channels (stable channel first). */
+function chromeWinCandidatesFrom(env) {
+  const roots = [env.PROGRAMFILES, env['PROGRAMFILES(X86)'], env.PROGRAMW6432, env.LOCALAPPDATA].filter(Boolean);
+  const out = [];
+  const seen = new Set();
+  for (const root of roots) {
+    for (const tail of CHROME_WIN_INSTALL_TAILS) {
+      const candidate = join(root, tail);
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      out.push(candidate);
+    }
+  }
+  return out;
+}
+
+/**
+ * A bare command name on Windows is resolved through PATHEXT by the shell, not by CreateProcess;
+ * probing the literal name would miss every `chrome.exe` shim on PATH.
+ */
+function commandCandidates(command, platform = process.platform) {
+  if (platform !== 'win32') return [command];
+  if (extname(command) !== '') return [command];
+  const extensions = String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  return [command, ...extensions.map((extension) => command + extension.toLowerCase())];
+}
+
+function chromeCandidates(defaultCandidate, dirs, macCandidates, winCandidates = [], platform = process.platform) {
+  const names = platform === 'win32' ? CHROME_WIN_PATH_NAMES : CHROME_PATH_NAMES;
   return [...new Set([
     ...(defaultCandidate ? [defaultCandidate] : []),
-    ...dirs.flatMap((dir) => CHROME_PATH_NAMES.map((name) => join(dir, name))),
+    ...dirs.flatMap((dir) => names.map((name) => join(dir, name))),
     ...macCandidates,
+    ...(platform === 'win32' ? winCandidates : []),
   ])];
 }
 
@@ -99,14 +147,19 @@ function chromeUnsupported(reason, candidates) {
  * a probe can exercise the search order without touching the host environment; production
  * callers pass nothing and get the cached answer.
  */
-export function resolveChromeExecutable({ override, pathDirs, defaultCandidate = CHROME_DEFAULT_CANDIDATE, macCandidates = CHROME_MAC_CANDIDATES } = {}) {
+export function resolveChromeExecutable({
+  override, pathDirs, defaultCandidate = CHROME_DEFAULT_CANDIDATE, macCandidates = CHROME_MAC_CANDIDATES,
+  winCandidates, platform = process.platform, env = process.env,
+} = {}) {
   const explicit = override !== undefined
     ? override
-    : { present: CHROME_ENV in process.env, value: process.env[CHROME_ENV] };
-  const cacheable = override === undefined && pathDirs === undefined
-    && defaultCandidate === CHROME_DEFAULT_CANDIDATE && macCandidates === CHROME_MAC_CANDIDATES;
-  const cacheKey = explicit.present ? `${CHROME_ENV}=${explicit.value}` : '(default)';
+    : { present: CHROME_ENV in env, value: env[CHROME_ENV] };
+  const cacheable = override === undefined && pathDirs === undefined && winCandidates === undefined
+    && defaultCandidate === CHROME_DEFAULT_CANDIDATE && macCandidates === CHROME_MAC_CANDIDATES
+    && platform === process.platform && env === process.env;
+  const cacheKey = `${platform}|${explicit.present ? `${CHROME_ENV}=${explicit.value}` : '(default)'}`;
   if (cacheable && chromeResolution && chromeResolution.key === cacheKey) return chromeResolution.path;
+  const dirs = searchDirsFrom(pathDirs, platform);
 
   if (explicit.present) {
     const raw = explicit.value === undefined || explicit.value === null ? '' : String(explicit.value);
@@ -116,30 +169,125 @@ export function resolveChromeExecutable({ override, pathDirs, defaultCandidate =
     if (raw.includes('\0')) throw new BrowserError('INVALID_ARGUMENT', `${CHROME_ENV} 不能包含 NUL 字符`);
     if (!isAbsolute(raw)) {
       if (/[\\/]/.test(raw)) throw new BrowserError('INVALID_ARGUMENT', `${CHROME_ENV} 只接受绝对路径或 PATH 中的单个命令名：${raw}`);
-      const tried = searchDirsFrom(pathDirs).map((dir) => join(dir, raw));
-      const hit = tried.find(isExecutableFile);
+      const tried = dirs.flatMap((dir) => commandCandidates(raw, platform).map((name) => join(dir, name)));
+      const hit = tried.find((candidate) => isExecutableFile(candidate, platform));
       if (!hit) throw chromeUnsupported(`${CHROME_ENV} 指定的命令在 PATH 中不可执行：${raw}`, tried);
       if (cacheable) chromeResolution = { key: cacheKey, path: hit };
       return hit;
     }
-    if (!isExecutableFile(raw)) throw chromeUnsupported(`${CHROME_ENV} 指向的 Chrome 不可用（不存在或不可执行）：${raw}`, [raw]);
+    if (!isExecutableFile(raw, platform)) {
+      throw chromeUnsupported(`${CHROME_ENV} 指向的 Chrome 不可用（不存在或不可执行）：${raw}`, [raw]);
+    }
     if (cacheable) chromeResolution = { key: cacheKey, path: raw };
     return raw;
   }
 
-  const candidates = chromeCandidates(defaultCandidate, searchDirsFrom(pathDirs), macCandidates);
-  const found = candidates.find(isExecutableFile);
+  const candidates = chromeCandidates(
+    // A POSIX default path can never exist on Windows and only pads the error message there.
+    platform === 'win32' ? undefined : defaultCandidate,
+    dirs,
+    macCandidates,
+    winCandidates === undefined ? (platform === 'win32' ? chromeWinCandidatesFrom(env) : []) : winCandidates,
+    platform,
+  );
+  const found = candidates.find((candidate) => isExecutableFile(candidate, platform));
   if (!found) throw chromeUnsupported('找不到可用的 Chrome/Chromium 可执行文件', candidates);
   if (cacheable) chromeResolution = { key: cacheKey, path: found };
   return found;
+}
+
+/**
+ * Terminate a spawned browser and every process it created.
+ *
+ * On Windows there is no signal delivery for console children: child.kill() is a TerminateProcess
+ * on that one PID, so Chrome's own children survive and keep the temporary profile locked.
+ * taskkill /T kills the tree the browser was spawned into; POSIX keeps the SIGTERM-first path.
+ */
+function terminateProcessTree(proc, { force = false } = {}) {
+  const pid = proc && proc.pid;
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', ['/PID', String(pid), '/T', ...(force ? ['/F'] : [])], {
+        stdio: 'ignore', timeout: 5000, windowsHide: true,
+      });
+      return;
+    } catch { /* taskkill unavailable or process already gone: fall through */ }
+  }
+  try { proc.kill(force ? 'SIGKILL' : 'SIGTERM'); } catch { /* ignore */ }
+}
+
+/**
+ * Windows: drop the headed browser window out of the taskbar and Alt-Tab.
+ *
+ * `--window-position=-10000,-10000` parks the window offscreen but the shell still shows a taskbar
+ * button and an Alt-Tab entry for a visible, unowned top-level window. Marking it
+ * WS_EX_TOOLWINDOW (and clearing WS_EX_APPWINDOW, then HIDE + SHOW_NOACTIVATE so the shell
+ * re-evaluates) removes both.
+ *
+ * SW_HIDE alone is not an option: a genuinely hidden window makes the page `hidden`, which stops
+ * rAF and screencast frames — exactly the feed the debug panel renders. There is no CLI for window
+ * styles, so this is a bounded best-effort PowerShell call; every failure is non-fatal and only
+ * means the window keeps its taskbar button.
+ *
+ * @returns {boolean} true when at least one window was restyled
+ */
+function hideHeadedWindowWin32(pid) {
+  const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+  const powershell = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const script = `
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class DshUiTestingWin {
+  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
+  [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
+  [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] public static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int index, IntPtr value);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd);
+}
+'@
+$target = [uint32]${pid}
+$script:hits = 0
+$cb = [DshUiTestingWin+EnumProc]{
+  param($hWnd, $lParam)
+  [uint32]$owner = 0
+  [void][DshUiTestingWin]::GetWindowThreadProcessId($hWnd, [ref]$owner)
+  if ($owner -eq $target -and [DshUiTestingWin]::IsWindowVisible($hWnd) -and [DshUiTestingWin]::GetWindow($hWnd, 4) -eq [IntPtr]::Zero) {
+    $ex = [int64][DshUiTestingWin]::GetWindowLongPtr($hWnd, -20)
+    $new = ($ex -bor 0x80) -band (-bnot 0x40000)
+    [void][DshUiTestingWin]::SetWindowLongPtr($hWnd, -20, [IntPtr]$new)
+    [void][DshUiTestingWin]::ShowWindow($hWnd, 0)
+    [void][DshUiTestingWin]::ShowWindow($hWnd, 4)
+    $script:hits++
+  }
+  return $true
+}
+[void][DshUiTestingWin]::EnumWindows($cb, [IntPtr]::Zero)
+if ($script:hits -gt 0) { '1' } else { '0' }
+`;
+  try {
+    const output = execFileSync(powershell, [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
+    ], { encoding: 'utf8', timeout: 4000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    return String(output).trim() === '1';
+  } catch {
+    return false;
+  }
 }
 
 const ROUTE_PREFIX = '/plugins/ui-testing';
 const NETWORK_LIMIT = 300;
 const AGENT_HOLD_MS = 15000;
 /** Bounded retry for the exact mkdtemp profile cleanup (transient ENOTEMPTY/EBUSY/EPERM). */
-const PROFILE_RM_RETRIES = 5;
-const PROFILE_RM_RETRY_DELAY_MS = 50;
+/* Windows holds handles on a just-killed profile longer (AV, crashpad), so retry harder there. */
+const PROFILE_RM_RETRIES = process.platform === 'win32' ? 20 : 5;
+const PROFILE_RM_RETRY_DELAY_MS = process.platform === 'win32' ? 150 : 50;
 /** How long a reload / history command may take to commit its main-frame navigation. */
 const COMMIT_TIMEOUT_MS = 10000;
 /** Throttle for the merged background title/url/history read (UI polls at 500ms / 80ms). */
@@ -1376,10 +1524,15 @@ class BrowserHost {
     return process.env.DSH_UI_TESTING_HEADED_VISIBLE === '1' ? 'visible' : 'offscreen';
   }
 
-  /** Best-effort X11 hide: offscreen is not enough for taskbar/Alt-Tab, so unmap the windows. */
+  /** Best-effort hide: offscreen alone still leaves a taskbar/Alt-Tab entry on X11 and win32. */
   #hideHeadedWindows(pid) {
-    if (this.displayMode !== 'headed' || this.displayWindow === 'visible') return;
-    if (process.platform !== 'linux' || !process.env.DISPLAY || !pid) return;
+    if (this.displayMode !== 'headed' || this.displayWindow === 'visible' || !pid) return;
+    if (process.platform === 'win32') {
+      // Restyling keeps the window "visible" to Chromium; see hideHeadedWindowWin32.
+      if (hideHeadedWindowWin32(pid)) this.windowHidden = true;
+      return;
+    }
+    if (process.platform !== 'linux' || !process.env.DISPLAY) return;
     try {
       const ids = execFileSync('xdotool', ['search', '--pid', String(pid)], { encoding: 'utf8', timeout: 2000 })
         .trim().split('\n').filter(Boolean);
@@ -1398,7 +1551,11 @@ class BrowserHost {
     if (mode !== 'headless' && mode !== 'headed') {
       throw new BrowserError('INVALID_ARGUMENT', 'display mode 只支持 headless / headed', { mode });
     }
-    if (mode === 'headed' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+    // A Windows desktop always has a window system; DISPLAY/WAYLAND_DISPLAY is X11/Wayland only,
+    // so gating on those two variables rejects headed mode on every Windows host.
+    const windowSystem = process.platform === 'win32'
+      || Boolean(process.env.DISPLAY) || Boolean(process.env.WAYLAND_DISPLAY);
+    if (mode === 'headed' && !windowSystem) {
       throw new BrowserError('DISPLAY_UNAVAILABLE', '有头模式需要图形显示（DISPLAY/WAYLAND_DISPLAY）', { mode });
     }
     if (this.displayMode === mode) return this.displayMode;
@@ -1538,10 +1695,10 @@ class BrowserHost {
     this.profileDir = undefined;
     this.port = 0;
     if (proc) {
-      try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+      terminateProcessTree(proc);
       const exited = await waitForExit(proc, 1200);
       if (!exited) {
-        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+        terminateProcessTree(proc, { force: true });
         await waitForExit(proc, 500);
       }
     }
@@ -1819,10 +1976,10 @@ class BrowserHost {
     try { browserCdp?.close(); } catch { /* ignore */ }
     let cleanupFailed = false;
     if (proc && proc.exitCode === null) {
-      try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+      terminateProcessTree(proc);
       const exited = await waitForExit(proc, DEVTOOLS_STARTUP.killGraceMs);
       if (!exited) {
-        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+        terminateProcessTree(proc, { force: true });
         const killed = await waitForExit(proc, DEVTOOLS_STARTUP.killFinalMs);
         if (!killed) {
           cleanupFailed = true;
@@ -13840,7 +13997,9 @@ export function apply(ctx) {
     const root = captureStaging.root;
     captureStaging.root = undefined;
     if (!root) return;
-    try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
+    try {
+      rmSync(root, { recursive: true, force: true, maxRetries: PROFILE_RM_RETRIES, retryDelay: PROFILE_RM_RETRY_DELAY_MS });
+    } catch { /* best effort */ }
   }, 'ui-testing: capture staging root');
   let attachments;
   ctx.inject(['attachments'], (sub) => {
