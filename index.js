@@ -129,6 +129,26 @@ function chromeCandidates(defaultCandidate, dirs, macCandidates, winCandidates =
   ])];
 }
 
+/**
+ * Pure discovery order — the candidate list from docs/getting-started.md, without touching the
+ * filesystem. Separated from {@link resolveChromeExecutable} so the composition (which roots, which
+ * PATH names, never the other platform's shapes) is assertable on any host; whether a candidate
+ * actually exists stays a host question.
+ */
+export function chromeCandidatePaths({
+  platform = process.platform, env = process.env, pathDirs,
+  defaultCandidate = CHROME_DEFAULT_CANDIDATE, macCandidates = CHROME_MAC_CANDIDATES, winCandidates,
+} = {}) {
+  return chromeCandidates(
+    // A POSIX default path can never exist on Windows and only pads the error message there.
+    platform === 'win32' ? undefined : defaultCandidate,
+    searchDirsFrom(pathDirs, platform),
+    macCandidates,
+    winCandidates === undefined ? (platform === 'win32' ? chromeWinCandidatesFrom(env) : []) : winCandidates,
+    platform,
+  );
+}
+
 /** UNSUPPORTED/capability/false: no usable browser. The message lists candidates, never secrets. */
 function chromeUnsupported(reason, candidates) {
   const unique = [...new Set(candidates)];
@@ -145,7 +165,8 @@ function chromeUnsupported(reason, candidates) {
  *
  * `override` ({present, value}) / `pathDirs` / `defaultCandidate` / `macCandidates` exist only so
  * a probe can exercise the search order without touching the host environment; production
- * callers pass nothing and get the cached answer.
+ * callers pass nothing and get the cached answer. The candidate composition itself is
+ * {@link chromeCandidatePaths}.
  */
 export function resolveChromeExecutable({
   override, pathDirs, defaultCandidate = CHROME_DEFAULT_CANDIDATE, macCandidates = CHROME_MAC_CANDIDATES,
@@ -182,14 +203,7 @@ export function resolveChromeExecutable({
     return raw;
   }
 
-  const candidates = chromeCandidates(
-    // A POSIX default path can never exist on Windows and only pads the error message there.
-    platform === 'win32' ? undefined : defaultCandidate,
-    dirs,
-    macCandidates,
-    winCandidates === undefined ? (platform === 'win32' ? chromeWinCandidatesFrom(env) : []) : winCandidates,
-    platform,
-  );
+  const candidates = chromeCandidatePaths({ platform, env, pathDirs, defaultCandidate, macCandidates, winCandidates });
   const found = candidates.find((candidate) => isExecutableFile(candidate, platform));
   if (!found) throw chromeUnsupported('找不到可用的 Chrome/Chromium 可执行文件', candidates);
   if (cacheable) chromeResolution = { key: cacheKey, path: found };
