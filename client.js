@@ -2032,6 +2032,7 @@ window.__ModuleLoader__.load({
       const [navBusy, setNavBusy] = React.useState(false);
       const [mode, setMode] = React.useState('idle');
       const [env, setEnv] = React.useState('web');
+      const [displaySwitching, setDisplaySwitching] = React.useState(false);
       const [shot, setShot] = React.useState('');
       const [remote, setRemote] = React.useState({ mode: 'idle', activity: '', url: '', running: false });
       const [transportKind, setTransportKind] = React.useState('poll');
@@ -2470,6 +2471,7 @@ window.__ModuleLoader__.load({
       }
 
       const ui = remote && remote.ui && remote.ui.version === 1 ? remote.ui : null;
+      const displayMode = ui && ui.display && ui.display.mode === 'headed' ? 'headed' : 'headless';
       const uiHistory = ui && ui.history && typeof ui.history === 'object' ? ui.history : null;
       const running = remote.running === true;
       /** Latest accepted address: raw v1 address, or the redacted url on an old host. */
@@ -6868,6 +6870,31 @@ window.__ModuleLoader__.load({
         if (fitRef.current) changeFit(false);
       }
       /**
+       * 仅 Web 视图的“无头/有头”切换：Host 会关闭共享 Chromium 再按新模式重启（有头=可见窗口+
+       * 持久 profile）。切换成功后所有页面都没了：清掉 binding，让面板回到默认空态，需重新打开页面。
+       */
+      function changeDisplayMode(next) {
+        if (next !== 'headless' && next !== 'headed') return;
+        if (displaySwitching || next === displayMode || annotRef.current.on) return;
+        setDisplaySwitching(true);
+        setTabNotice('');
+        callHost('display', { mode: next }, { scope: scopeRef.current }).then(() => {
+          setDisplaySwitching(false);
+          setBindingState({ identityKey, value: '' });
+          setActiveViewId('primary');
+          showTabNotice(next === 'headed'
+            ? '已切换到有头模式：浏览器窗口可见，页面已关闭，请重新打开'
+            : '已切换到无头模式：页面已关闭，请重新打开');
+        }).catch((error) => {
+          setDisplaySwitching(false);
+          const code = String((error && error.code) || '');
+          showTabNotice(code === 'DISPLAY_UNAVAILABLE'
+            ? '有头模式需要图形显示（DISPLAY）'
+            : '切换运行模式失败');
+        });
+      }
+
+      /**
        * 用户 2026-11-03 第 3 条：用户主动切换环境时套该环境默认，只发布 width/height（不发布
        * scale），fit=true、pan=false；annotOn 或非 ready 不生效。
        */
@@ -6994,6 +7021,7 @@ window.__ModuleLoader__.load({
         'data-utb-ready-views': String(readyViewList.length),
         'data-utb-tabs-pref': tabsVisible ? 'true' : 'false',
         'data-utb-active-busy': activeBusy ? 'true' : 'false',
+        'data-utb-display-mode': displayMode,
         onPointerDown: markHuman,
         onKeyDown: markHuman,
         onWheel: markHuman,
@@ -7004,6 +7032,35 @@ window.__ModuleLoader__.load({
           h('div', { className: 'utb-env-text' },
             h('span', { className: 'utb-env-title' }, 'Web · 调试视图')),
           h('span', { className: 'utb-gap' }),
+          // Web-view-only run-mode switch: headless (default) vs headed (visible window + profile).
+          env === 'web' && h('div', {
+            className: 'utb-seg utb-display-seg',
+            role: 'group',
+            'aria-label': '运行模式',
+            'data-utb-display-mode': displayMode,
+          },
+            [['headless', '无头'], ['headed', '有头']].map(([id, label]) => {
+              const description = id === 'headed'
+                ? '有头模式（离屏隐藏窗口 + 持久 profile）\n'
+                  + '· 真实有头 Chromium，较不易被反爬识别；需要登录/过风控的站点用它\n'
+                  + '· 登录态 / Cookie 跨重启保留\n'
+                  + '· 启动较慢；切换会关闭所有页面，需重新打开'
+                : '无头模式（默认）\n'
+                  + '· 不显示浏览器窗口，启动快、资源占用低\n'
+                  + '· 容易被反爬 / 风控识别（Cloudflare、Turnstile 等会持续挑战或 403）\n'
+                  + '· 每次启动使用临时 profile，不保留登录态';
+              return h('button', {
+                key: id,
+                type: 'button',
+                className: 'utb-seg-btn',
+                'aria-pressed': displayMode === id,
+                'aria-description': description,
+                'data-utb-display': id,
+                title: description,
+                disabled: displaySwitching,
+                onClick: () => changeDisplayMode(id),
+              }, segDot(displayMode === id, 'display'), label);
+            })),
           h('label', { className: 'utb-env-pick' },
             h('span', { className: 'utb-sr' }, '选择运行环境'),
             h('select', {

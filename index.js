@@ -2,10 +2,10 @@
  * Host half of the UI testing plugin: owns a real headless Chromium and drives it over CDP.
  * The client half only renders frames and forwards input, so nothing here can steal window focus.
  */
-import { spawn } from 'node:child_process';
-import { accessSync, constants as fsConstants, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { accessSync, constants as fsConstants, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FrameSource } from './frame-source.js';
@@ -1356,11 +1356,65 @@ class BrowserHost {
     this.initialTargetId = undefined;
     /** Log the explicit IPv4-only degradation once per host, not once per start attempt. */
     this.ipv6ProbeLogged = false;
+    /** Headless by default; `headed` is the Web-view escape hatch (visible window + persistent profile). */
+    this.displayMode = 'headless';
+    /** True while the current profile must survive close (headed mode). */
+    this.profilePersistent = false;
+    /** Best-effort X11 unmap result: headed window is offscreen and not in WM/taskbar. */
+    this.windowHidden = false;
   }
 
   get pageCount() { return this.ownedTargets.size; }
 
   get running() { return Boolean(this.browserCdp && !this.browserCdp.closed); }
+
+  get display() { return this.displayMode; }
+
+  /** Headed runs offscreen by default (no visible window/task focus); env opts into a real window. */
+  get displayWindow() {
+    if (this.displayMode !== 'headed') return 'none';
+    return process.env.DSH_UI_TESTING_HEADED_VISIBLE === '1' ? 'visible' : 'offscreen';
+  }
+
+  /** Best-effort X11 hide: offscreen is not enough for taskbar/Alt-Tab, so unmap the windows. */
+  #hideHeadedWindows(pid) {
+    if (this.displayMode !== 'headed' || this.displayWindow === 'visible') return;
+    if (process.platform !== 'linux' || !process.env.DISPLAY || !pid) return;
+    try {
+      const ids = execFileSync('xdotool', ['search', '--pid', String(pid)], { encoding: 'utf8', timeout: 2000 })
+        .trim().split('\n').filter(Boolean);
+      for (const id of ids) {
+        try { execFileSync('xdotool', ['windowunmap', id], { timeout: 1000 }); this.windowHidden = true; } catch { /* ignore */ }
+      }
+    } catch { /* xdotool missing or window not created yet: keep the offscreen placement */ }
+  }
+
+  /**
+   * Switch the shared Chromium between headless (default) and headed (Web view only). A running
+   * browser cannot change flags in place: close it first, then let the next ensure spawn the new
+   * mode. Headed needs a display server and keeps its profile across sessions (login/CF cookies).
+   */
+  async setDisplayMode(mode) {
+    if (mode !== 'headless' && mode !== 'headed') {
+      throw new BrowserError('INVALID_ARGUMENT', 'display mode 只支持 headless / headed', { mode });
+    }
+    if (mode === 'headed' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+      throw new BrowserError('DISPLAY_UNAVAILABLE', '有头模式需要图形显示（DISPLAY/WAYLAND_DISPLAY）', { mode });
+    }
+    if (this.displayMode === mode) return this.displayMode;
+    this.displayMode = mode;
+    // Pages cannot survive the process swap: close now, the caller re-opens/ navigates explicitly.
+    await this.close();
+    return this.displayMode;
+  }
+
+  /** Stable profile for headed mode; headless keeps the disposable per-start temp profile. */
+  headedProfileDir() {
+    const override = process.env.DSH_UI_TESTING_PROFILE_DIR;
+    if (override) return override;
+    const home = process.env.DSH_HOME || join(homedir(), '.dsh');
+    return join(home, 'ui-testing', 'headed-profile');
+  }
 
   /**
    * Ensure the browser process/CDP is up. Mutually exclusive with close(): a caller that arrives
@@ -1428,6 +1482,8 @@ class BrowserHost {
         try { cdp.close(); } catch { /* ignore */ }
         throw new BrowserError('CDP_DISCONNECTED', '浏览器在创建页面时被关闭');
       }
+      // The X11 window may exist only after the page target is created; hide it once more here.
+      this.#hideHeadedWindows(this.proc && this.proc.pid);
       return { targetId, cdp, generation };
     } catch (error) {
       if (targetId) { try { await this.#closeOwnedTarget(targetId); } catch { /* ignore */ } }
@@ -1489,7 +1545,9 @@ class BrowserHost {
         await waitForExit(proc, 500);
       }
     }
-    if (dir) await this.#removeProfileDir(dir);
+    if (dir && !this.profilePersistent) await this.#removeProfileDir(dir);
+    this.profilePersistent = false;
+    this.windowHidden = false;
   }
 
   async #spawn(signal) {
@@ -1514,8 +1572,16 @@ class BrowserHost {
         if (!candidate) throw devtoolsStartupError('port-unavailable', attempts);
         const attemptDeadline = Math.min(overallDeadline, Date.now() + DEVTOOLS_STARTUP.attemptTimeoutMs);
         if (attemptDeadline <= Date.now()) throw devtoolsStartupError('port-unavailable', attempts);
-        // A fresh profile per attempt: a half-written profile or stale lock must not poison a retry.
-        profileDir = await mkdtemp(join(tmpdir(), 'dsh-ui-testing-'));
+        // Headed reuses one persistent profile (login/CF clearance); headless keeps the fresh
+        // disposable profile per attempt so a half-written profile cannot poison a retry.
+        if (this.displayMode === 'headed') {
+          profileDir = this.headedProfileDir();
+          mkdirSync(profileDir, { recursive: true });
+          this.profilePersistent = true;
+        } else {
+          profileDir = await mkdtemp(join(tmpdir(), 'dsh-ui-testing-'));
+          this.profilePersistent = false;
+        }
         this.profileDir = profileDir;
         proc = this.#spawnChrome(chromeBin, profileDir, candidate.port);
         this.proc = proc;
@@ -1542,6 +1608,7 @@ class BrowserHost {
         this.browserCdp = browserCdp;
         // Internal only: the public DevTools URL is built from uiState and needs a live page too.
         this.port = candidate.port;
+        this.#hideHeadedWindows(proc.pid);
         browserCdp.on((message) => {
           if (this.browserCdp !== browserCdp) return;
           this.#onBrowserEvent(browserCdp, message);
@@ -1558,7 +1625,7 @@ class BrowserHost {
         return browserCdp;
       } catch (error) {
         const classified = asBrowserError(error);
-        const cleanupFailed = await this.#disposeAttempt({ proc, profileDir, browserCdp });
+        const cleanupFailed = await this.#disposeAttempt({ proc, profileDir, browserCdp, persistent: this.profilePersistent });
         if (this.proc === proc) this.proc = undefined;
         if (this.profileDir === profileDir) this.profileDir = undefined;
         if (this.browserCdp === browserCdp) this.browserCdp = undefined;
@@ -1589,8 +1656,8 @@ class BrowserHost {
 
   /** One Chrome process with the exact loopback port + matching Origin allow-list. */
   #spawnChrome(chromeBin, profileDir, port) {
-    return spawn(chromeBin, [
-      '--headless=new',
+    const args = [
+      ...(this.displayMode === 'headed' ? [] : ['--headless=new']),
       '--remote-debugging-address=127.0.0.1',
       `--remote-debugging-port=${port}`,
       // Chrome 111+ rejects a CDP WebSocket whose Origin is not allow-listed (even same-origin
@@ -1609,8 +1676,14 @@ class BrowserHost {
       '--disable-backgrounding-occluded-windows',
       '--disable-features=CalculateNativeWinOcclusion',
       '--window-size=1280,800',
+      ...(this.displayMode === 'headed'
+        ? (process.env.DSH_UI_TESTING_HEADED_VISIBLE === '1'
+          ? ['--start-maximized']
+          : ['--window-position=-10000,-10000'])
+        : []),
       'about:blank',
-    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    ];
+    return spawn(chromeBin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   }
 
   /**
@@ -1742,7 +1815,7 @@ class BrowserHost {
   }
 
   /** Tear down exactly one failed attempt; returns true when the process could not be confirmed gone. */
-  async #disposeAttempt({ proc, profileDir, browserCdp }) {
+  async #disposeAttempt({ proc, profileDir, browserCdp, persistent = false }) {
     try { browserCdp?.close(); } catch { /* ignore */ }
     let cleanupFailed = false;
     if (proc && proc.exitCode === null) {
@@ -1757,7 +1830,7 @@ class BrowserHost {
         }
       }
     }
-    if (profileDir) await this.#removeProfileDir(profileDir);
+    if (profileDir && !persistent) await this.#removeProfileDir(profileDir);
     return cleanupFailed;
   }
 
@@ -2013,6 +2086,7 @@ class BrowserHost {
       const owned = this.ownedTargets.get(targetId);
       if (owned) owned.initializing = false;
       entry.status = 'ready';
+      this.#hideHeadedWindows(this.proc && this.proc.pid);
       parent.registry.bumpViews(entry.primaryKey);
       this.log('adopted popup target ' + targetId + ' as view ' + viewId + ' (parent ' + parent.runtimeId + ')');
     } catch (error) {
@@ -5911,6 +5985,11 @@ export class Runtime {
       ui: {
         version: 1,
         runtimeId: this.runtimeId,
+        display: {
+          mode: this.host && this.host.display === 'headed' ? 'headed' : 'headless',
+          window: this.host && typeof this.host.displayWindow === 'string' ? this.host.displayWindow : 'none',
+          hidden: this.host ? this.host.windowHidden === true : false,
+        },
         revision: this.uiRevision,
         scope: this.scope,
         address: running ? this.url : '',
@@ -14138,6 +14217,19 @@ export function apply(ctx) {
         await entry.runtime.run(() => entry.runtime.navigate(String(body.url || '')));
         registry.markRecent(entry);
         sendJson(res, 200, { ok: true, state: projected(entry.runtime) });
+        return;
+      }
+      if (action === '/display') {
+        // Web-view run mode: headless (default) vs headed (visible window + persistent profile).
+        // A swap restarts the shared Chromium; the caller must reopen pages afterwards. This is a
+        // lifecycle action, so it is GUI-only and carries no per-tab Agent lease gate.
+        if (!scoped) {
+          const rejection = requestRejection(req);
+          if (rejection) { rejectUi(res, rejection); return; }
+        }
+        const host = registry.browserHost();
+        await host.setDisplayMode(String(body.mode || ''));
+        sendJson(res, 200, { ok: true, mode: host.display });
         return;
       }
       if (action === '/reload') {

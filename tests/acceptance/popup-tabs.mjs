@@ -817,6 +817,90 @@ async function main() {
         { survived, hostViews: hostAfterReload.ui?.views, address: hostAfterReload.ui?.address });
     }
 
+    async function displayModeSmoke() {
+      const tips = await evaluate(`(() => Object.fromEntries([...document.querySelectorAll('[data-utb-display]')].map((b) => [b.getAttribute('data-utb-display'), b.getAttribute('title') || ''])))()`);
+      check('display: headless/headed tooltips explain the anti-bot and profile tradeoff',
+        /Cloudflare/i.test(tips.headless || '') && /无头|窗口/.test(tips.headless || '') && /持久 profile/.test(tips.headed || ''),
+        { headless: 'Cloudflare / 临时 profile', headed: '持久 profile' }, tips);
+      if (process.env.DSH_UI_TESTING_HEADED_TEST !== '1') {
+        notRun('display: headless/headed switch', '有头模式会打开可见窗口（需要 DISPLAY），默认不跑；设 DSH_UI_TESTING_HEADED_TEST=1 运行',
+          { display: process.env.DISPLAY || null });
+        return;
+      }
+      log('\n--- display mode: headless (default) <-> headed ---');
+      const initial = await evaluate(`(() => ({
+        mode: document.querySelector('.utb')?.getAttribute('data-utb-display-mode') || null,
+        buttons: [...document.querySelectorAll('[data-utb-display]')].map((b) => b.getAttribute('data-utb-display')),
+        pressed: document.querySelector('[data-utb-display][aria-pressed="true"]')?.getAttribute('data-utb-display') || null,
+      }))()`);
+      check('display: Web view exposes a headless/headed switch, default headless',
+        initial.mode === 'headless' && initial.pressed === 'headless'
+          && initial.buttons.includes('headless') && initial.buttons.includes('headed'),
+        { mode: 'headless', pressed: 'headless', buttons: ['headless', 'headed'] }, initial);
+      await evaluate(`(() => { const b=document.querySelector('[data-utb-display="headed"]'); if (b) b.click(); return !!b; })()`);
+      let headed = null;
+      const headedDeadline = Date.now() + 20000;
+      while (Date.now() < headedDeadline) {
+        const st = await hostState();
+        if (st.ui?.display?.mode === 'headed') { headed = st; break; }
+        await sleep(200);
+      }
+      let headedAttr = null;
+      const headedAttrDeadline = Date.now() + 5000;
+      while (Date.now() < headedAttrDeadline) {
+        headedAttr = await evaluate(`document.querySelector('.utb')?.getAttribute('data-utb-display-mode') || null`);
+        if (headedAttr === 'headed') break;
+        await sleep(150);
+      }
+      await sleep(800);
+      check('display: switching to headed restarts the browser and updates ui.display',
+        headed !== null && headedAttr === 'headed',
+        { hostMode: 'headed', panelMode: 'headed' }, { hostMode: headed?.ui?.display?.mode, panelMode: headedAttr });
+      // The process swap closes every page; a fresh navigation must work in headed mode.
+      await setAddressBar(fixtureUrl).catch((error) => log('[display] headed navigate failed: ' + String(error && error.message || error)));
+      await sleep(600);
+      const headedPage = await hostState();
+      check('display: headed mode opens a page after the restart',
+        String(headedPage.ui?.address || '') === fixtureUrl && headedPage.running === true,
+        { address: fixtureUrl, running: true }, { address: headedPage.ui?.address, running: headedPage.running });
+      const headedProfile = join(state.dsh.home, 'ui-testing', 'headed-profile');
+      check('display: headed mode keeps its persistent profile', existsSync(headedProfile), headedProfile, existsSync(headedProfile));
+      const hiddenState = await hostState();
+      check('display: headed window runs offscreen and is hidden from the WM (seamless)',
+        hiddenState.ui?.display?.mode === 'headed'
+          && hiddenState.ui?.display?.window === 'offscreen'
+          && hiddenState.ui?.display?.hidden === true,
+        { mode: 'headed', window: 'offscreen', hidden: true },
+        { mode: hiddenState.ui?.display?.mode, window: hiddenState.ui?.display?.window, hidden: hiddenState.ui?.display?.hidden });
+      await evaluate(`(() => { const b=document.querySelector('[data-utb-display="headless"]'); if (b) b.click(); return !!b; })()`);
+      let back = null;
+      const backDeadline = Date.now() + 20000;
+      while (Date.now() < backDeadline) {
+        const st = await hostState();
+        if (st.ui?.display?.mode === 'headless') { back = st; break; }
+        await sleep(200);
+      }
+      let backAttr = null;
+      const backAttrDeadline = Date.now() + 5000;
+      while (Date.now() < backAttrDeadline) {
+        backAttr = await evaluate(`document.querySelector('.utb')?.getAttribute('data-utb-display-mode') || null`);
+        if (backAttr === 'headless') break;
+        await sleep(150);
+      }
+      await sleep(800);
+      let backPage = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await setAddressBar(fixtureUrl).catch((error) => log('[display] headless retry ' + attempt + ': ' + String(error && error.message || error)));
+        await sleep(800);
+        backPage = await hostState();
+        if (String(backPage.ui?.address || '') === fixtureUrl && backPage.running === true) break;
+      }
+      check('display: switching back to headless restores a working headless page',
+        back !== null && backAttr === 'headless' && String(backPage?.ui?.address || '') === fixtureUrl && backPage?.running === true,
+        { hostMode: 'headless', panelMode: 'headless', address: fixtureUrl, running: true },
+        { hostMode: back?.ui?.display?.mode, panelMode: backAttr, address: backPage?.ui?.address, running: backPage?.running });
+    }
+
     async function hostAgentPrimaryCheck() {
       log('\n--- Host harness: Agent stays primary ---');
       const harness = await createHarness({
@@ -852,6 +936,7 @@ async function main() {
       await tabSmoke();
       await popupScenarios();
       await primaryReset();
+      await displayModeSmoke();
       await hostAgentPrimaryCheck();
       await captureGuiPng('popup-tabs-panel.png');
     } catch (error) {

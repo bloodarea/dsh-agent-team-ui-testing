@@ -76,6 +76,8 @@ node tests/acceptance/verify-3081.mjs      # 隔离宿主 HTTP 集成
 
 `pick-element-gui.mjs` 自启私有隔离 DSH（临时 `DSH_HOME`、随机端口，绝不用 3080/3081）并另开无头 Chrome：从右侧边栏 guide 的 `debug-view` 打开面板、地址栏导航到 `/pick-element.html`，断言入口三态与互斥（标注/尺寸调整双向）、悬浮框的 `data-utb-pick-*` 与按面板 `view`/图片几何计算的屏幕矩形误差 ≤2px、`detail:false` 的 hover 不带 selector、点击后 `[data-composer-input]` 的 `@` 元素引用 chip（紧凑标签 + 模型文本由 codec.serialize 提供，经测试钩子核对完整块）、强制降级时的完整文本块、发送后聊天记录的文本规则（块→紧凑 chip 的匹配与注册，含长 selector/截断样本）、成功提示与模式退出、聊天框焦点、Esc/指针离开、滚轮滚动后按新画布原点重取、以及退出后真实点击使 fixture 计数器 1→页面输入恢复；悬停/选元素期间页面计数保持 0。`NOT_RUN`（画布平移 O≠0、主面板 `recent`、DPR≠1/非 loopback、iframe/closed shadow 选取）必须原样报告。
 
+`popup-tabs.mjs` 额外覆盖 Web 视图的 无头/有头 切换（默认无头、切到有头后 Host `ui.display.mode=headed`、离屏窗口已隐藏 `display.hidden=true`、有头能打开页面、持久 profile 存在、切回无头可继续打开页面）。有头模式默认离屏并尝试从窗口管理器隐藏，但测试仍可能影响桌面环境，默认记 `NOT_RUN`；设 `DSH_UI_TESTING_HEADED_TEST=1` 才实际运行。
+
 `canvas-wheel.mjs` 也自启私有隔离 DSH：用 3000px 长页、O=0/±、内容/blank wheel 和真实点击，断言宿主/舞台滚动链不变、内容 wheel 恰派发一次、`p=q+O` 误差 ≤1px、点击只增目标按钮、A2 瞬态 `maxDeviation`/`extraBlank` 为 0；实时帧 barrier/seed 与 BUSY 注入等无法稳定复现的项按 `NOT_RUN` 报告，不能用“收到 wheel/显示提示”冒充通过。
 
 `popup-tabs.mjs` 自启私有隔离 DSH，用同时含 `target=_blank`、`rel=noopener`、真实 `window.open` 与自动定时 `window.open` 的本地 fixture：验证单标签时标签栏即显示且开关可收起/展开、`+` 只在栏内（工具栏无常驻 `+`）、真人点击后内部标签栏从 1→2、新标签 active、原 A 标签 URL/history 不变、A/B 切换与 B→C→后退、B active 时真实坐标点击命中 B、开关在标注左侧且隐藏不丢页面、关闭 child 发 binding `/close` 并回 A、非法/无 ticket/超容量阻断并提示、Host Agent `browser_state` 仍 primary。跨 workspace、刷新恢复、Agent lease 竞态等按 `NOT_RUN` 原样报告；Chrome 自动弹窗被 popup blocker 拦截时只证明“不新增标签”，不冒充可见 notice。

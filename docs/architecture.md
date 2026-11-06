@@ -31,7 +31,7 @@ tests/                 验收套件与确定性靶机
 DSH Agent / Agent Team
         │  工具调用
         ▼
-   BrowserHost ── 一个无头 Chromium / 一个 profile
+   BrowserHost ── 一个 Chromium（默认无头；Web 视图可切有头）/ 一个 profile
         │
         ├─ Runtime（每个 DSH 工作区一个 primary）
         │    ├─ 独立 page：URL、视口、历史、网络缓冲

@@ -30,7 +30,7 @@ This project focuses on:
 
 ## What works today
 
-- **Shared browser runtime** — one headless Chromium per host; each DSH workspace gets its own page, URL, viewport, history, network buffer and lease. Cookies and storage are shared by the Chromium profile.
+- **Shared browser runtime** — one Chromium per host, headless by default with an optional headed mode in the Web view (visible window + persistent profile); each DSH workspace gets its own page, URL, viewport, history, network buffer and lease. Cookies and storage are shared by the active Chromium profile.
 - **36 agent tools** across programmatic, structured GUI, static vision, dynamic behavior and network debugging.
 - **Dynamic behavior (T4)** — real CDP screencast plus a screenshot-loop path, a bounded frame store with integrity counters, seven deterministic motion analyses, WAAPI motion control with restore, region-only frame delivery, and six-direction frame↔network event correlation.
 - **Debug panel** — live preview, responsive size controls, shared viewport state, a hybrid canvas, and a client-side annotation layer that agents can read back.
@@ -73,7 +73,7 @@ DSH Agent / Agent Team
         │
         ▼
 UI testing plugin runtime
-  ├─ shared headless Chromium
+  ├─ shared Chromium (headless by default; headed available in Web view)
   ├─ one page per DSH workspace (URL, viewport, history, network, lease)
   ├─ agent tool surface (36 tools)
   └─ debug panel (preview, size bar, canvas, annotations)

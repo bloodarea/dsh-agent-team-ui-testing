@@ -106,6 +106,14 @@
 - 被策略阻断的 popup 只进入 `notices`（按 workspace 隔离，不跨 workspace 聚合），不创建 tab；`openEventId` 用于把 notice 与具体点击/新页事件对上。
 - `wait` 可在不启动浏览器的前提下等待 GUI 真人弹窗或另一会话新建的标签，`source:'gui-popup'` 可区分真人 popup 与 `agent-open`。
 
+## Web 视图运行模式（无头 / 有头）
+
+- 工具栏“Web 视图”环境选择器的左侧有 **无头 / 有头** 分段选择器，仅 Web 视图显示；默认 **无头**。
+- **有头** = 同一个共享 Chromium 以**离屏窗口**启动，并在 Linux/X11 上尽力用 `xdotool windowunmap` 从窗口管理器/任务栏/Alt-Tab 隐藏（`ui.display.window="offscreen"`、`ui.display.hidden=true`）；默认**无可见窗口、不抢焦点**。浏览器的进程本身仍出现在系统进程列表里（无法在不使用特权手段的情况下隐藏进程）。持久 profile（默认 `$DSH_HOME/ui-testing/headed-profile`，可用 `DSH_UI_TESTING_PROFILE_DIR` 覆盖）保留登录态 / 站点 Cookie；无头模式仍使用每次启动的临时 profile。
+- 切换模式会**关闭共享 Chromium 及其所有页面**（运行模式是整个插件共享的，跨 workspace）。切换成功后需要重新打开页面；面板会提示并回到空态。
+- 有头模式需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，否则返回 `DISPLAY_UNAVAILABLE` 并保持无头。设置 `DSH_UI_TESTING_HEADED_VISIBLE=1` 可让有头窗口正常显示（调试/手动登录用）；未安装 `xdotool` 时退化为离屏位置，不保证从任务栏隐藏。
+- 有头不等于通过站点反自动化：Cloudflare / Turnstile 等仍可能挑战甚至拒绝自动化浏览器；需要在可见窗口中人工完成挑战，且不承诺一定通过。
+
 ## 能力发现
 
 `browser_capabilities` 的 `tabs` 段报告版本、工具、`actions`（含 `wait`）、`maxTabsPerWorkspace:4`、`maxChildTabs:3`、`maxGlobalPages:8`、`idleMs`、`noticesLimit:8`、`closedHistoryLimit:8`、`keepalive` 说明与当前 selectedTab/views；`limits.tabs` 提供同一组限额与生命周期字段。读取 capabilities 不启动 Chromium、不取 lease。
