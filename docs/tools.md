@@ -4,6 +4,19 @@
 
 > `ok:true` 只说明工具完成了动作，**不等于**验收通过。视觉结论看 `verdict`，网络结论看 `integrity`，动态结论看 `analysis.verdict`。
 
+工具声明与执行由 Host 配置驱动：默认只暴露当前环境的专用 schema（Web 默认 36 个）；未启用/非当前环境的工具不会出现在模型请求中，旧调用与 GUI 旁路在执行时仍会被拒绝（`ADAPTER_DISABLED`，未注册的工具报 `unknown tool`）。`browser_state` 与 `browser_capabilities` 是**环境中立诊断**：任何环境（含被禁用）都保留，用于回答"支持什么/为什么被拒"，它们不启动目标；被禁用环境的六轴报告为 `support=supported` + `enabled=false`，不再退化成"未注册"或 `INTERNAL`。成功/失败 envelope 额外携带 `configRevision`、`environment`、`adapterId`，用于核对本次执行使用的配置版本；`browser_capabilities.adapter` 报告 adapter 契约版本、能力矩阵、P0 family 状态、六轴就绪，以及 `declaration`：`registeredTools`（当前注册面＝模型请求能看到的插件 schema）、`admittedTools`（逐 Agent 准入集合）、`isolated`（两者是否一致）。
+
+**工具布局由设置页的面板配置作为唯一权威**：启用了哪些环境，就只注册这些环境的工具，不会额外带入其它环境的 schema。
+
+| 面板里启用 | 注册面（模型请求可见的插件工具） |
+| --- | --- |
+| 只 Web | 36 个 `browser_*`（其中 `browser_state`/`browser_capabilities` 是两个环境无关诊断） |
+| Web + fake（测试环境） | 上述 36 个 + `browser_fake_probe` = 37 |
+| 只 fake | `browser_fake_probe` + `browser_state` + `browser_capabilities` = 3 |
+| 全关 | `browser_state` + `browser_capabilities` = 2（诊断在任何环境都可用，用于回答“支持什么/为什么被拒”） |
+
+被禁用或不允许选择的环境，其工具**根本不注册**，因此不可能出现在任何模型请求里。`when(agent)` 仍是第二道闸门（会话级执行准入与 Skill 发现都按会话解析），但**声明面以注册范围为准**：实测本机 3080 的 `request/header` 按“已注册”构建请求，`when=false` 不会移除声明，所以 `declaration.surface=host-tool-registration`、`registration=enabled-union`；两者不一致时 `isolated=false` 并给出说明。三个环境的真实请求头实测：36 → 2 → 36（关闭/重开 Web）。`browser_fake_probe` 仅在 `DSH_UI_TESTING_TEST_HOOKS=1`/`DSH_UI_TESTING_ALLOW_TEST_ENV=1` 的测试配置中注册，不属于生产 36 工具面。
+
 ## 总览
 
 | 分组 | 数量 | 工具 |
@@ -31,7 +44,7 @@
 | `browser_eval` | `expression` | 主世界执行，返回可序列化值；页面异常以错误对象返回 |
 | `browser_screenshot` | `scale` `region` `persist` `out` | 显式 scale 0.1–4；省略时跟随共享 `view.scale`；`region` 为 canvas CSS px（`O=0` 时与文档坐标相同）；PNG 经结构/尺寸校验；内联 base64 超过 24 MiB 时 `image=null` 并附 `image_base64_omitted` 警告（附件优先） |
 | `browser_input` | `events[]` | 原始鼠标/滚轮/键盘事件，单批 ≤ 200 条（超出 `INVALID_ARGUMENT`）；`applied` 只是数组长度，不能证明生效 |
-| `browser_network` | `limit` | 轻量请求列表（默认 50、上限 300）；深度分析用网络 P0 七工具 |
+| `browser_network` | `limit` | 轻量请求列表（默认 50、上限 300）；**只读**：不取页面队列、不取也不校验单 owner 租约（owner 持租约时仍可读），因此信封里 `sessionId` 是采集会话、agent 会话见 `agentSessionId`；深度分析用网络 P0 七工具 |
 | `browser_computed_style` | `selector` `properties` | 首个匹配元素的计算样式；简写属性（如 `border-color`/`margin`/`font`）经页面 `getComputedStyle` 回退读取，未知属性不返回；不证明视觉结果 |
 | `browser_http_request` | `url` `method` `headers` `body` `timeoutMs` `maxBytes` … | 独立 HTTP(S) 客户端，不启动浏览器、不占页面租约；`ok:true` **不等于 2xx** |
 | `browser_viewport` | `action:"get"\|"set"` `mode` `x` `y` `canvasX` `canvasY` `width` `height` `scale` `expectedRevision` | `get` 是只读缓存诊断；`set` 是页面操作，走队列与租约 |
@@ -64,7 +77,7 @@
 | --- | --- |
 | `browser_vision_image` | 裁剪、缩放、预处理、统计、识别、标注并交付 PNG |
 | `browser_vision_find` | 颜色/连通域/边缘/模板确定性定位；无匹配是成功空列表 |
-| `browser_vision_compare` | 两图 YIQ 差异，输出标注差异图；两图必须同尺寸 |
+| `browser_vision_compare` | 两图 YIQ 差异，输出标注差异图；两图必须同尺寸；几何映射不兼容时返回 `BLOCKED`/`mapping-incompatible`（显式 `bitmapOnly:true` 才降级为纯位图比较） |
 | `browser_vision_act` | 按截图坐标派发真实输入；六步校验不过则零派发 |
 | `browser_vision_baseline` | 受管基线：不可变 revision、HEAD CAS、墓碑删除 |
 | `browser_vision_check` | 回归与六类缺陷用例；整批先校验再执行 |

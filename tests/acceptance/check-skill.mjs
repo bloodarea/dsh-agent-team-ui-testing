@@ -3,7 +3,7 @@
  * Structural self-check for the bundled ui-testing skill.
  *
  * Checks (all against the real repository files, no network):
- *   - skills/ui-testing/SKILL.md has a parseable YAML frontmatter, name is `ui-testing`,
+ *   - skills/ui-testing-web/SKILL.md has a parseable YAML frontmatter, name is `ui-testing-web`,
  *     description is non-empty and names at least one real browser_* tool;
  *   - every `references/*.md` mentioned/backticked in SKILL.md exists on disk;
  *   - every browser_* tool name mentioned in SKILL.md is one of the tools index.js actually
@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(dirname(HERE));
 const SKILLS_ROOT = join(REPO_ROOT, 'skills');
-const SKILL_DIR = join(SKILLS_ROOT, 'ui-testing');
+const SKILL_DIR = join(SKILLS_ROOT, 'ui-testing-web');
 const SKILL_FILE = join(SKILL_DIR, 'SKILL.md');
 const MANIFEST_FILE = join(SKILL_DIR, 'manifests', 'declared-capabilities.json');
 const INDEX_FILE = join(REPO_ROOT, 'index.js');
@@ -136,6 +136,9 @@ async function main() {
   const indexSource = await readFile(INDEX_FILE, 'utf8');
   const actualTools = new Set();
   for (const match of indexSource.matchAll(/name:\s*'((?:browser_)[a-z0-9_]+)'/g)) actualTools.add(match[1]);
+  // `browser_fake_probe` is a test-only registration (guarded by DSH_UI_TESTING_TEST_HOOKS) and is
+  // never part of the production 36-tool surface this check protects.
+  actualTools.delete('browser_fake_probe');
   // 36 = 10 T1 + 1 P0-E (`browser_tabs`) (docs/architecture.md + docs/viewport-control.md §7 `browser_viewport`)
   //      + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
   //      + 7 network (docs/network-p0.md §2).
@@ -161,7 +164,7 @@ async function main() {
   const frontmatter = parseFrontmatter(raw);
   record('SKILL.md frontmatter 可解析', Boolean(frontmatter), frontmatter ? '已解析' : '缺少 --- 包裹的 YAML frontmatter');
   if (!frontmatter) return failSummary();
-  record('frontmatter.name === ui-testing', frontmatter.fields.name === 'ui-testing', frontmatter.fields.name);
+  record('frontmatter.name === ui-testing-web', frontmatter.fields.name === 'ui-testing-web', frontmatter.fields.name);
   record('frontmatter.description 非空', Boolean(frontmatter.fields.description && frontmatter.fields.description.length > 20), frontmatter.fields.description);
   const describedTools = [...(frontmatter.fields.description || '').matchAll(/browser_[a-z0-9_]+/g)].map((match) => match[0]);
   record('description 至少提到 1 个真实工具名（可路由）', describedTools.length > 0 && describedTools.every((name) => actualTools.has(name)), describedTools);

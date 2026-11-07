@@ -1,6 +1,6 @@
 # 文档
 
-本目录提供插件的使用说明、能力参考与贡献者指南。Web / Chromium 已实现 WEB-P0 基础设施与 T1–T4 工具；其他运行环境尚未提供适配器。
+本目录提供插件的使用说明、能力参考与贡献者指南。Web / Chromium 已实现 WEB-P0 基础设施与 T1–T4 工具，并通过三类 adapter 契约接入 Host 权威配置、逐 step 工具准入与按环境 Skill 发现；其他运行环境尚未提供真实适配器。
 
 ## 开始使用
 
@@ -28,6 +28,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [架构](architecture.md) | 运行时、模块职责、工作区隔离与扩展位置 |
+| [三类 adapter：契约、接入与坑点](adapters.md) | TargetAdapter / CapabilityAdapter / P0Provider 的接口形状、配置约束、六轴就绪写法、12 条实测坑点与新平台接入步骤 |
 | [验证与贡献](verification.md) | 环境要求、测试命令、结果判读与提交要求 |
 
-公开文档只描述当前行为、可复现的用法和已知限制。实施计划、协作记录、逐轮验收日志和本机环境信息不纳入公开文档；自动生成的报告与截图默认保留在本地。内置 Agent 操作手册随 [ui-testing Skill](../skills/ui-testing/SKILL.md) 分发。
+公开文档只描述当前行为、可复现的用法和已知限制。实施计划、协作记录、逐轮验收日志和本机环境信息不纳入公开文档；自动生成的报告与截图默认保留在本地。内置 Agent 操作手册随 [ui-testing-web Skill](../skills/ui-testing-web/SKILL.md) 分发。

@@ -3,8 +3,13 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { BrowserError, Cdp, Runtime } from '../../index.js';
+import { BrowserError, Cdp, Runtime, loadWebHostModules } from '../../index.js';
 import { validateTarget } from '../../browser-safety.js';
+
+// This suite drives the Web `Runtime` directly (outside the plugin's tool/HTTP entry points), so
+// it must resolve the on-demand Web module chain itself — the plugin does that before any real
+// call (A14 按需加载).
+await loadWebHostModules();
 
 const classified = (code, category, retryable) => (error) => {
   assert.ok(error instanceof BrowserError);
@@ -207,8 +212,9 @@ test('navigation checks CDP errorText and validates final destination', async ()
 
 test('dead CDP runtime cleans old process/profile before ensure restart and restores owner', async () => {
   const script = `import assert from 'node:assert/strict';
-import {Runtime} from './index.js';
+import {Runtime,loadWebHostModules} from './index.js';
 import {isProcessAlive,pathExists,waitFor} from './tests/acceptance/harness.mjs';
+await loadWebHostModules();  // Web 专用依赖按需加载（A14），直接构造 Runtime 需自行加载
 const r=new Runtime(()=>{});
 try {
  await r.run(()=>r.ensure(),{agent:true,sessionId:'recovery-owner'});

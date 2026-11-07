@@ -275,9 +275,12 @@ export async function pathExists(target) {
 /** Create the fake Cordis context surface used by index.js. */
 export function createFakeCordisContext({ connection, attachments, sessions, sessionPersistence, workspaceRegistry } = {}) {
   const toolDefs = new Map();
+  const toolOptions = new Map();
   const httpHandlers = [];
   const upgradeHandlers = [];
   const skillRegistrations = [];
+  const skillProviders = [];
+  const skillControls = [];
   const logs = [];
   const effects = [];
   const events = new EventEmitter();
@@ -309,9 +312,13 @@ export function createFakeCordisContext({ connection, attachments, sessions, ses
   const ctx = {
     // index.js uses ctx.tools.register(...) inside ctx.effect(...).
     tools: {
-      register(definition) {
+      register(definition, options) {
         toolDefs.set(definition.name, definition);
-        return () => { toolDefs.delete(definition.name); };
+        if (options !== undefined) toolOptions.set(definition.name, options);
+        return () => {
+          toolDefs.delete(definition.name);
+          toolOptions.delete(definition.name);
+        };
       },
     },
     // index.js registers { kind: 'prefix', path, handler }.
@@ -333,12 +340,33 @@ export function createFakeCordisContext({ connection, attachments, sessions, ses
       },
     },
     // Optional skills service (index.js guards with ctx.inject(['skills'], ...)).
+    // Supports both the legacy `register(skill)` and the provider API used by the environment
+    // isolation work, so the same plugin entry runs against real DSH and this fake context.
     skills: {
       register(skill) {
         skillRegistrations.push(skill);
         return () => {
           const index = skillRegistrations.indexOf(skill);
           if (index >= 0) skillRegistrations.splice(index, 1);
+        };
+      },
+      registerProvider(create) {
+        if (typeof create !== 'function') throw new TypeError('registerProvider requires a factory');
+        const controller = new AbortController();
+        const control = {
+          signal: controller.signal,
+          invalidate() {
+            for (const entry of skillProviders) entry.dirty = true;
+          },
+        };
+        const provider = create(control);
+        const entry = { provider, dirty: true, control };
+        skillProviders.push(entry);
+        skillControls.push(control);
+        return () => {
+          const index = skillProviders.indexOf(entry);
+          if (index >= 0) skillProviders.splice(index, 1);
+          controller.abort();
         };
       },
     },
@@ -387,7 +415,8 @@ export function createFakeCordisContext({ connection, attachments, sessions, ses
     get workspaceRegistry() { return ctx.__internal.workspaceRegistry; },
   };
   ctx.__internal = {
-    toolDefs, httpHandlers, upgradeHandlers, skillRegistrations, logs, effects,
+    toolDefs, toolOptions, httpHandlers, upgradeHandlers, skillRegistrations, skillProviders,
+    skillControls, logs, effects,
     connection: connection ?? undefined,
     sessions, sessionPersistence, workspaceRegistry,
     plugin: undefined,
@@ -494,8 +523,17 @@ export function createFakeSessionPersistenceService({ entries = new Map(), error
 
 export async function createHarness({
   name = 'harness', connection, attachments, sessions, sessionPersistence, workspaceRegistry,
+  configDir, allowTestEnvironments = false,
 } = {}) {
   const workspaceDir = defaultWorkspaceDirectory();
+  // Isolate authoritative config per harness: never read/write the user's DSH_HOME. The plugin
+  // reads this env when apply() runs, so set it before apply. A previous harness's value is
+  // restored on dispose so parallel/sequential harnesses cannot delete each other's directory.
+  const previousConfigDir = process.env.DSH_UI_TESTING_CONFIG_DIR;
+  const previousAllowTest = process.env.DSH_UI_TESTING_ALLOW_TEST_ENV;
+  const ownConfigDir = configDir || mkdtempSync(join(tmpdir(), 'dsh-utb-config-'));
+  process.env.DSH_UI_TESTING_CONFIG_DIR = ownConfigDir;
+  if (allowTestEnvironments) process.env.DSH_UI_TESTING_ALLOW_TEST_ENV = '1';
   const ctx = createFakeCordisContext({
     connection,
     attachments,
@@ -537,11 +575,63 @@ export async function createHarness({
 
   const request = (options) => callHttpHandler(ctx, options);
 
+  // Per-step admission as the real ToolsService would evaluate it: every `when` receives the
+  // agent context and a cancelled-free signal. A throwing condition is reported as rejected.
+  const evaluateAdmission = async (agent = { id: 'harness-agent', session: { header: { cwd: workspaceDir } } }) => {
+    const admitted = new Set();
+    const signal = new AbortController().signal;
+    for (const [toolName, definition] of tools) {
+      const options = ctx.__internal.toolOptions.get(toolName);
+      if (!options || typeof options.when !== 'function') {
+        admitted.add(toolName);
+        continue;
+      }
+      try {
+        if (await options.when({ agent, modelSelection: {}, signal })) admitted.add(toolName);
+      } catch {
+        // A rejected condition excludes the tool; it must never abort the harness.
+      }
+    }
+    return admitted;
+  };
+
+  const listSkills = async (options = {}) => {
+    const out = [];
+    for (const entry of ctx.__internal.skillProviders) {
+      const list = await entry.provider.list(options);
+      const candidates = Array.isArray(list) ? list : (list && Array.isArray(list.candidates) ? list.candidates : []);
+      out.push(...candidates);
+    }
+    return out;
+  };
+
+  const getSkill = async (skillName, options = {}) => {
+    const candidates = await listSkills(options);
+    const candidate = candidates.find((item) => item.name === skillName);
+    if (!candidate) return undefined;
+    for (const entry of ctx.__internal.skillProviders) {
+      const definition = await entry.provider.get(candidate, options);
+      if (definition) return definition;
+    }
+    return undefined;
+  };
+
   const dispose = async () => {
     for (const entry of [...ctx.__internal.effects].reverse()) {
       try { await entry.dispose(); } catch { /* cleanup must not mask results */ }
     }
     ctx.__internal.effects.length = 0;
+    if (!configDir) {
+      try { rmSync(ownConfigDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+    if (process.env.DSH_UI_TESTING_CONFIG_DIR === ownConfigDir) {
+      if (previousConfigDir === undefined) delete process.env.DSH_UI_TESTING_CONFIG_DIR;
+      else process.env.DSH_UI_TESTING_CONFIG_DIR = previousConfigDir;
+    }
+    if (allowTestEnvironments) {
+      if (previousAllowTest === undefined) delete process.env.DSH_UI_TESTING_ALLOW_TEST_ENV;
+      else process.env.DSH_UI_TESTING_ALLOW_TEST_ENV = previousAllowTest;
+    }
   };
 
   const closeBrowser = async () => {
@@ -558,6 +648,10 @@ export async function createHarness({
     tools,
     toolNames: () => [...tools.keys()],
     toolDefinitions: () => [...tools.values()],
+    toolOptions: () => new Map(ctx.__internal.toolOptions),
+    evaluateAdmission,
+    listSkills,
+    getSkill,
     invoke,
     request,
     closeBrowser,

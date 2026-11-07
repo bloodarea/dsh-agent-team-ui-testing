@@ -70,14 +70,14 @@ browser_network_session { action:"stop" }
 ## 时序与分析
 
 - 事件带单调 `seq` 与统一时间轴；`view:"timeline"` 把 http/ws/sse/marker 混排。
-- `view:"aggregate"` 必须给 `groupBy`；`search` 命中正文/WS/SSE 时只回**脱敏预览片段**。
+- `view:"aggregate"` 必须给 `groupBy`；`aggregate` 的合法指标是固定白名单 `count`｜`bytes`｜`duration`｜`p50`｜`p95`｜`failures`，给其它字符串返回 `NET_INVALID_ARGUMENT`（并回带 `allowed` 列表）；`search` 命中正文/WS/SSE 时只回**脱敏预览片段**。
 - 游标不透明，`cursor` 与 `sinceSeq` 二选一；指向已淘汰 seq 时返回 `gap`。
 
 ## 业务链路
 
 `browser_network_trace` 提供步骤窗口与对象提取：
 
-- `begin-step` / `end-step` / `mark` 建立时间窗，`window` 按 wallMs 查询。
+- `begin-step` / `end-step` / `mark` 建立窗口。窗口有 **wallMs 与 seq 两个边界**：一个事件属于该步骤必须同时落在 `[fromWallMs, toWallMs]` 与 `[fromSeq, toSeq]` 内。只看 wallMs 会把"步骤开始前就已入库、但其 response/finish 阶段时间戳更晚"的事件误算进下一步，因此 `stepId` 过滤与派生归属都以 seq 边界为准。
 - `objectRules` 声明要提取的业务对象；不做隐式猜测。
 - `correlationRules` 声明关联字段；`basis` 只有 `explicit`/`redirect`/`initiator` 才算因果，`temporal` 只是时间邻近（默认过滤，需 `includeTemporal:true`）。
 - `link` 建立 seq 与证据的显式关联，重复调用幂等。

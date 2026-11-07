@@ -1775,23 +1775,40 @@ function matchScalar(fieldValue, wanted, normalizer = (value) => String(value).t
   return list.some((item) => normalizer(fieldValue) === normalizer(item));
 }
 
-/** R1-1：`stepId` 是查询期按窗口派生的归属（`stepIds` 是显式链接）。 */
+/**
+ * R1-1：`stepId` 是查询期按窗口派生的归属（`stepIds` 是显式链接）。
+ *
+ * A step window has two bounds and membership needs both: the wall-clock window
+ * (`fromWallMs`/`toWallMs`) and the sequence window (`fromSeq`/`toSeq`). Wall clock alone is not
+ * enough — an event that was already in the store when the step opened can carry a *later*
+ * `ts.wallMs` (its response/finish phase is stamped after `begin-step` raced past it), and a
+ * wall-only test then counts pre-step traffic as in-step. The seq bounds are exact, so they decide.
+ */
+export function stepMembership(store, event, step) {
+  if (!step) return false;
+  const fromWall = step.window?.fromWallMs;
+  const toWall = step.window?.toWallMs === null || step.window?.toWallMs === undefined
+    ? Number.POSITIVE_INFINITY
+    : step.window.toWallMs;
+  const wallOk = Number.isFinite(fromWall) ? event.ts.wallMs >= fromWall && event.ts.wallMs <= toWall : true;
+  const fromSeq = Number.isInteger(step.fromSeq) ? step.fromSeq : null;
+  const toSeq = Number.isInteger(step.toSeq) ? step.toSeq : null;
+  const seqOk = (fromSeq === null || event.seq >= fromSeq) && (toSeq === null || event.seq <= toSeq);
+  return wallOk && seqOk;
+}
+
 export function derivedStepId(store, event) {
   if (event.stepId) return event.stepId;
   if (event.stepIds.length) return event.stepIds[0];
   for (const step of store.steps.values()) {
-    const to = step.window.toWallMs === null || step.window.toWallMs === undefined ? Number.POSITIVE_INFINITY : step.window.toWallMs;
-    if (event.ts.wallMs >= step.window.fromWallMs && event.ts.wallMs <= to) return step.stepId;
+    if (stepMembership(store, event, step)) return step.stepId;
   }
   return null;
 }
 
 export function inStepWindow(store, event, stepId) {
   if (event.stepId === stepId || event.stepIds.includes(String(stepId))) return true;
-  const step = store.steps.get(String(stepId));
-  if (!step) return false;
-  const to = step.window.toWallMs === null || step.window.toWallMs === undefined ? Number.POSITIVE_INFINITY : step.window.toWallMs;
-  return event.ts.wallMs >= step.window.fromWallMs && event.ts.wallMs <= to;
+  return stepMembership(store, event, store.steps.get(String(stepId)));
 }
 
 export function matchesFilter(store, event, filter) {

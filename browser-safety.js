@@ -11,6 +11,18 @@ const TAXONOMY = {
   // Independent HTTP client (docs/tools.md): HTTP timeouts are not CDP timeouts
   // (they must never trigger the page "close the browser before releasing the queue" path).
   HTTP_TIMEOUT: ['timeout', true], HTTP_FAILED: ['network', true], HTTP_REDIRECT_LIMIT: ['network', false],
+  // Cross-environment foundation (core/errors.js ERROR_TAXONOMY): adapter/config refusals are
+  // *classified* outcomes, so they must survive the tool boundary instead of degrading to INTERNAL.
+  // Without these entries a disabled environment or a stale config surfaced as `[INTERNAL]`.
+  ADAPTER_NOT_FOUND: ['environment', false], ADAPTER_UNSUPPORTED: ['capability', false],
+  ADAPTER_DISABLED: ['config', false], CONFIG_CONFLICT: ['config', true],
+  CONFIG_INVALID: ['config', false], CONFIG_STALE: ['config', true],
+  TARGET_NOT_BOUND: ['target', false], TARGET_GONE: ['target', true],
+  GENERATION_MISMATCH: ['state', false], CAPABILITY_UNSUPPORTED: ['capability', false],
+  CAPABILITY_UNAVAILABLE: ['environment', true], DEPENDENCY_MISSING: ['environment', false],
+  CONNECTION_UNTRUSTED: ['environment', true], PROBE_TIMEOUT: ['environment', true],
+  PROVIDER_UNAVAILABLE: ['environment', true], EVIDENCE_INCOMPLETE: ['evidence', false],
+  FORBIDDEN: ['capability', false],
   // Workspace isolation (docs/architecture.md): these must never fall back to INTERNAL.
   SCOPE_INVALID: ['input', false], SCOPE_NOT_FOUND: ['scope', false],
   SCOPE_UNAVAILABLE: ['scope', true], SCOPE_FORBIDDEN: ['authorization', false],
@@ -104,7 +116,21 @@ export class BrowserError extends Error {
   }
 }
 export function asBrowserError(error) {
-  return error instanceof BrowserError ? error : new BrowserError('INTERNAL', String(error?.message || error));
+  if (error instanceof BrowserError) return error;
+  // A classified cross-environment error (core/errors.js `AdapterError`) carries `code`/`category`/
+  // `retryable`/`details`. Rebuilding it as a BrowserError keeps the code so a policy refusal reads
+  // as `[ADAPTER_DISABLED]` rather than `[INTERNAL]`; the category comes from this module's taxonomy.
+  if (error && typeof error.code === 'string' && Object.hasOwn(TAXONOMY, error.code)) {
+    const rebuilt = new BrowserError(error.code, String(error.message || error.code));
+    if (error.name === 'AdapterError' || error.category !== undefined) {
+      rebuilt.name = 'BrowserError';
+      rebuilt.adapterCategory = typeof error.category === 'string' ? error.category : null;
+      rebuilt.retryable = typeof error.retryable === 'boolean' ? error.retryable : rebuilt.retryable;
+    }
+    if (error.details !== undefined) rebuilt.details = error.details;
+    return rebuilt;
+  }
+  return new BrowserError('INTERNAL', String(error?.message || error));
 }
 export function checkAbort(signal) {
   if (signal?.aborted) throw new BrowserError('ABORTED', '操作已取消');

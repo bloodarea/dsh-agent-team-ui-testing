@@ -1648,7 +1648,7 @@ async function probeC20({ harness, check }) {
     expected: { name: 'Enter User', email: 'enter@example.test', submitted: '1' }, actual: { output, submitted: stateAfterSubmit.submitted },
   });
   // 'tab' is P0-E host metadata attached to every action result, not an Enter business field.
-  const business = Object.keys(submitted.value || {}).filter((key) => !['ok', 'actionId', 'sessionId', 'startedAt', 'finishedAt', 'target', 'args', 'scope', 'evidence', 'tool', 'tab'].includes(key));
+  const business = Object.keys(submitted.value || {}).filter((key) => !['ok', 'actionId', 'sessionId', 'startedAt', 'finishedAt', 'target', 'args', 'scope', 'evidence', 'tool', 'tab', 'configRevision', 'environment', 'adapterId'].includes(key));
   check('submitted 只表示 Enter 已派发（业务字段仅 dispatched/insertedCharacters/replaced/submitted）', JSON.stringify(business.sort()) === JSON.stringify(['dispatched', 'insertedCharacters', 'replaced', 'submitted']), {
     expected: ['dispatched', 'insertedCharacters', 'replaced', 'submitted'], actual: business,
   });
@@ -2305,8 +2305,13 @@ async function probeC32({ check }) {
   const { createHarness } = await import(pathToFileURL(join(HERE, 'harness.mjs')).href);
   const harness = await createHarness({ name: 'C32-lease' });
   try {
-    const holder = await call(harness, 'browser_network', {}, execOf('lease-owner'));
+    // A page operation takes the single-owner lease; the read-only legacy traffic snapshot does not
+    // (it is asserted separately below).
+    const holder = await call(harness, 'browser_eval', { expression: '1 + 1' }, execOf('lease-owner'));
     check('owner 会话取得 lease（前置）', holder.ok, { expected: 'success', actual: holder.error?.message || 'ok' });
+    const readWhileHeld = await call(harness, 'browser_network', {}, execOf('lease-other'));
+    check('只读 browser_network 不取也不校验租约（owner 持租约时仍可读）', readWhileHeld.ok === true,
+      { expected: 'ok', actual: codeOf(readWhileHeld) || readWhileHeld.value?.entries?.length });
     const tools = [
       ['browser_snapshot', {}], ['browser_click', { selector: '#t2-inc' }], ['browser_type', { selector: '#t2-name', text: 'x' }],
       ['browser_scroll', { direction: 'down' }], ['browser_fill_form', { fields: [{ selector: '#t2-name', type: 'textbox', value: 'x' }] }],

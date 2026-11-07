@@ -96,6 +96,48 @@ window.__ModuleLoader__.load({
       return payload;
     }
 
+    /* ---- Host config transport (M4) ------------------------------------------------------
+     * The Host revision is the only truth for the settings page and the panel environment
+     * selector. Every helper resolves with the Host payload or throws an Error carrying `.code`
+     * (`CONFIG_CONFLICT`, `CONFIG_UNAVAILABLE`, ...); callers render the failure and never fake a
+     * saved state. `scope` is `null` on the settings page (legacy/default, no scope headers).
+     * ------------------------------------------------------------------------------------- */
+    async function requestHostConfig(method, path, body, options) {
+      const scope = options && options.scope;
+      const signal = options && options.signal;
+      const headers = Object.assign({}, scopeHeaders(scope));
+      const init = { method, credentials: 'same-origin', headers, signal, cache: 'no-store' };
+      if (body !== undefined) {
+        headers['content-type'] = 'application/json';
+        init.body = JSON.stringify(body);
+      }
+      const response = await fetch(HOST_BASE + path, init);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.ok === false) {
+        const error = new Error(payload.error || ('配置请求失败：' + response.status));
+        error.code = payload.code || (response.status === 404 ? 'CONFIG_UNAVAILABLE' : 'CONFIG_REQUEST_FAILED');
+        error.status = response.status;
+        error.payload = payload;
+        throw error;
+      }
+      return payload;
+    }
+
+    /** GET /config — `view` is `global` (settings page) or `session` (panel). */
+    function getHostConfig(scope, view, signal) {
+      return requestHostConfig('GET', '/config?view=' + encodeURIComponent(view || 'global'), undefined, { scope, signal });
+    }
+
+    /** PUT /config — CAS write; resolves with the Host revision, never assumes success. */
+    function putHostConfig(patch, expectedRevision, scope) {
+      return requestHostConfig('PUT', '/config', { expectedRevision, scope: 'global', patch }, { scope });
+    }
+
+    /** POST /config/select — session environment selection for this panel scope. */
+    function selectHostEnvironment(environment, expectedRevision, scope) {
+      return requestHostConfig('POST', '/config/select', { scope: 'session', environment, expectedRevision }, { scope });
+    }
+
     /** The Host's cold/recent binding (ui.runtimeId) for a scope-bearing response. */
     function runtimeIdOf(payload) {
       if (!payload || typeof payload !== 'object') return '';
@@ -1141,6 +1183,7 @@ window.__ModuleLoader__.load({
 .utb-select:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .utb-select option:disabled { color: var(--dsw-alias-label-secondary); }
 .utb-env-caret { position: absolute; right: 7px; display: grid; place-items: center; pointer-events: none; color: var(--dsw-alias-label-secondary); }
+.utb-env-error { max-width: 220px; font-size: 11px; line-height: 14px; color: #f59e0b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .utb-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .utb-bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; flex: 0 0 auto; background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
 .utb-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; flex: 0 0 auto; color: var(--dsw-alias-label-secondary); background: transparent; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
@@ -2034,6 +2077,10 @@ window.__ModuleLoader__.load({
       const [navBusy, setNavBusy] = React.useState(false);
       const [mode, setMode] = React.useState('idle');
       const [env, setEnv] = React.useState('web');
+      // Host-backed environment selection: busy while the POST /config/select is in flight, and a
+      // local failure notice that keeps the previous value (never a silent switch).
+      const [envBusy, setEnvBusy] = React.useState(false);
+      const [envNotice, setEnvNotice] = React.useState('');
       const [displaySwitching, setDisplaySwitching] = React.useState(false);
       const [shot, setShot] = React.useState('');
       const [remote, setRemote] = React.useState({ mode: 'idle', activity: '', url: '', running: false });
@@ -2295,6 +2342,23 @@ window.__ModuleLoader__.load({
       const scopeEpoch = scopeEpochRef.current;
       const scopeRef = React.useRef(scope);
       scopeRef.current = scope;
+      // Host config for this panel scope: the selector's allowed environments and current
+      // resolution come from the Host, not from the static ENVIRONMENTS list.
+      const hostConfig = useHostConfig(scope, 'session');
+      const hostResolved = hostConfig.state.resolved || null;
+      const resolvedEnvironment = hostResolved && hostResolved.environment ? String(hostResolved.environment) : '';
+      const allowedEnvironments = hostResolved && Array.isArray(hostResolved.enabledEnvironments)
+        ? hostResolved.enabledEnvironments.map(String) : null;
+      const envOptions = React.useMemo(() => {
+        if (!allowedEnvironments) return ENVIRONMENTS;
+        return ENVIRONMENTS.filter((option) => option.id === 'web' || allowedEnvironments.indexOf(option.id) !== -1);
+      }, [allowedEnvironments]);
+      React.useEffect(() => {
+        if (!resolvedEnvironment) return;
+        const option = ENVIRONMENTS.find((item) => item.id === resolvedEnvironment);
+        if (!option || !option.ready) return; // an unimplemented environment never becomes current
+        setEnv((current) => (current === resolvedEnvironment ? current : resolvedEnvironment));
+      }, [resolvedEnvironment]);
       const visibleRef = React.useRef(true);
       visibleRef.current = visible;
       const readyRef = React.useRef(false);
@@ -6896,17 +6960,9 @@ window.__ModuleLoader__.load({
         });
       }
 
-      /**
-       * 用户 2026-11-03 第 3 条：用户主动切换环境时套该环境默认，只发布 width/height（不发布
-       * scale），fit=true、pan=false；annotOn 或非 ready 不生效。
-       */
-      function changeEnv(next) {
-        if (annotRef.current.on) return;
-        const option = ENVIRONMENTS.find((item) => item.id === next);
-        if (!option || !option.ready) return;
-        if (next === env) return;
+      /** 套用某环境的默认尺寸（只发布 width/height；scale 回落到共享比例）。 */
+      function applyEnvDefaultSize(next) {
         const target = envDefaultSize(next);
-        setEnv(next);
         const dirty = viewDirtyRef.current;
         dirty.width = target.width;
         dirty.height = target.height;
@@ -6916,6 +6972,40 @@ window.__ModuleLoader__.load({
         queueViewPatch({ width: target.width, height: target.height });
         changePanMode(false);
         changeFit(target.fit);
+      }
+      /**
+       * 用户 2026-11-03 第 3 条 + M4：切换运行环境先提交 Host 会话选择（POST /config/select，
+       * 带本面板 scope），成功后才改本地状态；失败保留旧值并显示错误，不静默切换。
+       * 未实现环境（!ready）仍不可选，也不会因为选择而启动任何探测。
+       */
+      function changeEnv(next) {
+        if (annotRef.current.on || envBusy) return;
+        const option = ENVIRONMENTS.find((item) => item.id === next);
+        if (!option || !option.ready) return;
+        if (next === env) return;
+        const config = hostConfig.state;
+        if (config.revision === null) {
+          setEnvNotice(config.loading
+            ? '正在读取 Host 配置，请稍后重试'
+            : (config.error || 'Host 未提供配置接口，无法切换运行环境'));
+          return;
+        }
+        setEnvBusy(true);
+        setEnvNotice('');
+        selectHostEnvironment(next, config.revision, scopeRef.current).then((payload) => {
+          hostConfig.adopt(payload);
+          setEnvBusy(false);
+          setEnv(next);
+          applyEnvDefaultSize(next);
+        }).catch((error) => {
+          setEnvBusy(false);
+          if (error && error.code === 'CONFIG_CONFLICT') {
+            adoptHostConflict(hostConfig, error);
+            setEnvNotice('配置已被其他窗口修改（CONFIG_CONFLICT），已刷新；本次切换未生效');
+            return;
+          }
+          setEnvNotice('切换运行环境失败：' + ((error && error.message) || '未知错误'));
+        });
       }
       /**
        * 用户 2026-11-03 第 5/7 条：左侧四个分辨率预设不再只是宽高——点任一预设同时把 X/Y 归零，
@@ -7069,10 +7159,18 @@ window.__ModuleLoader__.load({
               className: 'utb-select',
               value: env,
               'aria-label': '选择运行环境',
-              disabled: annotOn,
+              disabled: annotOn || envBusy,
+              title: envBusy ? '正在提交到 Host…' : (hostConfig.state.error || undefined),
+              'data-utb-env-busy': envBusy ? 'true' : 'false',
               onChange: (e) => changeEnv(e.target.value),
-            }, ENVIRONMENTS.map((option) => h('option', { key: option.id, value: option.id, disabled: !option.ready }, option.label))),
-            h('span', { className: 'utb-env-caret', 'aria-hidden': true }, h(IconChevron, null)))),
+            }, envOptions.map((option) => h('option', { key: option.id, value: option.id, disabled: !option.ready }, option.label))),
+            h('span', { className: 'utb-env-caret', 'aria-hidden': true }, h(IconChevron, null))),
+          (hostConfig.state.error || envNotice) ? h('span', {
+            className: 'utb-env-error',
+            role: 'alert',
+            'data-uts-config-error': hostConfig.state.error ? 'read' : 'select',
+            title: hostConfig.state.error || envNotice,
+          }, hostConfig.state.error || envNotice) : null),
         h('div', { className: 'utb-bar' },
           button('后退', h(IconArrow, { dir: 'back' }), () => move('back'), backDisabled),
           button('前进', h(IconArrow, { dir: 'forward' }), () => move('forward'), forwardDisabled),
@@ -7663,128 +7761,146 @@ window.__ModuleLoader__.load({
     }
 
     /* =====================================================================================
-     * DSH 设置页：设置 → UI 测试 → 目标环境配置
-     * -------------------------------------------------------------------------------------
-     * 用户 2026-11-06 要求（标注草图 + 两轮补充）：设置页按「环境视图」分组列出可调试的目标，
-     * 每个环境都给出候选前端技术栈卡片；Web 视图为 Chrome / Edge / Firefox（Edge、Firefox 标
-     * 「未支持」）；Linux 视图的 Electron 指「调试 Electron 应用」，另含 Tauri / GTK / Qt /
-     * Flutter。灰色状态标签（未支持 / 未接入）放在**卡片内部底部**。
-     *
-     * 本轮只做前端：数据是静态占位，不探测环境、不保存启用状态、不新增 Host 路由或工具。
-     * 开关只在组件内切换（关闭重开即复位），未接入任何检测/持久化能力。
+     * DSH 设置页：第五节点为卡片目标；第三节点接口与第四节点执行端以同级标签展示。
+     * 配置与就绪状态来自 Host（GET/PUT /config）：页面只提交意图，Host revision 是唯一真值。
+     * Host 未提供接口时页面保持可用，但明确显示读取失败，绝不把任何目标标成已就绪或显示版本。
      * ===================================================================================== */
-    /** 一张目标卡片的默认形态：未接入（规划中），无有效环境、不可启用。 */
-    function plannedTarget(id, name, note) {
-      return { id, name, note: note || null, state: 'planned', valid: false, text: '—', enabled: false };
+    const TARGET_CHAINS = {
+      chromium: { communication: 'CDP', backend: 'Chromium DevTools' },
+      electron: { communication: 'CDP / RPC', backend: 'Electron DevTools / 桌面自动化服务' },
+      linux: { communication: 'D-Bus / X11 / Wayland', backend: 'AT-SPI / 桌面输入服务' },
+      webkitgtk: { communication: 'WebKit Inspector / D-Bus', backend: 'WebKitGTK 调试后端 / AT-SPI' },
+      windows: { communication: 'RPC / 系统 API', backend: 'UI Automation / 桌面输入服务' },
+      webview2: { communication: 'CDP / RPC', backend: 'WebView2 DevTools / UI Automation' },
+      macos: { communication: 'RPC / 系统 API', backend: 'Accessibility / 桌面输入服务' },
+      wkwebview: { communication: 'WebKit Inspector / RPC', backend: 'WebKit 调试后端 / Accessibility' },
+      android: { communication: 'ADB / RPC', backend: 'UI Automator / 系统输入服务' },
+      androidWeb: { communication: 'ADB / CDP', backend: 'UI Automator / WebView DevTools' },
+      terminal: { communication: 'PTY / IPC', backend: '终端会话服务' },
+      harmonyos: { communication: 'HDC / RPC', backend: 'UiTest / 系统输入服务' },
+      native3d: { communication: 'RPC / IPC', backend: '桌面自动化服务 / 应用辅助程序' },
+    };
+
+    /** 每张卡片表示运行中的应用类型；框架只作为技术栈说明。状态来自 Host 就绪结果。 */
+    function plannedTarget(id, name, note, chain) {
+      return { id, name, note, chain, state: 'planned' };
+    }
+
+    function miniProgramTarget(id, platform) {
+      return plannedTarget(id, platform + '小程序', '运行于' + platform + '小程序容器的应用', {
+        communication: '平台自动化接口（待选）', backend: platform + '开发者工具 / 辅助程序（待选）',
+      });
     }
 
     const TARGET_ENV_GROUPS = [
       {
         id: 'web', title: 'Web视图',
         targets: [
-          { id: 'chrome', name: 'Chrome', state: 'supported', valid: true, text: 'Chrome x.x.x', enabled: true },
-          Object.assign(plannedTarget('edge', 'Edge'), { state: 'unsupported' }),
-          Object.assign(plannedTarget('firefox', 'Firefox'), { state: 'unsupported' }),
+          { id: 'chrome', name: 'Chrome', note: 'Chrome / Chromium 中运行的网页', chain: TARGET_CHAINS.chromium,
+            state: 'supported' },
+          Object.assign(plannedTarget('edge', 'Edge', 'Edge 中运行的网页', {
+            communication: 'CDP', backend: 'Edge DevTools',
+          }), { state: 'unsupported' }),
+          Object.assign(plannedTarget('firefox', 'Firefox', 'Firefox 中运行的网页', {
+            communication: 'WebDriver BiDi', backend: 'Firefox Remote Agent',
+          }), { state: 'unsupported' }),
         ],
       },
       {
         id: 'linux', title: 'Linux视图',
         targets: [
-          plannedTarget('electron', 'Electron', '调试 Electron 应用'),
-          plannedTarget('tauri', 'Tauri', 'WebKitGTK'),
-          plannedTarget('gtk', 'GTK', 'GTK 4 / GTK 3'),
-          plannedTarget('qt', 'Qt', 'C++ / QML'),
-          plannedTarget('flutter', 'Flutter', 'Flutter Linux 桌面'),
+          plannedTarget('linux-native', 'Linux 原生桌面应用', 'GTK / Qt / Flutter 等原生窗口', TARGET_CHAINS.linux),
+          plannedTarget('electron', 'Electron 应用', 'Chromium 页面与原生应用窗口', TARGET_CHAINS.electron),
+          plannedTarget('tauri', 'Tauri 应用', 'WebKitGTK 页面与原生应用窗口', TARGET_CHAINS.webkitgtk),
         ],
       },
       {
         id: 'windows', title: 'Windows视图',
         targets: [
-          plannedTarget('winui3', 'WinUI 3', 'Windows App SDK'),
-          plannedTarget('wpf', 'WPF', '.NET 桌面'),
-          plannedTarget('winforms', 'WinForms', '.NET 桌面'),
-          plannedTarget('win-electron', 'Electron'),
-          plannedTarget('win-tauri', 'Tauri', 'WebView2'),
-          plannedTarget('win-qt', 'Qt', 'C++ / QML'),
-          plannedTarget('win-flutter', 'Flutter', 'Flutter Windows 桌面'),
+          plannedTarget('windows-native', 'Windows 原生桌面应用', 'Win32 / Qt / Flutter 等原生窗口', TARGET_CHAINS.windows),
+          plannedTarget('dotnet', '.NET 桌面应用', 'WPF / Windows Forms', TARGET_CHAINS.windows),
+          plannedTarget('winui3', 'WinUI 3 应用', 'Windows App SDK 应用', TARGET_CHAINS.windows),
+          plannedTarget('win-electron', 'Electron 应用', 'Chromium 页面与原生应用窗口', TARGET_CHAINS.electron),
+          plannedTarget('win-tauri', 'Tauri 应用', 'WebView2 页面与原生应用窗口', TARGET_CHAINS.webview2),
         ],
       },
       {
         id: 'macos', title: 'macOS视图',
         targets: [
-          plannedTarget('swiftui', 'SwiftUI', 'Swift'),
-          plannedTarget('appkit', 'AppKit', 'Cocoa'),
-          plannedTarget('mac-electron', 'Electron'),
-          plannedTarget('mac-tauri', 'Tauri', 'WKWebView'),
-          plannedTarget('mac-qt', 'Qt', 'C++ / QML'),
-          plannedTarget('mac-flutter', 'Flutter', 'Flutter macOS 桌面'),
+          plannedTarget('macos-native', 'macOS 原生桌面应用', 'AppKit / SwiftUI / Qt / Flutter', TARGET_CHAINS.macos),
+          plannedTarget('mac-electron', 'Electron 应用', 'Chromium 页面与原生应用窗口', TARGET_CHAINS.electron),
+          plannedTarget('mac-tauri', 'Tauri 应用', 'WKWebView 页面与原生应用窗口', TARGET_CHAINS.wkwebview),
         ],
       },
       {
         id: 'android', title: 'Android视图',
         targets: [
-          plannedTarget('compose', 'Jetpack Compose', 'Kotlin'),
-          plannedTarget('android-views', 'Android Views', 'XML 布局'),
-          plannedTarget('android-flutter', 'Flutter'),
-          plannedTarget('react-native', 'React Native'),
-          plannedTarget('capacitor', 'Capacitor', 'WebView'),
-          plannedTarget('cordova', 'Cordova', 'WebView'),
+          plannedTarget('android-native', 'Android 原生应用', 'Android Views / Jetpack Compose', TARGET_CHAINS.android),
+          plannedTarget('android-webview', 'Android WebView 应用', '内嵌网页；Capacitor / Cordova', TARGET_CHAINS.androidWeb),
+          plannedTarget('android-flutter', 'Flutter Android 应用', 'Flutter 引擎渲染的应用', TARGET_CHAINS.android),
+          plannedTarget('react-native', 'React Native 应用', 'Android 原生视图与 JS 运行时', TARGET_CHAINS.android),
         ],
       },
       {
         id: 'tui', title: 'TUI视图',
         targets: [
-          plannedTarget('textual', 'Textual', 'Python'),
-          plannedTarget('ink', 'Ink', 'React / Node.js'),
-          plannedTarget('bubbletea', 'Bubble Tea', 'Go'),
-          plannedTarget('ratatui', 'Ratatui', 'Rust'),
-          plannedTarget('blessed', 'blessed', 'Node.js'),
+          plannedTarget('python-tui', 'Python 终端应用', 'Textual 等终端界面', TARGET_CHAINS.terminal),
+          plannedTarget('node-tui', 'Node.js 终端应用', 'Ink / blessed 等终端界面', TARGET_CHAINS.terminal),
+          plannedTarget('go-tui', 'Go 终端应用', 'Bubble Tea 等终端界面', TARGET_CHAINS.terminal),
+          plannedTarget('rust-tui', 'Rust 终端应用', 'Ratatui 等终端界面', TARGET_CHAINS.terminal),
         ],
       },
       {
         id: 'harmonyos', title: 'HarmonyOS视图',
         targets: [
-          plannedTarget('arkui', 'ArkUI', 'ArkTS'),
-          plannedTarget('arkui-x', 'ArkUI-X', '跨平台'),
-          plannedTarget('harmony-flutter', 'Flutter'),
-          plannedTarget('harmony-rn', 'React Native'),
-          plannedTarget('uniapp', 'uni-app', 'Vue'),
+          plannedTarget('harmony-native', '鸿蒙原生应用', 'ArkUI / ArkTS', TARGET_CHAINS.harmonyos),
+          plannedTarget('arkui-x', 'ArkUI-X 应用', 'ArkUI 跨平台应用', TARGET_CHAINS.harmonyos),
+          plannedTarget('harmony-flutter', 'Flutter 鸿蒙应用', 'Flutter 鸿蒙适配应用', TARGET_CHAINS.harmonyos),
+          plannedTarget('harmony-rn', 'React Native 鸿蒙应用', 'React Native 鸿蒙适配应用', TARGET_CHAINS.harmonyos),
         ],
       },
       {
         id: 'game', title: '游戏视图',
         targets: [
-          plannedTarget('unity', 'Unity'),
-          plannedTarget('unreal', 'Unreal Engine'),
-          plannedTarget('godot', 'Godot'),
-          plannedTarget('cocos', 'Cocos Creator'),
-          plannedTarget('phaser', 'Phaser'),
+          plannedTarget('unity', 'Unity 游戏', 'Unity Player 中运行的游戏', {
+            communication: 'RPC / IPC', backend: 'Unity 调试辅助程序（待选）',
+          }),
+          plannedTarget('unreal', 'Unreal 游戏', 'Unreal Engine 游戏实例', {
+            communication: 'RPC / IPC', backend: 'Unreal 调试辅助程序（待选）',
+          }),
+          plannedTarget('godot', 'Godot 游戏', 'Godot 游戏实例', {
+            communication: '引擎调试协议 / RPC', backend: 'Godot 调试后端 / 辅助程序（待选）',
+          }),
+          plannedTarget('cocos', 'Cocos 游戏', 'Cocos 原生或 Web 游戏实例', {
+            communication: 'CDP / RPC', backend: 'DevTools / 引擎辅助程序（待选）',
+          }),
+          plannedTarget('browser-game', '浏览器游戏', 'Phaser 等 Web 游戏实例', TARGET_CHAINS.chromium),
         ],
       },
       {
         id: 'three-d', title: '3D视图',
         targets: [
-          plannedTarget('threejs', 'Three.js'),
-          plannedTarget('babylon', 'Babylon.js'),
-          plannedTarget('playcanvas', 'PlayCanvas'),
-          plannedTarget('webgpu', 'WebGL / WebGPU'),
-          plannedTarget('three-unity', 'Unity'),
+          plannedTarget('web-3d', 'Web 三维应用', 'Three.js / Babylon.js / PlayCanvas；WebGL / WebGPU', TARGET_CHAINS.chromium),
+          plannedTarget('native-3d', '原生三维应用', '原生窗口中的三维场景', TARGET_CHAINS.native3d),
+          plannedTarget('three-unity', 'Unity 三维应用', 'Unity Player 中的交互式三维场景', {
+            communication: 'RPC / IPC', backend: 'Unity 调试辅助程序（待选）',
+          }),
         ],
       },
       {
         id: 'miniprogram', title: '小程序视图',
         targets: [
-          plannedTarget('wechat', '微信小程序'),
-          plannedTarget('alipay', '支付宝小程序'),
-          plannedTarget('douyin', '抖音小程序'),
-          plannedTarget('qq', 'QQ小程序'),
-          plannedTarget('baidu', '百度智能小程序'),
-          plannedTarget('kuaishou', '快手小程序'),
-          plannedTarget('jd', '京东小程序'),
-          plannedTarget('meituan', '美团小程序'),
-          plannedTarget('xiaohongshu', '小红书小程序'),
-          plannedTarget('taobao', '淘宝小程序'),
-          plannedTarget('dingtalk', '钉钉小程序'),
+          miniProgramTarget('wechat', '微信'),
+          miniProgramTarget('alipay', '支付宝'),
+          miniProgramTarget('douyin', '抖音'),
+          miniProgramTarget('qq', 'QQ'),
+          miniProgramTarget('baidu', '百度智能'),
+          miniProgramTarget('kuaishou', '快手'),
+          miniProgramTarget('jd', '京东'),
+          miniProgramTarget('meituan', '美团'),
+          miniProgramTarget('xiaohongshu', '小红书'),
+          miniProgramTarget('taobao', '淘宝'),
+          miniProgramTarget('dingtalk', '钉钉'),
         ],
       },
     ];
@@ -7793,10 +7909,13 @@ window.__ModuleLoader__.load({
     const TARGET_ENV_CSS = `
 .uts-settings { display: flex; flex-direction: column; gap: 20px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); }
 .uts-head { display: flex; flex-direction: column; gap: 4px; }
+.uts-head-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; }
+.uts-filter { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .uts-page-title { margin: 0; font-size: 16px; font-weight: 500; line-height: 24px; }
 .uts-page-desc { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }
 .uts-body { display: flex; flex-direction: column; gap: 12px; }
 .uts-title { margin: 0; font-size: 14px; font-weight: 600; line-height: 20px; }
+.uts-chain-guide { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; overflow-wrap: anywhere; }
 .uts-groups { display: flex; flex-direction: column; gap: 18px; }
 .uts-group { display: flex; flex-direction: column; gap: 8px; }
 .uts-group-heading { margin: 0; font-size: 13px; font-weight: 600; line-height: 20px; }
@@ -7810,15 +7929,38 @@ window.__ModuleLoader__.load({
 .uts-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px 20px; }
 .uts-item { display: flex; flex-direction: column; min-width: 0; }
 .uts-card { box-sizing: border-box; width: 100%; flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: .5px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }
-.uts-card-name { font-size: 13px; font-weight: 600; line-height: 20px; }
-.uts-card-note { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+.uts-card-name { font-size: 13px; font-weight: 600; line-height: 20px; overflow-wrap: anywhere; }
+.uts-card-note { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
 .uts-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .uts-field-inline { flex-direction: row; align-items: center; gap: 8px; }
 .uts-field-label { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
 .uts-field-value { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.uts-field-value[data-uts-valid="false"] { color: var(--dsw-alias-label-tertiary); }
+.uts-field-value[data-uts-valid="false"], .uts-field-value[data-uts-valid="unknown"] { color: var(--dsw-alias-label-tertiary); }
 .uts-empty { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
-.uts-tag { align-self: flex-start; margin-top: auto; display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 6px; font-size: 11px; line-height: 1; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-2); border: .5px solid var(--dsw-alias-border-l2); }
+.uts-tags { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-top: auto; min-width: 0; }
+.uts-tag { box-sizing: border-box; display: inline-flex; align-items: center; min-height: 18px; max-width: 100%; padding: 2px 7px; border-radius: 6px; font-size: 11px; line-height: 16px; white-space: normal; overflow-wrap: anywhere; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-2); border: .5px solid var(--dsw-alias-border-l2); }
+.uts-tag[data-uts-tag="supported"] { color: #16a34a; background: color-mix(in srgb, #16a34a 12%, transparent); border-color: color-mix(in srgb, #16a34a 35%, transparent); }
+.uts-axes { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 14px; padding: 8px 10px; border: .5px dashed var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); }
+.uts-axis { display: flex; flex-direction: column; min-width: 0; }
+.uts-axis-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.uts-axis-label { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
+.uts-axis-status { font-size: 11px; line-height: 16px; font-weight: 600; color: var(--dsw-alias-label-tertiary); }
+.uts-axis-reason { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.uts-axis[data-uts-status="supported"] .uts-axis-status,
+.uts-axis[data-uts-status="ok"] .uts-axis-status,
+.uts-axis[data-uts-status="bound"] .uts-axis-status,
+.uts-axis[data-uts-status="available"] .uts-axis-status,
+.uts-axis[data-uts-status="true"] .uts-axis-status { color: #16a34a; }
+.uts-axis[data-uts-status="failed"] .uts-axis-status,
+.uts-axis[data-uts-status="degraded"] .uts-axis-status,
+.uts-axis[data-uts-status="stale"] .uts-axis-status,
+.uts-axis[data-uts-status="partial"] .uts-axis-status,
+.uts-axis[data-uts-status="unavailable"] .uts-axis-status { color: #d97706; }
+.uts-config-error { margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 18px; color: #b91c1c; background: color-mix(in srgb, #b91c1c 10%, transparent); border: .5px solid color-mix(in srgb, #b91c1c 30%, transparent); overflow-wrap: anywhere; }
+.uts-config-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary); }
+.uts-config-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-left: auto; }
+.uts-link-btn { padding: 2px 8px; font: inherit; font-size: 12px; line-height: 18px; color: var(--dsw-alias-brand-primary); background: transparent; border: .5px solid var(--dsw-alias-border-l2); border-radius: 6px; cursor: pointer; }
+.uts-link-btn:disabled { color: var(--dsw-alias-label-tertiary); cursor: not-allowed; }
 .uts-switch { position: relative; display: inline-flex; align-items: center; width: 32px; height: 18px; flex: 0 0 auto; cursor: pointer; }
 .uts-switch-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
 .uts-switch-input:disabled { cursor: not-allowed; }
@@ -7831,60 +7973,381 @@ window.__ModuleLoader__.load({
 @media (prefers-reduced-motion: reduce) { .uts-switch-track, .uts-switch-thumb, .uts-group-chevron { transition: none; } }
 `;
 
+    /* ---- Host config (M4): one authoritative revision for the settings page and the panel ---- */
+    const SETTINGS_EXPANDED_KEY = 'dsh.ui-testing.settings.expanded';
+    const AXIS_ORDER = ['support', 'enabled', 'dependency', 'connection', 'target', 'capability'];
+    const AXIS_LABEL = {
+      support: '工程支持', enabled: '用户启用', dependency: '依赖可用',
+      connection: '连接可信', target: '目标绑定', capability: '能力就绪',
+    };
+    /** M0 §5.2 status vocabulary → the short text the page shows. Unknown values fall through. */
+    const AXIS_TEXT = {
+      support: { supported: '已实现', unsupported: '未支持', planned: '未接入', 'not-probed': '未探测' },
+      enabled: { true: '已启用', false: '未启用', 'not-probed': '未知' },
+      dependency: { ok: '可用', degraded: '降级', failed: '不可用', 'not-probed': '未探测' },
+      connection: { ok: '可信', failed: '失败', 'not-probed': '未探测' },
+      target: { bound: '已绑定', unbound: '未绑定', stale: '已失效', 'not-probed': '未探测' },
+      capability: { available: '可用', partial: '部分可用', unavailable: '不可用', unsupported: '不支持', 'not-probed': '未探测' },
+    };
+    function axisText(axis, status) {
+      const table = AXIS_TEXT[axis] || {};
+      return table[status] || status || '未知';
+    }
+
+    /** One-line, human-readable detail for an axis tooltip (never invents missing facts). */
+    function axisDetail(axis) {
+      const parts = [];
+      if (axis.targetId) parts.push('目标 ' + axis.targetId);
+      if (axis.checkedAt) {
+        const at = new Date(axis.checkedAt);
+        parts.push('检查时间 ' + (Number.isNaN(at.getTime()) ? String(axis.checkedAt) : at.toISOString()));
+      }
+      if (axis.evidenceKind) parts.push('证据 ' + axis.evidenceKind);
+      if (axis.checks && typeof axis.checks === 'object') {
+        const failed = Object.entries(axis.checks)
+          .filter(([, check]) => check && check.status && check.status !== 'ok')
+          .map(([name, check]) => name + '=' + String(check.status) + (check.reason ? '(' + check.reason + ')' : ''));
+        if (failed.length) parts.push('未就绪 ' + failed.join(', '));
+      }
+      return parts.join(' · ');
+    }
+
     /**
-     * 「是否启用」开关：纯前端占位，只在组件内切换，不写配置、不通知 Host。
-     * 未支持/未接入的目标保持禁用（灰态），避免让人以为已经可启用。
+     * Normalize the Host readiness payload (`{checkedAt, environments:[...]}` or a map keyed by
+     * environment id). Each axis may be a bare status or `{status, reason}`; missing axes stay
+     * absent so the page can say "not probed" instead of inventing a value.
+     */
+    function normalizeReadiness(readiness) {
+      const map = {};
+      if (!readiness || typeof readiness !== 'object') return map;
+      const raw = readiness.environments;
+      let list = null;
+      if (Array.isArray(raw)) list = raw;
+      else if (raw && typeof raw === 'object') list = Object.keys(raw).map((id) => Object.assign({ environment: id }, raw[id]));
+      if (!list) return map;
+      for (const entry of list) {
+        if (!entry || typeof entry !== 'object') continue;
+        const id = String(entry.environment || entry.id || entry.env || '');
+        if (!id) continue;
+        const axes = {};
+        for (const axis of AXIS_ORDER) {
+          // The Host returns a nested `axes` object (M4 contract); older/defensive shapes may
+          // still be flat. Read the nested value first, then fall back to the flat field.
+          const rawValue = entry.axes && entry.axes[axis] !== undefined
+            ? entry.axes[axis]
+            : entry[axis];
+          if (rawValue === undefined || rawValue === null) continue;
+          if (typeof rawValue === 'object') {
+            const status = rawValue.status === undefined || rawValue.status === null ? '' : String(rawValue.status);
+            if (!status) continue;
+            // A13: keep the *evidence* the Host measured, not just a status word. Dropping
+            // target/evidence/expiresAt here made "which capability is missing / which target was
+            // probed / when" unanswerable in the page even though the Host had measured it.
+            axes[axis] = {
+              status,
+              reason: rawValue.reason ? String(rawValue.reason) : '',
+              checkedAt: Number.isFinite(rawValue.checkedAt) ? rawValue.checkedAt : null,
+              expiresAt: Number.isFinite(rawValue.expiresAt) ? rawValue.expiresAt : null,
+              targetId: rawValue.target && typeof rawValue.target === 'object' && rawValue.target.targetId
+                ? String(rawValue.target.targetId)
+                : '',
+              evidenceKind: rawValue.evidence && typeof rawValue.evidence === 'object' && rawValue.evidence.kind
+                ? String(rawValue.evidence.kind)
+                : '',
+              checks: rawValue.evidence && typeof rawValue.evidence === 'object'
+                && rawValue.evidence.checks && typeof rawValue.evidence.checks === 'object'
+                ? rawValue.evidence.checks
+                : null,
+            };
+          } else {
+            axes[axis] = { status: String(rawValue), reason: '', checkedAt: null, expiresAt: null, targetId: '', evidenceKind: '', checks: null };
+          }
+        }
+        map[id] = {
+          axes,
+          checkedAt: String(entry.checkedAt || readiness.checkedAt || ''),
+          reason: entry.reason ? String(entry.reason) : '',
+        };
+      }
+      return map;
+    }
+
+    /** Static engineering support, used only when the Host sends no support axis. */
+    function staticSupportOf(groupId) {
+      const group = TARGET_ENV_GROUPS.find((item) => item.id === groupId);
+      if (!group) return 'planned';
+      if (group.targets.some((target) => target.state === 'supported')) return 'supported';
+      if (group.targets.some((target) => target.state === 'unsupported')) return 'unsupported';
+      return 'planned';
+    }
+
+    /** `true`/`false` from the Host config, or `null` when the config carries no environment map. */
+    function enabledFromConfig(config, envId) {
+      const envs = config && config.global && config.global.environments;
+      if (!envs || typeof envs !== 'object') return null;
+      const entry = envs[envId];
+      return Boolean(entry && entry.enabled === true);
+    }
+
+    /**
+     * Six independent axes for one environment. Nothing is merged into a single "valid" flag:
+     * unsupported, disabled and not-probed stay distinguishable, and a missing Host answer is
+     * reported as not-probed with a reason rather than a ready state.
+     */
+    function environmentAxes(state, groupId) {
+      const entry = state && state.readiness ? state.readiness[groupId] : null;
+      const hostAxes = entry && entry.axes ? entry.axes : {};
+      const configLoaded = Boolean(state && state.revision !== null && !state.error);
+      return AXIS_ORDER.map((axis) => {
+        // `enabled` is the user's saved intent: the Host config revision wins over a readiness
+        // snapshot, so a successful PUT is visible immediately (the write response has no readiness).
+        if (axis === 'enabled') {
+          if (configLoaded) {
+            const enabled = enabledFromConfig(state.config, groupId);
+            if (enabled === null) {
+              return { axis, status: 'not-probed', reason: 'Host 配置未包含环境策略', source: 'unavailable' };
+            }
+            return {
+              axis,
+              status: enabled ? 'true' : 'false',
+              reason: enabled ? 'Host 配置已启用该环境' : 'Host 配置未启用该环境',
+              source: 'host',
+            };
+          }
+          if (state && state.error) {
+            return { axis, status: 'not-probed', reason: 'Host 配置读取失败，无法确认用户启用状态', source: 'unavailable' };
+          }
+          const hostEnabled = hostAxes.enabled;
+          if (hostEnabled && hostEnabled.status) {
+            return { axis, status: hostEnabled.status, reason: hostEnabled.reason || '来自 Host 就绪结果', source: 'host' };
+          }
+          return { axis, status: 'not-probed', reason: 'Host 配置不可用，未读取到用户启用状态', source: 'unavailable' };
+        }
+        const host = hostAxes[axis];
+        if (host && host.status) {
+          // Carry the measured detail through to the DOM: which target was probed, when it was
+          // checked, and (for the capability axis) which per-capability checks passed (A13).
+          return {
+            axis,
+            status: host.status,
+            reason: host.reason || '来自 Host 就绪结果',
+            source: 'host',
+            checkedAt: host.checkedAt ?? null,
+            expiresAt: host.expiresAt ?? null,
+            targetId: host.targetId || '',
+            evidenceKind: host.evidenceKind || '',
+            checks: host.checks || null,
+          };
+        }
+        if (axis === 'support') {
+          return { axis, status: staticSupportOf(groupId), reason: '静态候选清单（Host 未提供 support 探测）', source: 'static' };
+        }
+        return { axis, status: 'not-probed', reason: 'Host 未提供该轴的探测结果', source: 'unavailable' };
+      });
+    }
+
+    const EMPTY_HOST_CONFIG = Object.freeze({
+      loading: true, error: '', revision: null, config: null, resolved: null, readiness: {}, checkedAt: '',
+    });
+
+    /** Adopt one Host config payload; a payload without a numeric revision is a failed read. */
+    function mergeHostConfig(previous, payload) {
+      const revision = payload && typeof payload.revision === 'number' ? payload.revision : null;
+      if (revision === null) {
+        return Object.assign({}, previous, {
+          loading: false,
+          error: 'Host 未提供配置接口（响应缺少 revision）',
+        });
+      }
+      const readiness = payload.readiness !== undefined ? normalizeReadiness(payload.readiness) : previous.readiness;
+      const checkedAt = payload.readiness && payload.readiness.checkedAt
+        ? String(payload.readiness.checkedAt)
+        : previous.checkedAt;
+      return {
+        loading: false,
+        error: '',
+        revision,
+        config: payload.config !== undefined ? payload.config : previous.config,
+        resolved: payload.resolved !== undefined ? payload.resolved : previous.resolved,
+        readiness,
+        checkedAt,
+      };
+    }
+
+    function hostConfigError(error) {
+      const code = String((error && error.code) || '');
+      if (code === 'CONFIG_CONFLICT') return '配置已被其他窗口修改（CONFIG_CONFLICT）';
+      if (code === 'CONFIG_UNAVAILABLE' || (error && error.status === 404)) {
+        return 'Host 未提供配置接口，无法读取或保存配置';
+      }
+      const detail = error && error.message ? String(error.message) : '';
+      return '读取 Host 配置失败' + (detail ? '：' + detail : '');
+    }
+
+    /**
+     * Read one Host config view and keep the Host revision as the only truth. `scope` is `null` on
+     * the settings page (legacy/default, no scope headers) and the panel's own snapshot in the
+     * panel. A failed read leaves the caller usable but exposes `error`; nothing reports ready.
+     */
+    function useHostConfig(scope, view) {
+      const [state, setState] = React.useState(EMPTY_HOST_CONFIG);
+      const stateRef = React.useRef(state);
+      stateRef.current = state;
+      const epochRef = React.useRef(0);
+      const load = React.useCallback((signal) => {
+        const epoch = ++epochRef.current;
+        setState((current) => Object.assign({}, current, { loading: true, error: '' }));
+        getHostConfig(scope, view, signal).then((payload) => {
+          if (epoch !== epochRef.current) return;
+          setState(mergeHostConfig(stateRef.current, payload));
+        }).catch((error) => {
+          if (epoch !== epochRef.current) return;
+          setState(Object.assign({}, stateRef.current, { loading: false, error: hostConfigError(error) }));
+        });
+      }, [scope, view]);
+      React.useEffect(() => {
+        let controller = null;
+        if (typeof AbortController === 'function') controller = new AbortController();
+        load(controller ? controller.signal : undefined);
+        return () => {
+          epochRef.current += 1;
+          if (controller) controller.abort();
+        };
+      }, [load]);
+      const reload = React.useCallback(() => load(undefined), [load]);
+      const adopt = React.useCallback((payload) => {
+        const next = mergeHostConfig(stateRef.current, payload);
+        setState(next);
+        return next;
+      }, []);
+      return { state, reload, adopt };
+    }
+
+    /** A CAS conflict carries the latest revision: adopt it, or re-read when it does not. */
+    function adoptHostConflict(hostConfig, error) {
+      const payload = error && error.payload;
+      if (payload && typeof payload.revision === 'number') {
+        hostConfig.adopt(payload);
+        // Without the full config the write response cannot settle the page: re-read it.
+        if (payload.config === undefined) hostConfig.reload();
+        return;
+      }
+      hostConfig.reload();
+    }
+
+    function readExpandedGroups() {
+      try {
+        const raw = window.localStorage.getItem(SETTINGS_EXPANDED_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return {};
+        const next = {};
+        for (const key of Object.keys(parsed)) if (parsed[key] === true) next[key] = true;
+        return next;
+      } catch (error) {
+        return {};
+      }
+    }
+
+    function writeExpandedGroups(map) {
+      try {
+        window.localStorage.setItem(SETTINGS_EXPANDED_KEY, JSON.stringify(map));
+      } catch (error) {
+        /* Storage may be unavailable (private mode / policy); in-memory state still works. */
+      }
+    }
+
+    /**
+     * 开关组件：受控时把变更交给调用方（例如提交 Host），非受控时保留旧的本地预览行为。
+     * 未支持/未接入或 Host 配置不可用时保持禁用（灰态），避免让人以为已经可启用。
      */
     function TargetEnvSwitch(props) {
       const [on, setOn] = React.useState(props.checked === true);
+      const controlled = typeof props.onChange === 'function';
+      const title = props.title || (props.disabled
+        ? '当前不可启用'
+        : controlled ? '仅筛选当前页面显示的目标' : '前端预览：启用状态暂不保存');
       return h('label', {
         className: 'uts-switch',
-        title: props.disabled ? '当前不可启用' : '前端预览：启用状态暂不保存',
+        title,
+        'data-uts-switch-busy': props.busy ? 'true' : 'false',
       },
         h('input', {
           type: 'checkbox',
           role: 'switch',
           className: 'uts-switch-input',
           'aria-label': props.label,
-          checked: on,
+          checked: controlled ? props.checked === true : on,
           disabled: props.disabled,
-          onChange: (event) => setOn(event.target.checked),
+          onChange: (event) => controlled ? props.onChange(event.target.checked) : setOn(event.target.checked),
         }),
         h('span', { className: 'uts-switch-track', 'aria-hidden': true }, h('span', { className: 'uts-switch-thumb' })));
     }
 
-    /** 一个目标卡片；未支持/未接入的灰色标签渲染在卡片内部底部（用户 2026-11-06 指定位置）。 */
+    /**
+     * 第五节点目标卡片；接口、执行端与实现状态是底部同级标签。
+     * 不显示任何写死版本：启用状态来自 Host 配置，目标状态来自 Host 就绪结果。
+     */
     function TargetEnvCard(props) {
       const target = props.target || {};
-      const tag = target.state === 'unsupported' ? '未支持' : target.state === 'planned' ? '未接入' : '';
+      const tag = target.state === 'supported' ? '已实现' : target.state === 'unsupported' ? '未支持' : '未接入';
+      const candidate = target.state !== 'supported';
+      const chain = target.chain || {};
+      const configReady = props.configReady === true;
+      const busy = props.busy === true;
+      const targetAxis = props.targetAxis || { status: 'not-probed', reason: 'Host 未提供目标状态' };
+      const switchDisabled = target.state !== 'supported' || !configReady || busy;
+      const switchTitle = target.state !== 'supported'
+        ? '当前目标未实现，不能启用'
+        : !configReady
+          ? (props.configError || 'Host 配置不可用，无法提交启用状态')
+          : busy ? '正在提交到 Host…' : '提交到 Host（按 Host revision 保存）';
       return h('div', {
         className: 'uts-item',
         'data-uts-target': target.id,
         'data-uts-state': target.state,
+        'data-uts-node': 'target',
       },
         h('div', { className: 'uts-card' },
           h('div', { className: 'uts-card-name' }, target.name),
           target.note ? h('div', { className: 'uts-card-note' }, target.note) : null,
-          h('div', { className: 'uts-field' },
-            h('span', { className: 'uts-field-label' }, '环境是否有效：'),
-            h('span', { className: 'uts-field-value', 'data-uts-valid': target.valid ? 'true' : 'false' }, target.text)),
           h('div', { className: 'uts-field uts-field-inline' },
-            h('span', { className: 'uts-field-label' }, '是否启用：'),
+            h('span', { className: 'uts-field-label' }, '用户启用：'),
             h(TargetEnvSwitch, {
               label: '是否启用：' + target.name,
-              checked: target.enabled === true,
-              disabled: target.state !== 'supported',
+              checked: props.enabled === true,
+              disabled: switchDisabled,
+              busy,
+              title: switchTitle,
+              onChange: (next) => {
+                if (typeof props.onToggleEnabled === 'function') props.onToggleEnabled(next);
+              },
             })),
-          tag ? h('span', { className: 'uts-tag', 'data-uts-tag': target.state }, tag) : null));
+          h('div', { className: 'uts-field' },
+            h('span', { className: 'uts-field-label' }, '目标：'),
+            h('span', {
+              className: 'uts-field-value',
+              'data-uts-valid': targetAxis.status === 'bound' ? 'true' : targetAxis.status === 'stale' ? 'false' : 'unknown',
+              'data-uts-target-status': targetAxis.status,
+              title: targetAxis.reason || '',
+            }, axisText('target', targetAxis.status))),
+          h('div', { className: 'uts-tags', 'aria-label': '调试链路与实现状态' },
+            h('span', { className: 'uts-tag', 'data-uts-tag': 'interface' },
+              (candidate ? '③ 候选接口：' : '③ 接口：') + chain.communication),
+            h('span', { className: 'uts-tag', 'data-uts-tag': 'backend' },
+              (candidate ? '④ 候选执行端：' : '④ 执行端：') + chain.backend),
+            h('span', { className: 'uts-tag', 'data-uts-tag': target.state }, tag))));
     }
 
     /**
      * 一个环境分组：默认收齐（用户 2026-11-07 要求），点分组标题展开/收起该环境的候选卡片。
-     * 标题是 h4 里的 button（`aria-expanded`/`aria-controls`），卡片区域按需渲染为 region。
+     * 六轴就绪条始终可见（不受折叠影响）；标题是 h4 里的 button（`aria-expanded`/`aria-controls`），
+     * 卡片区域按需渲染为 region。
      */
     function TargetEnvGroup(props) {
       const group = props.group;
-      const [expanded, setExpanded] = React.useState(false);
+      const expanded = props.expanded === true;
+      const axes = props.axes || [];
       const regionId = 'uts-group-' + group.id;
       return h('div', {
         className: 'uts-group',
@@ -7898,15 +8361,45 @@ window.__ModuleLoader__.load({
             'aria-expanded': expanded,
             'aria-controls': regionId,
             'data-uts-group-toggle': group.id,
-            onClick: () => setExpanded((value) => !value),
+            onClick: () => props.onToggle(group.id),
           },
             h('span', { className: 'uts-group-title' }, group.title),
             h('span', { className: 'uts-group-count' }, group.targets.length + ' 个目标'),
             h('span', { className: 'uts-group-chevron', 'aria-hidden': true }, h(IconChevron, null)))),
+        h('div', { className: 'uts-axes', 'data-uts-axes': group.id, 'data-uts-axes-checked-at': props.checkedAt || '' },
+          axes.map((axis) => h('div', {
+            key: axis.axis,
+            className: 'uts-axis',
+            'data-uts-axis': axis.axis,
+            'data-uts-status': axis.status,
+            'data-uts-axis-source': axis.source || 'host',
+            'data-uts-axis-target': axis.targetId || '',
+            'data-uts-axis-checked-at': axis.checkedAt ? String(axis.checkedAt) : '',
+            title: axisDetail(axis),
+          },
+            h('span', { className: 'uts-axis-head' },
+              h('span', { className: 'uts-axis-label' }, AXIS_LABEL[axis.axis] || axis.axis),
+              h('span', { className: 'uts-axis-status' }, axisText(axis.axis, axis.status))),
+            h('span', { className: 'uts-axis-reason', 'data-uts-axis-reason': axis.axis }, axis.reason || '无附加原因'),
+            axis.checks && typeof axis.checks === 'object'
+              ? h('span', { className: 'uts-axis-checks', 'data-uts-axis-checks': axis.axis },
+                Object.entries(axis.checks)
+                  .map(([name, check]) => name + ':' + String(check && check.status ? check.status : 'unknown'))
+                  .join(' '))
+              : null))),
         expanded
           ? h('div', { className: 'uts-cards', id: regionId, role: 'region', 'aria-label': group.title },
               group.targets.length
-                ? group.targets.map((target) => h(TargetEnvCard, { key: target.id, target }))
+                ? group.targets.map((target) => h(TargetEnvCard, {
+                    key: target.id,
+                    target,
+                    enabled: props.envEnabled === true,
+                    configReady: props.configReady,
+                    configError: props.configError,
+                    busy: props.busy,
+                    targetAxis: props.targetAxis,
+                    onToggleEnabled: props.onToggleEnabled,
+                  }))
                 : h('p', { className: 'uts-empty' }, '暂未接入'))
           : null);
     }
@@ -7914,19 +8407,123 @@ window.__ModuleLoader__.load({
     /**
      * 设置页正文（DSH 设置弹层的独立分区）。标题/描述在这里渲染，因为 settings.section
      * 只提供导航标签，不提供页面标题；下面才是「目标环境配置」分组。
+     * 配置真值来自 Host：读取失败显示 `[data-uts-config-error]`，启用开关按 revision 提交。
      */
     function TargetEnvSettingsPage() {
-      return h('section', { className: 'uts-settings', 'data-uts-settings': 'page' },
+      const hostConfig = useHostConfig(null, 'global');
+      const state = hostConfig.state;
+      const [hideUnimplemented, setHideUnimplemented] = React.useState(false);
+      const [expanded, setExpanded] = React.useState(readExpandedGroups);
+      const [submittingEnv, setSubmittingEnv] = React.useState('');
+      const [notice, setNotice] = React.useState(null);
+      const aliveRef = React.useRef(true);
+      React.useEffect(() => () => { aliveRef.current = false; }, []);
+      const configReady = state.revision !== null && !state.error;
+      const groups = hideUnimplemented
+        ? TARGET_ENV_GROUPS.map((group) => ({ ...group, targets: group.targets.filter((target) => target.state === 'supported') }))
+          .filter((group) => group.targets.length > 0)
+        : TARGET_ENV_GROUPS;
+      function toggleGroup(id) {
+        setExpanded((current) => {
+          const next = Object.assign({}, current);
+          if (next[id]) delete next[id];
+          else next[id] = true;
+          writeExpandedGroups(next);
+          return next;
+        });
+      }
+      function toggleEnvironment(group, next) {
+        if (!configReady || submittingEnv) return;
+        setSubmittingEnv(group.id);
+        setNotice(null);
+        putHostConfig({ environments: { [group.id]: { enabled: next } } }, state.revision).then((payload) => {
+          if (!aliveRef.current) return;
+          const merged = hostConfig.adopt(payload);
+          if (payload.config === undefined) hostConfig.reload();
+          setSubmittingEnv('');
+          setNotice(merged.error
+            ? { kind: 'error', text: merged.error }
+            : { kind: 'ok', text: (next ? '已启用 ' : '已禁用 ') + group.title + ' · revision ' + merged.revision });
+        }).catch((error) => {
+          if (!aliveRef.current) return;
+          setSubmittingEnv('');
+          if (error && error.code === 'CONFIG_CONFLICT') {
+            adoptHostConflict(hostConfig, error);
+            setNotice({
+              kind: 'conflict',
+              text: '配置已被其他窗口修改（CONFIG_CONFLICT）；已按最新 revision 重新读取，本次切换未保存',
+            });
+            return;
+          }
+          setNotice({
+            kind: 'error',
+            text: '保存失败，已回滚为 Host 当前值：' + ((error && error.message) || '未知错误'),
+          });
+        });
+      }
+      const errorText = notice && notice.kind !== 'ok' ? notice.text : state.error;
+      return h('section', {
+        className: 'uts-settings',
+        'data-uts-settings': 'page',
+        'data-uts-hide-unimplemented': String(hideUnimplemented),
+        'data-uts-config-revision': state.revision === null ? '' : String(state.revision),
+        'data-uts-config-status': state.error ? 'error' : state.revision === null ? 'loading' : 'ready',
+      },
         h('style', null, TARGET_ENV_CSS),
         h('header', { className: 'uts-head' },
-          h('h2', { className: 'uts-page-title' }, 'UI 测试'),
-          h('p', { className: 'uts-page-desc' }, '面向 DeepSeekHarness 的前端 GUI 调试与测试插件：Web / Chromium 已实现；Windows/Linux/macOS 桌面、Android、TUI、HarmonyOS、小程序、游戏与 3D 共九种调试环境规划中。')),
+          h('div', { className: 'uts-head-row' },
+            h('h2', { className: 'uts-page-title' }, 'UI 测试'),
+            h('div', { className: 'uts-config-actions' },
+              h('button', {
+                type: 'button',
+                className: 'uts-link-btn',
+                'data-uts-config-reload': 'true',
+                disabled: state.loading,
+                onClick: () => hostConfig.reload(),
+              }, state.loading ? '读取中…' : '重新读取'),
+              h('div', { className: 'uts-filter' },
+                h('span', null, '隐藏未实现'),
+                h(TargetEnvSwitch, { label: '隐藏未实现', checked: hideUnimplemented, onChange: setHideUnimplemented })))),
+          h('p', { className: 'uts-page-desc' }, '面向 DeepSeekHarness 的前端 GUI 调试与测试插件：Web / Chromium 已实现；Windows/Linux/macOS 桌面、Android、TUI、HarmonyOS、小程序、游戏与 3D 共九种调试环境规划中。'),
+          h('p', { className: 'uts-config-meta' },
+            h('span', { 'data-uts-config-revision-meta': 'true' }, 'Host 配置 revision：' + (state.revision === null ? '未读取' : state.revision)),
+            state.checkedAt ? h('span', null, '就绪检查时间：' + state.checkedAt) : null),
+          errorText
+            ? h('p', {
+                className: 'uts-config-error',
+                role: 'alert',
+                'data-uts-config-error': notice && notice.kind ? notice.kind : 'read',
+              }, errorText)
+            : null,
+          notice && notice.kind === 'ok'
+            ? h('p', { className: 'uts-config-meta', role: 'status', 'data-uts-config-notice': 'ok' }, notice.text)
+            : null),
         h('div', { className: 'uts-body' },
           h('h3', { className: 'uts-title' }, '目标环境配置'),
-          h('div', { className: 'uts-groups' }, TARGET_ENV_GROUPS.map((group) =>
-            h(TargetEnvGroup, { key: group.id, group })))));
+          h('p', { className: 'uts-chain-guide' }, '① DSH Agent → ② UI 测试插件 → ③ 接口 → ④ 执行端 → ⑤ 卡片目标'),
+          h('p', { className: 'uts-chain-guide' }, '六轴分别来自 Host 配置与就绪结果：工程支持 / 用户启用 / 依赖可用 / 连接可信 / 目标绑定 / 能力就绪；未探测、未支持与未启用分开显示。'),
+          h('div', { className: 'uts-groups' }, groups.length
+            ? groups.map((group) => {
+                const axes = environmentAxes(state, group.id);
+                const targetAxis = axes.find((axis) => axis.axis === 'target') || { status: 'not-probed', reason: '' };
+                const readinessEntry = state.readiness ? state.readiness[group.id] : null;
+                return h(TargetEnvGroup, {
+                  key: group.id,
+                  group,
+                  axes,
+                  checkedAt: readinessEntry ? readinessEntry.checkedAt : '',
+                  expanded: expanded[group.id] === true,
+                  onToggle: toggleGroup,
+                  envEnabled: enabledFromConfig(state.config, group.id) === true,
+                  configReady,
+                  configError: state.loading ? '正在读取 Host 配置…' : state.error,
+                  busy: submittingEnv === group.id,
+                  targetAxis,
+                  onToggleEnabled: (next) => toggleEnvironment(group, next),
+                });
+              })
+            : h('p', { className: 'uts-empty' }, '暂无已实现的目标'))));
     }
-
     return {
       inject: ['slots'],
       apply(ctx) {

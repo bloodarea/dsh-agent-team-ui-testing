@@ -80,10 +80,30 @@ browser_screenshot {out}        # 留一张可复核的 PNG
 
 打开 DSH 的「设置」，左侧导航里的 `UI 测试` 就是「目标环境配置」：
 
-- 按环境视图分组，每个环境列出候选前端技术栈：Web视图 Chrome / Edge / Firefox；Linux视图 Electron（调试 Electron 应用）/ Tauri / GTK / Qt / Flutter；Windows视图 WinUI 3 / WPF / WinForms / Electron / Tauri / Qt / Flutter；macOS视图 SwiftUI / AppKit / Electron / Tauri / Qt / Flutter；Android视图 Jetpack Compose / Android Views / Flutter / React Native / Capacitor / Cordova；TUI视图 Textual / Ink / Bubble Tea / Ratatui / blessed；HarmonyOS视图 ArkUI / ArkUI-X / Flutter / React Native / uni-app；小程序视图 微信小程序 / 支付宝小程序 / 抖音小程序 / QQ小程序 / 百度智能小程序 / 快手小程序 / 京东小程序 / 美团小程序 / 小红书小程序 / 淘宝小程序 / 钉钉小程序；游戏视图 Unity / Unreal Engine / Godot / Cocos Creator / Phaser；3D视图 Three.js / Babylon.js / PlayCanvas / WebGL / WebGPU / Unity。
-- 十个环境分组**默认收起**，点分组标题展开该环境的候选技术栈卡片，再点一次收起；标题右侧显示目标数量。
-- 每张目标卡片显示「环境是否有效：」与版本占位、以及「是否启用：」开关；未支持/未接入的目标禁用开关，并在卡片内部底部显示灰色标签（Edge、Firefox 为「未支持」，其余未接入目标为「未接入」）。
-- 当前只做前端：不探测本机环境、不保存启用状态，也不新增 Host 接口；开关只在当前页面内切换，重新打开即复位。
+卡片表示五节点链路的第五节点——被调试的运行时或应用；框架与图形 API 放在说明中。页头展示 `① DSH Agent → ② UI 测试插件 → ③ 接口 → ④ 执行端 → ⑤ 卡片目标`。候选目标如下：
+
+| 环境分组 | 卡片目标 | 技术栈说明举例 |
+| --- | --- | --- |
+| Web | Chrome、Edge、Firefox | 相应浏览器中运行的网页 |
+| Linux | Linux 原生桌面应用、Electron 应用、Tauri 应用 | GTK / Qt / Flutter、Chromium、WebKitGTK |
+| Windows | Windows 原生桌面应用、.NET 桌面应用、WinUI 3 应用、Electron 应用、Tauri 应用 | Win32 / Qt / Flutter、WPF / Windows Forms、Windows App SDK、WebView2 |
+| macOS | macOS 原生桌面应用、Electron 应用、Tauri 应用 | AppKit / SwiftUI / Qt / Flutter、Chromium、WKWebView |
+| Android | Android 原生应用、Android WebView 应用、Flutter Android 应用、React Native 应用 | Views / Compose、Capacitor / Cordova、Flutter 引擎、原生视图与 JS 运行时 |
+| TUI | Python、Node.js、Go、Rust 终端应用 | Textual、Ink / blessed、Bubble Tea、Ratatui |
+| HarmonyOS | 鸿蒙原生应用、ArkUI-X 应用、Flutter 鸿蒙应用、React Native 鸿蒙应用 | ArkUI / ArkTS 与相应适配应用 |
+| 游戏 | Unity 游戏、Unreal 游戏、Godot 游戏、Cocos 游戏、浏览器游戏 | 对应引擎运行实例、Phaser 等 Web 游戏 |
+| 3D | Web 三维应用、原生三维应用、Unity 三维应用 | Three.js / Babylon.js / PlayCanvas、WebGL / WebGPU、原生窗口与 Unity Player |
+| 小程序 | 微信、支付宝、抖音、QQ、百度智能、快手、京东、美团、小红书、淘宝、钉钉小程序 | 对应小程序容器中的应用 |
+
+- 十个环境分组、共 45 张卡片，分组**默认收起**；标题右侧显示当前筛选下的目标数量。展开/收起状态保存在浏览器 `localStorage`，刷新或重开设置页保持。
+- 右上角「隐藏未实现」默认关闭；开启后仅保留带「已实现」状态的卡片，没有剩余目标的分组一并隐藏。它只筛选页面展示，不改变工具、Skill 或目标的启用配置。
+- 每张卡片底部同级显示 `③ 接口`、`④ 执行端`、实现状态三个标签，支持换行。「已实现」为绿色（当前为 Chrome），「未支持」与「未接入」为灰色。未实现项明确显示「候选接口 / 候选执行端」，不表示其接入方案或能力已经验证。
+- **配置真值在 Host**：设置页挂载时读取 `GET /plugins/ui-testing/config?view=global`，启用开关通过 `PUT /plugins/ui-testing/config` 提交并携带 `expectedRevision`。成功用返回的 revision 更新；冲突（`CONFIG_CONFLICT`）会展示最新 revision 并回滚，不显示“已保存”。配置文件默认在 `${DSH_HOME}/ui-testing/config.json`，可用 `DSH_UI_TESTING_CONFIG_DIR` 覆盖。
+- **工具布局由面板决定**：设置页里启用了哪些环境，模型请求里就出现这些环境的工具（外加两个环境无关诊断），不会带入其它环境的 schema；关掉某个环境即从请求里消失，不需要重启。
+- **六轴就绪**：卡片分别显示 `工程支持 / 用户启用 / 依赖可用 / 连接可信 / 目标已绑定 / 能力就绪`，带检查时间、原因与配置 revision。未检测、检测失败、不支持、暂不可用不混用；冷态目标为未绑定、能力为未探测，不伪造版本或“有效”。每个轴把 Host 测到的细节一并带出：目标 id、逐轴检查时间、证据类型；能力轴还列出逐项探测结果（结构/输入/网络/帧源），未就绪项直接标在卡片上。禁用或未选择的环境不做探测，只如实显示“工程支持但未启用”。
+- 依赖探测只做低干扰检查（可执行文件是否存在），不启动浏览器、不扫描未启用环境；连接与能力探测在需要时另行执行，读取型探测不证明输入已生效。
+- 面板顶栏「运行环境」选择器读取同一份 Host 配置的 `enabledEnvironments`；切换时 `POST /plugins/ui-testing/config/select` 只写当前会话，成功才更新本地状态。未实现环境仍禁用，且不会触发任何探测。
+- 生效方式：`client.js` 改动刷新当前 DSH GUI 后生效；`index.js`、工具注册、Skill provider 与配置存储改动需要重启或重挂插件。已注入历史的 Skill 正文不会被开关自动移除，切换只对后续轮次生效。
 
 ## 安全边界
 

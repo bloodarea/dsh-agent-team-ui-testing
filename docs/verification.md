@@ -31,6 +31,16 @@ node --test tests/dynamic-t4.test.mjs          # T4 纯核心单测
 node --test tests/network-p0.test.mjs          # 网络纯核心单测
 node tests/acceptance/check-skill.mjs          # Skill 结构、引用、工具名与清单一致性
 node tests/acceptance/check-skill-registry.mjs # 真实 SkillRegistry 注册与加载
+node --test tests/contracts/*.test.mjs         # 跨环境契约：core/config/P0/fake/Web adapter
+node --test tests/contracts/isolation.test.mjs # 真实 ToolsService/SkillRegistry 的 schema 与 Skill 隔离
+node tests/acceptance/cross-environment.mjs    # 配置 CAS/持久化/六轴就绪/GUI 旁路/不启动浏览器
+node tests/acceptance/foundation-isolation.mjs # A03/A04/A05/A08/A09/A10/A11/A12/A13/A14 逐项阻断复核（离线，不发模型请求）
+node tests/acceptance/settings-config-gui.mjs  # 隔离 DSH GUI：设置页读取/写入/revision/六轴
+node tests/acceptance/audit-isolated-agent.mjs --group g1 --prompt <prompt.txt> \
+  --expect-tools browser_navigate,browser_snapshot      # 隔离 DSH 实例里跑真实 Agent 轮次并判定 browser_* 结果
+node tests/acceptance/audit-payload-capture.mjs         # 本地录制代理抓真实模型请求体（工具声明/Skill 目录）
+node tests/acceptance/audit-a05-annotations.mjs         # 标注写面（面板 scoped 路由）与目标绑定探针
+node tests/acceptance/audit-a11-scope.mjs               # 会话级环境选择：控制面/工具快照/声明层一致性
 ```
 
 **串行执行**：这些套件各自启动 Chromium 与靶机，并行会让端口、profile 与 CPU 互相干扰，计数不可信。

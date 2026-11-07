@@ -11,7 +11,7 @@
 <p>
   <a href="https://www.npmjs.com/package/dsh-agent-team-ui-testing"><img src="https://img.shields.io/npm/v/dsh-agent-team-ui-testing?style=flat-square&amp;logo=npm&amp;logoColor=white" alt="npm version"></a>
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/stargazers"><img src="https://img.shields.io/github/stars/bloodarea/dsh-agent-team-ui-testing?style=flat-square&amp;logo=github" alt="GitHub stars"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/bloodarea/dsh-agent-team-ui-testing?style=flat-square" alt="License: MIT"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Node.js >= 22"></a>
   <a href="docs/getting-started.md"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Platforms"></a>
   <a href="docs/tools.md"><img src="https://img.shields.io/badge/tools-36-brightgreen?style=flat-square" alt="Agent tools"></a>
@@ -162,7 +162,7 @@ flowchart TB
 | **`targets/`** | 各环境 Adapter：把公共能力请求翻译成 CDP/ADB 等调用，再将结果标准化；声明环境支持和不支持的能力 | 连接第②节点与第③～⑤节点，封装环境差异 |
 | **`engines/`** | **仅存放自研**、需要单独构建或部署的执行端，例如未来 Android 无障碍 Companion APK | 在需要时提供第④节点的一种实现；没有也完全正常 |
 
-`targets/web` 不表示把 Chrome/Playwright 的源码复制进仓库，`engines/android` 也不意味着 Android 必须安装 APK：ADB / UI Automator 可先作为现成执行路径。**`core/`、`targets/`、`engines/` 是未来重构的模块责任示意，不是目前仓库已存在的目录承诺。** 目前 Web 的控制、CDP 接入和工具实现仍以现有插件代码为准。
+`targets/web` 不表示把 Chrome/Playwright 的源码复制进仓库，`engines/android` 也不意味着 Android 必须安装 APK：ADB / UI Automator 可先作为现成执行路径。**`core/` 与 `targets/` 已作为实际目录落地**：`core/` 承载契约、配置、身份/几何/时钟、证据与六轴就绪，`targets/web` 是真实 Web 适配器，`targets/fake` 是 test-only 契约夹具；`engines/` 仍是未来自研执行端的预留边界。Web 的 CDP 接入与 36 个工具实现仍集中在 `index.js`（组合根/Web 实现），但工具准入、配置与执行均已通过 adapter 边界。
 
 ### 能力架构：T1 / T2 / T3 / T4 按需选路
 
@@ -233,7 +233,7 @@ sequenceDiagram
 - **区分源码组织与部署形态**：`targets/` 是宿主侧适配器，`engines/` 是可选自研执行端源码，真实 Chrome / Android / 小程序运行时在仓库之外。
 - **按环境启用工具与 Skill**：未来应避免把未启用目标环境的专用工具 schema、Skill 内容和运行依赖无谓加载进 Agent 上下文。
 
-**实现状态边界：** Web / Chromium 的 36 个工具、T1～T4 及 P0 相关能力已有实现，但验证与覆盖范围仍以 [能力文档](docs/capability-tiers.md)、[架构文档](docs/architecture.md) 和 [验证记录](docs/verification.md) 为准；T4 仍有未完成验收。跨环境 `core/targets/engines` 契约、Android / Mini Program 等适配器属于后续演进方向。
+**实现状态边界：** Web / Chromium 的 36 个工具、T1～T4 及 P0 相关能力已有实现，但验证与覆盖范围仍以 [能力文档](docs/capability-tiers.md)、[架构文档](docs/architecture.md) 和 [验证记录](docs/verification.md) 为准；T4 仍有未完成验收。三类 adapter 契约（`TargetAdapter` / `CapabilityAdapter` / `P0Provider`）、`core/` + `targets/` 分层、Host 权威配置、逐 step 工具准入与按环境 Skill 发现已对 Web 落地，并有 test-only 假适配器契约测试；真实桌面、Android、小程序等平台适配器与 `engines/` 仍属后续演进方向。
 
 ## 快速开始
 

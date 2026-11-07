@@ -446,6 +446,13 @@ try {
     await h.ctx.emit('agent/disposed', { agent: { id: 'sid-a' } });
     const afterDispose = await h.invoke('browser_network', {}, execA2);
     check('agent/disposed 只释放对应 session 的租约（同工作区其他 session 可继续）', afterDispose.ok === true, afterDispose.error || { ok: true });
+    // The next block is a GUI page write on the SAME tab while sid-a2 still owns the single-owner
+    // lease (TTL 15 s). Wait for the lease to clear instead of racing the TTL against a 15 s
+    // waitTitle budget — otherwise the block fails deterministically on a BUSY, not on a product bug.
+    await waitFor(() => {
+      const lease = runtimeOf('ws-a')?.lease;
+      return !lease || lease.sessionId === null || (lease.expiresAt ?? 0) <= Date.now();
+    }, { timeoutMs: 20000, intervalMs: 250, label: 'ws-a lease release before page write' });
   }
 
   /* ------------------------------------------------------------- close / reopen / target destroy */

@@ -39,15 +39,25 @@ P0 是四项互相独立的能力，不能相互顶替：
 
 ## 各层已实现范围
 
-- **T1**：导航、JS 执行、截图、原始输入、轻量网络列表、计算样式、独立 HTTP 请求、共享视口、状态与能力发现。轻量 `browser_network` 只提供元数据环形缓冲；深度抓包、正文与控制属于 P0-B 的七个工具，两者并存、语义不互相顶替。
+- **T1**：导航、JS 执行、截图、原始输入、轻量网络列表、计算样式、独立 HTTP 请求、共享视口、状态与能力发现。轻量 `browser_network` 只提供元数据环形缓冲，且**只读**（不取页面队列与单 owner 租约）；深度抓包、正文与控制属于 P0-B 的七个工具，两者并存、语义不互相顶替。
 - **T2**：snapshot → ref 定位 → 可信输入 → 证据 → 等待/节点状态，覆盖点击、输入、滚动、表单与状态读取。
 - **T3**：纯 JavaScript、零 npm 依赖的图像处理、确定性识别、YIQ 差异、坐标输入、受管基线、回归与六类缺陷用例。
 - **T4**：真实 CDP screencast 与 screenshot-loop 两条帧源、有界帧存储、七类确定性分析、WAAPI 运动控制、六向事件关联。
 - **P0-B**：采集（HTTP/HTTPS 请求响应、WebSocket、SSE、同页 iframe 与 dedicated worker）、时序、分析、业务链路、控制、证据导出与多 Agent 订阅。
 
+## 跨环境适配状态
+
+三类 adapter 契约（TargetAdapter / CapabilityAdapter / P0Provider）已落地，Web 是唯一真实实现；配置驱动工具 schema、Skill 目录/正文与执行准入。`targets/fake/` 只是 test-only 契约夹具，不是真实平台。
+
+| 环境 | 工程支持 | 说明 |
+| --- | --- | --- |
+| Web / Chromium | supported | 36 个 `browser_*` 工具、T1–T4 与 P0；唯一可执行的真实环境 |
+| fake（test-only） | supported（仅测试） | 确定性夹具，用于验证契约/隔离/证据；生产配置默认拒绝，不得称为真实平台 |
+| Linux/Windows/macOS 桌面、Android、TUI、HarmonyOS、小程序、游戏、3D | planned / unsupported | 尚无 adapter 与真实探针；设置页显示 planned，运行环境选择器不启用 |
+
 ## 已知限制
 
-- **仅 Web 目标环境。** Web / Chromium 是唯一实现的目标环境，可运行在 Linux、macOS 与 Windows 宿主上；桌面应用、Android、TUI、HarmonyOS、小程序、游戏与 3D 尚无适配器，运行时选择器保持禁用。
+- **仅 Web 目标环境。** Web / Chromium 是唯一实现的目标环境，可运行在 Linux、macOS 与 Windows 宿主上；桌面应用、Android、TUI、HarmonyOS、小程序、游戏与 3D 尚无适配器，运行时选择器保持禁用。跨环境契约与配置隔离已落地，但不等于这些平台已支持。
 - **视觉是确定性的，不是语义的。** 没有 VLM/OCR、没有语义命名；「这段文字是什么意思」「人看着对不对」不在范围内。
 - **T4 验收未全覆盖。** 44 条动态行为门槛中 12 条通过、20 条部分通过、12 条未运行、0 条失败。close/dispose 恢复、WebGPU 渲染、媒体 seek/stall、header 校验身份、16 ms 闪白覆盖与长连接稳定性仍未验证。
 - **网络采集边界不完整。** OOPIF 为部分覆盖；shared/service worker 不采集；GUI 内部标签页可打开真人触发的 `target=_blank`（每个标签独立页面/Runtime），Agent 工具操作当前会话 selectedTab（未选择时 primary），多标签详见 [multi-tab.md](multi-tab.md)，自动/未授权 popup 仍阻断，也不做跨标签聚合；HTTPS 未独立验收；`responseModification` 在本构建固定为 `false`（`modify-response` 不可用，不做 CDP 能力探测）；HAR 只保证 1.2 子集。

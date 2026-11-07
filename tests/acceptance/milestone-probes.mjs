@@ -173,33 +173,43 @@ export async function capabilityProbe({ harness, check }) {
 export async function leaseProbe({ check }) {
   const harness = await createHarness({ name: 'lease' });
   try {
-    const [a, b] = await Promise.all(['lease-a', 'lease-b'].map((id) => harness.invoke('browser_network', {}, exec(id))));
+    // The single-owner lease serialises page writes, so the competition uses a page operation. The
+    // read-only legacy traffic snapshot must stay readable while somebody holds the lease.
+    const [a, b] = await Promise.all(['lease-a', 'lease-b'].map((id) => harness.invoke('browser_eval', { expression: '1 + 1' }, exec(id))));
     const winner = a.ok ? 'lease-a' : 'lease-b';
     const loser = a.ok ? b : a;
     check('两个不同会话竞争只有一个获得 lease，另一方 BUSY', [a, b].filter((item) => item.ok).length === 1 && errorShape(loser.error, 'BUSY') && loser.error.retryable,
       { expected: 'one success + one BUSY', actual: [a, b] });
-    for (const [name, args] of [['browser_network', {}], ['browser_eval', { expression: '1' }], ['browser_screenshot', {}], ['browser_computed_style', { selector: 'body' }], ['browser_input', { events: [] }], ['browser_navigate', { url: 'http://127.0.0.1:1/' }]]) {
+    // Page *writes* validate the lease. The read-only legacy traffic snapshot must not: it neither
+    // writes the page nor needs ownership, so it stays readable while another session holds the lease.
+    for (const [name, args] of [['browser_eval', { expression: '1' }], ['browser_screenshot', {}], ['browser_computed_style', { selector: 'body' }], ['browser_input', { events: [] }], ['browser_navigate', { url: 'http://127.0.0.1:1/' }]]) {
       const result = await harness.invoke(name, args, exec('lease-other'));
-      check(`${name} 页面/网络访问校验 lease`, result.threw && errorShape(result.error, 'BUSY'), { expected: 'BUSY', actual: result });
+      check(`${name} 页面写操作校验 lease`, result.threw && errorShape(result.error, 'BUSY'), { expected: 'BUSY', actual: result });
     }
+    const readOnlyNetwork = await harness.invoke('browser_network', {}, exec('lease-observer'));
+    check('browser_network 只读：owner 持租约时仍可读且不夺取租约', readOnlyNetwork.ok === true,
+      { expected: 'ok', actual: readOnlyNetwork.error || { entries: readOnlyNetwork.value?.entries?.length } });
     for (const name of ['browser_state', 'browser_capabilities']) {
       const result = await harness.invoke(name, {}, exec('lease-observer'));
       check(`${name} 诊断可跨会话且不夺取 owner`, result.ok, { expected: 'success', actual: result.error || result.value });
     }
     const busyCapabilities = await harness.invoke('browser_capabilities', {}, exec('lease-observer'));
     const byTool = new Map((busyCapabilities.value?.capabilities || []).filter((item) => item.tool).map((item) => [item.tool, item]));
-    check('capabilities 对其他 owner 页面/network 如实报 unavailable，诊断仍 available', ['browser_navigate', 'browser_eval', 'browser_screenshot', 'browser_input', 'browser_network', 'browser_computed_style'].every((name) => byTool.get(name)?.status === 'unavailable')
-      && ['browser_state', 'browser_capabilities'].every((name) => byTool.get(name)?.status === 'available'), { expected: '6 unavailable + 2 diagnostics available', actual: busyCapabilities.value?.capabilities });
+    // The read-only traffic snapshot stays `available` for another owner (it takes no lease); the
+    // page-write tools report BUSY.
+    check('capabilities 对其他 owner 页面写工具如实报 unavailable，只读读与诊断仍 available', ['browser_navigate', 'browser_eval', 'browser_screenshot', 'browser_input', 'browser_computed_style'].every((name) => byTool.get(name)?.status === 'unavailable')
+      && ['browser_network', 'browser_state', 'browser_capabilities'].every((name) => byTool.get(name)?.status === 'available'), { expected: '5 unavailable + network/2 diagnostics available', actual: busyCapabilities.value?.capabilities });
     // Diagnostics run in the same workspace (workspace isolation: leases are per workspace),
     // from a third session that must not take the owner.
     const state = await harness.invoke('browser_state', {}, exec('lease-observer'));
-    check('诊断保留实际 owner 且 network 不启动浏览器', state.value?.owner?.sessionId === winner && state.value.running === false,
-      { expected: { owner: winner, running: false }, actual: state.value });
+    // Read-only diagnostics never take the lease: the owner must still be the page-operation winner.
+    check('诊断保留实际 owner（只读读取不夺取租约）', state.value?.owner?.sessionId === winner,
+      { expected: { owner: winner }, actual: { owner: state.value?.owner, running: state.value?.running } });
     await harness.ctx.emit('agent/disposed', { agent: { id: 'unrelated-session' } });
-    const stillBusy = await harness.invoke('browser_network', {}, exec('lease-after-unrelated'));
+    const stillBusy = await harness.invoke('browser_eval', { expression: '1 + 1' }, exec('lease-after-unrelated'));
     check('无关 disposed 事件不释放 owner', errorShape(stillBusy.error, 'BUSY'), { expected: 'BUSY', actual: stillBusy });
     await harness.ctx.emit('agent/disposed', { agent: { id: winner } });
-    const next = await harness.invoke('browser_network', {}, exec('lease-after-dispose'));
+    const next = await harness.invoke('browser_eval', { expression: '1 + 1' }, exec('lease-after-dispose'));
     check('owner agent/disposed 释放 lease', next.ok, { expected: 'success', actual: next.error || next.value });
   } finally { await harness.dispose(); }
   const anonymous = await createHarness({ name: 'anonymous' });

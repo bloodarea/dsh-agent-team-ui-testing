@@ -8,7 +8,6 @@ import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, extname, isAbsolute, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FrameSource } from './frame-source.js';
 import { attachFramePush } from './frame-push.js';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
@@ -16,22 +15,171 @@ import https from 'node:https';
 import net from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { BrowserError, Cdp, asBrowserError, checkAbort, abortable, redactUrl, redactText, validateTarget } from './browser-safety.js';
-import {
-  CAPTURE_LIMITS, checkPixelSize, composeCanvasImage, createCaptureMapping, decodePng, detectImageAnomaly,
-  encodePngRgba, expectedPixelSize, hasPositiveOutputSize, inspectPng, intersectRects,
-  projectCaptureMapping, publishCapture, resolveCapturePath,
-} from './capture-p0.js';
-// Web T3 static vision (docs/t3-vision.md). The Host layer never
-// re-implements the pixel algorithms: it validates arguments, resolves sources, owns the product
-// store per scope, delivers the single PNG and implements the act/check decision rules on top of
-// the pure module API.
-import * as vision from './vision-t3.js';
-import { createBaselineStore } from './vision-baseline.js';
+import { createCrossEnvironment } from './integration/cross-environment.js';
+/*
+ * Web-only host modules are loaded on demand (A14 按需加载).
+ *
+ * The frame source, capture pipeline, T3 vision, the baseline store and the P0 network collector
+ * exist only for the Web environment. Importing them at module load made every Host — including
+ * one whose configuration disables Web — pay for the whole Web dependency chain, which is exactly
+ * what "未启用环境不加载专用运行依赖" forbids. They are now behind `ensureWebHostModules()`:
+ * the tool/HTTP entry points await it before touching a page, and a Web-disabled Host never
+ * resolves these specifiers at all.
+ */
+const WEB_HOST_MODULE_SPECS = Object.freeze({
+  'frame-source': './frame-source.js',
+  'capture-p0': './capture-p0.js',
+  'vision-t3': './vision-t3.js',
+  'vision-baseline': './vision-baseline.js',
+  'network-p0': './network-p0.js',
+});
+const webHostModules = { loaded: false, loading: null, namespaces: {}, failed: null };
+
+/** Resolved namespace, or a typed "not loaded" view when the Web chain was never demanded. */
+function webHostNamespace(id) {
+  const namespace = webHostModules.namespaces[id];
+  if (namespace) return namespace;
+  return null;
+}
+
+/**
+ * Load every Web-only module once. Safe to call from any concurrency: callers share one promise.
+ *
+ * This is the *only* place the Web dependency chain is resolved, so a host that never enables the
+ * Web environment (or never touches a page) never loads it.
+ */
+async function ensureWebHostModules() {
+  if (webHostModules.loaded) return webHostModules.namespaces;
+  if (webHostModules.loading) return webHostModules.loading;
+  webHostModules.loading = (async () => {
+    const entries = Object.entries(WEB_HOST_MODULE_SPECS);
+    const loaded = await Promise.all(entries.map(([, specifier]) => import(specifier)));
+    entries.forEach(([id], index) => { webHostModules.namespaces[id] = loaded[index]; });
+    webHostModules.loaded = true;
+    return webHostModules.namespaces;
+  })();
+  try {
+    return await webHostModules.loading;
+  } catch (error) {
+    webHostModules.loading = null;
+    webHostModules.failed = String((error && error.message) || error);
+    throw new BrowserError('ADAPTER_DISABLED', 'Web 专用模块加载失败：' + webHostModules.failed, {
+      module: Object.keys(WEB_HOST_MODULE_SPECS),
+    });
+  }
+}
+
+/**
+ * A namespace view that forwards to the lazily loaded module.
+ *
+ * Properties stay `undefined` until the module is loaded: read-only diagnostics that happen to
+ * touch a vision/network constant must answer "not available" instead of throwing. Constructions
+ * (`new FrameSource()`) are gated explicitly, because a silently inert page source would be worse
+ * than a typed refusal.
+ */
+function lazyWebNamespace(id) {
+  return new Proxy({}, {
+    get(_target, property) {
+      if (property === 'then' || typeof property === 'symbol') return undefined;
+      const namespace = webHostNamespace(id);
+      return namespace ? namespace[property] : undefined;
+    },
+    has(_target, property) {
+      const namespace = webHostNamespace(id);
+      return namespace ? property in namespace : false;
+    },
+    ownKeys() {
+      const namespace = webHostNamespace(id);
+      return namespace ? Reflect.ownKeys(namespace) : [];
+    },
+    getOwnPropertyDescriptor(_target, property) {
+      const namespace = webHostNamespace(id);
+      if (!namespace) return undefined;
+      const descriptor = Object.getOwnPropertyDescriptor(namespace, property);
+      return descriptor ? { ...descriptor, configurable: true } : undefined;
+    },
+  });
+}
+
+// Web T3 static vision (docs/t3-vision.md). The Host layer never re-implements the pixel
+// algorithms: it validates arguments, resolves sources, owns the product store per scope,
+// delivers the single PNG and implements the act/check decision rules on top of the pure API.
+const vision = lazyWebNamespace('vision-t3');
 // Web P0 network (docs/network-p0.md). The Host layer owns CDP collection, the single Fetch
 // dispatcher and the 7 tool surfaces; every projection/aggregation/evidence rule lives in the
 // pure module so it can be unit tested without a browser.
-import * as network from './network-p0.js';
+const network = lazyWebNamespace('network-p0');
+/**
+ * A lazily forwarded *value* export (not a namespace): `CAPTURE_LIMITS.scaleMin` must read the
+ * module's `CAPTURE_LIMITS` object, not the module namespace itself.
+ */
+function lazyWebValue(id, exportName) {
+  return new Proxy({}, {
+    get(_target, property) {
+      if (property === 'then' || typeof property === 'symbol') return undefined;
+      const namespace = webHostNamespace(id);
+      const value = namespace ? namespace[exportName] : undefined;
+      return value ? value[property] : undefined;
+    },
+    has(_target, property) {
+      const namespace = webHostNamespace(id);
+      const value = namespace ? namespace[exportName] : undefined;
+      return value ? property in value : false;
+    },
+    ownKeys() {
+      const namespace = webHostNamespace(id);
+      const value = namespace ? namespace[exportName] : undefined;
+      return value ? Reflect.ownKeys(value) : [];
+    },
+    getOwnPropertyDescriptor(_target, property) {
+      const namespace = webHostNamespace(id);
+      const value = namespace ? namespace[exportName] : undefined;
+      const descriptor = value ? Object.getOwnPropertyDescriptor(value, property) : undefined;
+      return descriptor ? { ...descriptor, configurable: true } : undefined;
+    },
+  });
+}
+
+/** Capture-p0 constants (a value export, hence `lazyWebValue`); functions forward on call. */
+const CAPTURE_LIMITS = lazyWebValue('capture-p0', 'CAPTURE_LIMITS');
+const checkPixelSize = (...args) => webHostNamespace('capture-p0').checkPixelSize(...args);
+const composeCanvasImage = (...args) => webHostNamespace('capture-p0').composeCanvasImage(...args);
+const createCaptureMapping = (...args) => webHostNamespace('capture-p0').createCaptureMapping(...args);
+const decodePng = (...args) => webHostNamespace('capture-p0').decodePng(...args);
+const detectImageAnomaly = (...args) => webHostNamespace('capture-p0').detectImageAnomaly(...args);
+const encodePngRgba = (...args) => webHostNamespace('capture-p0').encodePngRgba(...args);
+const expectedPixelSize = (...args) => webHostNamespace('capture-p0').expectedPixelSize(...args);
+const hasPositiveOutputSize = (...args) => webHostNamespace('capture-p0').hasPositiveOutputSize(...args);
+const inspectPng = (...args) => webHostNamespace('capture-p0').inspectPng(...args);
+const intersectRects = (...args) => webHostNamespace('capture-p0').intersectRects(...args);
+const projectCaptureMapping = (...args) => webHostNamespace('capture-p0').projectCaptureMapping(...args);
+const publishCapture = (...args) => webHostNamespace('capture-p0').publishCapture(...args);
+const resolveCapturePath = (...args) => webHostNamespace('capture-p0').resolveCapturePath(...args);
+const createBaselineStore = (...args) => webHostNamespace('vision-baseline').createBaselineStore(...args);
+/** `new FrameSource()` must refuse instead of returning an inert source. */
+const FrameSource = new Proxy(function FrameSourceLazy() {}, {
+  construct(_target, args, newTarget) {
+    const namespace = webHostNamespace('frame-source');
+    if (!namespace) {
+      throw new BrowserError('ADAPTER_DISABLED', 'Web 帧源尚未加载：当前进程未启用 Web 环境', {
+        module: 'frame-source',
+      });
+    }
+    return Reflect.construct(namespace.FrameSource, args, newTarget === FrameSource ? namespace.FrameSource : newTarget);
+  },
+  get(_target, property) {
+    if (property === 'prototype') return webHostNamespace('frame-source')?.FrameSource?.prototype ?? {};
+    return undefined;
+  },
+});
 export { BrowserError, Cdp } from './browser-safety.js';
+/**
+ * Load the Web-only host modules on demand (A14).
+ *
+ * The plugin loads them itself before the first call that needs them; this export exists for
+ * tests/diagnostics that construct the Web `Runtime` directly and therefore sit outside that gate.
+ */
+export const loadWebHostModules = ensureWebHostModules;
 
 export const inject = ['tools', 'webServer'];
 
@@ -314,8 +462,8 @@ const INPUT_EVENT_LIMIT = 200;
 export const IMAGE_INLINE_BASE64_LIMIT = 24 * 1024 * 1024;
 /** Throttle for the merged background title/url/history read (UI polls at 500ms / 80ms). */
 const METADATA_THROTTLE_MS = 250;
-const SKILL_NAME = 'ui-testing';
-const SKILL_DIR = fileURLToPath(new URL('./skills/ui-testing/', import.meta.url));
+const SKILL_NAME = 'ui-testing-web';
+const SKILL_DIR = fileURLToPath(new URL('./skills/ui-testing-web/', import.meta.url));
 const SKILL_FALLBACK_DESCRIPTION =
   'Web/Chromium UI testing through 36 bundled browser_* tools: T1 programmatic (navigation, eval, input, ' +
   'network, computed style, screenshots, independent HTTP, viewport, state, capabilities), T2 structured GUI, ' +
@@ -894,7 +1042,7 @@ function readBundledSkill() {
     return undefined;
   }
   const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(raw);
-  if (!frontmatter) throw new Error('skills/ui-testing/SKILL.md 缺少 YAML frontmatter');
+  if (!frontmatter) throw new Error('skills/ui-testing-web/SKILL.md 缺少 YAML frontmatter');
   const singleLine = /^description:\s*(?!>)(.+)$/m.exec(frontmatter[1]);
   return {
     name: SKILL_NAME,
@@ -4091,6 +4239,11 @@ export function inlineImageDelivery(base64, limit = IMAGE_INLINE_BASE64_LIMIT) {
 }
 
 export class Runtime {
+  #frames = null;
+  #visionStore = null;
+  #net = null;
+  #netCtl = null;
+
   /**
    * @param log logger
    * @param {{host?: BrowserHost, origins?: Set<string>, scope?: object, registry?: RuntimeRegistry}} [options]
@@ -4117,7 +4270,11 @@ export class Runtime {
     this.cdp = undefined;
     /** { targetId, generation } of this runtime's own page target (undefined when cold). */
     this.page = undefined;
-    this.frames = new FrameSource();
+    // A14: the frame source is the Web-only capture chain. Constructing it eagerly made
+    // `new Runtime()` require the whole Web module graph, so a host that never captures frames
+    // still paid for it (and a direct construction outside the plugin's load gate threw). It is
+    // created on first use instead; a runtime that never captures never loads it.
+    this.#frames = null;
     this.frameTransport = undefined;
     this.clientMetrics = undefined;
     this.ackFailures = 0;
@@ -4189,6 +4346,11 @@ export class Runtime {
     this.lastErrorTarget = null;
     this.starting = undefined;
     this.queue = Promise.resolve();
+    // Cross-environment lifecycle (A12): a config transition that removes the Web selection for
+    // this page's scope must cancel queued/running operations instead of letting them mutate a
+    // page the environment no longer owns. The composed signal is what `run()` observes.
+    this.envController = new AbortController();
+    this.envAbortReason = null;
     this.lease = undefined;
     this.active = 0;
     // Every queued/running operation (agent OR panel): idle sweep/LRU must never close a page
@@ -4221,7 +4383,7 @@ export class Runtime {
     // instance and independent of the page lifecycle — a page navigation/close keeps the stored
     // images analysable offline (their actionable资格 is invalidated separately). Only dispose
     // (plugin unload / runtime retire) clears it.
-    this.visionProducts = new vision.VisionProductStore({ now: () => Date.now() });
+    this.#visionStore = null;
     // Provenance per product (runtimeId/pageGeneration/documentEpoch) so `act` can prove it is
     // operating on the same page generation, and evidence can cite the capture lineage.
     this.visionProvenance = new Map();
@@ -4260,15 +4422,10 @@ export class Runtime {
     // TOOL-P1-04: session attribution is a construction-time fact -- scopeId from this Runtime's
     // workspace, runtimeId its own id, tabId 'primary' for the primary runtime and the popup viewId
     // for a child tab. It is never inferred from cdpSessionId/targetId and stays stable per tab.
-    this.net = new network.NetworkStore({
-      scopeId: this.scope.id,
-      attribution: {
-        scopeId: this.scope.id,
-        runtimeId: this.runtimeId,
-        tabId: this.kind === 'popup' ? (this.viewId || 'primary') : 'primary',
-      },
-    });
-    this.netCtl = new network.ControlState();
+    // A14: the P0 network store/control state belong to the Web-only module chain; they are
+    // created on first use so a runtime that never touches the network never loads them.
+    this.#net = null;
+    this.#netCtl = null;
     this.netTargets = new Map();
     this.netReq = new Map();
     this.netHops = new Map();
@@ -4279,7 +4436,8 @@ export class Runtime {
     this.netHoldTimer = null;
     this.netBodyTimeoutMs = 1500;
     // Tool-surface evidence: last real network tool call (projected into capabilities.network).
-    this.net.observed = null;
+    // The store itself is created on first network use, so the field is seeded here as data.
+    this.netObserved = null;
     this.lastNetSessionId = null;
     // Web T4 dynamic behaviour (docs/t4-dynamic-behavior.md, docs/t4-dynamic-behavior.md):
     // one active session per scope, up to four retained summaries, one screencast sink, and the
@@ -4347,6 +4505,52 @@ export class Runtime {
     cdp.send('Page.bringToFront', {}, { timeoutMs: 1000 }).catch(() => {});
   }
 
+  /** Lazily created P0 network store (scope-local attribution is fixed at first use). */
+  get net() {
+    if (!this.#net) {
+      this.#net = new network.NetworkStore({
+        scopeId: this.scope.id,
+        attribution: {
+          scopeId: this.scope.id,
+          runtimeId: this.runtimeId,
+          tabId: this.kind === 'popup' ? (this.viewId || 'primary') : 'primary',
+        },
+      });
+    }
+    return this.#net;
+  }
+
+  set net(value) { this.#net = value; }
+
+  /** Last real network tool call (`capabilities.network.observed`); null until one happens. */
+  get netObserved() { return this.#net ? this.#net.observed : null; }
+
+  set netObserved(value) { if (this.#net) this.#net.observed = value; }
+
+  /** Lazily created interception/throttle/hold state machine. */
+  get netCtl() {
+    if (!this.#netCtl) this.#netCtl = new network.ControlState();
+    return this.#netCtl;
+  }
+
+  set netCtl(value) { this.#netCtl = value; }
+
+  /** Lazily created T3 product store (created on first vision use, like the frame source). */
+  get visionProducts() {
+    if (!this.#visionStore) this.#visionStore = new vision.VisionProductStore({ now: () => Date.now() });
+    return this.#visionStore;
+  }
+
+  set visionProducts(value) { this.#visionStore = value; }
+
+  /** Lazily created frame source (see the constructor note). Throws only when actually used. */
+  get frames() {
+    if (!this.#frames) this.#frames = new FrameSource();
+    return this.#frames;
+  }
+
+  set frames(value) { this.#frames = value; }
+
   hasLease() { return Boolean(this.lease && (this.active || this.lease.expiresAt > Date.now())); }
 
   /** Idle sweep / LRU eviction is only allowed when nothing is using this page. */
@@ -4371,7 +4575,29 @@ export class Runtime {
    * and clear the error projection (contract §9.1). Diagnostics, HTTP requests, BUSY and
    * pre-validation failures pass no action, so they can never overwrite another owner's error.
    */
+  /** Observed signal for one operation: caller cancellation plus the environment-transition gate. */
+  #effectiveSignal(signal) {
+    const environmentSignal = this.envController?.signal;
+    if (!environmentSignal) return signal;
+    if (!signal) return environmentSignal;
+    return typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, environmentSignal]) : signal;
+  }
+
+  /**
+   * Cancel queued/running work because the configuration no longer selects this environment.
+   * The controller is replaced so later operations (after re-enabling Web) are not still aborted;
+   * `run()`'s ABORTED classification closes the page, releasing connection/frames/network/lease.
+   */
+  abortForEnvironmentChange(reason = 'config-transition') {
+    if (!this.envController || this.envController.signal.aborted) return { aborted: false, reason: this.envAbortReason };
+    this.envAbortReason = reason;
+    try { this.envController.abort(new Error('environment changed: ' + reason)); } catch { /* best effort */ }
+    this.envController = new AbortController();
+    return { aborted: true, reason };
+  }
+
   async run(operation, { signal, sessionId = 'anonymous', agent = false, action } = {}) {
+    signal = this.#effectiveSignal(signal);
     checkAbort(signal);
     this.inflight += 1;
     // Everything that can throw after the counter moved must sit inside the try/finally below:
@@ -12185,7 +12411,8 @@ export class Runtime {
       this.dynamic.session = null;
       this.dynamic.sink = null;
     } catch { /* evidence only */ }
-    this.frames.stop();
+    // Teardown must never construct the lazily loaded Web chain (A14): stop only what exists.
+    if (this.#frames) this.#frames.stop();
     // Network collector teardown: release held requests (never leave a paused request behind),
     // stop collecting, drop child-session bookkeeping. Exported evidence files stay on disk.
     try { await this.#netReleaseAllHeld(); } catch { /* ignore */ }
@@ -12194,7 +12421,7 @@ export class Runtime {
     this.netReq.clear();
     this.netHops.clear();
     this.netCacheHits.clear();
-    if (this.net) this.net.stop();
+    if (this.#net) this.#net.stop();
     this.network.length = 0;
     this.requests.clear();
     this.url = '';
@@ -14096,6 +14323,11 @@ export function apply(ctx) {
     idleMs: envPositiveInt('DSH_UI_TESTING_IDLE_MS', IDLE_MS_DEFAULT),
     viewerTtlMs: envPositiveInt('DSH_UI_TESTING_VIEWER_TTL_MS', VIEWER_TTL_MS),
   });
+  // Cross-environment composition root (M2/M3): authoritative config, adapter registry, tool
+  // admission, per-execution adapter dispatch, readiness and Skill discovery. The Web runtime
+  // stays here; `integration/` only consumes the public core/targets contracts.
+  const crossEnvironment = createCrossEnvironment({ ctx, registry, log, BrowserError, asBrowserError });
+  ctx.effect(() => () => crossEnvironment.dispose(), 'ui-testing: cross-environment');
   // Independent HTTP client: shares only the collected host origins, never a page runtime.
   const httpClient = new HttpClient({ origins: () => [...origins] });
   ctx.effect(() => () => { httpClient.dispose(); }, 'ui-testing: http client');
@@ -14221,22 +14453,15 @@ export function apply(ctx) {
     };
   }, 'ui-testing: frame push');
 
-  // The bundled Skill is the documented, structured tool surface plus capability discovery.
-  // It is optional: a deployment without the skill asset (or without the skills service) keeps
-  // the browser tools working, and the failure is logged instead of aborting the plugin.
+  // Environment-aware Skill discovery (M3). The provider exposes the common rules plus only the
+  // current environment's extension; `get()` re-checks visibility because an explicit skill load
+  // does not pass through `list()`. The legacy single-skill registration is the fallback.
   ctx.inject(['skills'], (sub) => {
-    let skill;
     try {
-      skill = readBundledSkill();
+      crossEnvironment.registerSkills(sub);
     } catch (error) {
       log('ui-testing skill 未注册：' + String((error && error.message) || error));
-      return;
     }
-    if (!skill) {
-      log('ui-testing skill 未注册：skills/ui-testing/SKILL.md 不存在');
-      return;
-    }
-    sub.effect(() => sub.skills.register(skill), 'ui-testing: bundled skill');
   });
 
   /**
@@ -14267,6 +14492,13 @@ export function apply(ctx) {
   };
 
   const handle = async (req, res) => {
+    // A14: the HTTP surface (panel/WS/legacy routes) may create or drive a page; resolve the Web
+    // module chain before the first such request instead of at module load.
+    try {
+      await ensureWebHostModules();
+    } catch (error) {
+      log('ui-testing: web host modules unavailable: ' + String((error && error.message) || error));
+    }
     let action = '/';
     let selected;
     try {
@@ -14336,11 +14568,27 @@ export function apply(ctx) {
         return { resolved, entry };
       };
       const assertGuiPageWrite = (runtime, selfSessionId = null) => {
+        // Configuration gate: a disabled/non-Web environment must not be bypassed through the
+        // panel HTTP routes (the same snapshot as tool admission).
+        crossEnvironment.assertGuiAllowed(scopeRequest);
         const lease = runtime && runtime.lease;
         if (lease && lease.sessionId !== selfSessionId && (runtime.active > 0 || lease.expiresAt > Date.now())) {
           throw new BrowserError('BUSY', '该标签正由 Agent 操作，GUI 输入暂不可用', { owner: lease.sessionId });
         }
       };
+      // Cross-environment control plane: /config, /config/select, /readiness. Consumed before the
+      // page-route dispatch so these endpoints never create a Runtime or start Chromium.
+      if (await crossEnvironment.handleHttp(req, res, {
+        action,
+        url,
+        scopeRequest,
+        scoped,
+        requestRejection,
+        rejectUi,
+        readJson,
+        sendJson,
+        resolveScopeRequest,
+      })) return;
       // Scoped callers are owner-only by construction; legacy callers keep the old fail-closed
       // requestRejection projection. `ui.devtools` is scoped-only: the legacy uiState() shape must
       // not expose the loopback port/target id even to an accepted old client.
@@ -14404,6 +14652,7 @@ export function apply(ctx) {
           sendJson(res, 403, { ok: false, ...error.payload(), error: error.message });
           return;
         }
+        crossEnvironment.assertGuiAllowed(scopeRequest);
         let ack;
         try {
           const request = normalizeAnnotationPublish(await readAnnotationBody(req, ANNOTATION_LIMITS.maxBodyBytes));
@@ -14472,11 +14721,16 @@ export function apply(ctx) {
         return;
       }
       if (action === '/ensure') {
+        // Environment gate (A10): a legacy/unscoped caller must not warm up (or navigate) a page
+        // for an environment the configuration disabled. This runs for scoped *and* legacy
+        // callers, before `select()` can create a page, so the bypass cannot resurrect Chromium.
+        crossEnvironment.assertGuiAllowed(scopeRequest);
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
         // A URL here is a page write, not a warm-up: gate it exactly like /navigate so a GUI
-        // caller cannot navigate a tab an Agent owns.
+        // caller cannot navigate a tab an Agent owns. The lease gate stays scoped-only; the
+        // environment gate above applies to every caller.
         if (body.url && scoped) assertGuiPageWrite(entry.runtime, scopeRequest.mode === 'session' ? scopeRequest.sessionId : null);
         await entry.runtime.run(async () => {
           await entry.runtime.ensure();
@@ -14487,6 +14741,9 @@ export function apply(ctx) {
         return;
       }
       if (action === '/navigate') {
+        // Environment gate (A10): the legacy compatibility route used to skip every config check
+        // unless the caller was scoped, so `enabledEnvironments=[]` still let it navigate.
+        crossEnvironment.assertGuiAllowed(scopeRequest);
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
@@ -14512,6 +14769,8 @@ export function apply(ctx) {
         return;
       }
       if (action === '/reload') {
+        // A10: reload/history are page writes too; the environment switch gates every caller.
+        crossEnvironment.assertGuiAllowed(scopeRequest);
         // These two routes exist only for the authenticated GUI. Scoped callers already passed
         // the strict owner-only gate above; legacy callers keep the historical check.
         if (!scoped) {
@@ -14528,6 +14787,7 @@ export function apply(ctx) {
         return;
       }
       if (action === '/history') {
+        crossEnvironment.assertGuiAllowed(scopeRequest); // A10: page write, same gate as /reload.
         if (!scoped) {
           const rejection = requestRejection(req);
           if (rejection) { rejectUi(res, rejection); return; }
@@ -14542,6 +14802,9 @@ export function apply(ctx) {
         return;
       }
       if (action === '/viewport') {
+        // A10: changing the shared viewport is a page write; a disabled Web environment must not
+        // drive it through the legacy GUI route.
+        crossEnvironment.assertGuiAllowed(scopeRequest);
         // Two shapes (docs/viewport-control.md):
         //   legacy {width,height}                 -> historical Number/round/clamp, same reply
         //   v1 {version:1, ...patch, expectedRevision?, originId?} -> strict, same validation as
@@ -14609,6 +14872,7 @@ export function apply(ctx) {
         return;
       }
       if (action === '/input') {
+        crossEnvironment.assertGuiAllowed(scopeRequest); // A10: same environment gate as /navigate.
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
@@ -14625,6 +14889,7 @@ export function apply(ctx) {
         return;
       }
       if (action === '/eval') {
+        crossEnvironment.assertGuiAllowed(scopeRequest); // A10: same environment gate as /navigate.
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
@@ -14635,6 +14900,7 @@ export function apply(ctx) {
         return;
       }
       if (action === '/screenshot') {
+        crossEnvironment.assertGuiAllowed(scopeRequest);
         const { entry } = await select();
         selected = entry;
         registry.touch(entry);
@@ -14660,6 +14926,7 @@ export function apply(ctx) {
         return;
       }
       if (action === '/tabs') {
+        crossEnvironment.assertGuiAllowed(scopeRequest);
         const { entry } = await select();
         selected = entry;
         const primary = registry.primaryEntry(entry) || entry;
@@ -14713,13 +14980,85 @@ export function apply(ctx) {
 
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler: handle }), 'ui-testing: http routes');
 
+  /**
+   * Describe the *live* target this tool call is running against, when it has one.
+   *
+   * Readiness must answer "is the target this session is actually driving bound?", not a static
+   * projection: a running page with a runtimeId is a bound target with a connected transport
+   * (plan §6.2 six axes, A13). Diagnostics never start a target, so an idle runtime reports null
+   * and the axes stay `not-probed`/`unbound` truthfully.
+   */
+  function liveReadinessTarget(exec, runtime) {
+    const rt = runtime || exec?.runtime || null;
+    if (!rt || typeof rt !== 'object') return null;
+    // A created-but-idle runtime entry is not a bound target: only a running page (or a live CDP
+    // transport) proves the connection/target axes. Otherwise the probe's not-probed/unbound stay.
+    const live = rt.running === true || Boolean(rt.cdp && rt.cdp.closed !== true);
+    if (!live) return null;
+    const runtimeId = rt.runtimeId || rt.id || null;
+    if (!runtimeId) return null;
+    return {
+      sessionId: exec?.agent?.id ? String(exec.agent.id) : null,
+      runtimeId: String(runtimeId),
+      url: typeof rt.url === 'string' ? redactUrl(rt.url) : null,
+      transport: rt.transport || (rt.send ? 'ws' : null),
+      // The Runtime keeps the page/document generation as `generation`; both names are accepted so
+      // the target axis can carry a real generation instead of a null placeholder.
+      pageGeneration: Number.isInteger(rt.pageGeneration) ? rt.pageGeneration
+        : (Number.isInteger(rt.generation) ? rt.generation : null),
+      documentEpoch: Number.isInteger(rt.documentEpoch) ? rt.documentEpoch : null,
+    };
+  }
+
   const text = (value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }];
+  /**
+   * P0 data access for tools (A01): one entry through the environment's P0 provider.
+   *
+   * The provider owns target binding, generation and the evidence envelope; the tool keeps its
+   * public result shape. `raw: true` (default) keeps platform-shaped payloads untouched.
+   */
+  const p0 = async (exec, family, method, args = {}, extra = {}) => {
+    const result = await crossEnvironment.p0Call({
+      family,
+      method,
+      args,
+      exec,
+      runtime: exec?.runtime ?? null,
+      entry: extra.entry ?? null,
+      meta: exec?.meta ?? null,
+      selection: extra.selection ?? null,
+      resolvedScope: extra.resolvedScope ?? null,
+      raw: extra.raw !== false,
+    });
+    return extra.withEvidence === true ? result : result.value;
+  };
   const register = (definition) => {
     const execute = definition.execute;
     if (!definition.timeoutMs) definition.timeoutMs = 30000;
     definition.execute = async (args, exec = {}) => {
+      // Execution guard: conditional registration alone is not enough (old calls, /test/invoke,
+      // programmatic dispatch). The same snapshot gates the actual dispatch.
+      crossEnvironment.assertToolAllowed(exec.agent, definition.name);
+      // A14: the Web-only module chain is resolved here, once, before any page/state work — and
+      // only when this call actually needs it. Neutral diagnostics must still answer on a host
+      // whose Web environment is disabled, so for them the load is optional and failure-tolerant:
+      // the capability matrix then reports "limits not available" instead of the tool failing.
+      // The two neutral diagnostics describe the Web capability matrix, so they need the module
+      // chain too — but they must keep answering if it cannot be loaded (a disabled/absent
+      // environment then reports "limits unavailable" instead of failing the whole tool).
+      if (definition.name !== 'browser_fake_probe') {
+        if (['browser_state', 'browser_capabilities'].includes(definition.name)) {
+          try { await ensureWebHostModules(); } catch { /* diagnostics keep answering */ }
+        } else {
+          await ensureWebHostModules();
+        }
+      }
+      const admissionSnapshot = crossEnvironment.snapshotForAgent(exec.agent);
       const sessionId = String(exec.agent?.id || 'anonymous');
       const meta = { actionId: randomUUID(), sessionId, startedAt: Date.now(), tool: definition.name,
+        configRevision: admissionSnapshot.revision,
+        environment: admissionSnapshot.environment,
+        adapterId: admissionSnapshot.adapterId,
         // Expressions and input text may contain secrets: record a bounded structural summary.
         args: Object.fromEntries(Object.entries(args || {}).map(([key, value]) => [key,
           key === 'url' ? redactUrl(String(value))
@@ -14738,6 +15077,15 @@ export function apply(ctx) {
       // no recent/error bookkeeping. It may still read another owner's cached view.
       const readOnly = typeof definition.readOnly === 'function' && definition.readOnly(args) === true;
       const isHttpRequest = definition.name === 'browser_http_request';
+      // test-only fake environment tool: no Web runtime/page is created or touched.
+      const isFakeTool = definition.name === 'browser_fake_probe';
+      // Environment-neutral diagnostics (browser_state / browser_capabilities) answer "what is
+      // here / why is it refused". Outside the Web environment there is no page to report, and
+      // creating one would start a target the user did not enable — so they run without a runtime.
+      // Only `browser_state` needs the runtime-free path: `browser_capabilities` is documented as
+      // never starting a target, so it keeps its (inert) page entry and reports the adapter matrix.
+      const neutralWithoutWeb = definition.name === 'browser_state'
+        && admissionSnapshot.environment !== 'web';
       // Web P0 network read-only tools (session.status/reset, events, detail, trace query, evidence,
       // subscribe) are scope-local reads: they resolve the workspace runtime but never take the page
       // queue, the lease, or lazily start Chromium (docs/network-p0.md, R1-5).
@@ -14748,12 +15096,14 @@ export function apply(ctx) {
       let primaryEntry;
       let selection;
       let runtime;
+      let resolvedScope = null;
       try {
         const resolved = await resolveScopeRequest(ctx, registry, toolScopeRequest(exec));
+        resolvedScope = resolved;
         meta.scope = resolved.scope;
         // The independent HTTP tool is evidence-only: resolve identity, but never create/touch a
-        // page entry (no queue, no lease, no page).
-        if (!isHttpRequest) {
+        // page entry (no queue, no lease, no page). The fake tool has no Web runtime either.
+        if (!isHttpRequest && !isFakeTool && !neutralWithoutWeb) {
           entry = registry.getOrCreate(resolved);
           primaryEntry = entry;
           if (isTabsTool) {
@@ -14766,7 +15116,7 @@ export function apply(ctx) {
           }
         }
       } catch (error) {
-        if (!isHttpRequest) {
+        if (!isHttpRequest && !isFakeTool && !neutralWithoutWeb) {
           const classified = asBrowserError(error);
           const evidence = { ...meta, finishedAt: Date.now(), target: '' };
           classified.details = losslessJson({ ...classified.details, ...evidence }, definition.name + '.details', []);
@@ -14782,7 +15132,7 @@ export function apply(ctx) {
       const hostOnly = typeof definition.hostOnly === 'function' && definition.hostOnly(args, runtime) === true;
       // The independent HTTP tool must not enter the page queue, the lease, activity or lastError;
       // only real page/network operations participate in the error projection.
-      const pageOperation = !readOnly && !hostOnly && !diagnostic && !isHttpRequest && !isNetworkRead;
+      const pageOperation = !readOnly && !hostOnly && !diagnostic && !isHttpRequest && !isNetworkRead && !isFakeTool;
       const actionTarget = definition.name === 'browser_navigate'
         ? redactUrl(String((args && args.url) || ''))
         : (runtime && runtime.url ? redactUrl(runtime.url) : null);
@@ -14804,15 +15154,35 @@ export function apply(ctx) {
         if (notes.length > 0) clean.sanitized = notes;
         return clean;
       };
+      // Every tool implementation goes through the environment's capability adapter. The caller
+      // keeps the existing execution-class branch (queue/ensure/lease); the adapter validates
+      // admission/identity and wraps the value with an evidence envelope.
+      const runThroughAdapter = (thunk, executionClass) => crossEnvironment.invokeTool({
+        name: definition.name,
+        args,
+        exec,
+        thunk,
+        // The wrapper branch decides queue/ensure; the adapter class is the operation's declared
+        // class refined by its action (e.g. network_session status=readOnly, start=hostOnly).
+        executionClass: crossEnvironment.executionClassFor(definition.name, args) || executionClass,
+        resolvedScope,
+        runtime,
+        entry,
+        selection,
+        meta,
+      });
       try {
         if (isTabsTool) {
-          const value = await execute(args, { ...exec, meta, sessionId, runtime, primaryEntry, registry, httpClient });
+          const value = await runThroughAdapter(() => execute(args, { ...exec, meta, sessionId, runtime, primaryEntry, registry, httpClient }), 'tabs');
           return finish(value, runtime && runtime.url ? redactUrl(runtime.url) : '');
         }
-        if (isHttpRequest || isNetworkRead) {
+        if (isHttpRequest || isNetworkRead || isFakeTool) {
           // Independent dispatch branch: no ensure/run/claim/touchAgent, no page queue, no
           // profile, no page lastError. The implementation does its own argument validation.
-          const value = await execute(args, { ...exec, meta, sessionId, runtime, httpClient });
+          const value = await runThroughAdapter(
+            () => execute(args, { ...exec, meta, sessionId, runtime, httpClient }),
+            isFakeTool ? 'page' : (isHttpRequest ? 'independentHttp' : 'networkRead'),
+          );
           return finish(value, meta.target || '');
         }
         // Optional pure pre-flight, outside the queue: an invalid argument must cost zero CDP
@@ -14823,7 +15193,10 @@ export function apply(ctx) {
           // Cache-only diagnostic / host-memory-only action: deliberately outside run() so it cannot activate the page,
           // wait behind the queue, claim the lease or mark the entry recent.
           meta.target = runtime.url ? redactUrl(runtime.url) : '';
-          const value = await execute(args, { ...exec, meta, sessionId, runtime, httpClient });
+          const value = await runThroughAdapter(
+            () => execute(args, { ...exec, meta, sessionId, runtime, httpClient }),
+            hostOnly ? 'hostOnly' : 'readOnly',
+          );
           return finish(value, meta.target);
         }
         const value = await runtime.run(async () => {
@@ -14844,7 +15217,10 @@ export function apply(ctx) {
           // ever claiming causality.
           runtime.netMark({ tool: definition.name, actionId: meta.actionId, kind: 'tool', text: 'begin' });
           try {
-            return await execute(args, { ...exec, meta, runtime, httpClient });
+            return await runThroughAdapter(
+              () => execute(args, { ...exec, meta, runtime, httpClient }),
+              diagnostic ? 'diagnostic' : 'page',
+            );
           } finally {
             runtime.netMark({ tool: definition.name, actionId: meta.actionId, kind: 'tool', text: 'end' });
           }
@@ -14886,8 +15262,67 @@ export function apply(ctx) {
       }
     };
     testToolDefs.set(definition.name, definition);
-    return ctx.effect(() => ctx.tools.register(definition), 'ui-testing: tool ' + definition.name);
+    // Per-step admission: the same snapshot decides model-visible schema and dispatch. `when`
+    // must never throw (a rejected condition fails the whole step preparation).
+    const when = (context = {}) => {
+      try {
+        return crossEnvironment.toolAdmitted(context.agent, definition.name);
+      } catch {
+        return false;
+      }
+    };
+    // Registration is deferred to `syncToolVisibility()`, which registers the *union* of tool
+    // definitions once and lets the host resolve `when(agent)` per step. The host's declaration
+    // path (`ToolsService.resolve` -> the `systemPrompt.tools` provider reading
+    // `definitions(scope, toolSet)` in dsh-tools/lib/index.js) filters the model-facing list with
+    // that same admitted set, so a per-agent snapshot decides declaration and dispatch together
+    // (A08). The earlier global register/unregister sync leaked one agent's selection to every
+    // other agent in the process.
+    toolDefinitions.set(definition.name, { definition, when });
+    return null;
   };
+
+  /**
+   * Register the union of tool definitions, each with its per-agent `when` predicate.
+   *
+   * Registration no longer depends on the *global* selection: the host admits per step, so every
+   * environment's tools can stay registered without leaking into another agent's request (A08).
+   * Environment-neutral diagnostics stay registered in every environment (including a disabled
+   * one) so "why is it unavailable" remains answerable.
+   */
+  function syncToolVisibility() {
+    let wanted;
+    try {
+      wanted = crossEnvironment.declarableToolNames();
+    } catch (error) {
+      log('ui-testing: tool visibility sync skipped: ' + String((error && error.message) || error));
+      return;
+    }
+    for (const [name, dispose] of toolDisposers) {
+      if (wanted.has(name)) continue;
+      try { dispose(); } catch { /* best effort */ }
+      toolDisposers.delete(name);
+    }
+    for (const name of wanted) {
+      if (toolDisposers.has(name)) continue;
+      const entry = toolDefinitions.get(name);
+      if (!entry) continue;
+      try {
+        toolDisposers.set(name, ctx.tools.register(entry.definition, { when: entry.when }));
+      } catch (error) {
+        log('ui-testing: tool registration failed for ' + name + ': ' + String((error && error.message) || error));
+      }
+    }
+  }
+
+  const toolDefinitions = new Map();
+  const toolDisposers = new Map();
+  ctx.effect(() => () => {
+    for (const dispose of toolDisposers.values()) {
+      try { dispose(); } catch { /* best effort */ }
+    }
+    toolDisposers.clear();
+  }, 'ui-testing: tool visibility');
 
   register({
     name: 'browser_navigate',
@@ -15001,10 +15436,12 @@ export function apply(ctx) {
       }
 
       // 3) The single capture (no retry, no second encoding).
-      const shot = await runtime.capture({ scale, region: request.region, scaleSource }, exec.signal);
+      // A01: the capture data plane goes through the P0 provider (target binding + evidence),
+      // while the screenshot tool keeps owning its public result shape.
+      const shot = await p0(exec, 'A', 'capture', { scale, region: request.region, scaleSource });
       const data = shot.pngBytes;
       const captured = shot.capture;
-      const product = await runtime.browserProduct(exec.signal);
+      const product = await p0(exec, 'A', 'product');
 
       const warnings = [];
       const sha256 = createHash('sha256').update(data).digest('hex');
@@ -15376,6 +15813,11 @@ export function apply(ctx) {
   });
 
   register({
+    // Read-only metadata read: it resolves the workspace scope but never takes the page queue or the
+    // single-owner lease. The lease exists to serialise page *writes*; a traffic snapshot neither
+    // writes the page nor needs ownership, and holding it for the lease TTL would block the next
+    // page operation of another session in the same workspace.
+    networkRead: true,
     name: 'browser_network',
     description: '读取内嵌浏览器最近捕获的网络请求（T1 网络抓包，默认不含请求体）。',
     parameters: {
@@ -15410,7 +15852,7 @@ export function apply(ctx) {
     },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
-      return exec.runtime.netSession(args || {}, exec, exec.signal);
+      return p0(exec, 'B', String(args?.action || 'start'), args || {});
     },
   });
 
@@ -15438,7 +15880,7 @@ export function apply(ctx) {
     },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
-      return exec.runtime.netEvents(args || {});
+      return p0(exec, 'B', 'events', args || {});
     },
   });
 
@@ -15463,7 +15905,7 @@ export function apply(ctx) {
     },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
-      return exec.runtime.netDetail(args || {});
+      return p0(exec, 'B', 'detail', args || {});
     },
   });
 
@@ -15494,7 +15936,7 @@ export function apply(ctx) {
     },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
-      return exec.runtime.netTrace(args || {});
+      return p0(exec, 'B', 'trace', args || {});
     },
   });
 
@@ -15527,7 +15969,7 @@ export function apply(ctx) {
     },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
-      return exec.runtime.netControl(args || {}, exec, exec.signal);
+      return p0(exec, 'B', 'control', args || {});
     },
   });
 
@@ -15556,7 +15998,7 @@ export function apply(ctx) {
     },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
-      return exec.runtime.netEvidence(args || {}, exec);
+      return p0(exec, 'B', 'evidence', args || {});
     },
   });
 
@@ -15582,7 +16024,7 @@ export function apply(ctx) {
     },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
-      return exec.runtime.netSubscribe(args || {}, exec.meta.sessionId);
+      return p0(exec, 'B', 'subscribe', args || {});
     },
   });
 
@@ -16046,8 +16488,12 @@ export function apply(ctx) {
         throw new BrowserError('INVALID_ARGUMENT', 'kind/source/timeoutMs/pollMs 只用于 wait', { field: 'action' });
       }
       if (action === 'list') {
+        // A01: the target list is a P0-E read; it goes through the provider so the projection and
+        // its evidence come from one place (the provider binds the calling target internally).
+        const listed = await p0(exec, 'E', 'list', {}, { entry: primary });
+        const tabs = Array.isArray(listed) ? listed : (Array.isArray(listed?.tabs) ? listed.tabs : []);
         return {
-          ok: true, action, tabs: registry.listTabs(primary, sessionId),
+          ok: true, action, tabs,
           notices: registry.noticesView(primary), recentClosed: registry.recentClosedView(primary),
           selection: registry.selectionFor(primary, sessionId),
         };
@@ -16166,6 +16612,24 @@ export function apply(ctx) {
     parameters: { type: 'object', properties: {}, required: [] },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
+      if (!exec.runtime) {
+        // Neutral diagnostic outside the Web environment (fake contract environment, or a Web
+        // environment the user disabled): report the environment-scoped truth instead of failing
+        // or starting a page. Nothing here claims a bound Web target.
+        const snapshot = crossEnvironment.snapshotForAgent(exec.agent);
+        return {
+          mode: 'idle',
+          activity: '空闲',
+          url: '',
+          environment: snapshot.environment,
+          adapterId: snapshot.adapterId,
+          configRevision: snapshot.revision,
+          enabledEnvironments: snapshot.enabledEnvironments,
+          running: false,
+          target: null,
+          note: 'no Web runtime: this environment has no page target (environment-neutral diagnostic)',
+        };
+      }
       await exec.runtime.refreshTitle(exec.signal);
       // Page-state ↔ network correlation (§3.3 / G2.6): one state mark per state read so the
       // timeline can replay url/title/revision changes next to the traffic they belong to.
@@ -16437,9 +16901,9 @@ export function apply(ctx) {
         ? normalized.scale
         : (Number.isFinite(liveScale) ? liveScale : runtime.view.scale);
       const scaleSource = normalized.scale !== undefined ? 'explicit' : 'view';
-      const shot = await runtime.capture({
+      const shot = await p0(exec, 'A', 'capture', {
         scale: resolvedScale, region: normalized.region ?? undefined, scaleSource,
-      }, exec.signal);
+      });
       const png = inspectPng(shot.pngBytes, { checkCrc: true });
       if (!png.ok) {
         throw new BrowserError('INVALID_PNG', '实时采集返回的字节不是结构完整的 PNG（不交付坏图）', {
@@ -17546,7 +18010,9 @@ export function apply(ctx) {
     description: 'T3 静态视觉：对两张显式源图做 YIQ 像素差异比较（固定算法 t3-v1），输出完整尺寸的标注差异 PNG（红=差异、黄=AA、灰=mask、蓝=区域 bbox）与 PASS/WARN/FAIL。'
       + 'before/after 必须显式给出；两图必须同像素尺寸，否则 VISION_SIZE_MISMATCH；region 是两图共同的图像像素 Rect。'
       + 'masks 缺省继承 before 基线元数据（before 非基线则空），显式 [] 清空；options/thresholds 逐字段覆盖 before 基线默认。'
-      + '全屏蔽无分母抛 VISION_EMPTY_COMPARISON，不返回 similarity=1；similarity 是阈值化差异覆盖率，不是语义相似度。',
+      + '全屏蔽无分母抛 VISION_EMPTY_COMPARISON，不返回 similarity=1；similarity 是阈值化差异覆盖率，不是语义相似度。'
+      + '映射门禁：两图几何映射不兼容（不同目标/缩放/坐标空间）时 verdict=BLOCKED/mapping-incompatible，不再给 PASS；'
+      + '只有显式 bitmapOnly=true 才降级为纯位图比较（标注 bitmap-only，不可当作几何验收）。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -17572,6 +18038,11 @@ export function apply(ctx) {
           description: 'Thresholds：warnRatio/failRatio（0≤warn≤fail≤1，默认 0.001/0.01）。',
           properties: { warnRatio: { type: 'number' }, failRatio: { type: 'number' } },
           required: [],
+        },
+        bitmapOnly: {
+          type: 'boolean',
+          description: '显式选择"只比较位图、不参与几何验收"（默认 false）。false 时两图 mapping 不兼容会返回 BLOCKED/mapping-incompatible，'
+            + '不再给 PASS；true 时只返回位图差异比率并标 bitmap-only，其结论不得当作几何验收证据。',
         },
         output: {
           type: 'object',
@@ -17651,6 +18122,13 @@ export function apply(ctx) {
         });
         if (comparisonRegions.length > T3_EVIDENCE_REGIONS) t3Warning(warnings, 'regions-truncated');
         if (!mappingCompatible) t3Warning(warnings, 'mapping-incompatible');
+        // Mapping gate (plan §4.5 / A03): a bitmap ratio over incompatible geometry is not an
+        // acceptance signal. Without an explicit `bitmapOnly` opt-in the comparison is BLOCKED, so
+        // "same pixels, different target region" can never come back as PASS.
+        const bitmapOnly = request.bitmapOnly === true;
+        const gatedVerdict = mappingCompatible ? verdict : (bitmapOnly ? verdict : 'BLOCKED');
+        const gatedReason = mappingCompatible ? 'ratio' : (bitmapOnly ? 'bitmap-only' : 'mapping-incompatible');
+        if (!mappingCompatible && bitmapOnly) t3Warning(warnings, 'advisory-only');
         const highlight = Buffer.isBuffer(diff.highlight) ? diff.highlight : Buffer.from(diff.highlight ?? []);
         const png = inspectPng(highlight, { checkCrc: true });
         if (!png.ok) throw new BrowserError('INVALID_PNG', '差异图未通过 PNG 结构/CRC 校验', { phase: 'inspectPng', reason: png.message });
@@ -17677,8 +18155,10 @@ export function apply(ctx) {
           regions: comparisonRegions,
           regionCount: Number.isInteger(diff.regionCount) ? diff.regionCount : comparisonRegions.length,
           regionsTruncated: diff.regionsTruncated === true || comparisonRegions.length > T3_EVIDENCE_REGIONS,
-          verdict,
-          reason: 'ratio',
+          verdict: gatedVerdict,
+          reason: gatedReason,
+          ratioVerdict: verdict,
+          bitmapOnly,
           mappingCompatible,
         };
         const metrics = {
@@ -17694,11 +18174,11 @@ export function apply(ctx) {
             beforeDocumentCss: item.beforeDocumentCss, afterDocumentCss: item.afterDocumentCss, area: item.area,
           })),
           metrics,
-          verdict: { status: verdict, reason: 'ratio' },
+          verdict: { status: gatedVerdict, reason: gatedReason },
           output: { productId: diffProduct.productId, sha256: delivered.sha256, file: delivered.file, delivery: delivered.delivery },
           incomplete: comparison.regionsTruncated ? ['regions-truncated'] : [],
         }));
-        runtime.noteVisionOperation('compare', verdict);
+        runtime.noteVisionOperation('compare', gatedVerdict);
         return {
           ok: true,
           before: resolvedBefore.product,
@@ -18045,7 +18525,7 @@ export function apply(ctx) {
         }
         if (mapping.visualViewportScale === null) incomplete.push('visual-viewport-scale-unknown');
         // §6 step 2: re-capture the ancestor capture rect/scale and compare decoded RGBA hashes.
-        const recapture = await runtime.capture({ scale: captureFacts.scale, region: captureFacts.region }, exec.signal);
+        const recapture = await p0(exec, 'A', 'capture', { scale: captureFacts.scale, region: captureFacts.region });
         const recapturePng = inspectPng(recapture.pngBytes, { checkCrc: true });
         if (!recapturePng.ok) {
           throw new BrowserError('INVALID_PNG', '复验截图不是结构完整的 PNG', { phase: 'inspectPng', reason: recapturePng.message });
@@ -18161,7 +18641,7 @@ export function apply(ctx) {
         // §6 step 6: one immediate after-capture of the same rect/scale (no file/base64).
         let afterProduct = null;
         try {
-          const after = await runtime.capture({ scale: captureFacts.scale, region: captureFacts.region }, exec.signal);
+          const after = await p0(exec, 'A', 'capture', { scale: captureFacts.scale, region: captureFacts.region });
           const afterPng = inspectPng(after.pngBytes, { checkCrc: true });
           if (!afterPng.ok) throw new Error('after PNG invalid');
           const afterDecoded = await t3Decode(after.pngBytes, exec.signal, t3NewBudget());
@@ -19389,7 +19869,13 @@ export function apply(ctx) {
             : null,
         }
         : null;
+      // The capability matrix below describes the *Web* surface. In another environment it would be
+      // a lie: report the environment-scoped truth (adapter.capabilities) and say so, rather than
+      // listing web.* entries that this environment does not offer (A13/A08).
+      const activeEnvironment = crossEnvironment.snapshotForAgent(exec.agent).environment;
+      const webSurface = activeEnvironment === 'web';
       return { ok: true,
+        environment: activeEnvironment,
         runtime: {
           running, browser: 'chromium', transport: running ? 'ws' : 'unavailable',
           isolation: 'single-owner-lease', attachments: typeof attachments?.saveImage === 'function',
@@ -19400,9 +19886,11 @@ export function apply(ctx) {
         },
         capabilities: [
           ...pageTools.map((name) => ({ id: 'web.t1.' + name, tool: 'browser_' + name,
-            status: busy ? 'unavailable' : 'available',
-            ...(busy ? { reason: 'BUSY: browser owned by another session' } : {}),
-            constraints: pageConstraints })),
+            // The legacy traffic snapshot is a read-only metadata read: it neither takes nor
+            // validates the single-owner lease, so another owner's BUSY never applies to it.
+            status: name === 'network' ? 'available' : (busy ? 'unavailable' : 'available'),
+            ...(name !== 'network' && busy ? { reason: 'BUSY: browser owned by another session' } : {}),
+            ...(name === 'network' ? { reason: null, constraints: [...pageConstraints, 'read-only: no page queue and no single-owner lease'] } : { constraints: pageConstraints }) })),
           ...t2Tools.map((name) => ({ id: 'web.t2.' + name, tool: 'browser_' + name,
             status: busy ? 'unavailable' : 'available',
             ...(busy ? { reason: 'BUSY: browser owned by another session' } : {}),
@@ -19512,7 +20000,10 @@ export function apply(ctx) {
           { id: 'web.t4.dynamic-vision', status: 'available', aliasOf: 'web.t4.dynamic-behavior',
             constraints: ['legacy alias of web.t4.dynamic-behavior; not an independent tool', 'tool count unchanged'] },
           { id: 'web.t1.browser-extras', status: 'unsupported', reason: 'Not implemented' },
-        ],
+        ].filter(() => webSurface),
+        capabilitiesNote: webSurface
+          ? null
+          : 'capabilities 描述的是 Web 专属操作面；当前环境不是 web，请以 adapter.capabilities / adapter.p0 为准',
         // TOOL-P1-03 caps-level disclosure: measured beats requested, and low sampling can never
         // prove a negative. Same rule the T4 analyzers enforce in metrics.sampling/verdict.
         limitations: [
@@ -20007,10 +20498,91 @@ export function apply(ctx) {
             security: 'Not a complete network sandbox; DNS rebinding remains possible; unknown host origins and response content may contain secrets',
           },
         },
+        // Cross-environment control plane (M2/M3): the same config revision that admitted this
+        // call, the adapter capability matrix and the six-axis readiness. Reading it starts nothing.
+        adapter: await crossEnvironment.capabilitiesBlock(
+          null,
+          liveReadinessTarget(exec, runtime),
+          crossEnvironment.snapshotForAgent(exec.agent),
+        ),
       };
     },
   });
+  // Test-only fake environment tool. It is registered only when the explicit test hook is on,
+  // and `when` keeps it invisible unless the resolved environment is the fake adapter.
+  if (crossEnvironment.allowTestEnvironments) {
+    register({
+      name: 'browser_fake_probe',
+      description: 'test-only：假环境契约探针（不启动浏览器，不代表任何真实平台）。',
+      parameters: { type: 'object', properties: { payload: { type: 'object' } }, required: [] },
+      output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+      async execute(args) {
+        return { ok: true, environment: 'fake', payload: (args && args.payload) || null };
+      },
+    });
+  }
+  /**
+   * Apply one authoritative config transition to the *running* resources (A12).
+   *
+   * Re-admitting the tool surface is not enough: a selection that no longer resolves to Web must
+   * also cancel queued/running work, release the connection/frame source/network collector/lease
+   * and rotate the tab selection, otherwise an old reference keeps operating a page its
+   * environment no longer owns. Only pages whose scope lost Web are touched, so an unrelated
+   * write (e.g. enabling the fake environment) never tears down a live Web page.
+   *
+   * @returns {{transitioned: Array<{scope:string, environment:string, reason:string}>}}
+   */
+  async function applyConfigTransition(notification = {}) {
+    const transitioned = [];
+    for (const entry of [...registry.entries.values()]) {
+      const scope = entry.scope || {};
+      let snapshot;
+      try {
+        snapshot = crossEnvironment.snapshotForScope({ id: scope.id, workspaceId: scope.workspaceId, cwd: scope.cwd });
+      } catch {
+        continue;
+      }
+      const webSelected = snapshot.environment === 'web'
+        && Array.isArray(snapshot.enabledEnvironments)
+        && snapshot.enabledEnvironments.includes('web');
+      if (webSelected) continue;
+      const runtime = entry.runtime;
+      const reason = snapshot.enabledEnvironments.includes(snapshot.environment)
+        ? 'environment-switched'
+        : 'environment-disabled';
+      const cancelled = typeof runtime?.abortForEnvironmentChange === 'function'
+        ? runtime.abortForEnvironmentChange(reason)
+        : { aborted: false, reason };
+      // Rotate the per-session tab selection: an old tabId/ref must not resolve through the new
+      // environment's page (identity rotation, not just cancellation).
+      for (const [key, value] of [...registry.selectedBySession.entries()]) {
+        if (key.includes(entry.key) || value?.workspaceKey === entry.key) registry.selectedBySession.delete(key);
+      }
+      registry.bumpViews(entry.key);
+      if (typeof registry.touch === 'function') registry.touch(entry);
+      try { await runtime?.close?.(); } catch { /* teardown is best effort */ }
+      transitioned.push({ scope: entry.key, environment: snapshot.environment, reason, cancelled: cancelled.aborted });
+    }
+    if (transitioned.length > 0) {
+      log('ui-testing: config transition released ' + transitioned.length + ' web scope(s): '
+        + transitioned.map((item) => `${item.scope}:${item.reason}`).join(', '));
+    }
+    return { transitioned, revision: notification.revision ?? null };
+  }
+
+  // Initial admission + re-admission on every successful config write: schema declaration follows
+  // the same authoritative snapshot that execution uses (plan §5.1/§5.3, A08/A10), and the same
+  // notification drives resource release for scopes that no longer own the Web environment (A12).
+  syncToolVisibility();
+  crossEnvironment.onConfigChange((notification) => {
+    try { syncToolVisibility(); } catch (error) {
+      log('ui-testing: tool visibility sync failed: ' + String((error && error.message) || error));
+    }
+    applyConfigTransition(notification).catch((error) => {
+      log('ui-testing: config transition cleanup failed: ' + String((error && error.message) || error));
+    });
+  });
   // Returned for the fake-ctx acceptance harness only (Cordis ignores apply()'s return value);
   // production callers must keep using the HTTP/tool surface, not this handle.
-  return { registry };
+  return { registry, syncToolVisibility, toolDefinitions, applyConfigTransition };
 }

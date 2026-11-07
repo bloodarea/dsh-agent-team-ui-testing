@@ -573,7 +573,11 @@ async function probe23NetworkSurface({ harness, createHarness, fixture, check, f
     const legacyKeys = Object.keys(legacy.value || {}).sort();
     // §2.8 keeps the legacy body `{entries:[metadata]}` (wrapped by the shared action envelope); `ok`
     // is not required, the envelope fields are allowed to grow.
-    const envelopeKeys = ['actionId', 'sessionId', 'startedAt', 'tool', 'args', 'scope', 'target', 'tab', 'finishedAt'];
+    // `agentSessionId` joins the envelope because the legacy read now goes through the read-only
+    // network branch (it owns `sessionId` like the P0 network family, so the agent session moves to
+    // `agentSessionId`). Additive only: the metadata body `{entries:[…]}` is unchanged.
+    const envelopeKeys = ['actionId', 'sessionId', 'startedAt', 'tool', 'args', 'scope', 'target', 'tab', 'finishedAt',
+      'configRevision', 'environment', 'adapterId', 'agentSessionId'];
     check('旧 browser_network 仍返回 {entries:[元数据]}（envelope 允许携带 actionId 等，不要求 ok）',
       legacy.ok && Array.isArray(legacy.value?.entries)
         && legacyKeys.every((key) => key === 'entries' || key === 'capturedAt' || key === 'note' || envelopeKeys.includes(key)),

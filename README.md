@@ -11,7 +11,7 @@ Let AI agents operate, inspect, test and verify real user interfaces — with ev
 <p>
   <a href="https://www.npmjs.com/package/dsh-agent-team-ui-testing"><img src="https://img.shields.io/npm/v/dsh-agent-team-ui-testing?style=flat-square&amp;logo=npm&amp;logoColor=white" alt="npm version"></a>
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/stargazers"><img src="https://img.shields.io/github/stars/bloodarea/dsh-agent-team-ui-testing?style=flat-square&amp;logo=github" alt="GitHub stars"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/bloodarea/dsh-agent-team-ui-testing?style=flat-square" alt="License: MIT"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Node.js >= 22"></a>
   <a href="docs/getting-started.md"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Platforms"></a>
   <a href="docs/tools.md"><img src="https://img.shields.io/badge/tools-36-brightgreen?style=flat-square" alt="Agent tools"></a>
@@ -84,7 +84,7 @@ The panel is the human window into the same runtime the agent uses.
 
 ## Architecture design philosophy
 
-> **In one sentence:** the AI agent decides *what to test and how to judge it*; the plugin *connects, controls, observes, and preserves evidence*; and the target runtime *actually runs the application*. **Web / Chromium is the implemented target today.** The cross-environment contracts and `core/`, `targets/`, `engines/` boundaries below describe the **next-stage architecture**, not a refactor claimed to be complete.
+> **In one sentence:** the AI agent decides *what to test and how to judge it*; the plugin *connects, controls, observes, and preserves evidence*; and the target runtime *actually runs the application*. **Web / Chromium is the implemented target today.** The three adapter contracts (`TargetAdapter` / `CapabilityAdapter` / `P0Provider`), the `core/` + `targets/` split, host-authoritative config, per-step tool admission and environment-aware Skill discovery are implemented for Web; the `engines/` boundary and other platform adapters remain planned.
 
 ### Three perspectives on the same test
 
@@ -162,7 +162,7 @@ flowchart TB
 | **`targets/`** | Environment adapters translate common capability requests into CDP/ADB/etc., normalize results, and honestly report supported/unsupported operations | Bridges node ② to nodes ③–⑤ |
 | **`engines/`** | **Self-developed** executors that need separate builds or deployment, such as a possible Android accessibility Companion APK | Optional implementation of node ④ |
 
-`targets/web` does not mean vendoring Chrome or Playwright. Nor does `engines/android` imply an APK is required: ADB / UI Automator may be sufficient for initial Android automation. **These directories are proposed module responsibilities, not a claim that the current repository already has this layout.** Existing Web logic remains governed by the current plugin implementation.
+`targets/web` does not mean vendoring Chrome or Playwright. Nor does `engines/android` imply an APK is required: ADB / UI Automator may be sufficient for initial Android automation. **`core/` and `targets/` are now real directories**: `core/` owns the contracts, config, identity/geometry/clock, evidence and six-axis readiness; `targets/web` is the real Web adapter and `targets/fake` is a test-only contract fixture. `engines/` remains the reserved boundary for self-developed executors. The CDP integration and the 36 tool implementations still live in `index.js` (composition root / Web implementation), but admission, config and execution all go through the adapter boundary.
 
 ### Capability architecture: choose T1 / T2 / T3 / T4 as needed
 
@@ -233,7 +233,7 @@ Mapped to the three perspectives: **execution** carries `browser_*` calls to Chr
 - **Distinguish code ownership from deployment:** `targets/` lives on the controller side, `engines/` holds optional self-developed executors, and real Chrome / Android / Mini Program runtimes live outside the repository.
 - **Load targets on demand:** future target selection should avoid needlessly injecting disabled platforms' tool schemas, skill content, or runtime dependencies into the AI agent's context.
 
-**Implementation boundary:** Web / Chromium currently provides 36 tools and T1–T4/P0-related features, subject to the coverage and limitations in [capability tiers](docs/capability-tiers.md), [architecture](docs/architecture.md), and [verification](docs/verification.md). T4 acceptance is still partial. Cross-environment `core/targets/engines` contracts and Android / Mini Program adapters remain proposed work.
+**Implementation boundary:** Web / Chromium currently provides 36 tools and T1–T4/P0-related features, subject to the coverage and limitations in [capability tiers](docs/capability-tiers.md), [architecture](docs/architecture.md), and [verification](docs/verification.md). T4 acceptance is still partial. The cross-environment contracts, host-authoritative config, config-driven tool/Skill isolation and six-axis readiness are implemented and tested for Web plus a test-only fake adapter; real desktop, Android, Mini Program and other platform adapters remain proposed work.
 
 ## Getting started
 

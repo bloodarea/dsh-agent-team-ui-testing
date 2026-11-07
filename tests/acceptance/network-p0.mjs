@@ -1256,9 +1256,14 @@ async function probeC16({ harness, check }) {
     && Number.isInteger(window_.fromSeq) && Number.isInteger(window_.toSeq) && ('nearest' in window_),
     { expected: ['frameTimeMs', 'captureEndMs', 'fromSeq', 'toSeq', 'nearest'], actual: window_ });
   const storedSeq = window_?.toSeq;
-  check('toSeq 是调用时刻的 highWater（允许含 execute 前写入的那条 tool mark，±1）', Number.isInteger(storedSeq)
-    && Number.isInteger(seqBefore) && storedSeq <= seqBefore + 1,
-    { expected: { toSeq: `<=${seqBefore}+1` }, actual: { toSeq: storedSeq, seqBefore } });
+  // The window's `toSeq` is the store highWater read at the *start of the tool call*, so it is
+  // `seqBefore` + the wrapper's tool mark (+1). One further event may legitimately land in
+  // between: a request that was still finishing when the probe sampled `seqBefore` (its
+  // loadingFinished arrives after the sample but before the tool body runs). The assertion stays
+  // an upper bound on that bounded lag instead of pretending the two samples are atomic.
+  check('toSeq 是调用时刻的 highWater（允许 tool mark + 一条迟到事件，≤ seqBefore+2）', Number.isInteger(storedSeq)
+    && Number.isInteger(seqBefore) && storedSeq <= seqBefore + 2,
+    { expected: { toSeq: `<=${seqBefore}+2` }, actual: { toSeq: storedSeq, seqBefore } });
   check('原 capture 证据结构不变（capture.version=1 仍在）', shot.value?.capture?.version === 1
     && typeof shot.value?.sha256 === 'string', { expected: { captureVersion: 1 }, actual: { capture: shot.value?.capture && { version: shot.value.capture.version }, sha256: typeof shot.value?.sha256 } });
   const nearest = window_?.nearest;

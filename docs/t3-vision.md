@@ -20,7 +20,7 @@ Source = { kind:"live", scale?:0.1–4, region?:画布CSS Rect（O=0 时与文�
 | --- | --- | --- |
 | `browser_vision_image` | 裁剪、缩放、预处理、统计、识别、标注并交付 PNG | 处理顺序固定：source → crop → resize → preprocess → 统计/识别 → 标注 → 编码；分析与识别在标注之前 |
 | `browser_vision_find` | 颜色/连通域/边缘/模板定位 | 无匹配是**成功空列表**；`semanticName` 恒 `null`，候选不是可操作 ref |
-| `browser_vision_compare` | 两图 YIQ 差异与标注差异图 | 两图必须同像素尺寸，否则 `VISION_SIZE_MISMATCH` |
+| `browser_vision_compare` | 两图 YIQ 差异与标注差异图 | 两图必须同像素尺寸，否则 `VISION_SIZE_MISMATCH`；两图几何映射不兼容时 `verdict=BLOCKED`、`reason=mapping-incompatible`（位图比率照算，放在 `ratioVerdict`），只有显式 `bitmapOnly:true` 才返回纯位图结论并标 `bitmap-only` |
 | `browser_vision_act` | 按截图坐标派发真实输入 | 六步校验全过才派发，任何一步不过**零派发**；`verdict` 固定 `INCONCLUSIVE(dispatch-only)` |
 | `browser_vision_baseline` | 受管基线的增删改查 | 不可变 revision、HEAD CAS、删除是墓碑 |
 | `browser_vision_check` | 回归与六类缺陷用例 | 整批先纯参数校验再逐 case 执行；不导航、不建基线、不读 DOM |
@@ -58,6 +58,10 @@ browser_click / browser_vision_act   # 执行动作
 browser_vision_image / browser_vision_compare   # 前后对比
 browser_vision_baseline create → browser_vision_check   # 建基线并做回归
 ```
+
+## 颜色参数的写法
+
+识别/缺陷类参数里的颜色（`color`、`background` 等）一律是**整数数组**：`[r,g,b]` 或 `[r,g,b,a]`，每通道 0–255；写成 `{r,g,b}` 对象会返回 `INVALID_ARGUMENT`，detail 为 `expected-rgba-array-3`（或 `-4`）。`tolerance` 是可选整数。
 
 ## 错误
 
