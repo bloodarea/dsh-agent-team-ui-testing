@@ -7921,6 +7921,14 @@ window.__ModuleLoader__.load({
 .uts-groups { display: flex; flex-direction: column; gap: 18px; }
 .uts-group { display: flex; flex-direction: column; gap: 8px; }
 .uts-group-heading { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; font-weight: 600; line-height: 20px; }
+.uts-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.uts-card-title { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.uts-card-switch { flex: none; display: inline-flex; align-items: center; }
+.uts-card-actions { display: flex; gap: 6px; margin-top: 6px; }
+.uts-diagnose-btn { box-sizing: border-box; padding: 2px 8px; font: inherit; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); background: transparent; border: .5px solid var(--dsw-alias-border-l2); border-radius: 6px; cursor: pointer; }
+.uts-diagnose-btn:hover { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l1); }
+.uts-diagnostics .uts-axes { margin-top: 8px; }
+.uts-diagnostics .uts-head-row { gap: 8px; }
 .uts-group-env { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 2px 8px; font-size: 12px; font-weight: 400; color: var(--dsw-alias-label-secondary); }
 .uts-current-tag { margin-left: 8px; font-weight: 400; }
 .uts-current-tag[data-uts-current="true"] { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l1); }
@@ -8399,10 +8407,9 @@ window.__ModuleLoader__.load({
       // 但关闭总闸不会改写各 provider 已保存的值。
       const masterEnabled = props.masterEnabled === true;
       const providerCurrent = props.providerCurrent === true;
-      const targetAxis = props.targetAxis || { status: 'not-probed', reason: 'Host 未提供目标状态' };
-      // 依赖轴按 provider 单独显示：Edge 装了没有、override 有效没有，是"能不能执行"的直接答案，
-      // 不能被同组 Chrome 的证据顶替。
-      const dependencyAxis = props.dependencyAxis || { status: 'not-probed', reason: 'Host 未提供该运行环境的依赖状态' };
+      const depAxis = (props.axes || []).find((axis) => axis.axis === 'dependency') || null;
+      const dependencyStatus = depAxis ? depAxis.status : 'not-probed';
+      const dependencyReason = depAxis ? depAxis.reason : 'Host 未提供该运行环境的依赖状态';
       const switchDisabled = !providerSupported || !configReady || busy || !masterEnabled;
       const switchTitle = !providerSupported
         ? '当前运行环境未实现，不能启用'
@@ -8421,44 +8428,46 @@ window.__ModuleLoader__.load({
         'data-uts-node': 'target',
       },
         h('div', { className: 'uts-card' },
-          h('div', { className: 'uts-card-name' },
-            target.name,
-            h('span', {
-              className: 'uts-tag uts-current-tag',
-              'data-uts-tag': 'current',
-              'data-uts-current': providerCurrent ? 'true' : 'false',
-            }, providerCurrent ? '当前使用' : '未选中')),
+          h('div', { className: 'uts-card-head' },
+            h('span', { className: 'uts-card-title' },
+              h('span', { className: 'uts-card-name' }, target.name),
+              h('span', {
+                className: 'uts-tag uts-current-tag',
+                'data-uts-tag': 'current',
+                'data-uts-current': providerCurrent ? 'true' : 'false',
+              }, providerCurrent ? '当前使用' : '未选中')),
+            // 开关挪到卡片右上角：卡片里不再有“用户启用：”这类说明文字。
+            h('span', { className: 'uts-card-switch', 'data-uts-switch-provider': target.id },
+              h(TargetEnvSwitch, {
+                label: '是否启用运行环境：' + target.name,
+                checked: props.providerEnabled === true,
+                disabled: switchDisabled,
+                busy,
+                title: switchTitle,
+                onChange: (next) => {
+                  if (typeof props.onToggleProvider === 'function') props.onToggleProvider(target.id, next);
+                },
+              }))),
           target.note ? h('div', { className: 'uts-card-note' }, target.note) : null,
-          h('div', {
-            className: 'uts-field uts-field-inline',
-            'data-uts-switch-provider': target.id,
-          },
-            h('span', { className: 'uts-field-label' }, '用户启用：'),
-            h(TargetEnvSwitch, {
-              label: '是否启用运行环境：' + target.name,
-              checked: props.providerEnabled === true,
-              disabled: switchDisabled,
-              busy,
-              title: switchTitle,
-              onChange: (next) => {
-                if (typeof props.onToggleProvider === 'function') props.onToggleProvider(target.id, next);
-              },
-            })),
-          h('div', { className: 'uts-field' },
+          // 卡片只留一眼可读的那条（依赖＝"这台机器上能不能跑"），完整的六轴去二级诊断页看：
+          // 六条状态塞进 145px 宽的卡片会变成噪音，而它们诊断的是**这一个**运行环境，不是环境汇总。
+          h('div', { className: 'uts-field uts-field-inline' },
             h('span', { className: 'uts-field-label' }, '依赖：'),
             h('span', {
               className: 'uts-field-value',
-              'data-uts-dependency-status': dependencyAxis.status,
-              title: dependencyAxis.reason || '',
-            }, axisText('dependency', dependencyAxis.status))),
-          h('div', { className: 'uts-field' },
-            h('span', { className: 'uts-field-label' }, '目标：'),
-            h('span', {
-              className: 'uts-field-value',
-              'data-uts-valid': targetAxis.status === 'bound' ? 'true' : targetAxis.status === 'stale' ? 'false' : 'unknown',
-              'data-uts-target-status': targetAxis.status,
-              title: targetAxis.reason || '',
-            }, axisText('target', targetAxis.status))),
+              'data-uts-dependency-status': dependencyStatus,
+              title: dependencyReason || '',
+            }, axisText('dependency', dependencyStatus))),
+          h('div', { className: 'uts-card-actions' },
+            h('button', {
+              type: 'button',
+              className: 'uts-diagnose-btn',
+              'data-uts-diagnose': target.id,
+              title: '单独查看 ' + target.name + ' 的六轴诊断',
+              onClick: () => {
+                if (typeof props.onDiagnose === 'function') props.onDiagnose(target.id);
+              },
+            }, '诊断')),
           h('div', { className: 'uts-tags', 'aria-label': '调试链路与实现状态' },
             h('span', { className: 'uts-tag', 'data-uts-tag': 'interface' },
               (candidate ? '③ 候选接口：' : '③ 接口：') + chain.communication),
@@ -8501,7 +8510,6 @@ window.__ModuleLoader__.load({
             'data-uts-env-switch': group.id,
             'data-uts-env-enabled': props.envEnabled === true ? 'true' : 'false',
           },
-            h('span', { className: 'uts-field-label' }, '目标环境总开关'),
             h(TargetEnvSwitch, {
               label: '目标环境总开关：' + group.title,
               checked: props.envEnabled === true,
@@ -8516,27 +8524,6 @@ window.__ModuleLoader__.load({
                 if (typeof props.onToggleEnv === 'function') props.onToggleEnv(next);
               },
             }))),
-        h('div', { className: 'uts-axes', 'data-uts-axes': group.id, 'data-uts-axes-checked-at': props.checkedAt || '' },
-          axes.map((axis) => h('div', {
-            key: axis.axis,
-            className: 'uts-axis',
-            'data-uts-axis': axis.axis,
-            'data-uts-status': axis.status,
-            'data-uts-axis-source': axis.source || 'host',
-            'data-uts-axis-target': axis.targetId || '',
-            'data-uts-axis-checked-at': axis.checkedAt ? String(axis.checkedAt) : '',
-            title: axisDetail(axis),
-          },
-            h('span', { className: 'uts-axis-head' },
-              h('span', { className: 'uts-axis-label' }, AXIS_LABEL[axis.axis] || axis.axis),
-              h('span', { className: 'uts-axis-status' }, axisText(axis.axis, axis.status))),
-            h('span', { className: 'uts-axis-reason', 'data-uts-axis-reason': axis.axis }, axis.reason || '无附加原因'),
-            axis.checks && typeof axis.checks === 'object'
-              ? h('span', { className: 'uts-axis-checks', 'data-uts-axis-checks': axis.axis },
-                Object.entries(axis.checks)
-                  .map(([name, check]) => name + ':' + String(check && check.status ? check.status : 'unknown'))
-                  .join(' '))
-              : null))),
         expanded
           ? h('div', { className: 'uts-cards', id: regionId, role: 'region', 'aria-label': group.title },
               group.targets.length
@@ -8546,12 +8533,6 @@ window.__ModuleLoader__.load({
                     const axesFor = props.providerAxesById && props.providerAxesById[target.id]
                       ? props.providerAxesById[target.id]
                       : null;
-                    const targetAxis = axesFor
-                      ? (axesFor.find((axis) => axis.axis === 'target') || { status: 'not-probed', reason: 'Host 未提供该运行环境的目标状态' })
-                      : props.targetAxis;
-                    const dependencyAxis = axesFor
-                      ? (axesFor.find((axis) => axis.axis === 'dependency') || { status: 'not-probed', reason: 'Host 未提供该运行环境的依赖状态' })
-                      : { status: 'not-probed', reason: 'Host 未提供该运行环境的依赖状态' };
                     return h(TargetEnvCard, {
                       key: target.id,
                       target,
@@ -8561,13 +8542,70 @@ window.__ModuleLoader__.load({
                       configReady: props.configReady,
                       configError: props.configError,
                       busy: props.busy,
-                      targetAxis,
-                      dependencyAxis,
+                      axes: axesFor,
+                      onDiagnose: props.onDiagnose,
                       onToggleProvider: props.onToggleProvider,
                     });
                   })
                 : h('p', { className: 'uts-empty' }, '暂未接入'))
           : null);
+    }
+
+    /**
+     * 二级页：单个运行环境（provider）的诊断。
+     *
+     * 六轴是**这一个浏览器**的六轴（`readiness.environments.<env>.providers.<id>.axes`），
+     * 不是目标环境的汇总：同组 Chrome 的"依赖可用"不能给 Edge 背书，未启用的 provider 也不会被探测。
+     * 这里只读 Host 已经给出的结果，不触发新探测。
+     */
+    function TargetEnvDiagnostics(props) {
+      const group = props.group || { id: '', title: '' };
+      const target = props.target || {};
+      const axes = props.axes || [];
+      const tag = target.state === 'supported' ? '已实现' : target.state === 'unsupported' ? '未支持' : '未接入';
+      return h('section', {
+        className: 'uts-settings uts-diagnostics',
+        'data-uts-diagnostics': target.id || '',
+        'data-uts-diagnostics-group': group.id || '',
+        'data-uts-diagnostics-state': target.state || '',
+      },
+        h('header', { className: 'uts-head' },
+          h('div', { className: 'uts-head-row' },
+            h('button', {
+              type: 'button',
+              className: 'uts-link-btn',
+              'data-uts-diagnostics-back': 'true',
+              onClick: () => { if (typeof props.onBack === 'function') props.onBack(); },
+            }, '← 返回'),
+            h('h2', { className: 'uts-page-title' }, (target.name || target.id) + ' 诊断'),
+            h('span', { className: 'uts-tag', 'data-uts-tag': target.state || 'planned' }, tag))),
+        h('p', { className: 'uts-page-desc' },
+          '这是「' + (group.title || group.id) + '」下的运行环境 ' + (target.name || target.id)
+          + ' 的单独诊断：六条状态各自回答一个独立问题，未探测 ≠ 不可用，工程支持 ≠ 用户启用。'),
+        axes.length
+          ? h('div', { className: 'uts-axes', 'data-uts-axes': target.id || '', 'data-uts-axes-checked-at': props.checkedAt || '' },
+              axes.map((axis) => h('div', {
+                key: axis.axis,
+                className: 'uts-axis',
+                'data-uts-axis': axis.axis,
+                'data-uts-status': axis.status,
+                'data-uts-axis-provider': target.id || '',
+                'data-uts-axis-source': axis.source || 'host',
+                'data-uts-axis-target': axis.targetId || '',
+                'data-uts-axis-checked-at': axis.checkedAt ? String(axis.checkedAt) : '',
+                title: axisDetail(axis),
+              },
+                h('span', { className: 'uts-axis-head' },
+                  h('span', { className: 'uts-axis-label' }, AXIS_LABEL[axis.axis] || axis.axis),
+                  h('span', { className: 'uts-axis-status' }, axisText(axis.axis, axis.status))),
+                h('span', { className: 'uts-axis-reason', 'data-uts-axis-reason': axis.axis }, axis.reason || '无附加原因'),
+                axis.checks && typeof axis.checks === 'object'
+                  ? h('span', { className: 'uts-axis-checks', 'data-uts-axis-checks': axis.axis },
+                    Object.entries(axis.checks)
+                      .map(([name, check]) => name + ':' + String(check && check.status ? check.status : 'unknown'))
+                      .join(' '))
+                  : null)))
+          : h('p', { className: 'uts-empty' }, 'Host 未返回这个运行环境的诊断结果'));
     }
 
     /**
@@ -8583,6 +8621,8 @@ window.__ModuleLoader__.load({
       const [submittingEnv, setSubmittingEnv] = React.useState('');
       const [submittingProvider, setSubmittingProvider] = React.useState('');
       const [notice, setNotice] = React.useState(null);
+      // 二级诊断页：记录 (环境, 运行环境)，为空时显示环境分组列表。
+      const [diagnosing, setDiagnosing] = React.useState(null);
       const aliveRef = React.useRef(true);
       React.useEffect(() => () => { aliveRef.current = false; }, []);
       const configReady = state.revision !== null && !state.error;
@@ -8688,9 +8728,6 @@ window.__ModuleLoader__.load({
                 h('span', null, '隐藏未实现'),
                 h(TargetEnvSwitch, { label: '隐藏未实现', checked: hideUnimplemented, onChange: setHideUnimplemented })))),
           h('p', { className: 'uts-page-desc' }, '面向 DeepSeekHarness 的前端 GUI 调试与测试插件：Web / Chromium 已实现；Windows/Linux/macOS 桌面、Android、TUI、HarmonyOS、小程序、游戏与 3D 共九种调试环境规划中。'),
-          h('p', { className: 'uts-config-meta' },
-            h('span', { 'data-uts-config-revision-meta': 'true' }, 'Host 配置 revision：' + (state.revision === null ? '未读取' : state.revision)),
-            state.checkedAt ? h('span', null, '就绪检查时间：' + state.checkedAt) : null),
           errorText
             ? h('p', {
                 className: 'uts-config-error',
@@ -8702,10 +8739,24 @@ window.__ModuleLoader__.load({
             ? h('p', { className: 'uts-config-meta', role: 'status', 'data-uts-config-notice': 'ok' }, notice.text)
             : null),
         h('div', { className: 'uts-body' },
-          h('h3', { className: 'uts-title' }, '目标环境配置'),
-          h('p', { className: 'uts-chain-guide' }, '① DSH Agent → ② UI 测试插件 → ③ 接口 → ④ 执行端 → ⑤ 卡片目标'),
-          h('p', { className: 'uts-chain-guide' }, '六轴分别来自 Host 配置与就绪结果：工程支持 / 用户启用 / 依赖可用 / 连接可信 / 目标绑定 / 能力就绪；未探测、未支持与未启用分开显示。'),
-          h('div', { className: 'uts-groups' }, groups.length
+          diagnosing
+            ? h(TargetEnvDiagnostics, {
+                group: (() => {
+                  const found = TARGET_ENV_GROUPS.find((item) => item.id === diagnosing.groupId);
+                  return found || { id: diagnosing.groupId, title: diagnosing.groupId, targets: [] };
+                })(),
+                target: (() => {
+                  const found = TARGET_ENV_GROUPS.find((item) => item.id === diagnosing.groupId);
+                  const hit = found && found.targets.find((item) => item.id === diagnosing.providerId);
+                  return hit || { id: diagnosing.providerId, name: diagnosing.providerId, state: 'planned' };
+                })(),
+                axes: providerAxes(state, diagnosing.groupId, diagnosing.providerId),
+                checkedAt: state.readiness && state.readiness[diagnosing.groupId]
+                  ? state.readiness[diagnosing.groupId].checkedAt
+                  : '',
+                onBack: () => setDiagnosing(null),
+              })
+            : h('div', { className: 'uts-groups' }, groups.length
             ? groups.map((group) => {
                 const axes = environmentAxes(state, group.id);
                 const targetAxis = axes.find((axis) => axis.axis === 'target') || { status: 'not-probed', reason: '' };
@@ -8729,6 +8780,7 @@ window.__ModuleLoader__.load({
                   configError: state.loading ? '正在读取 Host 配置…' : state.error,
                   busy: submittingEnv === group.id || submittingProvider !== '',
                   targetAxis,
+                  onDiagnose: (providerId) => setDiagnosing({ groupId: group.id, providerId }),
                   onToggleEnv: (next) => toggleEnvironment(group, next),
                   onToggleProvider: (providerId, next) => toggleProvider(group, providerId, next),
                 });

@@ -1,6 +1,6 @@
 ---
 name: ui-testing-web
-description: 使用 browser_* 工具调试与测试已授权的 Web 页面：T1 程序化接口（导航、JS、截图、输入、网络元数据、计算样式、独立 HTTP、共享视口）、T2 结构化 GUI（snapshot→ref→动作→证据→等待/节点状态）、T3 静态视觉（PNG 裁剪/预处理/标注/确定性识别/坐标输入/像素差异/受管基线/回归）、T4 动态行为（帧序列、七类运动分析、WAAPI 控制与恢复、六向事件关联）、网络 P0（请求/WS/SSE 采集、时间轴、业务链路、拦截限速重放、JSONL/HAR 证据、多 Agent 订阅）。以 browser_capabilities 的实际运行态选路；证据不足时记 BLOCKED/INCONCLUSIVE。
+description: 调试与测试已授权 Web 页面的默认入口——下列常规表述都算命中：打开/点一下/填一下/滚动这个页面；「这个按钮点了没反应/没跳转/提交报错」；「这个元素为什么不见了/被谁挡住/什么颜色字号/布局错位/文字截断」；「截个图/放大看看/和设计稿或上一版对比/这块颜色对不对」；「这个动画卡不卡/过渡顺不顺/有没有闪烁/拖拽跟手吗」；「接口返回什么/为什么 404 或 500/请求发了几次/慢在哪/有没有重复请求」；「看我框的/我圈的是这里/这个箭头指什么」（面板人工标注，读 browser_state.annotations）；「新开了个标签页/弹窗没出来」；「这个环境能用吗/为什么工具不可用/Edge 还是 Chrome 在跑」。用 browser_* 工具取证：T1 程序化接口（导航/JS/截图/输入/网络元数据/计算样式/独立 HTTP/共享视口）、T2 结构化 GUI（snapshot→ref→动作→等待/节点状态）、T3 静态视觉（PNG 裁剪/给图片画框/确定性识别/像素差异/受管基线）、T4 动态行为（帧序列/七类运动分析/WAAPI/事件关联）、网络 P0（请求/WS/SSE/时间轴/链路/拦截重放/JSONL/HAR/订阅）、多标签；以 browser_capabilities 的实际运行态选路，证据不足记 BLOCKED/INCONCLUSIVE。
 ---
 
 # UI Testing · Web T1–T4 与网络操作规范
@@ -8,6 +8,23 @@ description: 使用 browser_* 工具调试与测试已授权的 Web 页面：T1 
 ## 何时使用
 
 用于已授权 HTTP(S) 网页的调试、UI 测试、元素定位与交互、计算样式、网络元数据、截图和运行态诊断。**T1 = 程序化接口**（导航/JS/输入/网络/CSSOM/截图/独立 HTTP）；**T2 = 结构化 GUI**（AX 语义快照 + ref 定位 + 可信输入 + 节点状态 + 条件等待）；**T3 = 静态视觉**（对有限张静态 PNG 做裁剪/缩放/预处理/标注/确定性识别/坐标输入/像素差异/受管基线/回归与缺陷用例；无 VLM、无 OCR、无语义命名，不主动读 DOM）；**网络 P0 = 网络调试引擎**（HTTP/HTTPS 请求响应与头/体、WebSocket/SSE、iframe/OOPIF/Worker 采集，统一时间轴、分析与聚合、业务步骤链路、拦截/限速/断连/重放/Mock、JSONL+HAR 证据与多 Agent 独立订阅）；**T4 = 动态行为**（真实 screencast/截图循环帧序列、时间轴、七类运动分析、WAAPI 控制与恢复、六向动态事件关联；帧证据带 sourceTimestamp/encoded+rgba 双 hash/dropped-evicted 计数，关联区分 explicit/redirect/initiator（confirmed-causal）与 observed/temporal（默认过滤））。宿主 OS 支持 Linux / macOS / Windows；尚未定义或实现的目标环境是桌面应用、Android、TUI、HarmonyOS、小程序、游戏与 3D。
+
+### 常见表述 → 命中哪条链路（先对号，再动手）
+
+| 用户这么说 | 先做什么 | 主链路 |
+| --- | --- | --- |
+| 打开/点开/进到这个页面、点一下那个按钮、帮我填一下、滚动到底 | `browser_navigate` → `browser_state` → `browser_snapshot` → 动作 | T1+T2 |
+| 这个按钮点了没反应、点了没跳转、提交报错 | snapshot → click → 回读 state/节点状态；必要时开网络 | T2 + 网络 |
+| 这个元素为什么不见了、被谁挡住、什么颜色/字号/间距、布局错位、文字截断 | `browser_node_state` + `browser_computed_style` + snapshot(boxes) | T1+T2 |
+| 截个图、放大看看、和设计稿/上一版对比、这块颜色对不对 | `browser_screenshot` / `vision_image` / `vision_compare` / `vision_baseline` | T3 |
+| 这个动画卡不卡、过渡顺不顺、有没有闪烁、拖拽跟手吗 | `dynamic_session` → `motion_observe/analyze/control` | T4 |
+| 接口返回什么、为什么 404/500、请求发了几次、有没有重复、慢在哪 | `network_session start` → `events`/`detail`/`trace` | 网络 P0 |
+| **看我框的、我圈的是这里、这个箭头指什么** | **先读 `browser_state.annotations`**（人类画在调试视图上的标注），不要问他编号 | 通用标注 |
+| 新开了个标签页、弹窗怎么没出来、切到那个标签 | `browser_tabs` list/select/wait | P0-E |
+| 这个环境能用吗、为什么工具不可用、现在跑的是 Chrome 还是 Edge | `browser_capabilities` + 就绪六轴 + `adapter.declaration` | 诊断 |
+| 给我证据、复现一下、留个截图存档 | 证据 envelope + 落盘 PNG（`out`） | 全部 |
+
+不命中本 Skill：纯文案/文档写作、后端接口设计、与被调试页面无关的通用编程问题。
 
 ## 事实来源与边界
 
@@ -447,11 +464,13 @@ browser_http_request {
 - 原始截图及可见附件仍不等于 T3 分析；T3 也只支持指定区域/分辨率/时间/阈值下的像素结论，不证明业务、交互、可访问性或整页正确。`/metrics` 只证明预览管线指标。
 不得伪造路径、附件或已通过状态。
 
-## 读取面板标注（P0-D annotations）
+## 人类标注（调试视图上的画图）：先读标注，别让用户改口述
 
-用户在调试面板里画的标注是**问题线索**，Agent 用结构化文档读，不用截图：
+用户说「看我框的」「我圈的是这里」「这个箭头指什么」时，**先读标注**——不要让他把位置写成文字、也不要让他给候选编号。人类在调试视图上画图是**跨环境通用的输入通道**（环境中立规则见 `ui-testing-common`），这里只写 Web 侧的入口与坐标细则。
 
-- **入口**：`browser_state()` 顶层 `annotations`（每工作区一份，与已认证 `/state` 的 `ui.annotations` 同源）；`browser_capabilities().annotations` 给读取方式/`space`/`limits`。工具面仍是 30，没有标注工具；**标注不进 `browser_screenshot` 也不进 T3**（`capture.composite:true` 只是画布空白合成，与标注无关）。
+**术语**：本 Skill 里的「浏览器工具 / 工具面」= 当前 Web 环境**注册并准入**的 `browser_*` 工具（当前 36 个，含 `browser_state`、`browser_capabilities` 两个环境无关诊断）。环境或 provider 被禁用时这些工具根本不注册，调用会拿到 `ADAPTER_DISABLED`——那是"这个环境没启用"，不是工具坏了。
+
+- **入口**：`browser_state()` 顶层 `annotations`（每工作区一份，与已认证 `/state` 的 `ui.annotations` 同源）；`browser_capabilities().annotations` 给读取方式/`space`/`limits`。**没有单独的「标注工具」**：读标注就是读一个已注册工具的字段；**标注不进 `browser_screenshot` 也不进 T3**（`capture.composite:true` 只是画布空白合成，与标注无关）。
 - **坐标**：shapes 是画布 CSS px `d`，页面坐标 `p = d − S`（`S` 用**当前** `view.x/y`，不能用发布时的 `annotations.view`）；`scale`/DPR 不参与。
 - **图形**：`rect/line/arrow`（箭头尖为 `(x2,y2)`）、`circle`（PS 包围盒椭圆 `cx/cy/rx/ry`）、`brush`（只有 `points`）、`text`（唯一带原文）。
 - **读不到手写字**：`brush` 只有点集；"用户写的字"只有 `text.text` 才有。要逐字复述就让用户用文字工具。

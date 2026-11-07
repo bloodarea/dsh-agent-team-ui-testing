@@ -550,9 +550,11 @@ async function readSettingsState() {
       status: page.getAttribute('data-uts-config-status'),
       groupCount: groups.length,
       expanded: groups.map((group) => ({ id: group.getAttribute('data-uts-group'), expanded: group.getAttribute('data-uts-expanded') })),
-      webAxes: [...document.querySelectorAll('[data-uts-group="web"] [data-uts-axis]')].map((node) => ({
-        axis: node.getAttribute('data-uts-axis'),
-        status: node.getAttribute('data-uts-status'),
+      // Six axes no longer live on the group: they belong to one runtime provider and are shown on
+      // that provider's own diagnostics page. The card keeps a one-line dependency hint + the button.
+      providerDiagnose: [...document.querySelectorAll('[data-uts-provider]')].map((node) => ({
+        provider: node.getAttribute('data-uts-provider'),
+        hasButton: Boolean(node.querySelector('[data-uts-diagnose]')),
       })),
       chromeCardText: (document.querySelector('[data-uts-target="chrome"]') || {}).textContent || '',
       // The group header owns the *target environment* master switch; the card owns the
@@ -645,6 +647,13 @@ async function main() {
     log('[gui] settings page mounted');
 
     /* ---------------------------------------------------------------- A07/A13: initial page */
+    // The section mounts before its Host config read resolves; wait for the first numeric revision
+    // instead of sampling a page that is still in `loading` (that raced once and failed A07's
+    // "numeric revision" assertion).
+    await waitFor(async () => {
+      const current = await readSettingsState();
+      return current && String(current.revisionRaw).trim() !== '' ? current : undefined;
+    }, { timeoutMs: 20000, label: 'settings page config revision' });
     const initial = await readSettingsState();
     await capture('settings-page.png');
     const initialRevision = Number(initial.revisionRaw);
@@ -670,15 +679,45 @@ async function main() {
     const expanded = await readSettingsState();
     await capture('settings-page-expanded.png');
     const AXES = ['support', 'enabled', 'dependency', 'connection', 'target', 'capability'];
-    const axisNames = expanded.webAxes.map((axis) => axis.axis);
-    check('A13 expanded Web group exposes the six independent axes with their own data-uts-status',
-      AXES.every((axis) => axisNames.includes(axis))
-        && expanded.webAxes.every((axis) => typeof axis.status === 'string' && axis.status.length > 0)
-        && new Set(expanded.webAxes.map((axis) => axis.status)).size >= 2,
-      { axes: AXES, eachWithStatus: true },
-      { axes: expanded.webAxes });
-    // A13 page/Host consistency: the axes rendered on the page must be the Host's own values.
-    // This is the check that catches a client that silently drops the Host readiness payload.
+    // Every provider card must offer its own diagnostics entry (the axes are provider-scoped facts).
+    check('A13 every Web provider card offers its own diagnostics page',
+      (expanded.providerDiagnose || []).length > 0
+        && expanded.providerDiagnose.every((item) => item.hasButton === true),
+      { providers: ['chrome', 'edge', 'firefox'], eachWithButton: true },
+      { providerDiagnose: expanded.providerDiagnose });
+
+    await evaluate(`(() => { const button = document.querySelector('[data-uts-diagnose="chrome"]'); if (button) button.click(); })()`);
+    await waitFor(async () => evaluate(`!!document.querySelector('[data-uts-diagnostics="chrome"]')`),
+      { timeoutMs: 10000, label: 'chrome diagnostics page' });
+    const diagnostics = await evaluate(`(() => {
+      const pages = [...document.querySelectorAll('[data-uts-settings="page"]')];
+      const visible = pages.filter((node) => node.getBoundingClientRect().width > 0);
+      const scope = visible[visible.length - 1] || document.body;
+      const page = scope.querySelector('[data-uts-diagnostics="chrome"]');
+      if (!page) return { title: '', provider: null, axes: [], pageInstances: pages.length, visibleInstances: visible.length };
+      return {
+        title: (page.querySelector('.uts-page-title') || {}).textContent || '',
+        provider: page.getAttribute('data-uts-diagnostics'),
+        axes: [...page.querySelectorAll('[data-uts-axis]')].map((node) => ({
+          axis: node.getAttribute('data-uts-axis'),
+          status: node.getAttribute('data-uts-status'),
+        })),
+        pageInstances: pages.length,
+        visibleInstances: visible.length,
+      };
+    })()`);
+    await capture('settings-diagnostics-chrome.png');
+    const axisNames = diagnostics.axes.map((axis) => axis.axis);
+    check('A13 a provider diagnostics page exposes the six independent axes with their own data-uts-status',
+      diagnostics.provider === 'chrome'
+        && AXES.every((axis) => axisNames.includes(axis))
+        && diagnostics.axes.every((axis) => typeof axis.status === 'string' && axis.status.length > 0)
+        && new Set(diagnostics.axes.map((axis) => axis.status)).size >= 2,
+      { provider: 'chrome', axes: AXES, eachWithStatus: true },
+      { title: diagnostics.title, axes: diagnostics.axes });
+
+    // A13 page/Host consistency: the axes on that provider's page must be the Host's own values for
+    // *that provider* — not the environment aggregate and not another browser's evidence.
     const hostReadiness = await evaluate(`(async () => {
       const response = await fetch('/plugins/ui-testing/config?view=global', { credentials: 'same-origin', cache: 'no-store' });
       const payload = await response.json();
@@ -687,23 +726,59 @@ async function main() {
     const hostWebEntry = hostReadiness && Array.isArray(hostReadiness.environments)
       ? hostReadiness.environments.find((entry) => (entry.id || entry.environment) === 'web')
       : null;
+    const hostProviderEntry = hostWebEntry && hostWebEntry.providers ? hostWebEntry.providers.chrome : null;
     const hostAxisStatus = (axis) => {
-      const entry = hostWebEntry || {};
+      const entry = hostProviderEntry || {};
       if (entry.axes && entry.axes[axis]) return entry.axes[axis].status;
       return entry[axis] === undefined || entry[axis] === null ? null : String(entry[axis]);
     };
-    const axisMismatches = expanded.webAxes
+    const axisMismatches = diagnostics.axes
       .map((axis) => ({ axis: axis.axis, page: axis.status, host: hostAxisStatus(axis.axis) }))
       .filter((row) => row.host !== null && row.page !== row.host);
-    check('A13 page axes match the Host readiness payload (no dropped/downgraded axis)',
-      Boolean(hostWebEntry) && axisMismatches.length === 0,
-      { pageEqualsHost: true },
-      { hostEntry: hostWebEntry ? { checkedAt: hostWebEntry.checkedAt, axes: hostWebEntry.axes } : null, mismatches: axisMismatches });
+    check('A13 provider diagnostics axes match the Host per-provider readiness (no dropped/downgraded axis)',
+      Boolean(hostProviderEntry) && axisMismatches.length === 0,
+      { pageEqualsHostForChrome: true },
+      { hostProvider: hostProviderEntry ? { checkedAt: hostProviderEntry.checkedAt, axes: hostProviderEntry.axes } : null, mismatches: axisMismatches });
 
-    check('A13 Web support axis is supported (not a fabricated "valid" boolean)',
-      expanded.webAxes.some((axis) => axis.axis === 'support' && axis.status === 'supported'),
+    check('A13 diagnostics support axis is supported (not a fabricated "valid" boolean)',
+      diagnostics.axes.some((axis) => axis.axis === 'support' && axis.status === 'supported'),
       { support: 'supported' },
-      expanded.webAxes.find((axis) => axis.axis === 'support') || null);
+      diagnostics.axes.find((axis) => axis.axis === 'support') || null);
+
+    // Back to the list: the diagnostics page must unmount and the environment groups must render.
+    const backClick = await evaluate(`(() => {
+      const pages = [...document.querySelectorAll('[data-uts-settings="page"]')];
+      const visible = pages.filter((node) => node.getBoundingClientRect().width > 0);
+      const scope = visible[visible.length - 1] || document.body;
+      const back = scope.querySelector('[data-uts-diagnostics-back]');
+      if (!back) return 'no-back-button';
+      back.click();
+      return 'clicked';
+    })()`);
+    const backState = await waitFor(async () => {
+      // `.uts-groups` is a class, not a data attribute — selecting it as `[data-uts-groups]` never
+      // matches and made this wait time out even when the list had already rendered.
+      const closed = await evaluate(`!document.querySelector('[data-uts-diagnostics]') && !!document.querySelector('.uts-groups')`);
+      return closed ? 'list' : undefined;
+    }, { timeoutMs: 15000, label: 'diagnostics -> environment list' }).catch(() => 'timeout');
+    const backProbe = await evaluate(`(() => {
+      const pages = [...document.querySelectorAll('[data-uts-settings="page"]')];
+      const diag = document.querySelectorAll('[data-uts-diagnostics]');
+      const back = document.querySelectorAll('[data-uts-diagnostics-back]');
+      return {
+        pages: pages.length,
+        diagPresent: diag.length,
+        backPresent: back.length,
+        groupsPresent: document.querySelectorAll('.uts-groups').length,
+        dialogOpen: document.querySelectorAll('[role="dialog"]').length,
+        pageText: (pages[0] ? pages[0].textContent : '').slice(0, 120),
+      };
+    })()`);
+    check('A13 diagnostics page returns to the environment list',
+      backClick === 'clicked' && backState === 'list',
+      { backClick: 'clicked', backState: 'list' },
+      { backClick, backState, pageInstances: diagnostics.pageInstances, visibleInstances: diagnostics.visibleInstances, backProbe });
+
     const chromeCard = expanded.chromeCardText || '';
     check('A13 Chrome card shows no hardcoded version number',
       chromeCard.length > 0 && !/\d+\.\d+(\.\d+)?/u.test(chromeCard) && !/版本\s*[:：]?\s*\d/u.test(chromeCard),

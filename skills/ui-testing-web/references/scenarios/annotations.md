@@ -5,7 +5,7 @@
 ## 1. 唯一读取入口
 
 - `browser_state()` 返回顶层 `annotations`（每个**工作区**一份，与已认证 `/state` 的 `ui.annotations` 同源；旧 Host 无此字段 → 按 `unsupported` 处理，不要假装读到）。
-- `browser_capabilities()` 的 `annotations` 段声明读取方式、`space`（恒为 `canvas-css-px`）与 `limits`；**工具面仍是 30**，没有"标注工具"可调。
+- `browser_capabilities()` 的 `annotations` 段声明读取方式、`space`（恒为 `canvas-css-px`）与 `limits`；**工具面是 36 个已注册的 `browser_*`（当前 Web 环境注册并准入的那些）**，没有单独的“标注工具”可调——读标注就是读 `browser_state` 的一个字段。
 - **标注不进截图、也不进 T3**：`browser_screenshot` 的 `capture.composite:true` 只表示"页面帧合成到白画布"，与标注无关。若在截图里找不到用户画的线，这是设计如此，不是 bug。
 
 ## 2. 文档形状
