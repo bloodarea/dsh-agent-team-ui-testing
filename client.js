@@ -7798,9 +7798,11 @@ window.__ModuleLoader__.load({
         targets: [
           { id: 'chrome', name: 'Chrome', note: 'Chrome / Chromium 中运行的网页', chain: TARGET_CHAINS.chromium,
             state: 'supported' },
+          // Edge 与 Chrome 共用 CDP 执行端，已是「已实现」；是否真的可跑仍由 Host 就绪的依赖轴
+          // （providers.edge.axes.dependency）回答，卡片不得据此显示成「可用」。
           Object.assign(plannedTarget('edge', 'Edge', 'Edge 中运行的网页', {
             communication: 'CDP', backend: 'Edge DevTools',
-          }), { state: 'unsupported' }),
+          }), { state: 'supported' }),
           Object.assign(plannedTarget('firefox', 'Firefox', 'Firefox 中运行的网页', {
             communication: 'WebDriver BiDi', backend: 'Firefox Remote Agent',
           }), { state: 'unsupported' }),
@@ -7918,7 +7920,10 @@ window.__ModuleLoader__.load({
 .uts-chain-guide { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; overflow-wrap: anywhere; }
 .uts-groups { display: flex; flex-direction: column; gap: 18px; }
 .uts-group { display: flex; flex-direction: column; gap: 8px; }
-.uts-group-heading { margin: 0; font-size: 13px; font-weight: 600; line-height: 20px; }
+.uts-group-heading { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; font-weight: 600; line-height: 20px; }
+.uts-group-env { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 2px 8px; font-size: 12px; font-weight: 400; color: var(--dsw-alias-label-secondary); }
+.uts-current-tag { margin-left: 8px; font-weight: 400; }
+.uts-current-tag[data-uts-current="true"] { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l1); }
 .uts-group-toggle { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0; padding: 4px 8px; font: inherit; font-weight: 600; line-height: 20px; color: var(--dsw-alias-label-primary); text-align: left; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
 .uts-group-toggle:hover { background: var(--dsw-alias-bg-layer-2); }
 .uts-group-toggle:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
@@ -8017,6 +8022,48 @@ window.__ModuleLoader__.load({
      * environment id). Each axis may be a bare status or `{status, reason}`; missing axes stay
      * absent so the page can say "not probed" instead of inventing a value.
      */
+    /**
+     * Read the six axes out of one Host readiness entry (environment-level or provider-level).
+     * The Host returns a nested `axes` object (M4 contract); older/defensive shapes may still be
+     * flat, so the nested value is read first and the flat field is the fallback.
+     */
+    function axesOfHostEntry(entry) {
+      const axes = {};
+      if (!entry || typeof entry !== 'object') return axes;
+      for (const axis of AXIS_ORDER) {
+        const rawValue = entry.axes && entry.axes[axis] !== undefined
+          ? entry.axes[axis]
+          : entry[axis];
+        if (rawValue === undefined || rawValue === null) continue;
+        if (typeof rawValue === 'object') {
+          const status = rawValue.status === undefined || rawValue.status === null ? '' : String(rawValue.status);
+          if (!status) continue;
+          // A13: keep the *evidence* the Host measured, not just a status word. Dropping
+          // target/evidence/expiresAt here made "which capability is missing / which target was
+          // probed / when" unanswerable in the page even though the Host had measured it.
+          axes[axis] = {
+            status,
+            reason: rawValue.reason ? String(rawValue.reason) : '',
+            checkedAt: Number.isFinite(rawValue.checkedAt) ? rawValue.checkedAt : null,
+            expiresAt: Number.isFinite(rawValue.expiresAt) ? rawValue.expiresAt : null,
+            targetId: rawValue.target && typeof rawValue.target === 'object' && rawValue.target.targetId
+              ? String(rawValue.target.targetId)
+              : '',
+            evidenceKind: rawValue.evidence && typeof rawValue.evidence === 'object' && rawValue.evidence.kind
+              ? String(rawValue.evidence.kind)
+              : '',
+            checks: rawValue.evidence && typeof rawValue.evidence === 'object'
+              && rawValue.evidence.checks && typeof rawValue.evidence.checks === 'object'
+              ? rawValue.evidence.checks
+              : null,
+          };
+        } else {
+          axes[axis] = { status: String(rawValue), reason: '', checkedAt: null, expiresAt: null, targetId: '', evidenceKind: '', checks: null };
+        }
+      }
+      return axes;
+    }
+
     function normalizeReadiness(readiness) {
       const map = {};
       if (!readiness || typeof readiness !== 'object') return map;
@@ -8029,42 +8076,25 @@ window.__ModuleLoader__.load({
         if (!entry || typeof entry !== 'object') continue;
         const id = String(entry.environment || entry.id || entry.env || '');
         if (!id) continue;
-        const axes = {};
-        for (const axis of AXIS_ORDER) {
-          // The Host returns a nested `axes` object (M4 contract); older/defensive shapes may
-          // still be flat. Read the nested value first, then fall back to the flat field.
-          const rawValue = entry.axes && entry.axes[axis] !== undefined
-            ? entry.axes[axis]
-            : entry[axis];
-          if (rawValue === undefined || rawValue === null) continue;
-          if (typeof rawValue === 'object') {
-            const status = rawValue.status === undefined || rawValue.status === null ? '' : String(rawValue.status);
-            if (!status) continue;
-            // A13: keep the *evidence* the Host measured, not just a status word. Dropping
-            // target/evidence/expiresAt here made "which capability is missing / which target was
-            // probed / when" unanswerable in the page even though the Host had measured it.
-            axes[axis] = {
-              status,
-              reason: rawValue.reason ? String(rawValue.reason) : '',
-              checkedAt: Number.isFinite(rawValue.checkedAt) ? rawValue.checkedAt : null,
-              expiresAt: Number.isFinite(rawValue.expiresAt) ? rawValue.expiresAt : null,
-              targetId: rawValue.target && typeof rawValue.target === 'object' && rawValue.target.targetId
-                ? String(rawValue.target.targetId)
-                : '',
-              evidenceKind: rawValue.evidence && typeof rawValue.evidence === 'object' && rawValue.evidence.kind
-                ? String(rawValue.evidence.kind)
-                : '',
-              checks: rawValue.evidence && typeof rawValue.evidence === 'object'
-                && rawValue.evidence.checks && typeof rawValue.evidence.checks === 'object'
-                ? rawValue.evidence.checks
-                : null,
+        const axes = axesOfHostEntry(entry);
+        // Slice ② also reports per-provider axes (`readiness.environments[web].providers.<id>.axes`).
+        // Each card reads its own provider's result instead of sharing Chrome's connection/target/
+        // capability axes — a disabled provider is therefore not rendered as "ready".
+        const providers = {};
+        const rawProviders = entry.providers && typeof entry.providers === 'object' ? entry.providers : null;
+        if (rawProviders) {
+          for (const [providerId, providerEntry] of Object.entries(rawProviders)) {
+            if (!providerEntry || typeof providerEntry !== 'object') continue;
+            providers[providerId] = {
+              axes: axesOfHostEntry(providerEntry),
+              checkedAt: String(providerEntry.checkedAt || entry.checkedAt || readiness.checkedAt || ''),
+              reason: providerEntry.reason ? String(providerEntry.reason) : '',
             };
-          } else {
-            axes[axis] = { status: String(rawValue), reason: '', checkedAt: null, expiresAt: null, targetId: '', evidenceKind: '', checks: null };
           }
         }
         map[id] = {
           axes,
+          providers,
           checkedAt: String(entry.checkedAt || readiness.checkedAt || ''),
           reason: entry.reason ? String(entry.reason) : '',
         };
@@ -8087,6 +8117,75 @@ window.__ModuleLoader__.load({
       if (!envs || typeof envs !== 'object') return null;
       const entry = envs[envId];
       return Boolean(entry && entry.enabled === true);
+    }
+
+    /**
+     * Per-provider switch values straight from the Host config.
+     *
+     * Returns `null` when the config carries no provider map at all (old Host / unreadable config),
+     * so the page can say "unknown" instead of pretending the switch is off. The map is the single
+     * source of truth: closing the target-environment master switch never rewrites these values.
+     */
+    function providersFromConfig(config, envId) {
+      const envs = config && config.global && config.global.environments;
+      const entry = envs && typeof envs === 'object' ? envs[envId] : null;
+      const providers = entry && typeof entry.providers === 'object' && entry.providers ? entry.providers : null;
+      if (!providers) return null;
+      const out = {};
+      for (const [providerId, value] of Object.entries(providers)) {
+        out[providerId] = Boolean(value && value.enabled === true);
+      }
+      return out;
+    }
+
+    /**
+     * The execution provider the Host resolved for this scope. Read from `resolved.provider`, never
+     * inferred from the checkboxes: the switch says "may use", this says "will use".
+     */
+    function currentProviderFromState(state) {
+      const resolved = state && state.resolved && typeof state.resolved === 'object' ? state.resolved : null;
+      return resolved && typeof resolved.provider === 'string' ? resolved.provider : '';
+    }
+
+    /**
+     * Six axes for one provider card, read from `readiness.environments[env].providers.<id>.axes`.
+     * When the Host reports nothing for that provider, every axis stays `not-probed` with a reason —
+     * a card never borrows another provider's connection/target/capability evidence.
+     */
+    function providerAxes(state, envId, providerId) {
+      const entry = state && state.readiness ? state.readiness[envId] : null;
+      const providerEntry = entry && entry.providers ? entry.providers[providerId] : null;
+      const hostAxes = providerEntry && providerEntry.axes ? providerEntry.axes : null;
+      const configLoaded = Boolean(state && state.revision !== null && !state.error);
+      return AXIS_ORDER.map((axis) => {
+        if (axis === 'enabled') {
+          if (configLoaded) {
+            const providers = providersFromConfig(state.config, envId);
+            if (providers === null) {
+              return { axis, status: 'not-probed', reason: 'Host 配置未包含 providers', source: 'unavailable' };
+            }
+            return providers[providerId] === true
+              ? { axis, status: 'true', reason: 'Host 配置已启用该运行环境', source: 'host' }
+              : { axis, status: 'false', reason: 'Host 配置未启用该运行环境', source: 'host' };
+          }
+          return { axis, status: 'not-probed', reason: 'Host 配置不可用，未读取到该运行环境的启用状态', source: 'unavailable' };
+        }
+        const host = hostAxes ? hostAxes[axis] : null;
+        if (host && host.status) {
+          return {
+            axis,
+            status: host.status,
+            reason: host.reason || '来自 Host 就绪结果',
+            source: 'host',
+            checkedAt: host.checkedAt ?? null,
+            expiresAt: host.expiresAt ?? null,
+            targetId: host.targetId || '',
+            evidenceKind: host.evidenceKind || '',
+            checks: host.checks || null,
+          };
+        }
+        return { axis, status: 'not-probed', reason: 'Host 未提供该运行环境的探测结果', source: 'unavailable' };
+      });
     }
 
     /**
@@ -8295,34 +8394,63 @@ window.__ModuleLoader__.load({
       const chain = target.chain || {};
       const configReady = props.configReady === true;
       const busy = props.busy === true;
+      const providerSupported = target.state === 'supported';
+      // 总闸（目标环境）与分开关（运行环境）是两层：分开关只在总闸打开时才可操作，
+      // 但关闭总闸不会改写各 provider 已保存的值。
+      const masterEnabled = props.masterEnabled === true;
+      const providerCurrent = props.providerCurrent === true;
       const targetAxis = props.targetAxis || { status: 'not-probed', reason: 'Host 未提供目标状态' };
-      const switchDisabled = target.state !== 'supported' || !configReady || busy;
-      const switchTitle = target.state !== 'supported'
-        ? '当前目标未实现，不能启用'
+      // 依赖轴按 provider 单独显示：Edge 装了没有、override 有效没有，是"能不能执行"的直接答案，
+      // 不能被同组 Chrome 的证据顶替。
+      const dependencyAxis = props.dependencyAxis || { status: 'not-probed', reason: 'Host 未提供该运行环境的依赖状态' };
+      const switchDisabled = !providerSupported || !configReady || busy || !masterEnabled;
+      const switchTitle = !providerSupported
+        ? '当前运行环境未实现，不能启用'
         : !configReady
           ? (props.configError || 'Host 配置不可用，无法提交启用状态')
-          : busy ? '正在提交到 Host…' : '提交到 Host（按 Host revision 保存）';
+          : busy ? '正在提交到 Host…'
+            : !masterEnabled ? '目标环境总开关已关闭：已保存的开关值保留，重新打开后恢复'
+              : '提交到 Host（按 Host revision 保存）';
       return h('div', {
         className: 'uts-item',
         'data-uts-target': target.id,
+        'data-uts-provider': target.id,
+        'data-uts-provider-state': providerSupported ? 'supported' : 'disabled',
+        'data-uts-provider-current': providerCurrent ? 'true' : 'false',
         'data-uts-state': target.state,
         'data-uts-node': 'target',
       },
         h('div', { className: 'uts-card' },
-          h('div', { className: 'uts-card-name' }, target.name),
+          h('div', { className: 'uts-card-name' },
+            target.name,
+            h('span', {
+              className: 'uts-tag uts-current-tag',
+              'data-uts-tag': 'current',
+              'data-uts-current': providerCurrent ? 'true' : 'false',
+            }, providerCurrent ? '当前使用' : '未选中')),
           target.note ? h('div', { className: 'uts-card-note' }, target.note) : null,
-          h('div', { className: 'uts-field uts-field-inline' },
+          h('div', {
+            className: 'uts-field uts-field-inline',
+            'data-uts-switch-provider': target.id,
+          },
             h('span', { className: 'uts-field-label' }, '用户启用：'),
             h(TargetEnvSwitch, {
-              label: '是否启用：' + target.name,
-              checked: props.enabled === true,
+              label: '是否启用运行环境：' + target.name,
+              checked: props.providerEnabled === true,
               disabled: switchDisabled,
               busy,
               title: switchTitle,
               onChange: (next) => {
-                if (typeof props.onToggleEnabled === 'function') props.onToggleEnabled(next);
+                if (typeof props.onToggleProvider === 'function') props.onToggleProvider(target.id, next);
               },
             })),
+          h('div', { className: 'uts-field' },
+            h('span', { className: 'uts-field-label' }, '依赖：'),
+            h('span', {
+              className: 'uts-field-value',
+              'data-uts-dependency-status': dependencyAxis.status,
+              title: dependencyAxis.reason || '',
+            }, axisText('dependency', dependencyAxis.status))),
           h('div', { className: 'uts-field' },
             h('span', { className: 'uts-field-label' }, '目标：'),
             h('span', {
@@ -8365,7 +8493,29 @@ window.__ModuleLoader__.load({
           },
             h('span', { className: 'uts-group-title' }, group.title),
             h('span', { className: 'uts-group-count' }, group.targets.length + ' 个目标'),
-            h('span', { className: 'uts-group-chevron', 'aria-hidden': true }, h(IconChevron, null)))),
+            h('span', { className: 'uts-group-chevron', 'aria-hidden': true }, h(IconChevron, null))),
+          // 目标环境总开关：与上面的展开/收起是两个不同控件（不同节点、不同属性），
+          // 关闭它只停用整块执行，不抹掉各运行环境已保存的开关值。
+          h('div', {
+            className: 'uts-group-env',
+            'data-uts-env-switch': group.id,
+            'data-uts-env-enabled': props.envEnabled === true ? 'true' : 'false',
+          },
+            h('span', { className: 'uts-field-label' }, '目标环境总开关'),
+            h(TargetEnvSwitch, {
+              label: '目标环境总开关：' + group.title,
+              checked: props.envEnabled === true,
+              disabled: props.configReady !== true || props.busy === true,
+              busy: props.busy === true,
+              title: props.configReady !== true
+                ? (props.configError || 'Host 配置不可用，无法提交启用状态')
+                : props.busy === true
+                  ? '正在提交到 Host…'
+                  : '关闭后停用整块执行；各运行环境已保存的开关值保留',
+              onChange: (next) => {
+                if (typeof props.onToggleEnv === 'function') props.onToggleEnv(next);
+              },
+            }))),
         h('div', { className: 'uts-axes', 'data-uts-axes': group.id, 'data-uts-axes-checked-at': props.checkedAt || '' },
           axes.map((axis) => h('div', {
             key: axis.axis,
@@ -8390,16 +8540,32 @@ window.__ModuleLoader__.load({
         expanded
           ? h('div', { className: 'uts-cards', id: regionId, role: 'region', 'aria-label': group.title },
               group.targets.length
-                ? group.targets.map((target) => h(TargetEnvCard, {
-                    key: target.id,
-                    target,
-                    enabled: props.envEnabled === true,
-                    configReady: props.configReady,
-                    configError: props.configError,
-                    busy: props.busy,
-                    targetAxis: props.targetAxis,
-                    onToggleEnabled: props.onToggleEnabled,
-                  }))
+                ? group.targets.map((target) => {
+                    // 每张卡读自己的 provider 六轴；没有就把目标轴如实报成未探测，
+                    // 绝不复用同组另一个浏览器的连接/目标证据。
+                    const axesFor = props.providerAxesById && props.providerAxesById[target.id]
+                      ? props.providerAxesById[target.id]
+                      : null;
+                    const targetAxis = axesFor
+                      ? (axesFor.find((axis) => axis.axis === 'target') || { status: 'not-probed', reason: 'Host 未提供该运行环境的目标状态' })
+                      : props.targetAxis;
+                    const dependencyAxis = axesFor
+                      ? (axesFor.find((axis) => axis.axis === 'dependency') || { status: 'not-probed', reason: 'Host 未提供该运行环境的依赖状态' })
+                      : { status: 'not-probed', reason: 'Host 未提供该运行环境的依赖状态' };
+                    return h(TargetEnvCard, {
+                      key: target.id,
+                      target,
+                      masterEnabled: props.envEnabled === true,
+                      providerEnabled: props.providers ? props.providers[target.id] === true : false,
+                      providerCurrent: props.currentProvider === target.id,
+                      configReady: props.configReady,
+                      configError: props.configError,
+                      busy: props.busy,
+                      targetAxis,
+                      dependencyAxis,
+                      onToggleProvider: props.onToggleProvider,
+                    });
+                  })
                 : h('p', { className: 'uts-empty' }, '暂未接入'))
           : null);
     }
@@ -8415,6 +8581,7 @@ window.__ModuleLoader__.load({
       const [hideUnimplemented, setHideUnimplemented] = React.useState(false);
       const [expanded, setExpanded] = React.useState(readExpandedGroups);
       const [submittingEnv, setSubmittingEnv] = React.useState('');
+      const [submittingProvider, setSubmittingProvider] = React.useState('');
       const [notice, setNotice] = React.useState(null);
       const aliveRef = React.useRef(true);
       React.useEffect(() => () => { aliveRef.current = false; }, []);
@@ -8447,6 +8614,42 @@ window.__ModuleLoader__.load({
         }).catch((error) => {
           if (!aliveRef.current) return;
           setSubmittingEnv('');
+          if (error && error.code === 'CONFIG_CONFLICT') {
+            adoptHostConflict(hostConfig, error);
+            setNotice({
+              kind: 'conflict',
+              text: '配置已被其他窗口修改（CONFIG_CONFLICT）；已按最新 revision 重新读取，本次切换未保存',
+            });
+            return;
+          }
+          setNotice({
+            kind: 'error',
+            text: '保存失败，已回滚为 Host 当前值：' + ((error && error.message) || '未知错误'),
+          });
+        });
+      }
+      /**
+       * 运行环境分开关：只写 `environments.<env>.providers.<id>.enabled`，与总开关互不影响。
+       * 关闭总开关时不会调用这里，因此各 provider 的已保存值保持不变。
+       */
+      function toggleProvider(group, providerId, next) {
+        if (!configReady || submittingEnv || submittingProvider) return;
+        setSubmittingProvider(providerId);
+        setNotice(null);
+        const patch = { environments: { [group.id]: { providers: { [providerId]: { enabled: next } } } } };
+        putHostConfig(patch, state.revision).then((payload) => {
+          if (!aliveRef.current) return;
+          const merged = hostConfig.adopt(payload);
+          if (payload.config === undefined) hostConfig.reload();
+          setSubmittingProvider('');
+          const target = (group.targets || []).find((item) => item.id === providerId);
+          const name = target && target.name ? target.name : providerId;
+          setNotice(merged.error
+            ? { kind: 'error', text: merged.error }
+            : { kind: 'ok', text: (next ? '已启用运行环境 ' : '已禁用运行环境 ') + name + ' · revision ' + merged.revision });
+        }).catch((error) => {
+          if (!aliveRef.current) return;
+          setSubmittingProvider('');
           if (error && error.code === 'CONFIG_CONFLICT') {
             adoptHostConflict(hostConfig, error);
             setNotice({
@@ -8515,11 +8718,19 @@ window.__ModuleLoader__.load({
                   expanded: expanded[group.id] === true,
                   onToggle: toggleGroup,
                   envEnabled: enabledFromConfig(state.config, group.id) === true,
+                  providers: providersFromConfig(state.config, group.id),
+                  currentProvider: currentProviderFromState(state),
+                  providerAxesById: (() => {
+                    const byId = {};
+                    for (const target of group.targets) byId[target.id] = providerAxes(state, group.id, target.id);
+                    return byId;
+                  })(),
                   configReady,
                   configError: state.loading ? '正在读取 Host 配置…' : state.error,
-                  busy: submittingEnv === group.id,
+                  busy: submittingEnv === group.id || submittingProvider !== '',
                   targetAxis,
-                  onToggleEnabled: (next) => toggleEnvironment(group, next),
+                  onToggleEnv: (next) => toggleEnvironment(group, next),
+                  onToggleProvider: (providerId, next) => toggleProvider(group, providerId, next),
                 });
               })
             : h('p', { className: 'uts-empty' }, '暂无已实现的目标'))));

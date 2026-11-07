@@ -43,7 +43,16 @@ test('default config is minimal, web-only, and normalize is idempotent', () => {
   assert.equal(DEFAULT_CONFIG.revision, 0);
   assert.equal(DEFAULT_CONFIG.global.environment, 'web');
   assert.deepEqual(DEFAULT_CONFIG.global.enabledEnvironments, ['web']);
-  assert.deepEqual(DEFAULT_CONFIG.global.environments.web, { enabled: true, targetId: null });
+  assert.deepEqual(DEFAULT_CONFIG.global.environments.web, {
+    enabled: true,
+    targetId: null,
+    provider: 'chrome',
+    providers: {
+      chrome: { enabled: true },
+      edge: { enabled: false },
+      firefox: { enabled: false },
+    },
+  });
   assert.deepEqual(DEFAULT_CONFIG.workspaces, {});
   assert.deepEqual(DEFAULT_CONFIG.sessions, {});
   assert.ok(Object.isFrozen(DEFAULT_CONFIG));

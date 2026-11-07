@@ -467,6 +467,22 @@ async function probeA13A14(configDir) {
   const after = scanPluginChromeProcesses();
   const web = (readiness.body.environments || []).find((item) => item.id === 'web');
   const planned = (readiness.body.environments || []).filter((item) => item.support === 'planned');
+  // slice ②: per-provider cards are present and never borrow another provider's evidence.
+  const providerCards = (web && web.providers) || null;
+  check('A13 readiness 暴露逐 provider 卡片（chrome/edge/firefox 各六轴）',
+    Boolean(providerCards) && ['chrome', 'edge', 'firefox'].every((id) => {
+      const card = providerCards[id];
+      return card && card.axes && ['support', 'enabled', 'dependency', 'connection', 'target', 'capability']
+        .every((axis) => card.axes[axis]);
+    }),
+    'web.providers.<id>.axes',
+    providerCards ? Object.keys(providerCards) : null);
+  check('A13 未启用的 edge 卡片不被探测（依赖轴不借用 Chrome 证据）',
+    Boolean(providerCards) && providerCards.edge && providerCards.edge.support === 'supported'
+      && providerCards.edge.axes.dependency.status === 'not-probed'
+      && providerCards.edge.axes.dependency.reason === 'provider-disabled',
+    { support: 'supported', dependency: { status: 'not-probed', reason: 'provider-disabled' } },
+    providerCards && providerCards.edge ? { support: providerCards.edge.support, dependency: providerCards.edge.axes.dependency } : null);
   check('A14 冷态 GET /readiness 未启动 Chromium', after.count === before.count, { count: before.count }, { count: after.count });
   check('A13 六个轴齐备且各自独立', Boolean(web) && ['support', 'enabled', 'dependency', 'connection', 'target', 'capability'].every((axis) => web.axes?.[axis]),
     'six axes', web ? Object.keys(web.axes || {}) : null);

@@ -21,7 +21,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { DEFAULT_CONFIG, normalizeConfig, resolveSnapshot, validatePatch } from './config.js';
-import { ERROR_CODES } from './contracts.js';
+import { ENVIRONMENTS, ERROR_CODES } from './contracts.js';
 import { AdapterError } from './errors.js';
 import { workspaceKeyOf } from './identity.js';
 
@@ -35,6 +35,10 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function requireString(value, field) {
   if (typeof value !== 'string' || value.length === 0) {
     throw new AdapterError(ERROR_CODES.INVALID_ARGUMENT, `${field} must be a non-empty string`, {
@@ -44,6 +48,32 @@ function requireString(value, field) {
   return value;
 }
 
+/**
+ * Merge one normalized patch entry into an existing environment entry.
+ *
+ * The environment-level patch must stay a *partial* update: a nested `providers` map is merged per
+ * provider id, so writing `{providers:{edge:{enabled:true}}}` never drops the sibling
+ * `chrome`/`firefox` switches (a plain `{...existing, ...entry}` spread would).
+ */
+function mergeEnvironmentEntry(existing, patchEntry) {
+  const base = isPlainObject(existing) ? existing : {};
+  const next = { ...base, ...clone(patchEntry) };
+  if (isPlainObject(patchEntry?.providers)) {
+    const providers = {};
+    for (const [provider, entry] of Object.entries(base.providers ?? {})) {
+      providers[provider] = isPlainObject(entry) ? { ...entry } : entry;
+    }
+    for (const [provider, entry] of Object.entries(patchEntry.providers)) {
+      providers[provider] = {
+        ...(isPlainObject(providers[provider]) ? providers[provider] : {}),
+        ...clone(entry),
+      };
+    }
+    next.providers = providers;
+  }
+  return next;
+}
+
 function applyGlobalPatch(config, patch) {
   if (patch.environment !== undefined) config.global.environment = patch.environment;
   if (patch.enabledEnvironments !== undefined) {
@@ -51,18 +81,18 @@ function applyGlobalPatch(config, patch) {
   }
   if (patch.environments !== undefined) {
     for (const [environment, entry] of Object.entries(patch.environments)) {
-      config.global.environments[environment] = {
-        ...(config.global.environments[environment] ?? {}),
-        ...clone(entry),
-      };
+      config.global.environments[environment] = mergeEnvironmentEntry(
+        config.global.environments[environment],
+        entry,
+      );
     }
   }
   if (patch.targetId !== undefined) {
     const environment = patch.environment ?? config.global.environment;
-    config.global.environments[environment] = {
-      ...(config.global.environments[environment] ?? {}),
-      targetId: patch.targetId,
-    };
+    config.global.environments[environment] = mergeEnvironmentEntry(
+      config.global.environments[environment],
+      { targetId: patch.targetId },
+    );
   }
 }
 
@@ -77,19 +107,19 @@ function applyWorkspacePatch(config, workspaceKey, patch) {
   if (patch.environments !== undefined) {
     workspace.environments = workspace.environments ?? {};
     for (const [environment, entry] of Object.entries(patch.environments)) {
-      workspace.environments[environment] = {
-        ...(workspace.environments[environment] ?? {}),
-        ...clone(entry),
-      };
+      workspace.environments[environment] = mergeEnvironmentEntry(
+        workspace.environments[environment],
+        entry,
+      );
     }
   }
   if (patch.targetId !== undefined) {
     const environment = patch.environment ?? workspace.environment ?? config.global.environment;
     workspace.environments = workspace.environments ?? {};
-    workspace.environments[environment] = {
-      ...(workspace.environments[environment] ?? {}),
-      targetId: patch.targetId,
-    };
+    workspace.environments[environment] = mergeEnvironmentEntry(
+      workspace.environments[environment],
+      { targetId: patch.targetId },
+    );
   }
 }
 
@@ -99,6 +129,8 @@ function applySessionPatch(config, agentId, patch) {
   config.sessions[key] = session;
   if (patch.environment !== undefined) session.environment = patch.environment;
   if (patch.targetId !== undefined) session.targetId = patch.targetId;
+  // Session-scoped provider choice only; global/workspace enablement stays a global decision.
+  if (patch.webProvider !== undefined) session.webProvider = patch.webProvider;
 }
 
 /**
@@ -406,19 +438,24 @@ export class ConfigStore {
   }
 
   /**
-   * Convenience wrapper over `write` for selecting an environment/target.
+   * Convenience wrapper over `write` for selecting an environment/target/provider.
    *
    * Workspace scope accepts either an explicit `workspaceKey` or `{agent, cwd, workspaceId}` and
    * derives the key through `workspaceKeyOf`, so config buckets and runtime entries cannot drift.
    *
+   * `webProvider` selects the web runtime provider. Session scope writes `sessions.<id>.webProvider`
+   * (a session may choose, never change global enablement); global/workspace scope writes
+   * `environments.web.provider`.
+   *
    * @param {{scope?:'global'|'workspace'|'session', environment?:string, targetId?:string|null,
-   *   agentId?:string, workspaceKey?:string, expectedRevision?:number, agent?:object,
-   *   cwd?:string, workspaceId?:string}} input
+   *   webProvider?:string|null, agentId?:string, workspaceKey?:string, expectedRevision?:number,
+   *   agent?:object, cwd?:string, workspaceId?:string}} input
    */
   select({
     scope = 'session',
     environment,
     targetId,
+    webProvider,
     agentId,
     workspaceKey,
     expectedRevision,
@@ -440,8 +477,18 @@ export class ConfigStore {
         patch.environments = { [selected]: { targetId } };
       }
     }
+    if (webProvider !== undefined) {
+      if (scope === 'session') {
+        patch.webProvider = webProvider;
+      } else {
+        patch.environments = {
+          ...(patch.environments ?? {}),
+          [ENVIRONMENTS.WEB]: { ...(patch.environments?.[ENVIRONMENTS.WEB] ?? {}), provider: webProvider },
+        };
+      }
+    }
     if (Object.keys(patch).length === 0) {
-      throw new AdapterError(ERROR_CODES.CONFIG_INVALID, 'select requires environment or targetId', {
+      throw new AdapterError(ERROR_CODES.CONFIG_INVALID, 'select requires environment, targetId or webProvider', {
         details: { scope },
       });
     }

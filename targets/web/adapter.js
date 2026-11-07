@@ -18,20 +18,26 @@
  */
 
 import { existsSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import process from 'node:process';
 
 import {
   AdapterError,
   AVAILABILITY,
   CONTRACT_VERSION,
+  DEFAULT_WEB_PROVIDER,
   ERROR_CODES,
   READINESS_STATUS,
   SUPPORT,
+  WEB_PROVIDER_IDS,
+  WEB_PROVIDER_REASONS,
+  WEB_PROVIDER_VENDOR,
   axis,
   createEvidenceEnvelope,
   createReadinessReport,
+  isImplementedWebProvider,
   newTargetIdentity,
+  webProviderSupport,
 } from '../../core/index.js';
 
 /**
@@ -228,6 +234,72 @@ function executionClassesOf(operation) {
   return entry.executionClasses ?? [entry.executionClass];
 }
 
+/**
+ * Resolve which browser *driver* one snapshot addresses (contract §4.2).
+ *
+ * The web environment keeps exactly one facade per adapter class (`environment` / `adapterId` stay
+ * `"web"`); the provider dimension lives here and only here, so "which browser executes" is answered
+ * once instead of at every call site. `provider` missing from the snapshot is the legacy shape
+ * (hand-built test snapshots, pre-provider hosts) and means chrome — the documented v1 default.
+ *
+ * `blocked` is never resolved by substituting another browser (§5): it either reports `null`
+ * (executable) or the reason the *selected* provider cannot run, with the §4.4 error code.
+ *
+ * @param {object|null} snapshot
+ * @returns {{provider:string, executionAdapterId:string, implemented:boolean,
+ *   blocked:string|null, errorCode:string|null}}
+ */
+export function resolveWebDriver(snapshot) {
+  const provider = snapshot && typeof snapshot.provider === 'string' && snapshot.provider.length > 0
+    ? snapshot.provider
+    : DEFAULT_WEB_PROVIDER;
+  const known = WEB_PROVIDER_IDS.includes(provider);
+  const support = webProviderSupport(provider);
+  const implemented = isImplementedWebProvider(provider);
+  const configReason = snapshot && isPlainObject(snapshot.source)
+    && typeof snapshot.source.rejectedProviderReason === 'string'
+    ? snapshot.source.rejectedProviderReason
+    : null;
+  // Config policy first (it is the actionable thing a user can change), then engineering support.
+  let blocked = null;
+  if (!known) blocked = WEB_PROVIDER_REASONS.UNKNOWN_PROVIDER;
+  else if (configReason === WEB_PROVIDER_REASONS.ENVIRONMENT_DISABLED
+    || configReason === WEB_PROVIDER_REASONS.PROVIDER_DISABLED) {
+    blocked = configReason;
+  } else if (support === 'pending') blocked = WEB_PROVIDER_REASONS.DRIVER_PENDING;
+  else if (!implemented) blocked = WEB_PROVIDER_REASONS.PROVIDER_UNSUPPORTED;
+  return {
+    provider,
+    executionAdapterId: `web-${provider}`,
+    support,
+    implemented,
+    blocked,
+    errorCode: blocked === null
+      ? null
+      : (blocked === WEB_PROVIDER_REASONS.DRIVER_PENDING || blocked === WEB_PROVIDER_REASONS.UNKNOWN_PROVIDER
+        || blocked === WEB_PROVIDER_REASONS.PROVIDER_UNSUPPORTED
+        ? ERROR_CODES.ADAPTER_UNSUPPORTED
+        : ERROR_CODES.ADAPTER_DISABLED),
+  };
+}
+
+/**
+ * Refuse a call whose provider cannot execute, using the fixed §4.4 vocabulary:
+ * disabled -> ADAPTER_DISABLED, unknown / not implemented -> ADAPTER_UNSUPPORTED.
+ */
+function assertDriverAllowed(driver, operation) {
+  if (driver.blocked === null) return driver;
+  const disabled = driver.blocked === WEB_PROVIDER_REASONS.ENVIRONMENT_DISABLED
+    || driver.blocked === WEB_PROVIDER_REASONS.PROVIDER_DISABLED;
+  throw new AdapterError(
+    driver.errorCode,
+    disabled
+      ? `web provider '${driver.provider}' is disabled (${driver.blocked})`
+      : `web provider '${driver.provider}' cannot execute (${driver.blocked})`,
+    { details: { operation: operation ?? null, provider: driver.provider, reason: driver.blocked } },
+  );
+}
+
 /** Error codes that a platform dispatch is allowed to raise and have preserved. */
 const PRESERVED_ERROR_CODES = new Set(Object.values(ERROR_CODES));
 
@@ -260,6 +332,132 @@ function windowsChromeCandidates(env) {
     candidates.push(join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe'));
   }
   return candidates;
+}
+
+/** Explicit per-provider override env var; one variable per vendor, never shared. */
+export const WEB_PROVIDER_ENV = Object.freeze({
+  chrome: 'DSH_UI_TESTING_CHROME',
+  edge: 'DSH_UI_TESTING_EDGE',
+});
+
+/** Edge candidates per platform. Chrome's list is untouched above. */
+const EDGE_LINUX_CANDIDATES = Object.freeze([
+  '/opt/microsoft/msedge/msedge',
+  '/usr/bin/microsoft-edge',
+  '/usr/bin/microsoft-edge-stable',
+  'microsoft-edge',
+  'microsoft-edge-stable',
+]);
+
+const EDGE_MAC_CANDIDATES = Object.freeze([
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+  '/Applications/Microsoft Edge Beta.app/Contents/MacOS/Microsoft Edge Beta',
+]);
+
+function windowsEdgeCandidates(env) {
+  const programFiles = env.ProgramFiles || env.PROGRAMFILES || 'C:\\Program Files';
+  const programFilesX86 = env['ProgramFiles(x86)'] || env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
+  const localAppData = env.LOCALAPPDATA || '';
+  const candidates = [
+    join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    join(programFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+  ];
+  if (localAppData) candidates.push(join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe'));
+  return candidates;
+}
+
+/**
+ * Ordered executable candidates for one provider. Vendors never mix: an Edge search never contains
+ * a Chrome path (a "successful" Edge launch that is really Chrome is the failure mode §8 forbids).
+ */
+export function providerExecutableCandidates({ provider, platform = process.platform, env = process.env } = {}) {
+  if (provider === 'edge') {
+    if (platform === 'darwin') return [...EDGE_MAC_CANDIDATES];
+    if (platform === 'win32') return windowsEdgeCandidates(env);
+    return [...EDGE_LINUX_CANDIDATES];
+  }
+  return chromeCandidates({ chromePath: undefined, platform, env });
+}
+
+/**
+ * Resolve the executable for one provider **without starting anything**.
+ *
+ * @returns {{provider:string, path:string|null, candidates:string[], source:'override'|'search',
+ *   reason:string|null, overrideValue:string|null}}
+ */
+export function resolveProviderExecutable({
+  provider, platform = process.platform, env = process.env, overridePath = undefined,
+} = {}) {
+  const id = typeof provider === 'string' && provider.length > 0 ? provider : 'chrome';
+  const envName = WEB_PROVIDER_ENV[id] ?? null;
+  const raw = overridePath !== undefined
+    ? overridePath
+    : (envName !== null && envName in env ? env[envName] : undefined);
+  const overrideValue = raw === undefined || raw === null ? null : String(raw).trim();
+  if (overrideValue !== null) {
+    // An explicit override is authoritative for *this* provider: when it is unusable we report it
+    // and stop. Falling back to another vendor would run the wrong browser under this label.
+    if (overrideValue === '' || overrideValue.includes('\0')) {
+      return { provider: id, path: null, candidates: [overrideValue], source: 'override',
+        reason: WEB_PROVIDER_REASONS.OVERRIDE_INVALID, overrideValue };
+    }
+    const usable = isAbsolute(overrideValue) || !/[\\/]/.test(overrideValue)
+      ? candidateExists(overrideValue, { platform, env })
+      : false;
+    return {
+      provider: id,
+      path: usable ? overrideValue : null,
+      candidates: [overrideValue],
+      source: 'override',
+      reason: usable ? null : WEB_PROVIDER_REASONS.OVERRIDE_INVALID,
+      overrideValue,
+    };
+  }
+  const candidates = providerExecutableCandidates({ provider: id, platform, env });
+  const found = firstExistingCandidate(candidates, { platform, env });
+  return {
+    provider: id,
+    path: found,
+    candidates,
+    source: 'search',
+    reason: found === null ? WEB_PROVIDER_REASONS.EXECUTABLE_MISSING : null,
+    overrideValue: null,
+  };
+}
+
+/**
+ * Confirm the product behind a live CDP endpoint is the vendor we think we started (§8: "CDP
+ * connected" is not proof). `Browser.getVersion.product` is the reliable signal.
+ *
+ * @returns {{ok:boolean, product:string|null, expected:string}}
+ */
+export function verifyProviderProduct({ provider, version } = {}) {
+  const rule = WEB_PROVIDER_VENDOR[provider] ?? null;
+  const product = typeof version?.product === 'string' && version.product.length > 0 ? version.product : null;
+  if (rule === null) {
+    // Unknown provider: no rule means no way to prove identity — never let it through.
+    return { ok: false, verified: false, product, expected: null, reason: WEB_PROVIDER_REASONS.PROVIDER_UNSUPPORTED };
+  }
+  const expected = rule.requires.join('+');
+  if (product === null) {
+    // "No evidence" is not "wrong evidence": non-chrome providers fail closed (their whole point is
+    // catching a Chrome binary under an Edge label); chrome keeps its accepted startup path.
+    return rule.failClosedOnMissing
+      ? { ok: false, verified: false, product, expected, reason: WEB_PROVIDER_REASONS.IDENTITY_UNVERIFIED }
+      : { ok: true, verified: false, product, expected, reason: null };
+  }
+  const missing = rule.requires.filter((token) => !product.includes(token));
+  const forbidden = rule.forbids.filter((token) => product.includes(token));
+  const ok = missing.length === 0 && forbidden.length === 0;
+  return {
+    ok,
+    verified: true,
+    product,
+    expected,
+    reason: ok ? null : WEB_PROVIDER_REASONS.IDENTITY_MISMATCH,
+    missing,
+    forbidden,
+  };
 }
 
 function isPlainObject(value) {
@@ -507,11 +705,15 @@ export function createWebTargetAdapter({
       });
     }
 
+    const driver = assertDriverAllowed(resolveWebDriver(snapshot), 'createSession');
     const sessionId = `web:${scope.id}`;
     const generationCache = new Map();
     const state = {
       sessionId,
       environment: 'web',
+      // Runtime provider this session talks to. The facade identity stays `web`.
+      provider: driver.provider,
+      executionAdapterId: driver.executionAdapterId,
       generation: 1,
       configRevision: configRevisionOf(snapshot),
       target: null,
@@ -550,6 +752,8 @@ export function createWebTargetAdapter({
     const session = {
       sessionId,
       environment: state.environment,
+      provider: state.provider,
+      executionAdapterId: state.executionAdapterId,
       scopeId: scope.id,
       get generation() {
         return state.generation;
@@ -612,17 +816,51 @@ export function createWebTargetAdapter({
     const checkedAt = typeof now === 'function' ? now() : Date.now();
     const enabled = enabledEnvironmentsOf(snapshot).includes('web');
 
-    const candidates = chromeCandidates({ chromePath, platform });
-    const found = firstExistingCandidate(candidates, { platform });
+    const driver = resolveWebDriver(snapshot);
+    // Only the chrome vendor resolver exists in this slice. Reporting another provider from the
+    // Chrome candidate list would fabricate a dependency observation (§8: CDP connecting is not
+    // proof of the product), so a non-chrome provider answers `not-probed` with a named reason.
+    const resolution = resolveProviderExecutable({
+      provider: driver.provider,
+      platform,
+      // The adapter-level `chromePath` option stays authoritative for chrome (test seam + config).
+      overridePath: driver.provider === DEFAULT_WEB_PROVIDER ? chromePath : undefined,
+    });
+    const candidates = resolution.candidates;
+    const found = resolution.path;
     // No version is ever invented: `version: null` means "not observed", not "unknown but assumed".
-    const dependencyEvidence = { id: 'chromium', kind: 'executable', version: null };
-    const dependency = found === null
-      ? axis(READINESS_STATUS.FAILED, {
-        reason: 'executable-missing',
+    const dependencyEvidence = {
+      id: driver.provider === DEFAULT_WEB_PROVIDER ? 'chromium' : driver.provider,
+      kind: 'executable',
+      provider: driver.provider,
+      // Resolved path is evidence, never a secret; version stays null unless it was observed
+      // without starting a browser (probe must not launch anything).
+      path: found,
+      version: null,
+    };
+    // A provider without a driver is not probed at all: `pending` says "driver not wired yet",
+    // `unsupported` says "no driver planned". Neither borrows chrome's evidence (§8).
+    const providerDependency = driver.blocked === WEB_PROVIDER_REASONS.DRIVER_PENDING
+      ? WEB_PROVIDER_REASONS.DRIVER_PENDING
+      : (driver.blocked === WEB_PROVIDER_REASONS.PROVIDER_UNSUPPORTED
+        || driver.blocked === WEB_PROVIDER_REASONS.UNKNOWN_PROVIDER
+        ? WEB_PROVIDER_REASONS.PROVIDER_UNSUPPORTED
+        : WEB_PROVIDER_REASONS.DRIVER_PENDING);
+    // A provider with a driver is probed with *its own* resolver (edge has its own candidate list),
+    // so "implemented but executable missing" is distinguishable from "not probed".
+    const dependency = !driver.implemented
+      ? axis(READINESS_STATUS.NOT_PROBED, {
+        reason: providerDependency,
         checkedAt,
         evidence: dependencyEvidence,
       })
-      : axis(READINESS_STATUS.OK, { checkedAt, evidence: dependencyEvidence });
+      : (found === null
+        ? axis(READINESS_STATUS.FAILED, {
+          reason: 'executable-missing',
+          checkedAt,
+          evidence: dependencyEvidence,
+        })
+        : axis(READINESS_STATUS.OK, { checkedAt, evidence: dependencyEvidence }));
 
     const host = registry?.host ?? null;
     const entry = findScopeEntry(registry, scope);
@@ -831,6 +1069,12 @@ export function createWebCapabilityAdapter({ dispatch, log, now = Date.now } = {
     if (isPlainObject(session) && session.closed === true) {
       return { support: SUPPORT.SUPPORTED, availability: AVAILABILITY.UNAVAILABLE, reason: 'target-gone' };
     }
+    // A provider that cannot run (disabled / unknown / not implemented) makes every operation of
+    // this environment unavailable — it is never answered from another browser's state.
+    const driver = resolveWebDriver(snapshot);
+    if (driver.blocked !== null) {
+      return { support: SUPPORT.SUPPORTED, availability: AVAILABILITY.UNAVAILABLE, reason: driver.blocked };
+    }
     // Only page/tabs work depends on a bound target; the rest is judged from the config snapshot so
     // a target-free tool is never reported as "not probed" just because no page is attached.
     const declaredClass = SPEC_BY_NAME.get(operation)?.executionClass;
@@ -889,6 +1133,10 @@ export function createWebCapabilityAdapter({ dispatch, log, now = Date.now } = {
       }
       assertSessionPresent(session);
 
+      // Provider gate before any dispatch work (§4.4): disabled -> ADAPTER_DISABLED,
+      // unknown / not implemented -> ADAPTER_UNSUPPORTED. No silent browser substitution.
+      const driver = assertDriverAllowed(resolveWebDriver(snapshot), operation);
+
       const snapshotRevision = configRevisionOf(snapshot);
       const sessionRevision = Number.isInteger(session.configRevision) ? session.configRevision : null;
       if (snapshotRevision !== null && sessionRevision !== snapshotRevision) {
@@ -936,6 +1184,10 @@ export function createWebCapabilityAdapter({ dispatch, log, now = Date.now } = {
           signal,
           executionClass: effectiveClass,
           context,
+          // Explicit routing facts: the composition root must execute this call on the provider's
+          // own runtime, never on whichever browser happens to be running.
+          provider: driver.provider,
+          executionAdapterId: driver.executionAdapterId,
         });
       } catch (error) {
         throw toAdapterError(error, { operation });

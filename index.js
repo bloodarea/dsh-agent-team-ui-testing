@@ -9,6 +9,9 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, extname, isAbsolute, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachFramePush } from './frame-push.js';
+import { verifyProviderProduct } from './targets/web/adapter.js';
+import { WEB_PROVIDER_REASONS } from './core/contracts.js';
+import { resolveProviderExecutable } from './targets/web/adapter.js';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
@@ -1074,6 +1077,22 @@ function readBundledSkill() {
  * by the create that owns it. Everything else is a popup and is blocked before it resumes.
  * ------------------------------------------------------------------------------------------- */
 const MAX_PAGES_DEFAULT = 8;
+
+/**
+ * Runtime provider (browser) this host container is keyed by (contract §6). Mirrors core's
+ * `DEFAULT_WEB_PROVIDER`; the *support* truth (which providers may execute at all) lives only in
+ * core's `WEB_PROVIDER_SUPPORT`, never here.
+ */
+const DEFAULT_RUNTIME_PROVIDER = 'chrome';
+
+/**
+ * The one function that composes a runtime entry key: `<provider>\u0000<baseKey>`.
+ * Every lookup path (getOrCreate/peek/closeProvider) must go through it so the composed key is
+ * byte-identical no matter how the caller addressed the entry.
+ */
+function providerEntryKey(provider, baseKey) {
+  return String(provider ?? DEFAULT_RUNTIME_PROVIDER) + '\u0000' + String(baseKey);
+}
 const IDLE_MS_DEFAULT = 600000;
 /** A viewer is only "visible" while the panel keeps posting metrics (WS liveness alone can leak). */
 const VIEWER_TTL_MS = 15000;
@@ -1651,9 +1670,13 @@ function isBlankPageUrl(value) {
 }
 
 class BrowserHost {
-  constructor(log) {
+  constructor(log, options = {}) {
     this.log = log;
     this.proc = undefined;
+    /** Runtime provider this host launches (chrome|edge); set by the registry, never by tools. */
+    this.provider = options?.provider ?? 'chrome';
+    this.product = null;
+    this.executablePath = null;
     this.profileDir = undefined;
     this.port = 0;
     this.browserCdp = undefined;
@@ -1742,7 +1765,10 @@ class BrowserHost {
     const override = process.env.DSH_UI_TESTING_PROFILE_DIR;
     if (override) return override;
     const home = process.env.DSH_HOME || join(homedir(), '.dsh');
-    return join(home, 'ui-testing', 'headed-profile');
+    // Per-provider persistent profile: Chrome keeps its historical directory, Edge gets its own.
+    // Sharing one headed profile across vendors would mix state and hide identity problems.
+    const suffix = this.provider === 'chrome' ? '' : `-${this.provider}`;
+    return join(home, 'ui-testing', `headed-profile${suffix}`);
   }
 
   /**
@@ -1885,8 +1911,18 @@ class BrowserHost {
   }
 
   async #spawn(signal) {
-    // Resolve first: a missing browser must fail before a profile directory is created.
-    const chromeBin = resolveChromeExecutable();
+    // Resolve first: a missing browser must fail before a profile directory is created. The
+    // resolution is per provider — an Edge host must never launch a Chrome binary (§8).
+    const resolution = resolveProviderExecutable({ provider: this.provider });
+    this.executablePath = resolution.path;
+    if (!resolution.path) {
+      throw new BrowserError(
+        'DEPENDENCY_MISSING',
+        `${this.provider} 可执行文件不可用（${resolution.reason}）：已尝试 ${resolution.candidates.slice(0, 4).join(', ')}`,
+        { provider: this.provider, reason: resolution.reason, candidates: resolution.candidates.slice(0, 8) },
+      );
+    }
+    const chromeBin = resolution.path;
     const generation = this.generation + 1;
     this.generation = generation;
     const overallDeadline = Date.now() + DEVTOOLS_STARTUP.totalBudgetMs;
@@ -1950,6 +1986,36 @@ class BrowserHost {
         // Record the pre-existing about:blank target BEFORE enabling auto-attach: setAutoAttach
         // also attaches to existing targets, and an attach event for the initial page must never
         // be classified as a popup (that would block/close the page we are about to reuse).
+        // §8: "CDP connected" is not proof of the product. Verify the vendor after the transport
+        // is up and before any page work; a mismatch is reported, never silently accepted.
+        {
+          // Every provider is checked; whether *missing* evidence rejects is per vendor
+          // (`WEB_PROVIDER_VENDOR.failClosedOnMissing`): edge fails closed, chrome stays lenient.
+          let version = null;
+          try {
+            version = await browserCdp.send('Browser.getVersion', {}, { signal });
+          } catch {
+            version = null; // no evidence; the vendor rule decides whether that is fatal
+          }
+          const identity = verifyProviderProduct({ provider: this.provider, version });
+          this.product = identity.product;
+          this.productVerified = identity.verified === true;
+          if (!identity.ok) {
+            throw new BrowserError(
+              'DEPENDENCY_MISSING',
+              identity.reason === WEB_PROVIDER_REASONS.IDENTITY_UNVERIFIED
+                ? `启动的产品身份无法确认（provider=${this.provider}）：拿不到 Browser.getVersion`
+                : `启动的产品身份与 provider 不符：期望 ${String(identity.expected)}，实际 ${String(identity.product)}`,
+              {
+                provider: this.provider,
+                product: identity.product,
+                expected: identity.expected,
+                reason: identity.reason,
+                path: resolution.path,
+              },
+            );
+          }
+        }
         this.initialTargetId = await this.#findInitialPage(signal);
         await browserCdp.send('Target.setAutoAttach', {
           autoAttach: true, waitForDebuggerOnStart: true, flatten: true,
@@ -12761,7 +12827,10 @@ export class RuntimeRegistry {
     this.selectedBySession = new Map();
     /** P0-E/T2: one monotonic ref allocator across all tabs of this registry. */
     this.nextGlobalRef = 1;
-    this.host = undefined;
+    /** provider -> BrowserHost. A provider only gets a host once its driver exists (§6). */
+    this.hosts = new Map();
+    /** base scope key -> provider that most recently used it (GUI/session fallback, §16 open item 2). */
+    this.providerByBaseKey = new Map();
     this.reservations = 0;
     this.recentKey = undefined;
     this.disposed = false;
@@ -12770,26 +12839,121 @@ export class RuntimeRegistry {
     this.sweepTimer.unref?.();
   }
 
-  get pageCount() { return this.host ? this.host.pageCount : 0; }
-
-  browserHost() {
-    if (!this.host) this.host = new BrowserHost(this.log);
-    return this.host;
+  /**
+   * Pages across **all** provider hosts. The page budget stays one global `maxPages`: splitting
+   * hosts must never multiply the ceiling, so every budget check compares this sum.
+   */
+  get pageCount() {
+    let total = 0;
+    for (const host of this.hosts.values()) total += host.pageCount;
+    return total;
   }
 
-  peek(key) { return this.entries.get(key); }
+  /**
+   * Compatibility accessor for host-idle checks only. It can never hand out another provider's host:
+   * a question about a non-chrome provider must go through `hostFor(provider)`.
+   */
+  get host() { return this.hosts.get(DEFAULT_RUNTIME_PROVIDER); }
+
+  /**
+   * Test/stepper seam for the default provider slot only — retained **solely** for the existing
+   * A12 stub injection in the acceptance suite; never use it on an execution path. It can never install a stub for another
+   * provider: a non-default provider is addressed through `hostFor`/`browserHost` and must have a
+   * real driver behind it.
+   */
+  set host(value) {
+    if (value === undefined || value === null) {
+      this.hosts.delete(DEFAULT_RUNTIME_PROVIDER);
+      return;
+    }
+    this.hosts.set(DEFAULT_RUNTIME_PROVIDER, value);
+  }
+
+  /** Existing host for one provider, or undefined. Never creates, never substitutes chrome. */
+  hostFor(provider = DEFAULT_RUNTIME_PROVIDER) {
+    const id = typeof provider === 'string' && provider.length > 0 ? provider : DEFAULT_RUNTIME_PROVIDER;
+    return this.hosts.get(id);
+  }
+
+  /**
+   * Create (lazily) the host for one provider.
+   *
+   * A provider without a driver must never reach this point: `resolveWebDriver()` refuses
+   * `pending`/`unsupported` providers before any execution, exactly so an "edge" label cannot end up
+   * spawning Chrome (§8).
+   */
+  browserHost(provider = DEFAULT_RUNTIME_PROVIDER) {
+    const id = typeof provider === 'string' && provider.length > 0 ? provider : DEFAULT_RUNTIME_PROVIDER;
+    let host = this.hosts.get(id);
+    if (!host) {
+      host = new BrowserHost(this.log, { provider: id });
+      this.hosts.set(id, host);
+    }
+    return host;
+  }
+
+  /**
+   * Provider identity for one resolved scope request.
+   *
+   * `binding` is reserved for an *explicit* provider (the caller already knows which browser it
+   * means). Everything else resolves to "the provider that last touched this workspace" and is
+   * reported as `recent`, even when only one provider exists — callers never have to guess.
+   */
+  providerFor(resolved) {
+    const explicit = typeof resolved?.provider === 'string' && resolved.provider.length > 0
+      ? resolved.provider
+      : null;
+    if (explicit !== null) return { provider: explicit, providerResolved: 'binding' };
+    const recent = this.providerByBaseKey.get(resolved?.key);
+    return {
+      provider: typeof recent === 'string' && recent.length > 0 ? recent : DEFAULT_RUNTIME_PROVIDER,
+      providerResolved: 'recent',
+    };
+  }
+
+  /**
+   * Provider facts for a response, so a fallback never looks like an exact match.
+   * `resolved` (the lookup that produced the entry) wins: `binding` only when the caller named the
+   * provider; every fallback reports `recent`, even with a single provider installed.
+   */
+  providerFacts(entry, resolved = null) {
+    const providerResolved = resolved
+      ? this.providerFor(resolved).providerResolved
+      : (entry?.providerResolved === 'binding' ? 'binding' : 'recent');
+    return {
+      provider: entry?.provider ?? DEFAULT_RUNTIME_PROVIDER,
+      providerResolved,
+    };
+  }
+
+  peek(input) {
+    // Both addressing styles must produce the identical composed key (asserted in the contract suite).
+    if (typeof input === 'string') return this.entries.get(input);
+    if (!input || typeof input !== 'object') return undefined;
+    const { provider } = this.providerFor(input);
+    return this.entries.get(providerEntryKey(provider, input.key));
+  }
 
   getOrCreate(resolved) {
     if (this.disposed) throw new BrowserError('SCOPE_UNAVAILABLE', '插件正在卸载');
-    const { key, scope } = resolved;
+    const { scope } = resolved;
+    const baseKey = resolved.key;
+    const { provider, providerResolved } = this.providerFor(resolved);
+    // §6: an entry is owned by (workspace, provider, tab). The base key stays the workspace/scope
+    // identity; the provider prefix keeps two browsers from ever sharing one runtime.
+    const key = providerEntryKey(provider, baseKey);
     const existing = this.entries.get(key);
     if (existing) return existing;
     if (this.entries.size >= this.maxEntries) this.#evictColdEntry();
-    const runtime = new Runtime(this.log, { host: this.browserHost(), origins: this.origins, scope, registry: this, viewerTtlMs: this.viewerTtlMs });
-    const entry = { key, scope, runtime, kind: 'primary', viewId: 'primary', primaryKey: key,
+    const runtime = new Runtime(this.log, {
+      host: this.browserHost(provider), origins: this.origins, scope, registry: this, viewerTtlMs: this.viewerTtlMs,
+    });
+    const entry = { key, baseKey, provider, providerResolved, scope, runtime, kind: 'primary',
+      viewId: 'primary', primaryKey: key,
       parentRuntimeId: null, parentTabId: null, openEventId: null, createdBy: 'host',
       tabId: 'primary', createdAt: Date.now(), lastUsedAt: Date.now() };
     this.entries.set(key, entry);
+    this.providerByBaseKey.set(baseKey, provider);
     return entry;
   }
 
@@ -12831,12 +12995,14 @@ export class RuntimeRegistry {
         maxPopupChildren: this.maxPopupChildren, popupCount: this.popupCount(primaryEntry.key),
       });
     }
-    const host = this.browserHost();
+    const provider = primaryEntry.provider ?? DEFAULT_RUNTIME_PROVIDER;
+    this.browserHost(provider);
     this.reservations += 1;
-    if (host.pageCount + this.reservations > this.maxPages) {
+    // Cross-provider sum against the *same* ceiling: splitting hosts must not widen the budget.
+    if (this.pageCount + this.reservations > this.maxPages) {
       this.reservations = Math.max(0, this.reservations - 1);
       throw new BrowserError('TAB_LIMIT', `popup 超出全局 ${this.maxPages} 页上限`, {
-        maxPages: this.maxPages, pageCount: host.pageCount, reservations: this.reservations,
+        maxPages: this.maxPages, pageCount: this.pageCount, reservations: this.reservations,
       });
     }
     let released = false;
@@ -12851,7 +13017,9 @@ export class RuntimeRegistry {
     const primaryKey = parentEntry.primaryKey || parentEntry.key;
     const key = `${parentEntry.key}:view:${viewId}`;
     const entry = {
-      key, scope: parentEntry.scope, runtime, kind: 'popup', viewId, tabId: viewId,
+      key, baseKey: parentEntry.baseKey ?? key, provider: parentEntry.provider ?? DEFAULT_RUNTIME_PROVIDER,
+      providerResolved: parentEntry.providerResolved ?? 'recent',
+      scope: parentEntry.scope, runtime, kind: 'popup', viewId, tabId: viewId,
       primaryKey, parentKey: parentEntry.key, parentRuntimeId: parentEntry.runtime.runtimeId,
       parentTabId: parentEntry.tabId || (parentEntry.kind === 'primary' ? 'primary' : parentEntry.viewId),
       openEventId: openEventId || null, sourcePanelId: sourcePanelId || null,
@@ -13363,15 +13531,20 @@ export class RuntimeRegistry {
   }
 
   /** The shared host exits only when the last page is gone and no create is in flight. */
-  async maybeCloseHost() {
+  async maybeCloseHost(provider = null) {
     if (this.disposed) return;
     if (this.reservations > 0) return;
-    const host = this.host;
-    if (!host) return;
-    if (host.pageCount > 0 || host.pendingCreates > 0 || host.starting) return;
-    if (host.closing) return host.closing;
-    if (!host.proc && !host.profileDir && !host.browserCdp) return undefined;
-    return host.close();
+    const candidates = provider === null
+      ? [...this.hosts.values()]
+      : [this.hosts.get(provider)].filter(Boolean);
+    let closing;
+    for (const host of candidates) {
+      if (host.pageCount > 0 || host.pendingCreates > 0 || host.starting) continue;
+      if (host.closing) { closing = closing ?? host.closing; continue; }
+      if (!host.proc && !host.profileDir && !host.browserCdp) continue;
+      closing = closing ?? host.close();
+    }
+    return closing;
   }
 
   releaseSession(sessionId) {
@@ -13411,7 +13584,33 @@ export class RuntimeRegistry {
       try { runtime.disposeVision?.(); } catch { /* ignore */ }
       try { await runtime.disposeDynamic?.(); } catch { /* ignore */ }
     }
-    if (this.host) { try { await this.host.close(); } catch { /* ignore */ } }
+    for (const host of this.hosts.values()) {
+      try { await host.close(); } catch { /* one provider's failure must not mask the others */ }
+    }
+    this.hosts.clear();
+    this.providerByBaseKey.clear();
+  }
+
+  /**
+   * Close one provider only (§6): its entries and its host. Another provider's pages, leases and
+   * refs are untouched, so closing Chrome never kills an Agent's Edge session.
+   */
+  async closeProvider(provider) {
+    const id = typeof provider === 'string' && provider.length > 0 ? provider : DEFAULT_RUNTIME_PROVIDER;
+    const doomed = [...this.entries.values()].filter((entry) => (entry.provider ?? DEFAULT_RUNTIME_PROVIDER) === id);
+    for (const entry of doomed) {
+      try { await entry.runtime.close(); } catch { /* ignore */ }
+      try { this.onRetire?.(entry.runtime); } catch { /* ignore */ }
+      this.entries.delete(entry.key);
+      if (this.recentKey === entry.key) this.recentKey = undefined;
+    }
+    for (const [baseKey, owner] of [...this.providerByBaseKey]) {
+      if (owner === id) this.providerByBaseKey.delete(baseKey);
+    }
+    const host = this.hosts.get(id);
+    this.hosts.delete(id);
+    if (host) { try { await host.close(); } catch { /* ignore */ } }
+    return { provider: id, closedEntries: doomed.length };
   }
 }
 
@@ -14429,7 +14628,7 @@ export function apply(ctx) {
         resolve: async (scopeRequest) => {
           const resolved = await resolveScopeRequest(ctx, registry, scopeRequest);
           let entry = scopeRequest && scopeRequest.mode === 'binding'
-            ? registry.peek(resolved.key) : registry.getOrCreate(resolved);
+            ? registry.peek(resolved) : registry.getOrCreate(resolved);
           if (!entry) throw new BrowserError('SCOPE_NOT_FOUND', 'scope binding 指向的运行时不存在', { scope: 'binding' });
           if (scopeRequest && scopeRequest.mode === 'session' && scopeRequest.tab !== SCOPE_TAB_PRIMARY) {
             entry = registry.resolveSessionTab(entry, scopeRequest.sessionId).entry;
@@ -14558,7 +14757,7 @@ export function apply(ctx) {
       const select = async ({ create = true } = {}) => {
         const resolved = await resolveScopeRequest(ctx, registry, scopeRequest);
         // A binding already names an existing primary/child; never create a new runtime for it.
-        let entry = create && scopeRequest.mode !== 'binding' ? registry.getOrCreate(resolved) : registry.peek(resolved.key);
+        let entry = create && scopeRequest.mode !== 'binding' ? registry.getOrCreate(resolved) : registry.peek(resolved);
         if (entry && scopeRequest.mode === 'session' && scopeRequest.tab !== SCOPE_TAB_PRIMARY) {
           // P0-E: a session-scoped HTTP read/write follows that Agent session's selectedTab.
           // `scope-tab: primary` opts out: a GUI panel renders its own selected tab, so the Agent's
@@ -14611,7 +14810,7 @@ export function apply(ctx) {
         return;
       }
       if (req.method === 'GET' && action === '/state') {
-        const { entry } = await select();
+        const { entry, resolved } = await select();
         selected = entry;
         const runtime = entry.runtime;
         if (runtime.running) {
@@ -14619,7 +14818,10 @@ export function apply(ctx) {
           // Same for the 500ms GUI state poll: coalesced + ≥200ms throttled, no standing timer.
           runtime.refreshViewObservationSoon();
         }
-        sendJson(res, 200, projected(runtime));
+        sendJson(res, 200, {
+          ...projected(runtime),
+          ...registry.providerFacts(entry, resolved),
+        });
         return;
       }
       if (req.method === 'GET' && action === '/metrics') {
@@ -20556,7 +20758,14 @@ export function apply(ctx) {
       // Rotate the per-session tab selection: an old tabId/ref must not resolve through the new
       // environment's page (identity rotation, not just cancellation).
       for (const [key, value] of [...registry.selectedBySession.entries()]) {
-        if (key.includes(entry.key) || value?.workspaceKey === entry.key) registry.selectedBySession.delete(key);
+        // Match the provider-qualified key *and* the bare workspace key: an entry key is now
+        // `<provider>\u0000<baseKey>`, and a stale selection record may still reference either form.
+        // A provider switch must invalidate the old selection, so both are purged.
+        const baseKey = entry.baseKey ?? entry.key;
+        if (key.includes(entry.key) || key.includes(baseKey)
+          || value?.workspaceKey === entry.key || value?.workspaceKey === baseKey) {
+          registry.selectedBySession.delete(key);
+        }
       }
       registry.bumpViews(entry.key);
       if (typeof registry.touch === 'function') registry.touch(entry);

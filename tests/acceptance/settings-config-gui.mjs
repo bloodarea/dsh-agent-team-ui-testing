@@ -555,25 +555,57 @@ async function readSettingsState() {
         status: node.getAttribute('data-uts-status'),
       })),
       chromeCardText: (document.querySelector('[data-uts-target="chrome"]') || {}).textContent || '',
-      chromeSwitch: (() => {
-        const input = document.querySelector('[data-uts-target="chrome"] input[type="checkbox"]');
+      // The group header owns the *target environment* master switch; the card owns the
+      // *running environment* (provider) switch. Both are read separately so a test can tell
+      // which layer a write touched.
+      envSwitch: (() => {
+        const input = document.querySelector('[data-uts-env-switch="web"] input[type="checkbox"]');
         return input ? { checked: input.checked, disabled: input.disabled, label: input.getAttribute('aria-label') } : null;
       })(),
+      chromeSwitch: (() => {
+        const input = document.querySelector('[data-uts-switch-provider="chrome"] input[type="checkbox"]');
+        return input ? { checked: input.checked, disabled: input.disabled, label: input.getAttribute('aria-label') } : null;
+      })(),
+      // Per-provider cards: each must carry its own switch, state and dependency axis.
+      providerCards: [...document.querySelectorAll('[data-uts-provider]')].map((node) => {
+        const dependency = node.querySelector('[data-uts-dependency-status]');
+        const box = node.querySelector('[data-uts-switch-provider] input[type="checkbox"]');
+        return {
+          provider: node.getAttribute('data-uts-provider'),
+          state: node.getAttribute('data-uts-provider-state'),
+          current: node.getAttribute('data-uts-provider-current'),
+          dependency: dependency ? dependency.getAttribute('data-uts-dependency-status') : null,
+          enabled: box ? box.checked : null,
+        };
+      }),
       configError: (document.querySelector('[data-uts-config-error]') || {}).textContent || '',
     };
   })()`);
 }
 
-async function clickChromeSwitch() {
+async function clickEnvSwitch() {
   const clicked = await evaluate(`(() => {
-    const input = document.querySelector('[data-uts-target="chrome"] input[type="checkbox"]');
+    const input = document.querySelector('[data-uts-env-switch="web"] input[type="checkbox"]');
     if (!input) return { ok: false, reason: 'no-switch' };
     if (input.disabled) return { ok: false, reason: 'disabled' };
     const before = input.checked;
     input.click();
     return { ok: true, before };
   })()`);
-  if (!clicked.ok) throw new Error('Chrome switch not clickable: ' + clicked.reason);
+  if (!clicked.ok) throw new Error('Target environment master switch not clickable: ' + clicked.reason);
+  return clicked;
+}
+
+async function clickProviderSwitch(providerId) {
+  const clicked = await evaluate(`(() => {
+    const input = document.querySelector('[data-uts-switch-provider="${providerId}"] input[type="checkbox"]');
+    if (!input) return { ok: false, reason: 'no-switch' };
+    if (input.disabled) return { ok: false, reason: 'disabled' };
+    const before = input.checked;
+    input.click();
+    return { ok: true, before };
+  })()`);
+  if (!clicked.ok) throw new Error('Provider switch not clickable: ' + providerId + ' / ' + clicked.reason);
   return clicked;
 }
 
@@ -678,9 +710,20 @@ async function main() {
       { versionPattern: 'absent' },
       { chromeCardText: chromeCard.slice(0, 200) });
 
+    // "Can it execute?" must be answerable per provider on the page itself: every card carries its
+    // own dependency axis, so a machine without Edge shows that on the Edge card instead of
+    // borrowing Chrome's evidence.
+    const providerCards = expanded.providerCards || [];
+    check('A13 every Web provider card exposes its own dependency axis',
+      ['chrome', 'edge', 'firefox'].every((id) => providerCards.some((card) => card.provider === id))
+        && providerCards.length > 0
+        && providerCards.every((card) => typeof card.dependency === 'string' && card.dependency.length > 0),
+      { providers: ['chrome', 'edge', 'firefox'], eachWithDependency: true },
+      { providerCards });
+
     /* ------------------------------------------------------------------- A07/A10: toggle PUT */
-    const switchInfo = await clickChromeSwitch();
-    log(`[gui] Chrome switch clicked (before=${switchInfo.before})`);
+    const switchInfo = await clickEnvSwitch();
+    log(`[gui] target-environment master switch clicked (before=${switchInfo.before})`);
     const bumped = await waitFor(async () => {
       const current = await readSettingsState();
       const revision = Number(current.revisionRaw);
@@ -698,9 +741,9 @@ async function main() {
       { revision: initialRevision + 1 },
       { revision: bumped.revision, state: bumped.state && bumped.state.status });
     check('A07 switch reflects the saved Host state after the PUT (web disabled)',
-      bumped.state.chromeSwitch && bumped.state.chromeSwitch.checked === false,
+      bumped.state.envSwitch && bumped.state.envSwitch.checked === false,
       { checked: false },
-      { switch: bumped.state.chromeSwitch });
+      { switch: bumped.state.envSwitch });
 
     /* ------------------------------------------------------------------------ A07: reload */
     await state.chrome.cdp.send('Page.reload', { ignoreCache: true });
@@ -719,21 +762,58 @@ async function main() {
       { revision: bumped.revision },
       { revision: afterReload.revisionRaw });
     check('A07 page reload keeps the switch state (web disabled)',
-      afterReload.chromeSwitch && afterReload.chromeSwitch.checked === false,
+      afterReload.envSwitch && afterReload.envSwitch.checked === false,
       { checked: false },
-      { switch: afterReload.chromeSwitch });
+      { switch: afterReload.envSwitch });
 
     // Restore web enabled so the isolated instance is left consistent (temp home is removed anyway).
-    const restoreClick = await clickChromeSwitch();
+    const restoreClick = await clickEnvSwitch();
     const restored = await waitFor(async () => {
       const current = await readSettingsState();
       return current && Number(current.revisionRaw) === bumped.revision + 1 ? current : undefined;
     }, { timeoutMs: 20000, label: 'revision increased after restore toggle' });
     check('A07 re-enabling web persists another revision and restores the switch',
       Number(restored.revisionRaw) === bumped.revision + 1
-        && restored.chromeSwitch && restored.chromeSwitch.checked === true,
+        && restored.envSwitch && restored.envSwitch.checked === true,
       { revision: bumped.revision + 1, checked: true },
-      { revision: restored.revisionRaw, switch: restored.chromeSwitch, clicked: restoreClick });
+      { revision: restored.revisionRaw, switch: restored.envSwitch, clicked: restoreClick });
+
+    /* ---------------------------------- A07: running-environment (provider) switch, second layer */
+    // The card switch is the *running environment* switch: it must write providers.chrome.enabled
+    // and leave the target-environment master switch (environments.web.enabled) untouched.
+    const providerSwitchClick = await clickProviderSwitch('chrome');
+    log(`[gui] chrome provider switch clicked (before=${providerSwitchClick.before})`);
+    // `restored` is a page snapshot, so the baseline revision comes from its raw attribute.
+    const restoredRevision = Number(restored.revisionRaw);
+    const providerBumped = await waitFor(async () => {
+      const current = await readSettingsState();
+      const revision = Number(current.revisionRaw);
+      return Number.isFinite(revision) && revision > restoredRevision ? { revision, state: current } : undefined;
+    }, { timeoutMs: 20000, label: 'config revision increased after provider toggle' });
+    const providerPuts = putConfigRequests();
+    const providerPut = providerPuts[providerPuts.length - 1];
+    check('A07 provider switch sends PUT writing environments.web.providers.<id>.enabled',
+      Boolean(providerPut) && providerPut.postData.includes('"providers"'),
+      { body: '{"environments":{"web":{"providers":{"chrome":{"enabled":false}}}}}' },
+      { body: providerPut && providerPut.postData.slice(0, 240) });
+    check('A07 provider toggle bumps the Host config revision by exactly one',
+      providerBumped.revision === restoredRevision + 1,
+      { revision: restoredRevision + 1 },
+      { revision: providerBumped.revision });
+    check('A07 provider switch reflects the saved Host state (chrome off)',
+      providerBumped.state.chromeSwitch && providerBumped.state.chromeSwitch.checked === false,
+      { checked: false },
+      { switch: providerBumped.state.chromeSwitch });
+    check('A07 provider toggle does not touch the target-environment master switch',
+      providerBumped.state.envSwitch && providerBumped.state.envSwitch.checked === true,
+      { masterChecked: true },
+      { switch: providerBumped.state.envSwitch });
+    // Restore the provider switch so the isolated instance is left consistent.
+    await clickProviderSwitch('chrome');
+    await waitFor(async () => {
+      const current = await readSettingsState();
+      return current && Number(current.revisionRaw) === providerBumped.revision + 1 ? current : undefined;
+    }, { timeoutMs: 20000, label: 'revision increased after provider restore' });
 
     /* ---------------------------------------------------------------------------- NOT_RUN */
     notRun('A07 404 degradation (missing route prefix)',

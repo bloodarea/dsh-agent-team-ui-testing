@@ -1,6 +1,6 @@
 # 三类 adapter：契约、接入与坑点
 
-面向两类读者：给本插件接一个新调试环境的人（Android、Linux 桌面、小程序……），以及维护 `core/` / `integration/` 的人。这里只写当前实现与当前边界；历史过程记录在 `docs/internal/`。
+面向两类读者：给本插件接一个新调试环境的人（Android、Linux 桌面、小程序……），以及维护 `core/` / `integration/` 的人。这里只写当前实现与当前边界；不写过程记录。
 
 一句话分层：**TargetAdapter 管"目标在哪、还能不能用"，CapabilityAdapter 管"这个操作能不能做、做了什么、证据是什么"，P0Provider 管"把平台数据翻译成公共数据模型"**。三者消费同一份不可变配置快照，串在一条调用链上。
 
@@ -86,17 +86,36 @@ Agent 工具调用
 
 ## 3. 配置如何约束三类 adapter
 
-- 组合根解析出**不可变** `ConfigSnapshot`：`{ revision, environment, adapterId, enabledEnvironments, capabilities, environmentConfig, targetId, source }`。深度冻结 + 按 revision 记忆化，同一 revision 内同一 Agent 拿到的是同一个对象。
+- 组合根解析出**不可变** `ConfigSnapshot`：`{ revision, environment, adapterId, provider, executionAdapterId, enabledProviders, providerConfig, enabledEnvironments, capabilities, environmentConfig, targetId, source }`。深度冻结 + 按 revision 记忆化，同一 revision 内同一 Agent 拿到的是同一个对象。
+- **`environment` 与 `adapterId` 仍是目标环境身份（Web 恒为 `"web"`）**；浏览器身份放在 `provider` / `executionAdapterId`（`web-<provider>`）里。一个字段不兼任两件事。
 - `invoke` 收到 `snapshot.revision` 与 `session.configRevision` 不一致时抛 `CONFIG_STALE`，**不静默用旧配置执行**。
 - `enabledEnvironments` 决定"允许启用谁"；`environmentConfig` 是该环境的连接参数。设置页只提交意图，Host 校验 + CAS 写入 + 返回权威 `revision`。
 - 工具声明面 = **已启用环境的并集 + 两个环境无关诊断**（`browser_state`、`browser_capabilities`）。被禁用的环境其工具根本不注册，因此不会出现在模型请求里。
+
+## 3.1 provider 维度：facade → driver
+
+同一个目标环境可以有多个**运行环境**（provider = 实际执行端，如 `chrome` / `edge`）。注册面不变：每环境仍是一个 TargetAdapter / CapabilityAdapter / P0Provider 组成的 facade，注册表不需要复合键。
+
+```text
+registry.resolve(snapshot) → web facade（environment/adapterId = "web"）
+   └─ resolveWebDriver(snapshot.provider) → chrome driver | edge driver
+                                           └─ 未实现 / 未知 provider → ADAPTER_UNSUPPORTED
+```
+
+- **派发靠快照，不靠全局开关。** facade 在 `invoke`/`createSession` 前解析 driver，并把 `provider` / `executionAdapterId` 一并交给平台 dispatch；36 个 `browser_*` 名字只注册一次，切换 provider 不改变工具集合。
+- **禁止静默换浏览器。** driver 解析结果只有两种：可执行，或带 `reason` 的阻断。被禁用是 `ADAPTER_DISABLED`（`environment-disabled` / `provider-disabled`），未实现/未知是 `ADAPTER_UNSUPPORTED`（`driver-pending` / `provider-unsupported` / `unknown-provider`），依赖问题属于 `DEPENDENCY_MISSING`（`executable-missing` / `override-invalid` / `identity-unverified` / `identity-mismatch`）。这些 `reason` 都在 `details` 里，不属于对外错误码。
+- **厂商参数化。** 可执行文件候选、覆盖变量（Chrome `DSH_UI_TESTING_CHROME`、Edge `DSH_UI_TESTING_EDGE`）、profile 目录、启动参数都按 provider 注入；Chrome 的覆盖不会被 Edge 继承，反之亦然。一个提供者的覆盖无效时直接报错，不尝试另一个厂商。
+- **产品身份校验。** 传输建立后用 `Browser.getVersion` 的产品串核对厂商（规则表：Chrome 必须含 `Chrome/` 且不含 `Edg/`；Edge 必须含 `Edg/`）。Edge 拿不到产品串按 `identity-unverified` 拒绝；Chrome 保持机会式（拿到就核对，拿不到不阻断）。
+- **运行时归属按 provider。** 页面容器是 `hosts[provider]`，entry 键为 `(provider, workspace)`（`<provider>\u0000<baseKey>`）。切换 provider 后旧 `targetId`、旧 ref、旧租约一律失效；关闭一个 provider 不影响另一个；页面总预算按 provider 求和后仍与同一个 `maxPages` 比较，拆 host 不放宽上限。
+- **GUI/预览读侧。** 明确绑定（binding）时用 provider 前缀键精确命中；其余读路径回落到"该工作区最近使用的 provider"，响应里带 `provider` 与 `providerResolved: "binding" | "recent"`。**预览面板按 provider 分栏尚未实现**。
 
 ## 4. 就绪（六轴）怎么写才算真实
 
 `probe()` 返回 `support / enabled / dependency / connection / target / capability` 六个独立轴，每轴带 `status`、`reason`、`checkedAt`（`expiresAt` 可选），能测到的还要带 `target` / `evidence`：
 
 - `probe()` **不得启动目标**，必须有超时；启动/连接属于显式操作。
-- `dependency`：可执行文件/服务是否存在；版本没读到就 `version: null`，不编造。
+- `dependency`：可执行文件/服务是否存在；版本没读到就 `version: null`，不编造。Web 的 evidence 还带 `provider` 与解析出的 `path`，并**用该 provider 自己的候选清单**探测（不借用另一个厂商的路径）；未实现的 provider 不探测，直接报 `not-probed` + 专属 reason。
+- Web 的每张 provider 卡片读自己的结果：`readiness.environments.web.providers.<provider>.axes`；被禁用的 provider 不探测、不启动。
 - `connection`：只在确有 transport 时 `ok`；有宿主进程但没有页面会话是 `not-probed / host-idle-no-transport`。
 - `target`：配置目标与实际绑定目标不一致时报 `stale / identity-mismatch`（带 expected/actual），不要报 `bound`。
 - `capability`：**逐项探测的并集**（Web 是结构树 / 输入 / 网络采集 / 帧源），全过 `available`、部分 `partial`、全不过 `unavailable`，明细放 `evidence.checks`。
@@ -129,10 +148,13 @@ Agent 工具调用
 ## 7. 验证入口
 
 ```bash
-node --test tests/contracts/*.test.mjs          # 契约层：adapter/fake/P0/配置/就绪
+node --test tests/contracts/*.test.mjs          # 契约层：adapter/fake/P0/配置/就绪/provider 派发
+node --test tests/contracts/web-provider-config.test.mjs   # provider 配置与选择链（含旧配置规范化）
+node --test tests/contracts/web-provider-runtime.test.mjs  # driver 门禁、host 隔离、页面预算、providerResolved
+node --test tests/contracts/web-provider-edge.test.mjs     # Edge 厂商参数化、覆盖变量、产品身份判定
 node tests/acceptance/cross-environment.mjs     # 配置 CAS、六轴、GUI 旁路、不启动浏览器
 node tests/acceptance/foundation-isolation.mjs  # 逐项阻断复核（含 A08 面板为权威、A09 Skill 隔离）
 node tests/acceptance/run.mjs                   # 真实无头 Chromium：36 工具面与 T1～T4 回归
 ```
 
-新增或修改 adapter 后，至少要让契约套件与 `foundation-isolation` 全绿，并在 `docs/verification.md` 记录的对应套件里留一次运行记录。
+新增或修改 adapter 后，至少要让契约套件与 `foundation-isolation` 通过；运行方式与套件清单见 [verification.md](verification.md)。

@@ -180,6 +180,33 @@ async function main() {
       'web.axes.target.status=unbound',
       { axesPresent: Boolean(webEntry && webEntry.axes), target: webTargetAxis });
 
+    /* --------------------------------------- slice ②: runtime provider identity (read-only) */
+    const resolved0 = initial.json.resolved || {};
+    check('A07 /config resolved carries the provider identity while environment/adapterId stay "web"',
+      resolved0.environment === 'web' && resolved0.adapterId === 'web'
+        && resolved0.provider === 'chrome' && resolved0.executionAdapterId === 'web-chrome',
+      { environment: 'web', adapterId: 'web', provider: 'chrome', executionAdapterId: 'web-chrome' },
+      { environment: resolved0.environment, adapterId: resolved0.adapterId, provider: resolved0.provider, executionAdapterId: resolved0.executionAdapterId });
+    check('A07 /config resolved exposes derived enabledProviders and providerConfig.support',
+      Array.isArray(resolved0.enabledProviders) && resolved0.enabledProviders.includes('chrome')
+        && resolved0.providerConfig && resolved0.providerConfig.support === 'supported',
+      { enabledProviders: ['chrome'], support: 'supported' },
+      { enabledProviders: resolved0.enabledProviders, providerConfig: resolved0.providerConfig });
+    const providerCards = (webEntry && webEntry.providers) || null;
+    check('A13 readiness exposes per-provider cards with six axes each',
+      Boolean(providerCards) && ['chrome', 'edge', 'firefox'].every((id) => {
+        const card = providerCards[id];
+        return card && card.axes && AXES.every((axis) => card.axes[axis]);
+      }),
+      'readiness.environments.web.providers.<id>.axes (six axes)',
+      providerCards ? Object.fromEntries(Object.entries(providerCards).map(([id, card]) => [id, { support: card.support, axes: Object.keys(card.axes || {}) }])) : null);
+    check('A13 disabled provider card is not probed (provider-disabled, no fabricated driver)',
+      Boolean(providerCards) && providerCards.edge && providerCards.edge.axes.dependency.status === 'not-probed'
+        && providerCards.edge.axes.dependency.reason === 'provider-disabled'
+        && providerCards.edge.support === 'supported',
+      { support: 'supported', enabled: false, dependency: { status: 'not-probed', reason: 'provider-disabled' } },
+      providerCards && providerCards.edge ? { support: providerCards.edge.support, dependency: providerCards.edge.axes.dependency } : null);
+
     /* ------------------------------------------------------------------------ A14: no lazy start */
     const profilesBefore = (await snapshotProfileDirs()).length;
     const chromeBefore = scanPluginChromeProcesses().length;

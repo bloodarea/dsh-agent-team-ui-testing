@@ -21,14 +21,19 @@ import {
   CONTRACT_VERSION,
   ConfigStore,
   DEFAULT_CONFIG,
+  DEFAULT_WEB_PROVIDER,
   ENVIRONMENTS,
   ERROR_CODES,
+  IMPLEMENTED_WEB_PROVIDERS,
   KNOWN_ENVIRONMENTS,
   READINESS_STATUS,
   SUPPORT,
+  WEB_PROVIDER_IDS,
   axis,
   createReadinessReport,
+  isImplementedWebProvider,
   resolveSnapshot,
+  webProviderSupport,
 } from '../core/index.js';
 import { createFakeEnvironment } from '../targets/fake/adapter.js';
 import {
@@ -36,6 +41,8 @@ import {
   createWebCapabilityAdapter,
   createWebTargetAdapter,
   resolveExecutionClass,
+  resolveProviderExecutable,
+  resolveWebDriver,
 } from '../targets/web/adapter.js';
 import { createWebP0Provider } from '../targets/web/provider.js';
 
@@ -476,6 +483,16 @@ export function createCrossEnvironment({
         revision: 0,
         environment: DEFAULT_ENVIRONMENT,
         adapterId: DEFAULT_ENVIRONMENT,
+        provider: DEFAULT_WEB_PROVIDER,
+        executionAdapterId: `${DEFAULT_ENVIRONMENT}-${DEFAULT_WEB_PROVIDER}`,
+        enabledProviders: [DEFAULT_WEB_PROVIDER],
+        providerConfig: {
+          provider: DEFAULT_WEB_PROVIDER,
+          enabled: true,
+          executable: null,
+          connection: null,
+          implemented: true,
+        },
         enabledEnvironments: [DEFAULT_ENVIRONMENT],
         capabilities: [],
         environmentConfig: {},
@@ -521,7 +538,69 @@ export function createCrossEnvironment({
     if (!environmentEnabled) return false;
     if (!Array.isArray(snapshot.capabilities) || !snapshot.capabilities.includes(capability)) return false;
     if (name === FAKE_TOOL) return snapshot.environment === ENVIRONMENTS.FAKE;
+    // §4.3: admission also answers the provider question. A disabled selection, an unknown name or
+    // a provider without a driver refuses the Web operations (never a silent browser swap).
+    if (snapshot.environment === ENVIRONMENTS.WEB && WEB_TOOL_OPERATIONS[name] !== undefined) {
+      if (resolveWebDriver(snapshot).blocked !== null) return false;
+    }
     return true;
+  }
+
+  /**
+   * Web provider switches for one resolved snapshot (derived, never a second stored list).
+   * `implementedProviders` is the subset a driver actually exists for.
+   */
+  function webProvidersFor(snapshot) {
+    const entry = isPlainObject(snapshot?.environmentConfig) ? snapshot.environmentConfig : {};
+    const providers = isPlainObject(entry.providers) ? entry.providers : {};
+    const enabledProviders = WEB_PROVIDER_IDS.filter((id) => providers[id]?.enabled === true);
+    return {
+      providers,
+      enabledProviders,
+      implementedProviders: enabledProviders.filter((id) => isImplementedWebProvider(id)),
+      totalEnabled: entry.enabled === true,
+    };
+  }
+
+  /**
+   * Providers enabled by *any* selectable scope (global + workspace switches). A session may only
+   * choose between these, so this union is the registration ceiling (§4.3).
+   */
+  function enabledProviderUnion() {
+    const config = configStore.getConfig();
+    const consider = (entry) => {
+      const web = isPlainObject(entry) ? entry.environments?.[ENVIRONMENTS.WEB] : null;
+      if (!isPlainObject(web) || !isPlainObject(web.providers)) return;
+      for (const id of WEB_PROVIDER_IDS) {
+        if (web.providers[id]?.enabled === true) union.add(id);
+      }
+    };
+    const union = new Set();
+    consider(config.global);
+    for (const entry of Object.values(config.workspaces || {})) consider(entry);
+    return union;
+  }
+
+  /** True when the Web tools may exist at all: some implemented provider is enabled somewhere. */
+  function webProviderSurfaceAvailable() {
+    const union = enabledProviderUnion();
+    return IMPLEMENTED_WEB_PROVIDERS.some((id) => union.has(id));
+  }
+
+  /** The provider/execution identity block exposed by /config, /config/select and capabilities. */
+  function resolvedBlock(snapshot) {
+    return {
+      environment: snapshot.environment,
+      adapterId: snapshot.adapterId,
+      provider: snapshot.provider ?? null,
+      executionAdapterId: snapshot.executionAdapterId ?? snapshot.adapterId,
+      enabledProviders: Array.isArray(snapshot.enabledProviders) ? [...snapshot.enabledProviders] : [],
+      providerConfig: snapshot.providerConfig ?? null,
+      enabledEnvironments: snapshot.enabledEnvironments,
+      capabilities: snapshot.capabilities,
+      targetId: snapshot.targetId,
+      source: snapshot.source,
+    };
   }
 
   /** Every environment some scope is allowed to select (global + workspace allow-lists). */
@@ -552,7 +631,10 @@ export function createCrossEnvironment({
   function declarableToolNames() {
     const names = new Set(ENV_NEUTRAL_TOOLS);
     const enabled = enabledEnvironmentUnion();
-    if (enabled.has(ENVIRONMENTS.WEB)) {
+    // §4.3: the Web tools exist while the total switch is valid AND at least one *implemented*
+    // provider is enabled. The 36 names are registered once; provider routing happens per call, so
+    // enabling one or two providers never changes the registered set.
+    if (enabled.has(ENVIRONMENTS.WEB) && webProviderSurfaceAvailable()) {
       for (const name of Object.keys(WEB_TOOL_OPERATIONS)) names.add(name);
     }
     // The test-only probe follows the same rule: registered only while the fake environment is
@@ -625,6 +707,19 @@ export function createCrossEnvironment({
     }
     const snapshot = snapshotForAgent(exec?.agent);
     prepareWeb(snapshot);
+    // §4.4 provider gate for the P0 surface: a disabled / unknown / unimplemented provider refuses
+    // the call instead of being answered by whichever browser happens to be running.
+    const driver = resolveWebDriver(snapshot);
+    if (driver.blocked !== null) {
+      const disabled = driver.blocked === 'environment-disabled' || driver.blocked === 'provider-disabled';
+      throw new BrowserError(
+        disabled ? ERROR_CODES.ADAPTER_DISABLED : ERROR_CODES.ADAPTER_UNSUPPORTED,
+        disabled
+          ? `当前 Web 运行环境（${driver.provider}）已禁用：${driver.blocked}`
+          : `当前 Web 运行环境（${driver.provider}）不可执行：${driver.blocked}`,
+        { provider: driver.provider, reason: driver.blocked, family, method, configRevision: snapshot.revision },
+      );
+    }
     const { providers } = adapterRegistry.resolve(snapshot);
     const provider = providers?.[0];
     if (!provider || typeof provider[surfaceName]?.[method] !== 'function') {
@@ -942,7 +1037,117 @@ export function createCrossEnvironment({
         },
       });
     }
+    // Per-provider cards (§7): each provider answers with its own axes; the environment-level
+    // axes stay as the summary the earlier pages already rely on.
+    const webEntry = config.global.environments?.[ENVIRONMENTS.WEB] ?? null;
+    for (const environment of environments) {
+      if (environment.id !== ENVIRONMENTS.WEB) continue;
+      environment.providers = providerReadinessBlock({
+        snapshot,
+        webEntry,
+        checkedAt,
+        axes: environment.axes,
+      });
+    }
     return { checkedAt, configRevision: snapshot.revision, environments };
+  }
+
+  /**
+   * Per-provider readiness for the web environment (§7).
+   *
+   * Structural rule: a provider that is disabled (or has no driver) is **never probed** and never
+   * started — its axes are answered from config facts. An enabled, implemented provider **is** probed
+   * for its dependency with *its own* executable candidates, so "not installed" is reported as
+   * `failed / executable-missing` instead of an unverified state, and never by borrowing chrome's
+   * evidence (§8: code reuse is not verification). Session-level axes (connection/target/capability)
+   * belong to the selected provider only; every other provider reports `provider-not-selected`.
+   *
+   * @param {{snapshot:object, webEntry:object, checkedAt:number, axes:object}} input
+   */
+  function providerReadinessBlock({ snapshot, webEntry, checkedAt, axes }) {
+    const switches = isPlainObject(webEntry?.providers) ? webEntry.providers : {};
+    const totalEnabled = webEntry?.enabled === true;
+    const selectedProvider = typeof snapshot?.provider === 'string' ? snapshot.provider : null;
+    const notProbed = (reason) => axis(READINESS_STATUS.NOT_PROBED, { reason, checkedAt });
+    const out = {};
+    for (const id of WEB_PROVIDER_IDS) {
+      const enabled = switches[id]?.enabled === true;
+      const support = webProviderSupport(id);
+      const implemented = isImplementedWebProvider(id);
+      const selected = selectedProvider === id;
+      const blockedReason = !totalEnabled
+        ? 'environment-disabled'
+        : (!enabled
+          ? 'provider-disabled'
+          : (support === 'pending'
+            ? 'provider-driver-pending'
+            : (!implemented ? 'provider-not-implemented' : null)));
+      if (blockedReason !== null) {
+        out[id] = {
+          id,
+          selected,
+          enabled,
+          support,
+          implemented,
+          axes: {
+            support: axis(implemented ? SUPPORT.SUPPORTED : SUPPORT.UNSUPPORTED, {
+              reason: support === 'pending' ? 'provider-driver-pending' : (implemented ? null : 'provider-not-implemented'),
+              checkedAt,
+            }),
+            enabled: axis('false', { reason: blockedReason, checkedAt }),
+            dependency: notProbed(blockedReason),
+            connection: notProbed(blockedReason),
+            target: axis(READINESS_STATUS.UNBOUND, { reason: blockedReason, checkedAt }),
+            capability: notProbed(blockedReason),
+          },
+        };
+        continue;
+      }
+      // Dependency is a filesystem fact about *this* provider's own executable, so it does not
+      // depend on which provider is currently selected: a machine without Edge must show that on
+      // the Edge card even while Chrome is the one executing.
+      let resolution = null;
+      try {
+        resolution = resolveProviderExecutable({ provider: id });
+      } catch (error) {
+        resolution = null;
+      }
+      const dependencyEvidence = {
+        id: id === DEFAULT_WEB_PROVIDER ? 'chromium' : id,
+        kind: 'executable',
+        provider: id,
+        path: resolution ? resolution.path : null,
+        // Version is never invented: null means "not observed" (probe must not launch anything).
+        version: null,
+      };
+      const dependencyAxis = resolution === null
+        ? notProbed('provider-dependency-not-verified')
+        : (resolution.path
+          ? axis(READINESS_STATUS.OK, { checkedAt, evidence: dependencyEvidence })
+          : axis(READINESS_STATUS.FAILED, {
+            reason: resolution.reason || 'executable-missing',
+            checkedAt,
+            evidence: dependencyEvidence,
+          }));
+      out[id] = {
+        id,
+        selected,
+        enabled,
+        support,
+        implemented,
+        axes: {
+          support: axis(SUPPORT.SUPPORTED, { checkedAt }),
+          enabled: axis('true', { reason: null, checkedAt }),
+          dependency: dependencyAxis,
+          connection: selected && axes?.connection ? axes.connection : notProbed('provider-not-selected'),
+          target: selected && axes?.target
+            ? axes.target
+            : axis(READINESS_STATUS.UNBOUND, { reason: 'provider-not-selected', checkedAt }),
+          capability: selected && axes?.capability ? axes.capability : notProbed('provider-not-selected'),
+        },
+      };
+    }
+    return out;
   }
 
   function safeResolveAdapter(id, snapshot) {
@@ -964,14 +1169,7 @@ export function createCrossEnvironment({
       ok: true,
       revision: config.revision,
       config,
-      resolved: {
-        environment: snapshot.environment,
-        adapterId: snapshot.adapterId,
-        enabledEnvironments: snapshot.enabledEnvironments,
-        capabilities: snapshot.capabilities,
-        targetId: snapshot.targetId,
-        source: snapshot.source,
-      },
+      resolved: resolvedBlock(snapshot),
       readiness: await readinessFor(snapshot),
     };
   }
@@ -1049,14 +1247,7 @@ export function createCrossEnvironment({
           ok: true,
           revision: written.revision,
           config: written.config,
-          resolved: {
-            environment: snapshot.environment,
-            adapterId: snapshot.adapterId,
-            enabledEnvironments: snapshot.enabledEnvironments,
-            capabilities: snapshot.capabilities,
-            targetId: snapshot.targetId,
-            source: snapshot.source,
-          },
+          resolved: resolvedBlock(snapshot),
         });
         return true;
       }
@@ -1083,14 +1274,7 @@ export function createCrossEnvironment({
         sendJson(res, 200, {
           ok: true,
           revision: written.revision,
-          resolved: {
-            environment: snapshot.environment,
-            adapterId: snapshot.adapterId,
-            enabledEnvironments: snapshot.enabledEnvironments,
-            capabilities: snapshot.capabilities,
-            targetId: snapshot.targetId,
-            source: snapshot.source,
-          },
+          resolved: resolvedBlock(snapshot),
         });
         return true;
       }

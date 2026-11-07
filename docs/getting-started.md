@@ -84,7 +84,7 @@ browser_screenshot {out}        # 留一张可复核的 PNG
 
 | 环境分组 | 卡片目标 | 技术栈说明举例 |
 | --- | --- | --- |
-| Web | Chrome、Edge、Firefox | 相应浏览器中运行的网页 |
+| Web | Chrome、Edge、Firefox（运行环境 = provider） | 相应浏览器中运行的网页 |
 | Linux | Linux 原生桌面应用、Electron 应用、Tauri 应用 | GTK / Qt / Flutter、Chromium、WebKitGTK |
 | Windows | Windows 原生桌面应用、.NET 桌面应用、WinUI 3 应用、Electron 应用、Tauri 应用 | Win32 / Qt / Flutter、WPF / Windows Forms、Windows App SDK、WebView2 |
 | macOS | macOS 原生桌面应用、Electron 应用、Tauri 应用 | AppKit / SwiftUI / Qt / Flutter、Chromium、WKWebView |
@@ -97,13 +97,25 @@ browser_screenshot {out}        # 留一张可复核的 PNG
 
 - 十个环境分组、共 45 张卡片，分组**默认收起**；标题右侧显示当前筛选下的目标数量。展开/收起状态保存在浏览器 `localStorage`，刷新或重开设置页保持。
 - 右上角「隐藏未实现」默认关闭；开启后仅保留带「已实现」状态的卡片，没有剩余目标的分组一并隐藏。它只筛选页面展示，不改变工具、Skill 或目标的启用配置。
-- 每张卡片底部同级显示 `③ 接口`、`④ 执行端`、实现状态三个标签，支持换行。「已实现」为绿色（当前为 Chrome），「未支持」与「未接入」为灰色。未实现项明确显示「候选接口 / 候选执行端」，不表示其接入方案或能力已经验证。
+- 每张卡片底部同级显示 `③ 接口`、`④ 执行端`、实现状态三个标签，支持换行。「已实现」为绿色（当前为 Chrome 与 Edge 的驱动代码），「未支持」与「未接入」为灰色。未实现项明确显示「候选接口 / 候选执行端」，不表示其接入方案或能力已经验证。
+- **两层开关。** 分组标题栏里是**目标环境总开关**（写 `environments.<env>.enabled`）；卡片里的「用户启用」是**运行环境分开关**（Web 分组下写 `environments.web.providers.<id>.enabled`，即 `chrome` / `edge` / `firefox` 各一份）。两者独立：开一个 provider 不会切换当前执行端，也不会改动其它 provider；关闭总开关时所有分开关置灰不可点，但**已保存的值原样保留**（不写 0），重新打开后按原值显示。
+- **运行环境（provider）与「当前使用」。** 一个 `web` 目标环境下可以有多个 provider，执行时按 `provider` 单选：卡片会标出「当前使用 / 未选中」，该标记来自 Host 解析出的 `resolved.provider`。选择链为：会话选择 > 父会话 > 工作区 > 全局 > 默认 `chrome`；当前 provider 被禁用时**不会静默切换到别的浏览器**，而是保留选择并阻断执行（错误码见 [adapters.md](adapters.md) 的错误语义）。预览面板仍按工作区展示，不按 provider 分栏。
+- **配置形状。** `environments.web` 下有 `provider`（当前执行端，默认 `chrome`）与 `providers.{chrome,edge,firefox}.enabled`；`enabledProviders` 是**派生**列表，不单独存储。更早版本写下的、没有 `provider` 字段的配置文件会被自动按「chrome 默认选择 + chrome 启用」解释，**不会**被判为配置损坏。
 - **配置真值在 Host**：设置页挂载时读取 `GET /plugins/ui-testing/config?view=global`，启用开关通过 `PUT /plugins/ui-testing/config` 提交并携带 `expectedRevision`。成功用返回的 revision 更新；冲突（`CONFIG_CONFLICT`）会展示最新 revision 并回滚，不显示“已保存”。配置文件默认在 `${DSH_HOME}/ui-testing/config.json`，可用 `DSH_UI_TESTING_CONFIG_DIR` 覆盖。
 - **工具布局由面板决定**：设置页里启用了哪些环境，模型请求里就出现这些环境的工具（外加两个环境无关诊断），不会带入其它环境的 schema；关掉某个环境即从请求里消失，不需要重启。
 - **六轴就绪**：卡片分别显示 `工程支持 / 用户启用 / 依赖可用 / 连接可信 / 目标已绑定 / 能力就绪`，带检查时间、原因与配置 revision。未检测、检测失败、不支持、暂不可用不混用；冷态目标为未绑定、能力为未探测，不伪造版本或“有效”。每个轴把 Host 测到的细节一并带出：目标 id、逐轴检查时间、证据类型；能力轴还列出逐项探测结果（结构/输入/网络/帧源），未就绪项直接标在卡片上。禁用或未选择的环境不做探测，只如实显示“工程支持但未启用”。
 - 依赖探测只做低干扰检查（可执行文件是否存在），不启动浏览器、不扫描未启用环境；连接与能力探测在需要时另行执行，读取型探测不证明输入已生效。
 - 面板顶栏「运行环境」选择器读取同一份 Host 配置的 `enabledEnvironments`；切换时 `POST /plugins/ui-testing/config/select` 只写当前会话，成功才更新本地状态。未实现环境仍禁用，且不会触发任何探测。
 - 生效方式：`client.js` 改动刷新当前 DSH GUI 后生效；`index.js`、工具注册、Skill provider 与配置存储改动需要重启或重挂插件。已注入历史的 Skill 正文不会被开关自动移除，切换只对后续轮次生效。
+
+## 运行环境（provider）：Chrome 与 Edge
+
+- **可执行文件按厂商分立**：Chrome 与 Edge 各有一份候选清单（Linux `microsoft-edge` / `microsoft-edge-stable`、Windows `Microsoft/Edge/Application/msedge.exe`、macOS Edge `.app` 内的可执行文件），互不混用。
+- **覆盖变量按 provider 分开**：Chrome 用 `DSH_UI_TESTING_CHROME`，Edge 用 `DSH_UI_TESTING_EDGE`。显式值**权威且不回退**：Edge 的值不可用时直接报 `DEPENDENCY_MISSING`（reason `override-invalid`），不会改用 Chrome。
+- **profile 按 provider 独立**（无头用一次性临时目录；有头持久目录也按 provider 分开），Chrome 与 Edge 不共享同一个有头 profile。
+- **启动后校验产品身份**：连上 CDP 之后用 `Browser.getVersion` 的产品串确认实际启动的是哪个厂商（Edge 必须含 `Edg/`，Chrome 必须含 `Chrome/` 且不含 `Edg/`）。"连上"不等于"开对了"；对不上报 `DEPENDENCY_MISSING`（reason `identity-mismatch`），Edge 拿不到产品串则按 `identity-unverified` 拒绝启动。
+- **Edge 的当前边界（务必按字面理解）**：Edge 的驱动与参数化代码已接入（复用同一套 CDP 连接、目标生命周期、输入、结构树、截图、网络与帧采集实现），但**本轮没有在装了 Edge 的机器上实际拉起过**。在没有 Edge 二进制的机器上：Edge 未启用时依赖轴是「未探测」（未启用不探测）；**启用之后**依赖轴变为 `failed / executable-missing`（卡片上「依赖」一行直接显示），此时启用它不会有任何页面被打开——这**不代表 Edge 已验证可用**。
+- **Firefox 当前未支持**：卡片置灰，开关不可点。
 
 ## 安全边界
 

@@ -51,7 +51,10 @@ P0 是四项互相独立的能力，不能相互顶替：
 
 | 环境 | 工程支持 | 说明 |
 | --- | --- | --- |
-| Web / Chromium | supported | 36 个 `browser_*` 工具、T1–T4 与 P0；唯一可执行的真实环境 |
+| Web / Chromium | supported | 36 个 `browser_*` 工具、T1–T4 与 P0；唯一可执行的真实目标环境 |
+| Web 运行环境 `chrome` | supported | 默认 provider；可执行文件、覆盖变量、profile、身份校验均已参数化 |
+| Web 运行环境 `edge` | supported（代码）/ 依赖视本机而定 | 与 Chrome 复用同一套 CDP 实现，候选路径、`DSH_UI_TESTING_EDGE`、profile、产品身份校验独立；本机没有 Edge 二进制时依赖轴报 `failed / executable-missing`，真机拉起未实测 |
+| Web 运行环境 `firefox` | unsupported | 配置里可写入开关，但没有驱动；设置页置灰，执行返回 `ADAPTER_UNSUPPORTED` |
 | fake（test-only） | supported（仅测试） | 确定性夹具，用于验证契约/隔离/证据；生产配置默认拒绝，不得称为真实平台 |
 | Linux/Windows/macOS 桌面、Android、TUI、HarmonyOS、小程序、游戏、3D | planned / unsupported | 尚无 adapter 与真实探针；设置页显示 planned，运行环境选择器不启用 |
 

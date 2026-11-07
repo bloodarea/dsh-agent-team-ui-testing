@@ -64,7 +64,7 @@ tests/                 验收套件与确定性靶机
 DSH Agent / Agent Team
         │  工具调用
         ▼
-   BrowserHost ── 一个 Chromium（默认无头；Web 视图可切有头）/ 一个 profile
+   BrowserHosts[provider] ── 每个运行环境一个浏览器（默认无头；Web 视图可切有头）/ 每个 provider 一份 profile
         │
         ├─ Runtime（每个 DSH 工作区一个 primary）
         │    ├─ 独立 page：URL、视口、历史、网络缓冲
@@ -83,6 +83,7 @@ DSH Agent / Agent Team
 - **串行化**：所有会改动页面的操作走该 Runtime 的串行队列；只读诊断（`browser_state`、`browser_capabilities`、`browser_viewport get`、离线基线读取）不进队列、不占租约。
 - **租约**：同一标签同一时刻只有一个 owner；不同标签可由不同 Agent 并行，同标签冲突返回 `BUSY`。
 - **懒启动**：只有真正需要页面的动作才启动 Chromium；诊断类工具不启动。
+- **运行环境（provider）归属**：页面容器按 provider 分开（`hosts[provider]`），entry 键是 `(provider, workspace)`，所以同一工作区在不同 provider 下是两套互不影响的页面/租约/ref；页面总预算按 provider 求和后仍受同一个 `maxPages` 约束。目标环境身份（`environment` / `adapterId`）不因此改变，仍是 `"web"`。跨 provider 的预览分栏尚未实现。
 
 ### 面板 HTTP 路由
 

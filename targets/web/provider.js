@@ -286,7 +286,19 @@ export function createWebP0Provider({ p0Dispatch, log, now = Date.now } = {}) {
       // `context` carries the invocation-scoped handles the platform dispatch needs (the page
       // runtime, the calling exec, the action meta). Dropping it made the production dispatch
       // unusable: it could only ever answer PROVIDER_UNAVAILABLE (A01).
-      platformResult = await callP0(family, method, { args, session, snapshot, signal, context });
+      platformResult = await callP0(family, method, {
+        args,
+        session,
+        snapshot,
+        signal,
+        context,
+        // Routing facts for the composition root (§4.2): the P0 call must run on the selected
+        // provider's runtime. `null` for a snapshot that predates the provider field.
+        provider: typeof snapshot?.provider === 'string' ? snapshot.provider : null,
+        executionAdapterId: typeof snapshot?.executionAdapterId === 'string'
+          ? snapshot.executionAdapterId
+          : null,
+      });
     } catch (error) {
       throw toAdapterError(error, { operation });
     }

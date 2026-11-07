@@ -54,6 +54,71 @@ export const READINESS_AXES = Object.freeze([
   'capability',
 ]);
 
+/**
+ * Web runtime providers and their engineering support — the **single truth** for "can this browser
+ * actually execute?".
+ *
+ * - `supported`: a driver exists (chrome).
+ * - `pending`: the user may express intent (`providers.<id>.enabled=true`) but no driver exists yet,
+ *   so it is *not* an implemented provider: registration does not count it, readiness reports
+ *   `not-probed / provider-driver-pending`, execution refuses with ADAPTER_UNSUPPORTED + `driver-pending`.
+ * - `unsupported`: no driver and none planned in this milestone.
+ *
+ * Flipping `edge` to `supported` is the one and only switch point (slice ③, once the vendor launcher,
+ * candidate paths and product-identity check exist). Never add a second "is edge usable?" judgement.
+ */
+export const WEB_PROVIDER_SUPPORT = Object.freeze({
+  chrome: 'supported',
+  // Slice ③: the Edge vendor launcher exists, so `edge` is implemented. **This is the one switch
+  // point** — driver, readiness, registration and execution all derive from this table.
+  edge: 'supported',
+  firefox: 'unsupported',
+});
+
+/**
+ * Machine-readable provider `reason` values. One concept, one spelling: driver refusal, readiness
+ * and tool errors must all use these constants (a `reason` is a detail, never a public error code).
+ */
+export const WEB_PROVIDER_REASONS = Object.freeze({
+  /** A provider whose driver is not wired yet (firefox today). */
+  DRIVER_PENDING: 'driver-pending',
+  /** No such provider id at all. */
+  UNKNOWN_PROVIDER: 'unknown-provider',
+  /** The user (or workspace) switch is off. */
+  PROVIDER_DISABLED: 'provider-disabled',
+  /** The whole target environment is off. */
+  ENVIRONMENT_DISABLED: 'environment-disabled',
+  /** Provider has no driver and none is planned. */
+  PROVIDER_UNSUPPORTED: 'provider-unsupported',
+  /** This provider's executable is missing on this machine. */
+  EXECUTABLE_MISSING: 'executable-missing',
+  /** An explicit override exists but is not usable (never a reason to run another vendor). */
+  OVERRIDE_INVALID: 'override-invalid',
+  /** The launched product gave no identity evidence and the provider needs it (non-chrome). */
+  IDENTITY_UNVERIFIED: 'identity-unverified',
+  /** The launched product identified as a different vendor. */
+  IDENTITY_MISMATCH: 'identity-mismatch',
+});
+
+/**
+ * Product-identity rule per vendor, used after the transport is up ("CDP connected" is not proof).
+ *
+ * `requires`: substrings the `Browser.getVersion.product` string must contain.
+ * `forbids`: substrings that must not appear (chrome must not be an Edge endpoint).
+ * `failClosedOnMissing`: no evidence is a rejection (multi-vendor providers) or tolerated
+ * (chrome, whose already-accepted startup path must not gain a new failure mode).
+ * A new vendor is one line here — never another if/else in the driver.
+ */
+export const WEB_PROVIDER_VENDOR = Object.freeze({
+  chrome: Object.freeze({ requires: Object.freeze(['Chrome/']), forbids: Object.freeze(['Edg/']), failClosedOnMissing: false }),
+  edge: Object.freeze({ requires: Object.freeze(['Edg/']), forbids: Object.freeze([]), failClosedOnMissing: true }),
+});
+
+/**
+ * Profile directory suffix per provider: Chrome and Edge must never share a headed profile.
+ */
+export const WEB_PROVIDER_PROFILE_SUFFIX = Object.freeze({ chrome: 'chrome', edge: 'edge', firefox: 'firefox' });
+
 /** Known environments. Only web/fake have implementations in this milestone. */
 export const ENVIRONMENTS = Object.freeze({
   WEB: 'web',

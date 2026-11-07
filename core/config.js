@@ -9,12 +9,53 @@ import {
   ENVIRONMENTS,
   ENVIRONMENT_CAPABILITIES,
   ERROR_CODES,
+  WEB_PROVIDER_SUPPORT,
 } from './contracts.js';
 import { AdapterError } from './errors.js';
 import { workspaceKeyOf } from './identity.js';
 
 /** Persisted config schema version. */
 export const CONFIG_VERSION = 1;
+
+/**
+ * Web *runtime providers* (the browser that actually executes): one target environment (`web`),
+ * one provider per selection. This is a different axis from `environment` and from the P0
+ * `P0Provider` class — never conflate the names (see docs/internal/web-runtime-provider-contract.md §4.2).
+ */
+export const WEB_PROVIDERS = Object.freeze({
+  CHROME: 'chrome',
+  EDGE: 'edge',
+  FIREFOX: 'firefox',
+});
+
+/** Known provider ids, in report order. Anything else is not a provider name. */
+export const WEB_PROVIDER_IDS = Object.freeze([
+  WEB_PROVIDERS.CHROME,
+  WEB_PROVIDERS.EDGE,
+  WEB_PROVIDERS.FIREFOX,
+]);
+
+/** Provider used when a legacy config has no `provider` field at all (config v1 compatibility). */
+export const DEFAULT_WEB_PROVIDER = WEB_PROVIDERS.CHROME;
+
+/** Engineering support for one provider id (`supported|pending|unsupported`, null when unknown). */
+export function webProviderSupport(provider) {
+  return Object.hasOwn(WEB_PROVIDER_SUPPORT, provider) ? WEB_PROVIDER_SUPPORT[provider] : null;
+}
+
+/**
+ * Providers the execution layer can currently drive — **derived** from `WEB_PROVIDER_SUPPORT`, so the
+ * config layer, registration, readiness and execution can never disagree. `edge` is `pending` today:
+ * its switch is storable, but it does not count as implemented and never executes.
+ */
+export const IMPLEMENTED_WEB_PROVIDERS = Object.freeze(
+  WEB_PROVIDER_IDS.filter((provider) => webProviderSupport(provider) === 'supported'),
+);
+
+/** True when a driver exists for this provider id. */
+export function isImplementedWebProvider(provider) {
+  return webProviderSupport(provider) === 'supported';
+}
 
 /**
  * Known environment metadata. `planned` environments are placeholders: they may be displayed but
@@ -89,7 +130,19 @@ function assertRevision(value, field = 'revision') {
   return value;
 }
 
-/** Default config: web is the only enabled environment. */
+/**
+ * Per-provider switches for a fresh web environment entry: chrome on, the others off, and no
+ * second copy of the "which providers are enabled" list (it is always derived).
+ */
+function defaultWebProviders() {
+  return {
+    [WEB_PROVIDERS.CHROME]: { enabled: true },
+    [WEB_PROVIDERS.EDGE]: { enabled: false },
+    [WEB_PROVIDERS.FIREFOX]: { enabled: false },
+  };
+}
+
+/** Default config: web is the only enabled environment, chrome the only enabled provider. */
 export const DEFAULT_CONFIG = deepFreeze({
   version: CONFIG_VERSION,
   revision: 0,
@@ -97,7 +150,16 @@ export const DEFAULT_CONFIG = deepFreeze({
     environment: ENVIRONMENTS.WEB,
     enabledEnvironments: [ENVIRONMENTS.WEB],
     environments: {
-      [ENVIRONMENTS.WEB]: { enabled: true, targetId: null },
+      [ENVIRONMENTS.WEB]: {
+        enabled: true,
+        targetId: null,
+        provider: DEFAULT_WEB_PROVIDER,
+        providers: {
+          [WEB_PROVIDERS.CHROME]: { enabled: true },
+          [WEB_PROVIDERS.EDGE]: { enabled: false },
+          [WEB_PROVIDERS.FIREFOX]: { enabled: false },
+        },
+      },
       [ENVIRONMENTS.FAKE]: { enabled: false, targetId: null },
     },
   },
@@ -106,10 +168,25 @@ export const DEFAULT_CONFIG = deepFreeze({
 });
 
 function defaultEnvironmentEntry(environment) {
-  return {
+  const entry = {
     enabled: environment === ENVIRONMENTS.WEB,
     targetId: null,
   };
+  if (environment === ENVIRONMENTS.WEB) {
+    entry.provider = DEFAULT_WEB_PROVIDER;
+    entry.providers = defaultWebProviders();
+  }
+  return entry;
+}
+
+/** Merge provider maps per provider id: sibling providers are never replaced wholesale. */
+function mergeProviderMaps(base, over) {
+  const out = {};
+  for (const [provider, entry] of Object.entries(base ?? {})) out[provider] = { ...entry };
+  for (const [provider, entry] of Object.entries(over ?? {})) {
+    out[provider] = { ...(out[provider] ?? {}), ...entry };
+  }
+  return out;
 }
 
 function normalizeEnvironmentName(environment, field, { allowTestEnvironments = true } = {}) {
@@ -140,40 +217,144 @@ function normalizeEnabledEnvironments(list, field, options) {
   return out;
 }
 
-function normalizeEnvironmentEntry(raw, environment, { partial = false } = {}) {
-  const source = assertPlainObject(raw, `environments.${environment}`);
+/**
+ * Validate a provider name.
+ *
+ * Write path (`strict`, i.e. every patch path): only chrome/edge/firefox are accepted, anything else
+ * is CONFIG_INVALID with the offending field — never a silent fallback.
+ *
+ * Load path (`strict:false`): a *well-typed but unknown* name (e.g. `"safari"` written by a newer
+ * version) is **kept verbatim**. Throwing here would make the store treat the whole file as corrupt,
+ * replace it with defaults and discard every saved switch — far worse than carrying one unusable
+ * selection. The snapshot then reports `source.rejectedProviderReason = 'unknown-provider'`, which
+ * blocks execution instead of quietly switching browsers. A value that is not a non-empty string is
+ * a structural error on both paths.
+ */
+function normalizeWebProviderName(value, field, { allowNull = false, strict = true } = {}) {
+  if (allowNull && value === null) return null;
+  if (typeof value !== 'string' || value.length === 0) {
+    throw invalid(`unknown web provider: ${String(value)}`, {
+      field,
+      provider: value === undefined ? null : String(value),
+      allowed: [...WEB_PROVIDER_IDS],
+    });
+  }
+  if (WEB_PROVIDER_IDS.includes(value)) return value;
+  if (strict) {
+    throw invalid(`unknown web provider: ${value}`, {
+      field,
+      provider: value,
+      allowed: [...WEB_PROVIDER_IDS],
+    });
+  }
+  return value;
+}
+
+const PROVIDER_ENTRY_KEYS = new Set(['enabled', 'executable', 'connection']);
+
+/**
+ * One provider entry. `partial` keeps the patch sparse (missing key = unchanged); `strict` rejects
+ * unknown keys instead of dropping them (write path).
+ */
+function normalizeProviderEntry(raw, field, { partial = false, strict = false } = {}) {
+  const source = assertPlainObject(raw, field);
+  if (strict) {
+    for (const key of Object.keys(source)) {
+      if (!PROVIDER_ENTRY_KEYS.has(key)) {
+        throw invalid(`unknown provider patch key: ${field}.${key}`, { field: `${field}.${key}` });
+      }
+    }
+  }
+  const out = {};
+  if (source.enabled !== undefined) {
+    if (typeof source.enabled !== 'boolean') {
+      throw invalid(`${field}.enabled must be a boolean`, { field: `${field}.enabled` });
+    }
+    out.enabled = source.enabled;
+  }
+  if (source.executable !== undefined) {
+    if (source.executable !== null && (typeof source.executable !== 'string' || source.executable.length === 0)) {
+      throw invalid(`${field}.executable must be a non-empty string or null`, {
+        field: `${field}.executable`,
+      });
+    }
+    out.executable = source.executable;
+  }
+  if (source.connection !== undefined) {
+    out.connection = clone(assertPlainObject(source.connection, `${field}.connection`));
+  }
+  return out;
+}
+
+/** Provider sub-map: per-provider deep shape, unknown ids dropped (load) or rejected (patch). */
+function normalizeProvidersMap(raw, field, { partial = false, strict = false } = {}) {
+  const source = assertPlainObject(raw, field);
+  const out = {};
+  for (const [provider, entry] of Object.entries(source)) {
+    if (!WEB_PROVIDER_IDS.includes(provider)) {
+      if (strict) {
+        throw invalid(`unknown web provider: ${provider}`, {
+          field: `${field}.${provider}`,
+          provider,
+          allowed: [...WEB_PROVIDER_IDS],
+        });
+      }
+      continue;
+    }
+    out[provider] = normalizeProviderEntry(entry, `${field}.${provider}`, { partial, strict });
+  }
+  return out;
+}
+
+function normalizeEnvironmentEntry(raw, environment, { partial = false, strict = false } = {}) {
+  const field = `environments.${environment}`;
+  const source = assertPlainObject(raw, field);
   const base = partial ? {} : defaultEnvironmentEntry(environment);
   const out = { ...base };
   if (source.enabled !== undefined) {
     if (typeof source.enabled !== 'boolean') {
-      throw invalid(`environments.${environment}.enabled must be a boolean`, {
-        field: `environments.${environment}.enabled`,
-      });
+      throw invalid(`${field}.enabled must be a boolean`, { field: `${field}.enabled` });
     }
     out.enabled = source.enabled;
   }
   if (source.targetId !== undefined) {
     if (source.targetId !== null && typeof source.targetId !== 'string') {
-      throw invalid(`environments.${environment}.targetId must be a string or null`, {
-        field: `environments.${environment}.targetId`,
-      });
+      throw invalid(`${field}.targetId must be a string or null`, { field: `${field}.targetId` });
     }
     out.targetId = source.targetId;
   }
   if (source.connection !== undefined) {
-    out.connection = clone(assertPlainObject(source.connection, `environments.${environment}.connection`));
+    out.connection = clone(assertPlainObject(source.connection, `${field}.connection`));
+  }
+  const webOnly = environment === ENVIRONMENTS.WEB;
+  if (source.provider !== undefined) {
+    if (!webOnly) {
+      throw invalid(`${field}.provider is only supported for the web environment`, {
+        field: `${field}.provider`,
+      });
+    }
+    out.provider = normalizeWebProviderName(source.provider, `${field}.provider`, { strict });
+  }
+  if (source.providers !== undefined) {
+    if (!webOnly) {
+      throw invalid(`${field}.providers is only supported for the web environment`, {
+        field: `${field}.providers`,
+      });
+    }
+    const provided = normalizeProvidersMap(source.providers, `${field}.providers`, { partial, strict });
+    out.providers = mergeProviderMaps(out.providers, provided);
   }
   return out;
 }
 
-function normalizeEnvironmentMap(raw, field, { partial = false } = {}) {
+function normalizeEnvironmentMap(raw, field, { partial = false, strict = false } = {}) {
   const source = assertPlainObject(raw, field);
   const out = {};
   for (const [environment, entry] of Object.entries(source)) {
     // Unknown and planned environments are dropped, not silently enabled.
     if (!Object.hasOwn(KNOWN_ENVIRONMENTS, environment)) continue;
     if (PLANNED_ENVIRONMENTS.has(environment)) continue;
-    out[environment] = normalizeEnvironmentEntry(entry, environment, { partial });
+    out[environment] = normalizeEnvironmentEntry(entry, environment, { partial, strict });
   }
   return out;
 }
@@ -251,6 +432,13 @@ function normalizeSessionEntry(raw, key) {
     }
     out.parentSession = source.parentSession;
   }
+  // Session-scoped provider selection (`null` clears it and re-inherits).
+  if (source.webProvider !== undefined) {
+    out.webProvider = normalizeWebProviderName(source.webProvider, `sessions.${key}.webProvider`, {
+      allowNull: true,
+      strict: false,
+    });
+  }
   return out;
 }
 
@@ -298,8 +486,8 @@ export function normalizeConfig(raw) {
 
 const GLOBAL_PATCH_KEYS = new Set(['environment', 'enabledEnvironments', 'environments', 'targetId']);
 const WORKSPACE_PATCH_KEYS = new Set(['environment', 'enabledEnvironments', 'environments', 'targetId']);
-const SESSION_PATCH_KEYS = new Set(['environment', 'targetId']);
-const ENVIRONMENT_ENTRY_KEYS = new Set(['enabled', 'targetId', 'connection']);
+const SESSION_PATCH_KEYS = new Set(['environment', 'targetId', 'webProvider']);
+const ENVIRONMENT_ENTRY_KEYS = new Set(['enabled', 'targetId', 'connection', 'provider', 'providers']);
 
 function normalizePatchEnvironments(raw, field, options) {
   const source = assertPlainObject(raw, field);
@@ -314,7 +502,7 @@ function normalizePatchEnvironments(raw, field, options) {
         });
       }
     }
-    out[environment] = normalizeEnvironmentEntry(entrySource, environment, { partial: true });
+    out[environment] = normalizeEnvironmentEntry(entrySource, environment, { partial: true, strict: true });
   }
   return out;
 }
@@ -360,6 +548,11 @@ export function validatePatch({ scope, patch } = {}, { allowTestEnvironments = f
     }
     out.targetId = source.targetId;
   }
+  if (source.webProvider !== undefined) {
+    out.webProvider = normalizeWebProviderName(source.webProvider, `${scope}.webProvider`, {
+      allowNull: true,
+    });
+  }
   return out;
 }
 
@@ -393,17 +586,30 @@ function agentSessionId(agent) {
  * A selection outside `enabledEnvironments` is rejected and falls back to `global.environment`;
  * the rejected value is reported in `source.rejectedEnvironment` (never silently allowed).
  *
+ * Web *provider* selection is an independent chain over the same scopes:
+ * `session.webProvider > parent's effective provider > workspace.environments.web.provider >
+ * global.environments.web.provider > "chrome"` (last step only for legacy configs without the
+ * field). A disabled provider is **not** silently replaced: the selection is kept in
+ * `snapshot.provider`, and `source.rejectedProvider` + `source.rejectedProviderReason` report that
+ * it cannot execute (the execution layer turns that into ADAPTER_DISABLED). `firefox` is a legal
+ * provider name that may be enabled, but has no driver: `providerConfig.implemented` is false and
+ * the execution layer must refuse with ADAPTER_UNSUPPORTED. A name that is not a known provider at
+ * all (`'safari'`, loaded from a newer config file) is preserved and reported as
+ * `rejectedProviderReason: 'unknown-provider'` — never replaced by chrome.
+ *
  * Malformed config degrades to defaults with `source.degraded=true` + `source.degradedReason`
  * instead of throwing. Only explicit invalid patches throw CONFIG_INVALID (validatePatch).
  *
  * @param {object} config
  * @param {{agent?:object, workspaceKey?:string|null}} [input]
  * @param {{allowTestEnvironments?:boolean}} [options]
- * @returns {{revision:number, environment:string, adapterId:string,
+ * @returns {{revision:number, environment:string, adapterId:string, provider:string|null,
+ *   executionAdapterId:string, enabledProviders:string[], providerConfig:object|null,
  *   enabledEnvironments:string[], capabilities:string[], environmentConfig:object,
  *   targetId:string|null, source:{globalRevision:number, workspaceKey:string|null,
  *   sessionId:string|null, inheritedFrom:string|null, rejectedEnvironment:string|null,
- *   degraded:boolean, degradedReason:string|null}}}
+ *   providerSource:string, inheritedProviderFrom:string|null, rejectedProvider:string|null,
+ *   rejectedProviderReason:string|null, degraded:boolean, degradedReason:string|null}}}
  */
 export function resolveSnapshot(config, { agent = null, workspaceKey = null } = {}, { allowTestEnvironments = false } = {}) {
   let normalized;
@@ -458,6 +664,10 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
   };
   const globalTarget = (environment) => normalized.global.environments[environment]?.targetId;
 
+  // `provider` is web-only: workspace/global entries for other environments have no such key.
+  const workspaceProvider = () => workspace?.environments?.[ENVIRONMENTS.WEB]?.provider;
+  const globalProvider = () => normalized.global.environments?.[ENVIRONMENTS.WEB]?.provider;
+
   const selectForSession = (currentId, agentParent, depth, seen) => {
     const own = Object.hasOwn(normalized.sessions, currentId) ? normalized.sessions[currentId] : null;
     const ownParent = isPlainObject(own)
@@ -489,6 +699,28 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
       environmentSource = 'global';
     }
 
+    // Independent provider chain: own webProvider > parent's effective provider > workspace >
+    // global > "chrome". Normalization already materializes chrome for a legacy config, so the last
+    // step is a defensive default rather than a normally observable source.
+    let provider;
+    let providerSource;
+    if (isPlainObject(own) && own.webProvider !== undefined && own.webProvider !== null) {
+      provider = own.webProvider;
+      providerSource = currentId;
+    } else if (parent !== null) {
+      provider = parent.provider;
+      providerSource = parent.providerSource;
+    } else if (workspaceProvider() !== undefined) {
+      provider = workspaceProvider();
+      providerSource = 'workspace';
+    } else if (globalProvider() !== undefined) {
+      provider = globalProvider();
+      providerSource = 'global';
+    } else {
+      provider = DEFAULT_WEB_PROVIDER;
+      providerSource = 'default';
+    }
+
     const effective = applyEnabled(environment);
     const rejectedEnvironment = effective.rejected !== null
       ? effective.rejected
@@ -515,6 +747,8 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
       environment: effective.environment,
       environmentSource,
       rejectedEnvironment,
+      provider,
+      providerSource,
       targetId,
     };
   };
@@ -531,10 +765,24 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
     const effective = applyEnabled(environment);
     const workspaceValue = workspaceTarget(effective.environment);
     const globalValue = globalTarget(effective.environment);
+    let provider;
+    let providerSource;
+    if (workspaceProvider() !== undefined) {
+      provider = workspaceProvider();
+      providerSource = 'workspace';
+    } else if (globalProvider() !== undefined) {
+      provider = globalProvider();
+      providerSource = 'global';
+    } else {
+      provider = DEFAULT_WEB_PROVIDER;
+      providerSource = 'default';
+    }
     selection = {
       environment: effective.environment,
       environmentSource: workspace?.environment !== undefined ? 'workspace' : 'global',
       rejectedEnvironment: effective.rejected,
+      provider,
+      providerSource,
       targetId: workspaceValue !== undefined ? workspaceValue : (globalValue !== undefined ? globalValue : null),
     };
   }
@@ -549,10 +797,52 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
       ...(workspaceEnvironmentConfig.connection ?? {}),
     };
   }
+  if (globalEnvironmentConfig.providers !== undefined || workspaceEnvironmentConfig.providers !== undefined) {
+    environmentConfig.providers = mergeProviderMaps(
+      globalEnvironmentConfig.providers,
+      workspaceEnvironmentConfig.providers,
+    );
+  }
 
   const inheritedFrom = sessionId !== null && selection.environmentSource === sessionId
     ? null
     : selection.environmentSource;
+  const inheritedProviderFrom = sessionId !== null && selection.providerSource === sessionId
+    ? null
+    : selection.providerSource;
+
+  // Web provider facts. `enabledProviders` is always derived from `providers.*.enabled` (no second
+  // stored list); `provider` / `executionAdapterId` / `providerConfig` only exist for web.
+  const enabledProviders = WEB_PROVIDER_IDS.filter(
+    (id) => environmentConfig.providers?.[id]?.enabled === true,
+  );
+  const isWeb = environment === ENVIRONMENTS.WEB;
+  const provider = isWeb ? selection.provider : null;
+  const providerEntry = isWeb ? (environmentConfig.providers?.[provider] ?? {}) : {};
+  // Precedence: total gate -> unknown provider name -> per-provider switch. Every non-null value
+  // blocks execution; an unknown name is kept so nothing is silently swapped for chrome.
+  const providerKnown = provider !== null && WEB_PROVIDER_IDS.includes(provider);
+  let rejectedProviderReason = null;
+  if (isWeb) {
+    if (environmentConfig.enabled !== true) rejectedProviderReason = 'environment-disabled';
+    else if (!providerKnown) rejectedProviderReason = 'unknown-provider';
+    else if (providerEntry.enabled !== true) rejectedProviderReason = 'provider-disabled';
+  }
+  // Legacy env-level `connection` is a chrome-scoped compatibility field (§11): it is reported for
+  // chrome only and never inherited by another provider.
+  const legacyConnection = environmentConfig.connection ?? null;
+  const providerConfig = isWeb
+    ? {
+      provider,
+      // Canonical engineering support fact; `implemented` is its derived boolean, never a second truth.
+      support: webProviderSupport(provider),
+      enabled: providerEntry.enabled === true,
+      executable: providerEntry.executable ?? null,
+      connection: providerEntry.connection
+        ?? (provider === WEB_PROVIDERS.CHROME ? legacyConnection : null),
+      implemented: isImplementedWebProvider(provider),
+    }
+    : null;
 
   // A snapshot is a *step input*: it must be immutable, because admission, schema declaration,
   // Skill discovery and execution all read the same object (A11). Freezing here — not at each
@@ -561,16 +851,25 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
     revision: normalized.revision,
     environment,
     adapterId: environment,
+    provider,
+    executionAdapterId: isWeb ? `${environment}-${provider}` : environment,
+    enabledProviders,
+    providerConfig,
     enabledEnvironments: [...enabledEnvironments],
     capabilities: capabilitiesForEnvironment(environment),
     environmentConfig,
-    targetId: selection.targetId ?? null,
+    // Legacy `targetId` belongs to the chrome runtime: it must not leak into another provider.
+    targetId: isWeb && provider !== WEB_PROVIDERS.CHROME ? null : (selection.targetId ?? null),
     source: {
       globalRevision: normalized.revision,
       workspaceKey: key,
       sessionId,
       inheritedFrom,
       rejectedEnvironment: selection.rejectedEnvironment,
+      providerSource: selection.providerSource,
+      inheritedProviderFrom,
+      rejectedProvider: rejectedProviderReason === null ? null : provider,
+      rejectedProviderReason,
       degraded,
       degradedReason,
     },
