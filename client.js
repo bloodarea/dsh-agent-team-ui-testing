@@ -6448,6 +6448,50 @@ window.__ModuleLoader__.load({
         inputNoticeTimerRef.current = window.setTimeout(() => setInputNotice(''), 3200);
       }
 
+      /** 面板按键的默认 virtualKeyCode（浏览器给不出 keyCode 时用）。 */
+      const PANEL_KEY_CODES = {
+        Backspace: 8, Tab: 9, Enter: 13, Shift: 16, Control: 17, Alt: 18, Pause: 19, CapsLock: 20,
+        Escape: 27, ' ': 32, PageUp: 33, PageDown: 34, End: 35, Home: 36,
+        ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Insert: 45, Delete: 46,
+        Meta: 91, ContextMenu: 93,
+        F1: 112, F2: 113, F3: 114, F4: 115, F5: 116, F6: 117, F7: 118, F8: 119,
+        F9: 120, F10: 121, F11: 122, F12: 123,
+      };
+
+      /**
+       * 真人按键 → Host `/input` 事件。旧实现有三处漏：`Ctrl/Cmd/Alt` 组合直接 return
+       * （快捷键全丢）、只认 7 个键（Home/End/PgUp/PgDn/F1-F12 全丢）、可打印字符走
+       * `kind:'text'`（页面收不到 keydown，绑在 keydown 上的快捷键与输入框按键逻辑都看不到）。
+       * 现在统一发 keyDown + keyUp：带 modifiers 位掩码、virtualKeyCode、物理 code、autoRepeat，
+       * 可打印字符同时带 text/unmodifiedText。
+       */
+      function panelKeyEvents(event) {
+        const key = String((event && event.key) || '');
+        if (!key || key === 'Dead' || key === 'Unidentified') return [];
+        const modifiers = (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0)
+          | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
+        const virtualKeyCode = Number.isFinite(event.keyCode) && event.keyCode > 0
+          ? event.keyCode
+          : PANEL_KEY_CODES[key];
+        const printable = key.length === 1;
+        const text = printable ? key : (key === 'Enter' ? '\r' : '');
+        const base = {
+          kind: 'key',
+          key,
+          code: event.code || undefined,
+          virtualKeyCode,
+          modifiers,
+          location: Number.isFinite(event.location) ? event.location : undefined,
+          autoRepeat: event.repeat === true ? true : undefined,
+        };
+        const down = Object.assign({}, base, { type: 'keyDown' });
+        if (text) {
+          down.text = text;
+          down.unmodifiedText = text;
+        }
+        return [down, Object.assign({}, base, { type: 'keyUp' })];
+      }
+
       function sendEvents(events, options) {
         if (annotRef.current.on) return; // single gate: annotation mode never dispatches page input
         // 选元素模式零页面交互：唯一例外是滚轮（契约要求继续滚动目标页）。
@@ -7689,18 +7733,11 @@ h('div', { className: 'utb-bar' },
                   onKeyDown: (event) => {
                     if (annotRef.current.on) return; // annotation mode: zero page input
                     if (pickRef.current.on) return; // pick mode: zero page keyboard input
-                    if (event.metaKey || event.ctrlKey || event.altKey) return;
+                    if (event.isComposing) return; // IME 组合中：别抢字符
+                    const events = panelKeyEvents(event);
+                    if (!events.length) return;
                     event.preventDefault();
-                    if (event.key.length === 1) {
-                      sendEvents([{ kind: 'text', text: event.key }]);
-                      return;
-                    }
-                    const virtual = { Backspace: 8, Tab: 9, Enter: 13, Escape: 27, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46 }[event.key];
-                    if (!virtual) return;
-                    sendEvents([
-                      { kind: 'key', type: 'keyDown', key: event.key, code: event.code, virtualKeyCode: virtual },
-                      { kind: 'key', type: 'keyUp', key: event.key, code: event.code, virtualKeyCode: virtual },
-                    ]);
+                    sendEvents(events);
                   },
                 }),
                 // P0-D annotation layer: covers the untranslated painted rect, viewBox = accepted

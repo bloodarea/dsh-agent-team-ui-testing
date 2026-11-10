@@ -35,6 +35,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 1. 把包安装进要使用的 DSH profile。
 2. 首次安装后**重启 DSH**，让插件 bundle 完成注册。
 3. 从 **更多 → 调试视图** 打开面板，或从右侧边栏的插件卡片进入。
+   面板里的键盘会转发到页面（含 `Ctrl/Cmd/Alt/Shift` 组合、F1–F12、Home/End/PgUp/PgDn/Delete/Insert）；但原生弹层（`<select>` 下拉、`alert/confirm`、右键菜单）由浏览器 UI 绘制，面板里看不到列表——下拉请用键盘选择，或让 agent 用 `browser_fill_form` 的 `combobox`。
    两个入口共用同一套视图：**右上角的「选择运行环境」组合框决定下方渲染哪个目标环境的视图**，而组合框**只列出设置页里已打开的目标环境**——例如只开了 Web 与 Android，就只出现这两项，没开的连选项都没有。当前只有 Web 视图实现了：选中 Android 这类已启用但没有视图的环境，会显示「视图层暂不支持」占位，并明确写出「执行环境仍然是 Web 视图，这里只切换视图」——**切视图不改执行环境**。把某个环境的开关关掉后，若当时正停在它的视图上，面板会退回宿主当前的执行环境。
 4. 插件开发时改为把本仓库链接或复制进 profile，不必安装 npm 包。
 5. 生效范围：

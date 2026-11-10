@@ -65,6 +65,8 @@ P0 是四项互相独立的能力，不能相互顶替：
 - **T4 验收未全覆盖。** 44 条动态行为门槛中 12 条通过、20 条部分通过、12 条未运行、0 条失败。close/dispose 恢复、WebGPU 渲染、媒体 seek/stall、header 校验身份、16 ms 闪白覆盖与长连接稳定性仍未验证。
 - **网络采集边界不完整。** OOPIF 为部分覆盖；shared/service worker 不采集；GUI 内部标签页可打开真人触发的 `target=_blank`（每个标签独立页面/Runtime），Agent 工具操作当前会话 selectedTab（未选择时 primary），多标签详见 [multi-tab.md](multi-tab.md)，自动/未授权 popup 仍阻断，也不做跨标签聚合；HTTPS 未独立验收；`responseModification` 在本构建固定为 `false`（`modify-response` 不可用，不做 CDP 能力探测）；HAR 只保证 1.2 子集。
 - **共享浏览器 profile。** Cookie 与存储由 Chromium profile 共享；只有页面、URL、视口、历史、网络缓冲与租约按工作区隔离，**不是登录态隔离**。
+- **原生弹层不在页面像素里。** `<select>` 的下拉列表、`alert/confirm`、右键菜单、文件选择器都由浏览器 UI 图层绘制，不进入页面渲染面，因此面板（screencast/截图）与 `browser_screenshot` 都看不到它们：点击会让它真的打开（`select.matches(':open') === true`），但屏幕上没有列表。选择请用键盘（聚焦后 ←→↑↓ + Enter/Esc，按键会作为真实 keydown/keyUp 转发）或 agent 侧 `browser_fill_form` 的 `combobox`（native setter + `change`）。
+- **面板键盘转发的是按键本身。** 除注释/选元素模式与 IME 组合期间外，按键都以 keydown + keyUp 转发到页面，带 CDP `modifiers` 位掩码（Alt=1/Ctrl=2/Meta=4/Shift=8）、物理 `code`、`virtualKeyCode` 与 `autoRepeat`，可打印字符同时带 `text/unmodifiedText`；`Ctrl/Cmd/Alt` 组合与 F1–F12、Home/End/PgUp/PgDn/Delete/Insert 都在范围内。
 - **截图不脱敏。** 分享前请检查内容；附件返回也不等于 provider 一定以原始分辨率收到图像。
 - **共享状态是乐观并发。** `browser_viewport get` 是缓存诊断，`stale` 表示「最近没观测」；`expectedRevision` 竞争失败返回 `VIEWPORT_CONFLICT` 且不自动重放。
 
