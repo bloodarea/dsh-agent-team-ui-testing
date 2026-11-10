@@ -1403,6 +1403,14 @@ async function main() {
       capturePng, observations, state,
     });
 
+    log('\n--- C page context menu ---');
+    const { runPanelContextChecks } = await import('./panel-context-checks.mjs');
+    await runPanelContextChecks({
+      fixtureUrl: new URL('/panel-context.html', state.fixture.url).href,
+      pageEvaluate, hostEvalJson, measurePreview, hostState, screenPointFor,
+      clickAt, centerOf, pressEscape, setAddressBar, waitFor, check, capturePng, observations, state,
+    });
+
     if (dsh.existing && process.env.DSH_SELECT_GUI_RETURN_URL) await setAddressBar(process.env.DSH_SELECT_GUI_RETURN_URL);
 
     if (!selectOnly) {

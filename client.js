@@ -2332,6 +2332,8 @@ window.__ModuleLoader__.load({
       const dragRef = React.useRef({ active: false, pointerId: -1, x: 0, y: 0 });
       /** 最近一次 pointerdown 的面板坐标：用来区分"点击"与"拖拽"（只有点击才弹 select 浮层）。 */
       const selectClickRef = React.useRef({ x: 0, y: 0, pointerId: -1, valid: false });
+      // 右键只在按下时记一次，抬起时补 release；没有按下过的右键不派发（避免键盘菜单/脚本右键串味）。
+      const rightClickRef = React.useRef({ x: 0, y: 0, pointerId: -1, valid: false });
       // P0-C「拖拽」模式：手势状态与共享 canvasX/canvasY 的节流写入（同一时刻最多一个 set 在途）。
       const panDragRef = React.useRef({
         active: false, pointerId: -1, startClientX: 0, startClientY: 0,
@@ -5696,6 +5698,20 @@ window.__ModuleLoader__.load({
           pickCommitAt(event);
           return;
         }
+        if (event.button === 2) {
+          // 右键归页面：宿主的右键菜单已在 onFrameContextMenu 里被阻断，这里只把右键按下转给
+          // 页面，页面自己绘制的菜单才会出现在帧里（原生默认菜单由浏览器 UI 图层画，见文档）。
+          rightClickRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId, valid: false };
+          if (!frameInputReady()) return;
+          const rightGeom = frameGeometry();
+          const rightPoint = rightGeom ? mapEventPoint(event, rightGeom) : null;
+          if (!rightPoint || !rightPoint.inside || rightPoint.blank) return;
+          event.preventDefault();
+          event.currentTarget.focus();
+          rightClickRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId, valid: true };
+          sendEvents([{ kind: 'mouse', type: 'mousePressed', x: rightPoint.x, y: rightPoint.y, button: 'right', buttons: 2, clickCount: 1 }]);
+          return;
+        }
         if (event.button !== 0) return;
         if (panMode) {
           // Pan is the recovery path: it must start even when page input is fail-closed (stale
@@ -5929,8 +5945,33 @@ window.__ModuleLoader__.load({
         if (selectPopRef.current && !selectPopIsCurrent(selectPopRef.current)) selectPopClose();
       });
 
+      /**
+       * 预览区内部的右键菜单属于页面，不属于宿主。
+       *
+       * 宿主（DSH Web）把右键菜单挂在容器上（`useContextMenu` 的 trigger props → React
+       * `onContextMenu`），预览是它的子树，所以右键会弹宿主的菜单。这里在预览区域内
+       * `preventDefault + stopPropagation`：既不弹宿主菜单，也不让事件继续冒泡到宿主容器。
+       * 页面的右键语义由 `onFramePointerDown`/`onFramePointerUp` 的右键派发提供。
+       */
+      function onFrameContextMenu(event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+
       /** The release is dispatched even when the pointer left the image (no stuck button). */
       function onFramePointerUp(event) {
+        if (event.button === 2) {
+          const right = rightClickRef.current;
+          rightClickRef.current = { x: 0, y: 0, pointerId: -1, valid: false };
+          // 标注/选元素模式内页面零输入（按下也没有派发，这里同样不派发）。
+          if (annotRef.current.on || pickRef.current.on) return;
+          if (!right.valid || right.pointerId !== event.pointerId) return;
+          const rightGeom = frameGeometry();
+          const rightPoint = rightGeom ? mapEventPoint(event, rightGeom) : null;
+          if (!rightPoint || !rightPoint.inside || rightPoint.blank) return;
+          sendEvents([{ kind: 'mouse', type: 'mouseReleased', x: rightPoint.x, y: rightPoint.y, button: 'right', buttons: 0, clickCount: 1 }]);
+          return;
+        }
         if (annotRef.current.on) return; // annotation mode: zero page input
         if (pickRef.current.on) return; // pick mode: action already committed on pointerdown
         const pan = panDragRef.current;
@@ -7984,7 +8025,9 @@ h('div', { className: 'utb-bar' },
           'aria-live': 'polite',
           'data-utb-pick-status': pickStatus ? pickStatus.kind : 'mode',
         }, pickStatus ? pickStatus.text : '选元素模式：点击画面中的元素加入聊天框 · 滚轮可滚动页面 · Esc 退出'),
-        h('div', { className: 'utb-stage', ref: stage },
+        // The whole preview area swallows the host context menu (page clicks only); see
+        // onFrameContextMenu. Outside this element the host menu keeps its normal behaviour.
+        h('div', { className: 'utb-stage', ref: stage, onContextMenu: onFrameContextMenu },
           activeUrl
             ? (shot
               ? h('div', {

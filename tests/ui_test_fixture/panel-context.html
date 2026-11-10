@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>右键菜单回归靶机</title>
+<style>
+  body { font: 16px system-ui; padding: 24px; background: #142033; color: #edf3ff; }
+  h1 { font-size: 22px; margin: 0 0 16px; }
+  .zone { width: 420px; height: 150px; margin: 0 0 20px; border-radius: 10px; display: flex;
+    align-items: center; justify-content: center; font: 15px/1.4 monospace; user-select: none; }
+  #ctx-zone { background: #1d3252; border: 1px solid #2f4b74; }
+  #plain-zone { background: #2a2438; border: 1px solid #4a3a63; }
+  #ctx-menu { position: fixed; z-index: 9; min-width: 160px; padding: 6px; border-radius: 8px;
+    background: #0b1220; border: 1px solid #38bdf8; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  #ctx-menu[hidden] { display: none; }
+  #ctx-menu button { display: block; width: 100%; text-align: left; padding: 7px 10px; margin: 0;
+    border: 0; border-radius: 6px; background: transparent; color: #e6ecf7; font: 14px system-ui; }
+  #ctx-menu button:hover { background: #1e3a8a; }
+  output { display: block; white-space: pre-wrap; font: 12px/1.5 monospace; color: #9fb3d1; }
+</style>
+<h1>右键菜单回归靶机</h1>
+<div id="ctx-zone" class="zone">页面自绘右键菜单区（点右键应出现本页菜单）</div>
+<div id="plain-zone" class="zone">没有菜单处理（原生默认菜单区）</div>
+<div id="ctx-menu" role="menu" hidden>
+  <button id="ctx-item-a" type="button" role="menuitem">页面菜单 · 甲</button>
+  <button id="ctx-item-b" type="button" role="menuitem">页面菜单 · 乙</button>
+</div>
+<output id="ctx-log">[]</output>
+<script>
+  window.ctxEvents = [];
+  window.ctxChosen = null;
+  const log = () => { document.getElementById('ctx-log').textContent = JSON.stringify(window.ctxEvents.slice(-8)); };
+  for (const type of ['mousedown', 'mouseup', 'contextmenu']) {
+    document.addEventListener(type, (event) => {
+      window.ctxEvents.push({
+        type,
+        button: event.button,
+        buttons: event.buttons,
+        clientX: Math.round(event.clientX),
+        clientY: Math.round(event.clientY),
+        trusted: event.isTrusted,
+        target: event.target && event.target.id,
+        // The listener runs in the bubble phase on document: this is the value AFTER page handlers.
+        prevented: event.defaultPrevented,
+      });
+      log();
+    });
+  }
+  const menu = document.getElementById('ctx-menu');
+  const zone = document.getElementById('ctx-zone');
+  zone.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    menu.hidden = false;
+    menu.style.left = Math.round(event.clientX) + 'px';
+    menu.style.top = Math.round(event.clientY) + 'px';
+    window.ctxMenuPoint = { x: Math.round(event.clientX), y: Math.round(event.clientY) };
+  });
+  for (const id of ['ctx-item-a', 'ctx-item-b']) {
+    document.getElementById(id).addEventListener('click', (event) => {
+      window.ctxChosen = id === 'ctx-item-a' ? 'a' : 'b';
+      window.ctxChosenPoint = { x: Math.round(event.clientX), y: Math.round(event.clientY) };
+      menu.hidden = true;
+    });
+  }
+  document.addEventListener('mousedown', (event) => {
+    if (!menu.hidden && !menu.contains(event.target)) menu.hidden = true;
+  });
+</script>
+</html>
