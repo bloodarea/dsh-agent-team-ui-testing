@@ -18,6 +18,13 @@ import https from 'node:https';
 import net from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { BrowserError, Cdp, asBrowserError, checkAbort, abortable, redactUrl, redactText, validateTarget } from './browser-safety.js';
+// Native <select> support for the debug panel: a browser-drawn popup never reaches the frame, so
+// the Host exposes a read-only option projection (POST /element) and one guarded write
+// (POST /select). Kept in its own pure module so the contract suite can pin it without a runtime.
+import {
+  classifySelectWrite, normalizeSelectProjection, normalizeSelectWriteRequest,
+  selectProbeDeclaration, selectWriteExpression,
+} from './select-control.js';
 import { createCrossEnvironment } from './integration/cross-environment.js';
 import { createDiagnose } from './integration/diagnose.js';
 import { nowMonoMs } from './core/clock.js';
@@ -7130,6 +7137,58 @@ export class Runtime {
     this.refreshViewObservationSoon({ delayMs: 50 });
     this.refreshViewObservationSoon({ delayMs: 250 });
     return events.length;
+  }
+
+  /**
+   * Panel-side `<select>` write (`POST /select`).
+   *
+   * One DOM write through the page: the native `selectedIndex` setter plus `input`/`change`.
+   * Bound requests validate the document and resolve the original node before writing; compatibility
+   * requests may use a selector or focus. The write stays in the serial queue; the guards in the HTTP route
+   * (same order as `/input`) and complete before this method is reached.
+   */
+  async selectValue(request, signal) {
+    await this.ensure(signal);
+    let answer;
+    if (request.target) {
+      const stale = () => new BrowserError('INVALID_ARGUMENT', '下拉目标已变化，请重新打开', { reason: 'stale-target' });
+      const tree = await this.send('Page.getFrameTree', {}, signal);
+      if (tree?.frameTree?.frame?.loaderId !== request.target.loaderId) throw stale();
+      let objectId;
+      try {
+        const resolved = await this.send('DOM.resolveNode', { backendNodeId: request.target.backendNodeId }, signal);
+        objectId = resolved?.object?.objectId;
+      } catch (error) {
+        if (['ABORTED', 'CDP_TIMEOUT', 'CDP_DISCONNECTED'].includes(error?.code)) throw error;
+        throw stale();
+      }
+      if (!objectId) throw stale();
+      try {
+        answer = await this.send('Runtime.callFunctionOn', {
+          objectId,
+          functionDeclaration: `function () { return ${selectWriteExpression(request, { objectBound: true })}; }`,
+          returnByValue: true,
+          userGesture: true,
+        }, signal);
+      } finally {
+        try { await this.send('Runtime.releaseObject', { objectId }, signal); } catch { /* best effort */ }
+      }
+    } else {
+      answer = await this.send('Runtime.evaluate', {
+        expression: selectWriteExpression(request),
+        returnByValue: true,
+        awaitPromise: false,
+        userGesture: true,
+      }, signal);
+    }
+    if (answer && answer.exceptionDetails) {
+      const details = answer.exceptionDetails;
+      const description = details.exception ? details.exception.description : details.text;
+      throw new BrowserError('EVAL_ERROR', String(description || '<select> 写入失败'));
+    }
+    const classified = classifySelectWrite(answer && answer.result ? answer.result.value : null);
+    if (!classified.ok) throw new BrowserError(classified.code, classified.message, classified.details);
+    return classified;
   }
 
   async evaluate(expression, awaitPromise = true, signal) {
@@ -15285,7 +15344,10 @@ async function pickElementAt(runtime, { x, y, detail }) {
       // quantised (nothing is dispatched and nothing is mutated).
       hit = await bounded('DOM.getNodeForLocation', {
         x: Math.floor(x), y: Math.floor(y),
-        includeUserAgentShadowDOM: true, ignorePointerEventsNone: false,
+        // Native controls contain browser-owned shadow nodes (e.g. select's inner DIV).
+        // Pick the authored control so its options and identity can be read. This flag only
+        // excludes UA shadow; authored open/closed shadow roots keep their existing behavior.
+        includeUserAgentShadowDOM: false, ignorePointerEventsNone: false,
       });
     } catch (error) {
       // "No node found at given location" is a miss; a timeout / detached document / closed CDP
@@ -15311,6 +15373,30 @@ async function pickElementAt(runtime, { x, y, detail }) {
       node = parent && parent.node;
     }
     if (!node || node.nodeType !== 1) return { element: null, reason: 'no-hit' };
+    // List-style selects hit their OPTION/OPTGROUP rather than the control's border. Project the
+    // owning control too, so unsupported shapes can show the keyboard hint instead of disappearing.
+    if (['option', 'optgroup'].includes(String(node.localName || '').toLowerCase())) {
+      const handles = [];
+      try {
+        const resolved = await bounded('DOM.resolveNode', { backendNodeId: node.backendNodeId });
+        const objectId = resolved?.object?.objectId;
+        if (objectId) {
+          handles.push(objectId);
+          const owner = await bounded('Runtime.callFunctionOn', {
+            objectId, functionDeclaration: 'function () { return this.closest("select"); }',
+          });
+          if (owner?.result?.objectId) {
+            handles.push(owner.result.objectId);
+            const describedOwner = await bounded('DOM.describeNode', { objectId: owner.result.objectId, depth: 0 });
+            if (describedOwner?.node?.localName === 'select') node = describedOwner.node;
+          }
+        }
+      } finally {
+        for (const objectId of handles) {
+          try { await bounded('Runtime.releaseObject', { objectId }); } catch { /* best effort */ }
+        }
+      }
+    }
     const tag = String(node.localName || '').toLowerCase();
     // A point on empty page background resolves to <html>/<body>; for a picker that is "nothing".
     if (!tag || tag === 'html' || tag === 'body') return { element: null, reason: 'no-hit' };
@@ -15340,10 +15426,52 @@ async function pickElementAt(runtime, { x, y, detail }) {
       },
     };
     if (detail) Object.assign(element, await elementDetailFacts(cdp, node.backendNodeId));
+    // A native <select> popup is painted by the browser UI layer, never by the page, so the panel
+    // cannot see it in the frame. Only for a select hit (and only when the projection is readable)
+    // does the reply gain a `select` field; every other hit keeps the exact historical shape.
+    if (tag === 'select') {
+      const select = await selectProjectionAt(bounded, node.backendNodeId);
+      if (select) element.select = {
+        ...select,
+        ...(loaderId ? { target: { backendNodeId: node.backendNodeId, loaderId } } : {}),
+      };
+    }
     return { element };
   } catch {
     // Any other read failure (CDP timeout/disconnect, detached target, missing box) is stale.
     return { element: null, reason: 'stale' };
+  }
+}
+
+/**
+ * Read-only option projection for a hit `<select>` (POST /element).
+ *
+ * Same read-only contract as `pickElementAt` (no ensure, no queue, no lease, no `lastError`): one
+ * `DOM.resolveNode` + one `Runtime.callFunctionOn` that merely reads. Every failure answers `null`
+ * so the element reply keeps its historical shape — a page that cannot be read must not turn a
+ * successful pick into an error, and a non-select hit must never grow a new field.
+ */
+async function selectProjectionAt(bounded, backendNodeId) {
+  let objectId = null;
+  try {
+    const resolved = await bounded('DOM.resolveNode', { backendNodeId });
+    objectId = resolved && resolved.object ? resolved.object.objectId : null;
+    if (!objectId) return null;
+    const answer = await bounded('Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: selectProbeDeclaration(),
+      returnByValue: true,
+    });
+    const value = answer && answer.result ? answer.result.value : null;
+    return normalizeSelectProjection(value);
+  } catch {
+    return null;
+  } finally {
+    // CallFunctionOn leaves a remote handle behind; releasing it is best-effort and must never
+    // mask the read result (a dropped handle only costs the inspector's object group).
+    if (objectId) {
+      try { await bounded('Runtime.releaseObject', { objectId }); } catch { /* best effort */ }
+    }
   }
 }
 
@@ -15969,6 +16097,39 @@ export function apply(ctx) {
         });
         registry.markRecent(entry);
         sendJson(res, 200, { ok: true, applied });
+        return;
+      }
+      if (action === '/select') {
+        // Panel-side native <select> write (POST /select, body {value, selector?}).
+        //
+        // Why this exists: the popup of a native <select> is drawn by the browser UI layer, so the
+        // panel's frame shows nothing and a mouse user cannot pick an option. The panel renders its
+        // own list (POST /element gives it the options) and writes the chosen value back here.
+        //
+        // Gate order is byte-for-byte the same as `/input` — environment/config gate, scoped
+        // ownership + lease (BUSY), body validation, and only then the serial queue + dispatch:
+        //   * `crossEnvironment.assertGuiAllowed(scopeRequest)` first (A10: a disabled Web
+        //     environment must not be bypassed through a panel route);
+        //   * `assertGuiPageWrite` before anything reaches the page, so a refused write dispatches
+        //     nothing at all (the tests assert the interception point, not a message);
+        //   * the body is validated outside `runtime.run`, so a bad request costs zero CDP;
+        //   * `runtime.run` gives the same single-owner serial queue and lease semantics as input.
+        // A refusal is a panel-facing input answer: INVALID_ARGUMENT is in NON_PAGE_ERROR_CODES, so
+        // a rejected value never overwrites the page's `lastError` projection.
+        crossEnvironment.assertGuiAllowed(scopeRequest); // A10: same environment gate as /input.
+        const { entry } = await select();
+        selected = entry;
+        registry.touch(entry);
+        if (scoped) assertGuiPageWrite(entry.runtime, scopeRequest.mode === 'session' ? scopeRequest.sessionId : null);
+        const request = normalizeSelectWriteRequest(body);
+        if (!request.ok) {
+          const refused = new BrowserError(request.code, request.message, request.details);
+          sendJson(res, scopeHttpStatus(request.code), { ok: false, ...refused.payload(), error: refused.message });
+          return;
+        }
+        const applied = await entry.runtime.run(() => entry.runtime.selectValue(request));
+        registry.markRecent(entry);
+        sendJson(res, 200, { ok: true, value: applied.value, selectedIndex: applied.selectedIndex, selector: request.selector });
         return;
       }
       if (action === '/eval') {

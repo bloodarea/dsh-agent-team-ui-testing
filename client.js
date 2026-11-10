@@ -9,6 +9,8 @@ window.__ModuleLoader__.load({
     try { reactDom = require('react-dom'); } catch { reactDom = null; }
 
     const ID = 'ui-testing-browser';
+    /** 面板构建标识：刷新后用它确认浏览器里跑的是哪一份 client.js（排查「改了没生效」）。 */
+    const CLIENT_BUILD = '2026-11-10T21:00+08:00·keyboard-rawdown+select-pop';
     const KIND = 'debug-view';
     const TITLE = '调试视图';
     /** 可选运行环境；本期只有 Web 视图可用，其余置灰。 */
@@ -1194,6 +1196,82 @@ window.__ModuleLoader__.load({
      * layout), natural* are the decoded frame pixels. The host window DPR never enters this
      * formula: event.clientX/Y, getBoundingClientRect and the target viewport are all CSS px.
      */
+    /** 单选 <select> 面板浮层的几何参数（纯数据；契约测试按源码抽取校验）。 */
+    const SELECT_POP_GEOMETRY = {
+      itemHeight: 26, minWidth: 160, maxWidth: 280, edge: 8, gap: 4, pad: 4, maxVisibleItems: 12,
+    };
+    /** 点击与按下点之间的最大偏移：超过就算拖拽，不弹浮层。 */
+    const SELECT_CLICK_SLOP_PX = 4;
+
+    /**
+     * 原生 <select> 浮层的定位（纯函数，无 DOM）。
+     *
+     * 输入：点击点在画面框内的 CSS px、要显示的行数、画面框的可用宽高；输出浮层的
+     * left/top/width/maxHeight 以及是否上翻/左移。规则：
+     *   ① 优先在点击点下方展开；② 下方放不下、上方放得下 → 上翻；
+     *   ③ 两侧都放不下 → 取空间较大的一侧，并把高度截断（列表内部滚动）；
+     *   ④ 任何情况下都夹在框内（edge 内边距），水平越界则左移。
+     * 行数再乘 itemHeight 得到自然高度；maxVisibleItems 是"不滚动时最多显示几行"的上限。
+     */
+    function selectPopLayout(point, itemCount, bounds) {
+      const g = SELECT_POP_GEOMETRY;
+      const boxW = Math.max(0, Number(bounds && bounds.width) || 0);
+      const boxH = Math.max(0, Number(bounds && bounds.height) || 0);
+      const rawX = Number(point && point.x);
+      const rawY = Number(point && point.y);
+      const x = Number.isFinite(rawX) ? rawX : 0;
+      const y = Number.isFinite(rawY) ? rawY : 0;
+      const count = Math.max(0, Math.floor(Number(itemCount) || 0));
+      // 高度按"最多 maxVisibleItems 行"算，但**所有条目都要渲染**（容器自己滚动）：
+      // 截断只发生在高度上，绝不能把第 13 项之后的选项从列表里丢掉。
+      const rowsForHeight = Math.max(1, Math.min(count, g.maxVisibleItems));
+      const natural = rowsForHeight * g.itemHeight + g.pad * 2;
+      const minHeight = g.itemHeight + g.pad * 2;
+      const roomBelow = Math.max(0, boxH - y - g.gap - g.edge);
+      const roomAbove = Math.max(0, y - g.gap - g.edge);
+      let side = 'below';
+      let top;
+      let maxHeight;
+      if (natural <= roomBelow) {
+        top = y + g.gap;
+        maxHeight = natural;
+      } else if (natural <= roomAbove) {
+        side = 'above';
+        top = y - g.gap - natural;
+        maxHeight = natural;
+      } else if (roomBelow >= roomAbove) {
+        top = y + g.gap;
+        maxHeight = Math.max(minHeight, Math.min(natural, roomBelow));
+      } else {
+        side = 'above';
+        maxHeight = Math.max(minHeight, Math.min(natural, roomAbove));
+        top = y - g.gap - maxHeight;
+      }
+      // ④ 硬夹进画面框：极端窄/矮面板也不许画到框外。
+      if (top + maxHeight > boxH - g.edge) top = boxH - g.edge - maxHeight;
+      if (top < g.edge) top = g.edge;
+      const room = Math.max(1, boxW - g.edge * 2);
+      const preferred = Math.max(g.minWidth, Math.min(g.maxWidth, room));
+      const width = Math.max(1, Math.min(preferred, room));
+      const wantedLeft = x - g.pad;
+      const lastLeft = Math.max(g.edge, boxW - g.edge - width);
+      const left = Math.min(Math.max(g.edge, wantedLeft), lastLeft);
+      const visibleItems = Math.max(1, Math.floor((maxHeight - g.pad * 2) / g.itemHeight));
+      return {
+        left: Math.round(left * 1000) / 1000,
+        top: Math.round(top * 1000) / 1000,
+        width: Math.round(width * 1000) / 1000,
+        maxHeight: Math.round(maxHeight * 1000) / 1000,
+        side,
+        flippedUp: side === 'above',
+        shiftedLeft: left < wantedLeft - 0.5,
+        itemHeight: g.itemHeight,
+        pad: g.pad,
+        visibleItems,
+        scrolls: count > visibleItems,
+      };
+    }
+
     function paintedRect(rect, naturalW, naturalH) {
       const nw = Number(naturalW) || 0;
       const nh = Number(naturalH) || 0;
@@ -1252,6 +1330,15 @@ window.__ModuleLoader__.load({
 .utb-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; font: inherit; text-align: left; color: var(--dsw-alias-label-primary); background: transparent; border: 0; border-radius: 6px; cursor: pointer; }
 .utb-menu-item:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
 .utb-menu-item:disabled { color: var(--dsw-alias-label-secondary); opacity: .6; cursor: not-allowed; }
+/* 原生 <select> 的面板侧浮层（浏览器弹层在 UI 图层，帧里看不到）。
+   观感复用 .utb-pop 那一套 token；定位由 selectPopLayout 纯函数给出。 */
+.utb-select-pop { overflow-y: auto; overflow-x: hidden; padding: 4px; background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.28); outline: none; }
+.utb-select-pop:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.utb-select-pop-item { display: block; width: 100%; padding: 4px 8px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-primary); border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.utb-select-pop-item:hover { background: var(--dsw-alias-bg-layer-2); }
+.utb-select-pop-item[data-utb-select-item="active"] { background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-2)); color: var(--dsw-alias-brand-primary); }
+.utb-select-pop-item[data-utb-select-item="disabled"] { color: var(--dsw-alias-label-secondary); opacity: .55; cursor: not-allowed; }
+.utb-select-pop-note { padding: 6px 8px; font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
 /* 调试工具弹窗被拦截时的本地提示 + 可点击降级链接（不写 Runtime lastError）。 */
 .utb-devtools-note { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; padding: 6px 8px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
 .utb-devtools-note a { color: var(--dsw-alias-brand-primary); text-decoration: underline; }
@@ -2130,6 +2217,17 @@ window.__ModuleLoader__.load({
       const [syncMismatch, setSyncMismatch] = React.useState(false);
       const [seedStatus, setSeedStatus] = React.useState(null);
       const [blankHint, setBlankHint] = React.useState('');
+      /**
+       * 原生 <select> 的面板侧浮层。浏览器把弹层画在 UI 图层，帧里根本看不到，所以键盘可用、
+       * 鼠标不可用；这里用点击点向 Host 问命中，命中 select 就在点击点画自己的列表。
+       * 形状：{anchor:{x,y}, bounds:{width,height}, select:<projection>, reason:<不支持原因|null>, activeIndex}
+       */
+      const [selectPop, setSelectPop] = React.useState(null);
+      const selectPopRef = React.useRef(null);
+      selectPopRef.current = selectPop;
+      const selectPopSeqRef = React.useRef(0);
+      const selectPopElementRef = React.useRef(null);
+      const inputQueueRef = React.useRef(Promise.resolve());
       const [inputNotice, setInputNotice] = React.useState('');
       const [tabNotice, setTabNotice] = React.useState('');
       const [tabOpening, setTabOpening] = React.useState(false);
@@ -2224,6 +2322,8 @@ window.__ModuleLoader__.load({
       const frameGeomRef = React.useRef(null);
       const pendingGeomRef = React.useRef(null);
       const dragRef = React.useRef({ active: false, pointerId: -1, x: 0, y: 0 });
+      /** 最近一次 pointerdown 的面板坐标：用来区分"点击"与"拖拽"（只有点击才弹 select 浮层）。 */
+      const selectClickRef = React.useRef({ x: 0, y: 0, pointerId: -1, valid: false });
       // P0-C「拖拽」模式：手势状态与共享 canvasX/canvasY 的节流写入（同一时刻最多一个 set 在途）。
       const panDragRef = React.useRef({
         active: false, pointerId: -1, startClientX: 0, startClientY: 0,
@@ -5625,6 +5725,7 @@ window.__ModuleLoader__.load({
         event.preventDefault();
         event.currentTarget.focus();
         dragRef.current = { active: true, pointerId: event.pointerId, x: point.x, y: point.y };
+        selectClickRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId, valid: true };
         try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ignore */ }
         sendEvents([{ kind: 'mouse', type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 }]);
       }
@@ -5661,6 +5762,158 @@ window.__ModuleLoader__.load({
         sendEvents([{ kind: 'mouse', type: 'mouseMoved', x: point.x, y: point.y, buttons: dragging ? 1 : 0 }]);
       }
 
+      /** 不支持浮层的形态 → 原因字符串（null = 支持）。与 Host 侧 selectShapeSupport 同义。 */
+      function selectPopReason(projection) {
+        if (!projection) return 'detached';
+        if (projection.multiple === true) return 'multiple';
+        if (Number(projection.size) > 1) return 'size';
+        if (!projection.options || projection.options.length === 0) return 'empty';
+        return null;
+      }
+
+      function selectPopClose(restoreFocus = false) {
+        selectPopSeqRef.current += 1;
+        selectPopRef.current = null;
+        setSelectPop(null);
+        if (restoreFocus && frameImgRef.current) frameImgRef.current.focus({ preventScroll: true });
+      }
+
+      function selectPopDocument() {
+        const state = remoteRef.current;
+        const ui = state && state.ui;
+        return annotDKey(annotDOf(ui)) + '|' + String(ui && ui.address || state && state.url || '');
+      }
+
+      function selectPopCanvas() {
+        const canvas = canvasPosition();
+        const view = viewRef.current;
+        return canvas ? JSON.stringify([canvas.x, canvas.y, view && view.scale]) : '';
+      }
+
+      function selectPopIsCurrent(pop) {
+        return pop && pop.epoch === scopeEpochRef.current && pop.seq === selectPopSeqRef.current
+          && pop.document === selectPopDocument() && pop.canvas === selectPopCanvas()
+          && readyRef.current && !writesPausedRef.current && !annotRef.current.on && !pickRef.current.on;
+      }
+
+      /**
+       * 一次点击之后问 Host 命中了什么：命中 <select> 就在点击点画浮层。
+       * 全部复用 picker 的坐标换算（q + 画布偏移 = 页面文档坐标），并沿用"画布原点移动就丢弃"
+       * 的规则，避免浮层画在错位的位置。
+       */
+      function selectPopProbe(event, point) {
+        if (!readyRef.current || writesPausedRef.current) return;
+        const canvas = canvasPosition();
+        const box = frameBoxRef.current;
+        if (!canvas || !box) return;
+        const rect = box.getBoundingClientRect();
+        const epoch = scopeEpochRef.current;
+        const seq = selectPopSeqRef.current + 1;
+        selectPopSeqRef.current = seq;
+        const signal = abortRef.current ? abortRef.current.signal : undefined;
+        const context = { epoch, seq, scope: scopeRef.current, document: selectPopDocument(), canvas: selectPopCanvas() };
+        callHost('element', { x: point.q.x + canvas.x, y: point.q.y + canvas.y, detail: false }, {
+          scope: context.scope,
+          signal,
+        }).then((payload) => {
+          if (!selectPopIsCurrent(context)) return;
+          const element = payload && payload.element;
+          const projection = element && element.select ? element.select : null;
+          if (!projection || !projection.target) { selectPopClose(); return; }
+          const options = projection.options || [];
+          const selectedIndex = options.findIndex((option) => option.selected);
+          setSelectPop({
+            ...context,
+            anchor: { x: event.clientX - rect.left, y: event.clientY - rect.top },
+            bounds: { width: rect.width, height: rect.height },
+            select: projection,
+            reason: selectPopReason(projection),
+            activeIndex: selectedIndex >= 0 ? selectedIndex : 0,
+          });
+        }).catch(() => {
+          if (selectPopIsCurrent(context)) selectPopClose();
+        });
+      }
+
+      /** 选中一项：写回 → 补一次 Escape 关掉可能已打开的原生弹层 → 收起浮层。 */
+      function selectPopChoose(option) {
+        const pop = selectPopRef.current;
+        if (!selectPopIsCurrent(pop) || pop.reason || !option || option.disabled) return;
+        const signal = abortRef.current ? abortRef.current.signal : undefined;
+        const optionIndex = pop.select.options.indexOf(option);
+        selectPopClose(true);
+        const settleEscape = () => {
+          if (pop.epoch !== scopeEpochRef.current || pop.document !== selectPopDocument()) return;
+          sendEvents([
+            { kind: 'key', type: 'keyDown', key: 'Escape', code: 'Escape', virtualKeyCode: 27, modifiers: 0 },
+            { kind: 'key', type: 'keyUp', key: 'Escape', code: 'Escape', virtualKeyCode: 27, modifiers: 0 },
+          ]);
+        };
+        callHost('select', { value: option.value, optionIndex, target: pop.select.target }, { scope: pop.scope, signal })
+          .then((payload) => {
+            if (!payload || payload.ok !== true) {
+              noteInputError(new Error('下拉写入失败'));
+              return;
+            }
+            // 顺序很重要：先写回再 Escape。反过来的话，Escape 会先把用户刚选的值撤销掉。
+            settleEscape();
+          })
+          .catch((error) => { noteInputError(error); });
+      }
+
+      /** 浮层内键盘：↑↓ 移动（跳过 disabled）、Enter 选中、Esc 关闭；不支持形态只有 Esc。 */
+      function onSelectPopKeyDown(event) {
+        const pop = selectPopRef.current;
+        if (!pop) return;
+        if (event.key === 'Escape' || event.key === 'Esc') {
+          event.preventDefault();
+          event.stopPropagation();
+          selectPopClose(true);
+          sendEvents(panelKeyEvents(event));
+          return;
+        }
+        if (pop.reason) {
+          const events = panelKeyEvents(event);
+          if (events.length) { event.preventDefault(); sendEvents(events); }
+          return;
+        }
+        const options = pop.select.options || [];
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!options.length) return;
+          const step = event.key === 'ArrowDown' ? 1 : -1;
+          let index = Number.isInteger(pop.activeIndex) ? pop.activeIndex : 0;
+          for (let hop = 0; hop < options.length; hop += 1) {
+            index = (index + step + options.length) % options.length;
+            if (!options[index].disabled) break;
+          }
+          setSelectPop(Object.assign({}, pop, { activeIndex: index }));
+          return;
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          event.stopPropagation();
+          const option = options[pop.activeIndex];
+          if (option && !option.disabled) selectPopChoose(option);
+        }
+      }
+
+      /** 点击浮层外部关闭（面板任意位置，含画面区的下一次按下）。 */
+      React.useEffect(() => {
+        const onDocumentPointerDown = (event) => {
+          const node = selectPopElementRef.current;
+          if (node && event.target && typeof node.contains === 'function' && node.contains(event.target)) return;
+          selectPopClose();
+        };
+        document.addEventListener('pointerdown', onDocumentPointerDown, true);
+        return () => document.removeEventListener('pointerdown', onDocumentPointerDown, true);
+      }, []);
+
+      React.useEffect(() => {
+        if (selectPopRef.current && !selectPopIsCurrent(selectPopRef.current)) selectPopClose();
+      });
+
       /** The release is dispatched even when the pointer left the image (no stuck button). */
       function onFramePointerUp(event) {
         if (annotRef.current.on) return; // annotation mode: zero page input
@@ -5682,9 +5935,11 @@ window.__ModuleLoader__.load({
         dragRef.current = { active: false, pointerId: -1, x: drag.x, y: drag.y };
         const geom = frameGeometry();
         const point = geom ? mapEventPoint(event, geom) : null;
+        let released = Promise.resolve(false);
+        const probeContext = { epoch: scopeEpochRef.current, seq: selectPopSeqRef.current, document: selectPopDocument(), canvas: selectPopCanvas() };
         if (point) {
           const size = acceptedViewSize();
-          sendEvents([{
+          released = sendEvents([{
             kind: 'mouse',
             type: 'mouseReleased',
             x: clampNumber(point.x, 0, Math.max(0, size.w - POINTER_EPSILON)),
@@ -5695,6 +5950,22 @@ window.__ModuleLoader__.load({
           }]);
         }
         try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
+        // 原生 <select>：点击（非拖拽、非空白）之后问一次命中。浮层由浏览器 UI 图层绘制，
+        // 帧里看不到，所以这里用同一坐标向 Host 取选项，在点击点画面板自己的列表。
+        if (point) {
+          const pressed = selectClickRef.current;
+          const moved = !pressed.valid
+            || pressed.pointerId !== event.pointerId
+            || Math.abs(event.clientX - pressed.x) > SELECT_CLICK_SLOP_PX
+            || Math.abs(event.clientY - pressed.y) > SELECT_CLICK_SLOP_PX;
+          selectClickRef.current = { x: 0, y: 0, pointerId: -1, valid: false };
+          if (!moved && !point.blank) {
+            const click = { clientX: event.clientX, clientY: event.clientY };
+            released.then((applied) => {
+              if (applied && selectPopIsCurrent(probeContext)) selectPopProbe(click, point);
+            });
+          }
+        }
       }
 
       /** Best-effort release for pointercancel / lost capture / blur while dragging. */
@@ -6049,6 +6320,9 @@ window.__ModuleLoader__.load({
         // unconfirmed content to the module queue under the old frozen identity *before* the old
         // remote/view refs are dropped, then retract this panel's local view only.
         annotRetainDirty(true);
+        selectPopClose();
+        inputQueueRef.current = Promise.resolve();
+        selectClickRef.current.valid = false;
         requestGenerationRef.current += 1;
         if (abortRef.current) abortRef.current.abort();
         abortRef.current = new AbortController();
@@ -6474,7 +6748,12 @@ window.__ModuleLoader__.load({
           ? event.keyCode
           : PANEL_KEY_CODES[key];
         const printable = key.length === 1;
-        const text = printable ? key : (key === 'Enter' ? '\r' : '');
+        // 命令修饰键（Ctrl/Cmd/Alt）按下时这是**快捷键**而不是输入：必须发 rawKeyDown 且不带
+        // text——带 text 时 Chrome 按字符插入处理，页面只看到「打了个字母」，全选/复制/粘贴/剪切
+        // 这些编辑命令不会执行（用户实测：组合键是分开的、不能真正全选）。
+        const altGraph = typeof event.getModifierState === 'function' && event.getModifierState('AltGraph');
+        const command = !altGraph && (event.ctrlKey === true || event.metaKey === true || event.altKey === true);
+        const text = command ? '' : (printable ? key : (key === 'Enter' ? '\r' : ''));
         const base = {
           kind: 'key',
           key,
@@ -6484,7 +6763,7 @@ window.__ModuleLoader__.load({
           location: Number.isFinite(event.location) ? event.location : undefined,
           autoRepeat: event.repeat === true ? true : undefined,
         };
-        const down = Object.assign({}, base, { type: 'keyDown' });
+        const down = Object.assign({}, base, { type: command ? 'rawKeyDown' : 'keyDown' });
         if (text) {
           down.text = text;
           down.unmodifiedText = text;
@@ -6492,20 +6771,71 @@ window.__ModuleLoader__.load({
         return [down, Object.assign({}, base, { type: 'keyUp' })];
       }
 
+      /* ---- 系统剪贴板桥：面板里的 Ctrl+C/X/V 与宿主系统共用剪贴板 -------------------------- */
+      // 页面跑在宿主的 Chromium 里，它的剪贴板是浏览器内部的；面板（GUI 页面）才有真正的系统
+      // 剪贴板 API。所以复制/剪切时把选区文本写进系统剪贴板，粘贴时把系统剪贴板的内容插进页面。
+      async function clipboardWriteText(text) {
+        const value = String(text || '');
+        if (!value) return false;
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(value);
+            return true;
+          }
+        } catch { /* 权限被拒：保持浏览器内部剪贴板行为 */ }
+        return false;
+      }
+
+      /** 返回 `null` 表示"读不到"（权限/不支持），空串表示"确实是空的"。 */
+      async function clipboardReadText() {
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+            const text = await navigator.clipboard.readText();
+            return typeof text === 'string' ? text : '';
+          }
+        } catch { /* 权限被拒 */ }
+        return null;
+      }
+
+      /** 页面当前选区文本（只读评估；输入框/文本域按 selectionStart..End 取，否则取 document 选区）。 */
+      function pageSelectionText(signal, scope = scopeRef.current) {
+        const expression = "(() => { const el = document.activeElement; "
+          + "if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) { const s = el.selectionStart, e = el.selectionEnd; "
+          + "return (typeof s === 'number' && typeof e === 'number' && e > s) ? String(el.value).slice(s, e) : ''; } "
+          + "return window.getSelection ? String(window.getSelection()) : ''; })()";
+        return callHost('eval', { expression }, { scope, signal })
+          .then((payload) => {
+            if (!payload) return '';
+            if (typeof payload.value === 'string') return payload.value;
+            if (payload.result && typeof payload.result.value === 'string') return payload.result.value;
+            return '';
+          })
+          .catch(() => '');
+      }
+
       function sendEvents(events, options) {
-        if (annotRef.current.on) return; // single gate: annotation mode never dispatches page input
-        // 选元素模式零页面交互：唯一例外是滚轮（契约要求继续滚动目标页）。
-        if (pickRef.current.on && !(options && options.wheel === true)) return;
-        if (!readyRef.current || writesPausedRef.current) return;
+        const scope = scopeRef.current;
+        const epoch = scopeEpochRef.current;
+        const documentKey = selectPopDocument();
         const signal = abortRef.current ? abortRef.current.signal : undefined;
-        const clearsNotice = (events || []).some((entry) => entry
-          && (entry.kind !== 'mouse' || ['mousePressed', 'mouseReleased', 'mouseClicked'].includes(String(entry.type))));
-        callHost('input', { events }, { scope: scopeRef.current, signal }).then(() => {
-          // Only a real content action clears the notice; hover moves must not erase a BUSY hint.
-          if (clearsNotice) setInputNotice('');
+        const current = () => epoch === scopeEpochRef.current && documentKey === selectPopDocument()
+          && !signal?.aborted && readyRef.current && !writesPausedRef.current
+          && !annotRef.current.on && (!pickRef.current.on || options?.wheel === true);
+        const pending = inputQueueRef.current.then(async () => {
+          if (!current()) return false;
+          const prepared = typeof events === 'function' ? await events({ scope, signal }) : events;
+          if (!current() || !prepared?.length) return false;
+          await callHost('input', { events: prepared }, { scope, signal });
+          const clearsNotice = prepared.some((entry) => entry
+            && (entry.kind !== 'mouse' || ['mousePressed', 'mouseReleased', 'mouseClicked'].includes(String(entry.type))));
+          if (current() && clearsNotice) setInputNotice('');
+          return true;
         }).catch((error) => {
-          noteInputError(error);
+          if (current()) noteInputError(error);
+          return false;
         });
+        inputQueueRef.current = pending;
+        return pending;
       }
 
       // 人类接管：真实输入后 4 秒内标记，其余时间回落到空闲
@@ -7734,12 +8064,97 @@ h('div', { className: 'utb-bar' },
                     if (annotRef.current.on) return; // annotation mode: zero page input
                     if (pickRef.current.on) return; // pick mode: zero page keyboard input
                     if (event.isComposing) return; // IME 组合中：别抢字符
+                    const commandKey = event.ctrlKey === true || event.metaKey === true;
+                    const keyName = String(event.key || '').toLowerCase();
+                    if (commandKey && event.altKey !== true && (keyName === 'c' || keyName === 'x')) {
+                      // 复制/剪切：页面照常处理，同时把选区文本写进系统剪贴板（读要在转发前，剪切会删掉选区）。
+                      event.preventDefault();
+                      const events = panelKeyEvents(event);
+                      sendEvents(async ({ scope, signal }) => {
+                        const text = await pageSelectionText(signal, scope);
+                        if (text) await clipboardWriteText(text);
+                        return events;
+                      });
+                      return;
+                    }
+                    if (commandKey && event.altKey !== true && keyName === 'v') {
+                      // 粘贴：系统剪贴板可读就由我们插入文本，避免浏览器内部剪贴板插入旧内容。
+                      event.preventDefault();
+                      const events = panelKeyEvents(event);
+                      const textRead = clipboardReadText();
+                      sendEvents(async () => {
+                        const text = await textRead;
+                        if (text === null) return events;
+                        return text === '' ? [] : [{ kind: 'text', text }];
+                      });
+                      return;
+                    }
                     const events = panelKeyEvents(event);
                     if (!events.length) return;
                     event.preventDefault();
                     sendEvents(events);
                   },
                 }),
+                // 原生 <select> 的面板侧浮层：绝对定位在画面框内、点击点附近。
+                // 浏览器自己的弹层在 UI 图层（帧里看不到），所以选项列表由面板绘制；
+                // 写回走 POST /select（与 /input 同一套门禁）。
+                selectPop ? (() => {
+                  const rowCount = selectPop.reason ? 1 : (selectPop.select.options || []).length;
+                  const layout = selectPopLayout(selectPop.anchor, rowCount, selectPop.bounds);
+                  return h('div', {
+                    className: 'utb-select-pop',
+                    ref: (node) => {
+                      selectPopElementRef.current = node;
+                      if (node && node.dataset.utbSelectFocused !== '1') {
+                        node.dataset.utbSelectFocused = '1';
+                        try { node.focus({ preventScroll: true }); } catch { /* focus 是 best-effort */ }
+                      }
+                    },
+                    role: 'listbox',
+                    tabIndex: -1,
+                    'aria-label': '下拉选项',
+                    'data-utb-select-pop': selectPop.reason || 'ready',
+                    'data-utb-select-reason': selectPop.reason || '',
+                    'data-utb-select-side': layout.side,
+                    'data-utb-select-layout': JSON.stringify({
+                      left: layout.left, top: layout.top, width: layout.width,
+                      maxHeight: layout.maxHeight, flippedUp: layout.flippedUp, shiftedLeft: layout.shiftedLeft,
+                    }),
+                    style: {
+                      position: 'absolute',
+                      left: layout.left,
+                      top: layout.top,
+                      width: layout.width,
+                      maxHeight: layout.maxHeight,
+                      zIndex: 6,
+                    },
+                    onKeyDown: onSelectPopKeyDown,
+                  }, selectPop.reason
+                    ? h('div', {
+                        className: 'utb-select-pop-note',
+                        'data-utb-select-unsupported': selectPop.reason,
+                      }, '该下拉不支持浮层，请用键盘 ↑↓ + Enter')
+                    : (selectPop.select.options || []).map((option, index) => h('div', {
+                        key: `${index}:${option.value}`,
+                        className: 'utb-select-pop-item',
+                        role: 'option',
+                        'aria-selected': index === selectPop.activeIndex ? 'true' : 'false',
+                        'aria-disabled': option.disabled ? 'true' : 'false',
+                        'data-utb-select-item': option.disabled ? 'disabled'
+                          : (index === selectPop.activeIndex ? 'active' : 'ready'),
+                        'data-utb-select-value': option.value,
+                        title: option.label || option.value,
+                        // 浮层内的按下不许穿透成页面鼠标事件（否则又是一次 select 点击）。
+                        onPointerDown: (event) => { event.preventDefault(); event.stopPropagation(); },
+                        onPointerEnter: () => {
+                          if (option.disabled) return;
+                          setSelectPop((current) => (current && current.seq === selectPop.seq
+                            ? Object.assign({}, current, { activeIndex: index })
+                            : current));
+                        },
+                        onClick: () => selectPopChoose(option),
+                      }, option.label || option.value || '（空值）')));
+                })() : null,
                 // P0-D annotation layer: covers the untranslated painted rect, viewBox = accepted
                 // canvas window. Committed shapes are React nodes; the live draft is one imperative
                 // <g> updated by rAF (never re-rendered per pointer move).
@@ -7890,6 +8305,7 @@ h('div', { className: 'utb-bar' },
         'data-utb-active-busy': activeBusy ? 'true' : 'false',
         'data-utb-display-mode': displayMode,
         // 组合框当前选中的目标环境，以及视图层是否已实现该环境
+        'data-utb-build': CLIENT_BUILD,
         'data-utb-view': env,
         'data-utb-view-supported': envViewSupported ? 'true' : 'false',
         onPointerDown: markHuman,

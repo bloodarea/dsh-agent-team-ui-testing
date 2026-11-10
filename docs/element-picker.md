@@ -94,6 +94,8 @@ outerHTML: 截断 <显示>/<原始> 码点（末尾 …，完整文本未取得�
 
 - `x` / `y` 是页面文档 CSS 像素，必须是有限数且 `|v| ≤ 1e7`；否则 `400 INVALID_ARGUMENT`。小数会被 floor 后再命中。
 - 命中：`200 {ok:true, element:{tag,id,classes,rect,frameId,scroll,page:{url,title},loaderId?}}`；`detail:true` 追加 `selector` 与 `selectorQuality`（`unique`/`degraded`/`none`）、`outerHTML` 与 `outerHTMLTruncated`/`outerHTMLLength`、`text` 与 `textTruncated`/`textLength`、`role`/`name`（AX best-effort）以及 shadow 事实 `shadowHost`/`closedShadow`。
+- 命中原生控件时排除浏览器自带的 UA shadow 节点，读取控件本身；页面作者创建的 open/closed shadow 命中规则不变。
+- 命中 `<select>` 时追加 `select:{multiple,size,value,options:[{value,label,disabled,selected}],truncated,target?}`（最多 200 项，超出置 `truncated:true`）。`disabled` 包含控件、fieldset、option 和 optgroup 的有效禁用状态。可读取文档身份时，`target:{backendNodeId,loaderId}` 绑定该节点与文档；只有命中 select 才追加 `select` 字段。
 - 截断是显式的：`outerHTML` 超过 240 码点时切到 240 并以 `…` 结尾（`outerHTMLTruncated:true`、`outerHTMLLength` 为原始码点数）；`text` 同理（上限 160）。
 - 未命中：`200 {ok:true, element:null, reason}`，`reason` 为：
   - `no-page`：该 scope 没有运行中的页面（冷态）；
@@ -104,6 +106,18 @@ outerHTML: 截断 <显示>/<原始> 码点（末尾 …，完整文本未取得�
 - 只读：不启动 Chromium、不进串行队列、不占租约、不记录客户端指标、不写 `lastError`；每次 CDP 调用上限 1500ms。
 
 `GET /element` 固定 `405`（该路由只接受 POST）。
+
+`POST /plugins/ui-testing/select` 写回一个选项（面板浮层用；门禁与 `/input` 完全一致——A10 环境门、scoped 鉴权、`ready`/租约（BUSY）、串行队列，且校验在派发之前，拒绝时零派发）：
+
+```json
+{ "value": "world", "optionIndex": 1, "target": { "backendNodeId": 42, "loaderId": "文档身份" } }
+```
+
+- `value` 必填且必须是字符串。面板提交 `/element` 返回的 `target` 与点击的 `optionIndex`；Host 校验文档仍相同并解析同一节点，不受后续聚焦变化影响。`optionIndex` 是非负安全整数，写前校验对应 option 的 value，因此重复 value 也能精确选择。
+- 兼容调用可给唯一 `selector`（否则 `selector-not-found` / `selector-not-unique` / `selector-invalid`）；没有 `target` 或 `selector` 时才使用当前聚焦的 `<select>`。
+- 写入用 `HTMLSelectElement.prototype.selectedIndex` 的 native setter，随后依次派发 `input`、`change`，返回 `200 {ok:true, value, selectedIndex, selector}`。禁用控件、禁用 option 和禁用 optgroup 均在写前拒绝。
+- 拒绝统一 `400 INVALID_ARGUMENT`，`details.reason` 包括 `stale-target`（文档变化或节点无法解析）、`target-detached`、`option-index-out-of-range`、`option-value-mismatch`、`option-disabled`、`no-focused-element`、`not-a-select`、`select-disabled`、`unsupported-shape`（`multiple`/`size>1`）、`no-options`、`value-not-in-options` 与上述 selector 三类。
+- 浮层等待页面点击完成后读取选项；关闭、scope/标签/文档切换、画布原点或比例变化会使在途结果失效。选中或按 Esc 关闭后，键盘焦点交回预览。
 
 ## 限制
 

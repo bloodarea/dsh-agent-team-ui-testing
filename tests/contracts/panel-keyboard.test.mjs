@@ -42,17 +42,39 @@ test('快捷键：Ctrl/Cmd/Shift 组合不再被丢掉，modifiers 位掩码正�
   assert.equal(ctrlZ.length, 2, 'Ctrl+Z 必须转发（旧实现直接 return）');
   assert.equal(ctrlZ[0].modifiers, 2, 'Ctrl = bit 2');
   assert.equal(ctrlZ[0].key, 'z');
+  assert.equal(ctrlZ[0].type, 'rawKeyDown', '快捷键走 rawKeyDown');
+  assert.equal(ctrlZ[0].text, undefined);
+
+  // 纯 Shift+字母仍然是"输入"，要带 text（这样才插入大写字母）
+  const shiftA = panelKeyEvents(key({ key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true }));
+  assert.equal(shiftA[0].type, 'keyDown');
+  assert.equal(shiftA[0].text, 'A');
 
   const ctrlShiftS = panelKeyEvents(key({ key: 'S', code: 'KeyS', keyCode: 83, ctrlKey: true, shiftKey: true }));
   assert.equal(ctrlShiftS[0].modifiers, 2 | 8);
-  assert.equal(ctrlShiftS[0].text, 'S', 'Shift 后的字符按实际输入字符发');
+  // 带 Ctrl 的是快捷键：rawKeyDown 且不带 text，否则 Chrome 会当字符插入（全选/复制/粘贴会失效）
+  assert.equal(ctrlShiftS[0].type, 'rawKeyDown');
+  assert.equal(ctrlShiftS[0].text, undefined, '快捷键不该带 text');
 
   const metaK = panelKeyEvents(key({ key: 'k', code: 'KeyK', keyCode: 75, metaKey: true }));
   assert.equal(metaK[0].modifiers, 4, 'Meta = bit 4');
 
   const altEnter = panelKeyEvents(key({ key: 'Enter', code: 'Enter', keyCode: 13, altKey: true }));
   assert.equal(altEnter[0].modifiers, 1, 'Alt = bit 1');
-  assert.equal(altEnter[0].text, '\r');
+  assert.equal(altEnter[0].type, 'rawKeyDown', 'Alt 组合属于快捷键');
+  assert.equal(altEnter[0].text, undefined);
+  // 不带修饰键的 Enter 仍然是"输入回车"
+  const plainEnter = panelKeyEvents(key({ key: 'Enter', code: 'Enter', keyCode: 13 }));
+  assert.equal(plainEnter[0].type, 'keyDown');
+  assert.equal(plainEnter[0].text, '\r');
+});
+
+test('AltGraph 的可打印字符仍带 text，不误判为 Ctrl+Alt 快捷键', () => {
+  const events = panelKeyEvents(key({ key: '@', code: 'KeyQ', ctrlKey: true, altKey: true,
+    getModifierState: (name) => name === 'AltGraph' }));
+  assert.equal(events[0].type, 'keyDown');
+  assert.equal(events[0].text, '@');
+  assert.equal(events[0].modifiers, 3);
 });
 
 test('非字符键：Home/End/PgUp/PgDn/Delete/Insert/F1-F12 都要转发', () => {

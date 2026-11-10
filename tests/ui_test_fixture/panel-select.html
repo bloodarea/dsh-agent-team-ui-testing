@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>原生下拉浮层回归靶机</title>
+<style>
+  body { font: 16px system-ui; padding: 24px; background: #142033; color: #edf3ff; }
+  label { display: inline-flex; flex-direction: column; margin: 0 24px 24px 0; gap: 8px; }
+  select, input { font: inherit; min-width: 150px; padding: 8px; }
+  output { display: block; white-space: pre-wrap; }
+</style>
+<h1>原生下拉浮层回归靶机</h1>
+<label>坐标系<select id="space"><option value="parent">Parent</option><option value="world">World</option><option value="local">Local</option></select></label>
+<label>重复值<select id="duplicate"><option value="same">First</option><option value="same">Second</option><option value="other">Other</option></select></label>
+<label>禁用项<select id="disabled"><option value="ok">可选</option><option value="no" disabled>禁用项</option><optgroup label="禁用组" disabled><option value="group">组内禁用</option></optgroup><option value="last">末项</option></select></label>
+<label>多选<select id="multiple" multiple size="3"><option>A</option><option>B</option><option>C</option></select></label>
+<label>列表<select id="list" size="3"><option>A</option><option>B</option><option>C</option></select></label>
+<label>长列表<select id="long"></select></label>
+<label>键盘<input id="keyboard" value="keyboard sample"></label>
+<label>禁用域<fieldset disabled><select id="fieldset"><option value="a">A</option><option value="b">B</option></select></fieldset></label>
+<button id="plain">普通按钮</button>
+<output id="events">[]</output>
+<script>
+  window.selectEvents = [];
+  document.getElementById('long').replaceChildren(...Array.from({length: 205}, (_, index) => new Option('Option ' + index, 'v' + index)));
+  for (const type of ['input', 'change']) document.addEventListener(type, (event) => {
+    if (event.target.tagName !== 'SELECT') return;
+    window.selectEvents.push({type, id: event.target.id, value: event.target.value, index: event.target.selectedIndex});
+    document.getElementById('events').textContent = JSON.stringify(window.selectEvents);
+  });
+</script>
+</html>

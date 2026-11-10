@@ -129,6 +129,7 @@ const STATIC_FILES = new Map([
   ['/blank.html', 'blank.html'],
   // Read-only element-pick fixture (tests/acceptance/pick-element-host.mjs): fixed boxes.
   ['/pick-element.html', 'pick-element.html'],
+  ['/panel-select.html', 'panel-select.html'],
   // Network fixture (/n/*): truth table in tests/ui_test_fixture/README.md §NET.
   ['/web-network.html', 'web-network.html'],
   ['/web-network-frame.html', 'web-network-frame.html'],

@@ -250,6 +250,17 @@ async function prepareDshHome() {
 }
 
 async function startIsolatedDsh({ chromeBin }) {
+  // Explicit opt-in for development verification against an already-running Host.
+  if (process.env.DSH_SELECT_GUI_URL) {
+    const base = new URL(process.env.DSH_SELECT_GUI_URL).origin;
+    const text = await readFile(process.env.DSH_SELECT_GUI_LOG || join(process.env.HOME, '.dsh/logs/web-launcher.log'), 'utf8');
+    const links = [...text.matchAll(/http:\/\/127\.0\.0\.1:\d+\/\?token=[^\s\u001b]+/gu)];
+    const link = links.reverse().find(([url]) => new URL(url).origin === base)?.[0];
+    if (!link) throw new Error('existing Host launch URL unavailable');
+    state.token = new URL(link).searchParams.get('token');
+    state.dsh = { base, port: Number(new URL(base).port), launchUrl: link, existing: true, copied: [] };
+    return state.dsh;
+  }
   const { home, profileDir, copied } = await prepareDshHome();
   const port = await pickPort();
   const proc = spawn(DSH_BIN, ['web', '--port', String(port), '--no-open'], {
@@ -263,10 +274,13 @@ async function startIsolatedDsh({ chromeBin }) {
   proc.on('exit', (code, signal) => log(`[dsh] exited code=${code} signal=${signal}`));
   state.dsh = { proc, home, profileDir, port, copied, output: () => output, base: `http://127.0.0.1:${port}` };
   const pattern = new RegExp(`dsh web: (http://127\\.0\\.0\\.1:${port}/\\?token=([^\\s]+))`);
-  const matched = await waitFor(() => {
-    const match = pattern.exec(output);
-    return match ? { url: match[1], token: match[2] } : undefined;
-  }, { timeoutMs: 120000, intervalMs: 250, label: 'isolated dsh launch URL' });
+  const matched = await Promise.race([
+    waitFor(() => {
+      const match = pattern.exec(output);
+      return match ? { url: match[1], token: match[2] } : undefined;
+    }, { timeoutMs: 120000, intervalMs: 250, label: 'isolated dsh launch URL' }),
+    new Promise((resolve, reject) => proc.once('exit', (code) => reject(new Error(`isolated DSH exited ${code}: ${sanitize(output.slice(-6000))}`)))),
+  ]);
   state.token = matched.token;
   state.dsh.launchUrl = matched.url;
   await waitFor(async () => {
@@ -790,6 +804,7 @@ async function main() {
       state.chrome = undefined;
     }
     const reapPluginChromium = async () => {
+      if (state.dsh?.existing) return 0;
       let killed = 0;
       for (const entry of scanPluginChromeProcesses()) {
         if (baselineChromes.includes(entry.pid)) continue;
@@ -799,7 +814,7 @@ async function main() {
       }
       return killed;
     };
-    if (state.dsh) {
+    if (state.dsh && !state.dsh.existing) {
       try { state.dsh.proc.kill('SIGTERM'); } catch { /* ignore */ }
       await sleep(800);
       try { state.dsh.proc.kill('SIGKILL'); } catch { /* ignore */ }
@@ -829,8 +844,8 @@ async function main() {
 
   try {
     const dsh = await startIsolatedDsh({ chromeBin: CHROME_BIN });
-    log(`[env] isolated DSH: ${dsh.base} (port ${dsh.port}); DSH_HOME is a temporary directory`);
-    observations.isolatedDsh = { base: dsh.base, port: dsh.port, copied: dsh.copied };
+    log(`[env] ${dsh.existing ? 'existing' : 'isolated'} DSH: ${dsh.base} (port ${dsh.port})`);
+    observations.isolatedDsh = { base: dsh.base, port: dsh.port, existing: Boolean(dsh.existing), copied: dsh.copied };
     const cookies = await authenticate(dsh.launchUrl);
     state.chrome = await launchGuiChrome(CHROME_BIN);
     const { cdp } = state.chrome;
@@ -845,10 +860,17 @@ async function main() {
     }
     await cdp.send('Page.navigate', { url: dsh.launchUrl });
     await guiReady(45000);
+    if (dsh.existing && process.env.DSH_SELECT_GUI_SESSION) {
+      const title = JSON.stringify(process.env.DSH_SELECT_GUI_SESSION);
+      await waitFor(async () => pageEvaluate(`Array.from(document.querySelectorAll('span')).some(n=>n.textContent===${title})`), { label: 'requested GUI session' });
+      const point = await centerOf(`Array.from(document.querySelectorAll('span')).find(n=>n.textContent===${title})`);
+      await clickAt(point.x, point.y);
+      await sleep(800);
+    }
 
     const location = await pageEvaluate('location.href');
-    check('G0.1', 'isolated DSH GUI loads from an ephemeral non-3080/3081 port',
-      dsh.port !== 3080 && dsh.port !== 3081 && String(location).startsWith(dsh.base),
+    check('G0.1', 'GUI loads from the requested Host (isolated by default)',
+      (dsh.existing || (dsh.port !== 3080 && dsh.port !== 3081)) && String(location).startsWith(dsh.base),
       { base: dsh.base }, { location: sanitize(location), port: dsh.port });
     check('G0.2', 'launch token is exchanged away and never appears in the run log',
       !String(location).includes('token=') && !logLines.join('\n').includes(state.token),
@@ -864,6 +886,8 @@ async function main() {
     observations.servedClient = { rev: served?.rev || '', bytes: served ? Buffer.byteLength(served.text, 'utf8') : 0, hasPickCode: servedHasPick };
     check('G0.3', 'GUI serves this checkout client.js with the element-pick code', servedHasPick, true, observations.servedClient);
 
+    const selectOnly = process.argv.includes('--select-only');
+    if (!selectOnly) {
     log('\n--- G1 panel + cold runtime ---');
     await openDebugPanelInSidebar();
     await waitFor(() => state.scopeHeaders, { timeoutMs: 15000, label: 'panel scope headers' });
@@ -1365,6 +1389,23 @@ async function main() {
     check('G8.6', 'PNG evidence captured for the run', state.evidence.length >= 4, '>=4', state.evidence.map((entry) => entry.name));
     await capturePng('page-click.png');
 
+    } else {
+      await openDebugPanelInSidebar();
+      await waitFor(() => state.scopeHeaders, { timeoutMs: 15000, label: 'select panel scope' });
+    }
+
+    log('\n--- S native select popover ---');
+    const { runPanelSelectChecks } = await import('./panel-select-checks.mjs');
+    await runPanelSelectChecks({
+      fixtureUrl: new URL('/panel-select.html', state.fixture.url).href,
+      pageEvaluate, hostEvalJson, pageHostFetch, jsonHeaders, measurePreview, hostState,
+      screenPointFor, clickAt, centerOf, pressEscape, setAddressBar, waitFor, check,
+      capturePng, observations, state,
+    });
+
+    if (dsh.existing && process.env.DSH_SELECT_GUI_RETURN_URL) await setAddressBar(process.env.DSH_SELECT_GUI_RETURN_URL);
+
+    if (!selectOnly) {
     notRun('G9.1', 'canvas pan (O≠0) hover mapping',
       '需要真实拖拽平移并在 O≠0 空白带上做像素级断言；本轮 GUI 验收只覆盖 O=0 与页面滚动（C 变化）',
       { implementedIn: 'client.js pickScreenRect / mapEventPoint' });
@@ -1398,7 +1439,21 @@ async function main() {
       G9: 'NOT_RUN G9.7（关闭面板/切 tab/切 scope）',
       G10: ['G1.3', 'G1.4', 'G2.3'],
     };
+    }
   } catch (error) {
+    if (state.chrome) {
+      try {
+        await capturePng('failure.png');
+        observations.failureDom = await pageEvaluate(`({text:document.body.innerText.slice(0,3000),build:document.querySelector('.utb')?.dataset.utbBuild,buttons:Array.from(document.querySelectorAll('button')).slice(0,60).map(b=>({text:b.textContent,label:b.getAttribute('aria-label'),title:b.title}))})`);
+        observations.selectTraffic = [];
+        for (const entry of state.elementTraffic.slice(-4)) {
+          let body;
+          try { body = (await state.chrome.cdp.send('Network.getResponseBody', { requestId: entry.requestId })).body; } catch { body = null; }
+          observations.selectTraffic.push({ ...entry, body });
+        }
+        observations.lastRequestPaths = state.requests.slice(-15).map(entry => new URL(entry.url).pathname);
+      } catch { /* evidence best effort */ }
+    }
     check('SUITE.1', 'GUI scenarios completed without an uncaught exception', false, 'no exception', errorMessage(error));
   } finally {
     await cleanup('run finished');
@@ -1415,7 +1470,7 @@ function buildReport() {
   const failed = checks.filter((entry) => !entry.pass).length;
   return {
     schemaVersion: 1,
-    suite: 'pick-element-gui',
+    suite: process.argv.includes('--select-only') ? 'panel-select-gui' : 'pick-element-gui',
     startedAt: STAMP,
     finishedAt: new Date().toISOString(),
     environment: {
