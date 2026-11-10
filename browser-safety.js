@@ -95,6 +95,17 @@ const TAXONOMY = {
   // whose first document cannot be hosted (`capability`). None of them may read as INTERNAL.
   TAB_NOT_FOUND: ['scope', false], TAB_FORBIDDEN: ['authorization', false],
   TAB_LIMIT: ['resource', false], POPUP_UNSUPPORTED: ['capability', false],
+  // Team/page access model (M1, docs/internal/m0-rulings-20261109.md §7.3). The pre-existing tab
+  // codes above only knew about a short lease; long-lived ownership adds *classification* failures
+  // that must not degrade to INTERNAL: a control conflict is `state` (read current, decide again —
+  // never an automatic BUSY replay), an unprovable identity is `authorization` (no downgrade to a
+  // self-made standalone domain), and "cannot observe without disturbing the page" is a
+  // `capability` answer, not a page error. TAB_OBSERVATION_STALE is retryable=true because the fix
+  // is simply to observe again, while TAB_CONTROL_CHANGED is not: retrying a stale control version
+  // would write with authority the caller no longer has.
+  TAB_CONTROL_CHANGED: ['state', false], TAB_OWNERSHIP_STALE: ['state', false],
+  TAB_IDENTITY_UNAVAILABLE: ['authorization', false], TAB_OBSERVATION_STALE: ['state', true],
+  OBSERVATION_UNAVAILABLE: ['capability', false],
   // T4 extend on a stopped/retained session: the session is gone but starting a new one may
   // recover, hence scope + retryable (docs/t4-dynamic-behavior.md §extend).
   DYNAMIC_SESSION_NOT_ACTIVE: ['scope', true],

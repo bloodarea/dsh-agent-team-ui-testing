@@ -32,6 +32,7 @@ import {
   axis,
   createReadinessReport,
   isImplementedWebProvider,
+  isPlannedEnvironment,
   resolveSnapshot,
   webProviderSupport,
 } from '../core/index.js';
@@ -1229,8 +1230,12 @@ export function createCrossEnvironment({
           const nextEnabled = new Set(current.global.enabledEnvironments || []);
           for (const [environment, entry] of Object.entries(patch.environments)) {
             if (!isPlainObject(entry)) continue;
+            // `enabledEnvironments` 是**可执行环境集合**（保持严格：只收已实现的环境）；
+            // 规划中的环境允许被"启用"（开关写进 environments 映射），但不混进执行集合——
+            // 「启用 ≠ 可执行」，否则这里会用一个注定被执行侧拒绝的值污染 allow-list。
+            const planned = isPlannedEnvironment(environment);
             if (entry.enabled === false) nextEnabled.delete(environment);
-            else if (entry.enabled === true) nextEnabled.add(environment);
+            else if (entry.enabled === true && !planned) nextEnabled.add(environment);
           }
           patch = { ...patch, enabledEnvironments: [...nextEnabled] };
         }

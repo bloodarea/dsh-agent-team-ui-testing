@@ -79,7 +79,7 @@ DSH Agent / Agent Team
 ```
 
 - **隔离粒度**：页面、URL、视口、历史、网络缓冲、租约按 Runtime 隔离；同一 DSH 工作区的 primary 与 popup child 共享 profile，但各有独立页面状态。**Cookie 与存储由 profile 共享**，不是登录态隔离。
-- **内部标签页**：真人触发的 `target=_blank` / `window.open` 会把原生 popup target 接管为同工作区的 child Runtime（不重新发请求），面板在地址栏下方增加标签；child 由 binding 路由，primary 保留原页。自动弹窗、无真人输入、非法目标与超容量仍阻断。每 Agent 会话独立 selectedTab：现有 `browser_*` 工具默认操作该会话选中的标签（无选择时 primary），`browser_tabs` 负责 list/current/select/open/close；GUI active 独立，GUI 切标签不会改变 Agent selection。
+- **内部标签页**：真人触发的 `target=_blank` / `window.open` 会把原生 popup target 接管为同工作区的 child Runtime（不重新发请求），面板在地址栏下方增加标签；child 由 binding 路由，primary 保留原页。自动弹窗、无真人输入、非法目标与超容量仍阻断。每 Agent 会话独立保存两个选择：写工具用 workSelection（无选择时 primary），读工具优先用 observationSelection（未设置时回退 workSelection），`browser_tabs` 负责 list/current/select/open/close/wait/acquire/release/transfer。页面组按 (workspace, provider, 团队根) 划分：同 root 共享一组页，跨 root 的目标一律 not-found 语义；谁能写由 root → 角色 → 控制权/版本决定，15 秒租约只表示"短暂忙"。GUI active 独立，GUI 切标签不会改变 Agent 的选择。
 - **串行化**：所有会改动页面的操作走该 Runtime 的串行队列；只读诊断（`browser_state`、`browser_capabilities`、`browser_viewport get`、离线基线读取）不进队列、不占租约。
 - **租约**：同一标签同一时刻只有一个 owner；不同标签可由不同 Agent 并行，同标签冲突返回 `BUSY`。
 - **懒启动**：只有真正需要页面的动作才启动 Chromium；诊断类工具不启动。

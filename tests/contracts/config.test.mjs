@@ -625,3 +625,37 @@ test('workspaceKeyOf prefers workspace ids, normalizes cwd, and never invents a 
   assert.equal(workspaceKeyOf({ cwd: '' }), null);
   assert.throws(() => new ConfigStore({}), assertCode('INVALID_ARGUMENT'));
 });
+
+test('planned 环境可以被"启用"，但不能成为当前执行环境', async () => {
+  const { validatePatch } = await import('../../core/config.js');
+  // 总开关（environments.<id>.enabled）允许 planned：启用 ≠ 可执行
+  assert.deepEqual(
+    validatePatch({ scope: 'global', patch: { environments: { android: { enabled: true } } } }).environments,
+    { android: { enabled: true } },
+  );
+  // 但"当前执行环境"仍然拒绝 planned
+  assert.throws(() => validatePatch({ scope: 'global', patch: { environment: 'android' } }), assertCode('CONFIG_INVALID'));
+  // 且 enabledEnvironments 这个"可执行列表"保持严格（不让 planned 混进执行集合）
+  assert.throws(
+    () => validatePatch({ scope: 'global', patch: { enabledEnvironments: ['web', 'android'] } }),
+    assertCode('CONFIG_INVALID'),
+  );
+});
+
+test('启用 planned 环境：开关写进 environments 映射，但不进可执行集合', async (t) => {
+  const { ConfigStore, DEFAULT_CONFIG } = await import('../../core/index.js');
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-cfg-planned-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = new ConfigStore({ dir, initial: DEFAULT_CONFIG });
+  const written = store.write({
+    expectedRevision: 0,
+    scope: 'global',
+    patch: { environments: { android: { enabled: true } } },
+  });
+  assert.equal(written.config.global.environments.android.enabled, true, '开关没有落进配置');
+  // 可执行集合（enabledEnvironments）保持严格：planned 不混进来
+  assert.deepEqual(written.config.global.enabledEnvironments, DEFAULT_CONFIG.global.enabledEnvironments);
+});

@@ -35,6 +35,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 1. 把包安装进要使用的 DSH profile。
 2. 首次安装后**重启 DSH**，让插件 bundle 完成注册。
 3. 从 **更多 → 调试视图** 打开面板，或从右侧边栏的插件卡片进入。
+   两个入口共用同一套视图：**右上角的「选择运行环境」组合框决定下方渲染哪个目标环境的视图**，而组合框**只列出设置页里已打开的目标环境**——例如只开了 Web 与 Android，就只出现这两项，没开的连选项都没有。当前只有 Web 视图实现了：选中 Android 这类已启用但没有视图的环境，会显示「视图层暂不支持」占位，并明确写出「执行环境仍然是 Web 视图，这里只切换视图」——**切视图不改执行环境**。把某个环境的开关关掉后，若当时正停在它的视图上，面板会退回宿主当前的执行环境。
 4. 插件开发时改为把本仓库链接或复制进 profile，不必安装 npm 包。
 5. 生效范围：
 
@@ -91,19 +92,21 @@ browser_screenshot {out}        # 留一张可复核的 PNG
 | Android | Android 原生应用、Android WebView 应用、Flutter Android 应用、React Native 应用 | Views / Compose、Capacitor / Cordova、Flutter 引擎、原生视图与 JS 运行时 |
 | TUI | Python、Node.js、Go、Rust 终端应用 | Textual、Ink / blessed、Bubble Tea、Ratatui |
 | HarmonyOS | 鸿蒙原生应用、ArkUI-X 应用、Flutter 鸿蒙应用、React Native 鸿蒙应用 | ArkUI / ArkTS 与相应适配应用 |
-| 游戏 | Unity 游戏、Unreal 游戏、Godot 游戏、Cocos 游戏、浏览器游戏 | 对应引擎运行实例、Phaser 等 Web 游戏 |
-| 3D | Web 三维应用、原生三维应用、Unity 三维应用 | Three.js / Babylon.js / PlayCanvas、WebGL / WebGPU、原生窗口与 Unity Player |
+| 游戏 | Unity 游戏、Unreal 游戏、Godot 游戏、Cocos 游戏 | 对应引擎运行实例（浏览器内运行的 Web 游戏归 Web 环境，不在此重复列出） |
+| 3D | Web 三维应用、原生三维应用、Unity 三维应用、Blender、3ds Max、MikuMikuDance、PMX Editor | Three.js / Babylon.js / PlayCanvas、WebGL / WebGPU、原生窗口与 Unity Player、Blender / 3ds Max 编辑界面、MMD 与 PMX 模型工具 |
 | 小程序 | 微信、支付宝、抖音、QQ、百度智能、快手、京东、美团、小红书、淘宝、钉钉小程序 | 对应小程序容器中的应用 |
 
-- 十个环境分组、共 45 张卡片，分组**默认收起**；标题右侧显示当前筛选下的目标数量。展开/收起状态保存在浏览器 `localStorage`，刷新或重开设置页保持。
-- 右上角「隐藏未实现」默认关闭；开启后仅保留带「已实现」状态的卡片，没有剩余目标的分组一并隐藏。它只筛选页面展示，不改变工具、Skill 或目标的启用配置。
-- 每张卡片底部同级显示 `③ 接口`、`④ 执行端`、实现状态三个标签，支持换行。「已实现」为绿色（当前为 Chrome 与 Edge 的驱动代码），「未支持」与「未接入」为灰色。未实现项明确显示「候选接口 / 候选执行端」，不表示其接入方案或能力已经验证。
+- 十个环境分组、共 48 张卡片，分组**默认收起**；标题右侧显示当前筛选下的目标数量。展开/收起状态保存在浏览器 `localStorage`，刷新或重开设置页保持。
+- 右上角「隐藏未实现」默认关闭；开启后只保留已实现的运行环境（卡片上标「可用」的那些），没有剩余目标的分组一并隐藏。它只筛选页面展示，不改变工具、Skill 或目标的启用配置。
+- 卡片只保留名称、启用分开关，以及页脚：左下角是状态槽——**已实现**标一枚绿色「可用」，未实现放一行灰色小字「未支持」或「未接入」；右下角固定「诊断」按钮。不再显示「当前使用 / 未选中」标记（开关本身已反映启用状态），也不再使用「已实现 / 未支持 / 未接入」的药丸标签。说明文字统一压到两行（超出省略，鼠标悬停可看全文），因此同一行卡片高度稳定一致。
+- 设置页的**目标环境总开关**：v1 只有 Web 有适配器，但**其余 9 个环境允许先打开开关**——「启用」不等于「可执行」：开关打开后它才出现在面板的组合框里（视图层没实现则显示占位），而执行环境仍然只能是已实现且已启用的那一个（把 `planned` 环境设为当前执行环境依旧会被宿主拒绝）。宿主返回的英文校验原因（`environment X is planned and cannot be selected in v1`、`unknown environment/provider`、`test-only`）在界面上统一翻成中文，原文只留在悬停提示里。
+- 点卡片上的「诊断」会在**独立弹层**（frame-wide overlay，不再挤在设置页里）打开诊断面板，面板宽度 `min(1180px, 94vw)`，设置页本身仍是环境分组列表；关闭方式有 ✕ 按钮、`Esc`、点遮罩三种，关闭会中止进行中的检查并把焦点还给卡片按钮。打开面板会**真实执行一次诊断 run**（`POST /plugins/ui-testing/diagnose`，NDJSON 流）：打开即发起一次 `observe` run，不会启动浏览器；页面按五个阶段（① 宿主集成/工具注册/调用通道、② 插件 Core/配置/调度、③ 通信接口探测、④ 执行后端与依赖、⑤ 目标列表/绑定/连接）逐条回填。节点与边只用 Host 的五个结果状态：**正常 / 警告 / 异常 / 跳过 / 未知**（「正常」绿、「警告」琥珀、「异常」红虚线、「跳过」灰虚线、「未知」灰蓝点线）；界面上只显示中文，英文状态码与原因码（`WARN`、`browser-not-running` 等）只出现在 `data-uts-*` 属性与 NDJSON 的 `reason` 里，供 agent 解析。所以「警告」是**已经得出的诊断结论**，不是让你再去点一次。四个板块右上角原来那几条英文装饰（`HOST RUN · STAGED CHECKS` 等）已去掉，同样的值仍从 `data-uts-*` 属性可读。每个调试节点的状态区固定预留两行（30px），超出两行才截断；**鼠标悬停在节点上**会给出完整信息：角色与名称、职责、完整状态、原因码、阻塞于哪一段、耗时；顶部胶囊的悬停提示同样带完整状态句。面板四块从上到下是**调试流程**（步骤 1–5 的链路）、**各模块诊断状态**（六轴卡片）、**诊断日志**、**步骤职责**；调试流程里每张步骤卡片的职责描述固定占两行，「能力就绪」的检查项一行一项、最多三行（还有几条就写在第三行末尾，如「快照：跳过 +3」，悬停看全部），六张模块卡片都按三行占位，所以卡片高度不随结果长短跳动；界面上用中文术语（本轮、宿主、阶段开始/结束、只读求值、目标列表、快照、截图），英文原词只在 `data-uts-*` 与 NDJSON 里，逐条对照见 [诊断状态码](diagnose-reason-codes.md)。还没有任何 run 结果时，总览与节点写「**待诊断**」；run 没能跑出结果时写「**诊断未完成**」（错误另起一行说明）——这两个词不属于五态，只是「本轮还没有结论」。状态码与状态词本身是英文机器契约（`data-uts-*`、NDJSON 的 `reason`），界面上只显示中文译文，逐条对照见 [诊断状态码](diagnose-reason-codes.md)。没有 run 就没有 `PASS`：这里不拿 readiness 快照冒充「已检查」。拓扑里 ④「Chromium DevTools」为绿色意味着 ③→④ 这一段在本 run 里 PASS，不会再出现「节点绿、前面那条边却断」的矛盾。页面顶部**始终**有「开始诊断」按钮：手动触发一轮 `start` 模式的真实检查；浏览器未运行时由该动作启动所选浏览器并创建受管调试页，已连接时只重新检查、不重启浏览器；打开页面本身的自动检查仍然是不启动浏览器的 `observe`，在用户点击之前不会启动任何浏览器。离开诊断页会中止进行中的 run（Host 侧随之停止），不会留下迟到执行。每次点「诊断」进入本页都会发起一次新的 `observe` run（相同 provider 也一样），旧结果只用于离开前的回显；进入时不会重放上一次的动画。
 - **两层开关。** 分组标题栏里是**目标环境总开关**（写 `environments.<env>.enabled`）；卡片里的「用户启用」是**运行环境分开关**（Web 分组下写 `environments.web.providers.<id>.enabled`，即 `chrome` / `edge` / `firefox` 各一份）。两者独立：开一个 provider 不会切换当前执行端，也不会改动其它 provider；关闭总开关时所有分开关置灰不可点，但**已保存的值原样保留**（不写 0），重新打开后按原值显示。
-- **运行环境（provider）与「当前使用」。** 一个 `web` 目标环境下可以有多个 provider，执行时按 `provider` 单选：卡片会标出「当前使用 / 未选中」，该标记来自 Host 解析出的 `resolved.provider`。选择链为：会话选择 > 父会话 > 工作区 > 全局 > 默认 `chrome`；当前 provider 被禁用时**不会静默切换到别的浏览器**，而是保留选择并阻断执行（错误码见 [adapters.md](adapters.md) 的错误语义）。预览面板仍按工作区展示，不按 provider 分栏。
+- **运行环境（provider）与当前执行端。** 一个 `web` 目标环境下可以有多个 provider，执行时按 `provider` 单选。选择链为：会话选择 > 父会话 > 工作区 > 全局 > 默认 `chrome`；当前 provider 被禁用时**不会静默切换到别的浏览器**，而是保留选择并阻断执行（错误码见 [adapters.md](adapters.md) 的错误语义）。卡片不再单独标出「当前使用 / 未选中」，该值仍由 Host 投影提供（`GET /state` 的 `resolved.provider` 与 `[data-uts-provider-current]` 属性），只是不在界面上重复写第二遍。预览面板仍按工作区展示，不按 provider 分栏。
 - **配置形状。** `environments.web` 下有 `provider`（当前执行端，默认 `chrome`）与 `providers.{chrome,edge,firefox}.enabled`；`enabledProviders` 是**派生**列表，不单独存储。更早版本写下的、没有 `provider` 字段的配置文件会被自动按「chrome 默认选择 + chrome 启用」解释，**不会**被判为配置损坏。
-- **配置真值在 Host**：设置页挂载时读取 `GET /plugins/ui-testing/config?view=global`，启用开关通过 `PUT /plugins/ui-testing/config` 提交并携带 `expectedRevision`。成功用返回的 revision 更新；冲突（`CONFIG_CONFLICT`）会展示最新 revision 并回滚，不显示“已保存”。配置文件默认在 `${DSH_HOME}/ui-testing/config.json`，可用 `DSH_UI_TESTING_CONFIG_DIR` 覆盖。
+- **配置真值在 Host**：设置页每次打开时自动读取一次 `GET /plugins/ui-testing/config?view=global`（页面上不再有「重新读取」按钮），启用开关通过 `PUT /plugins/ui-testing/config` 提交并携带 `expectedRevision`。成功用返回的 revision 更新；冲突（`CONFIG_CONFLICT`）会展示最新 revision 并回滚，不显示“已保存”。配置文件默认在 `${DSH_HOME}/ui-testing/config.json`，可用 `DSH_UI_TESTING_CONFIG_DIR` 覆盖。
 - **工具布局由面板决定**：设置页里启用了哪些环境，模型请求里就出现这些环境的工具（外加两个环境无关诊断），不会带入其它环境的 schema；关掉某个环境即从请求里消失，不需要重启。
-- **六轴就绪（按运行环境）**：卡片上只留一条「依赖」提示和「诊断」入口；点「诊断」在二级页单独显示**这一个运行环境**（chrome / edge / firefox 各自一份）的 `工程支持 / 用户启用 / 依赖可用 / 连接可信 / 目标已绑定 / 能力就绪`，带检查时间、原因与证据。六轴不是目标环境的汇总——同组 Chrome 的「依赖可用」不为 Edge 背书；未检测、检测失败、不支持、暂不可用不混用，冷态目标为未绑定、能力为未探测，不伪造版本或“有效”。
+- **各模块诊断状态（六轴）与诊断日志都来自本轮诊断**：六轴仍是原来的词表（`工程支持 / 目标绑定 / 用户启用 / 能力就绪 / 依赖可用 / 连接可信`），值取自 `run-end.axes`，每轴带 `source=run`、`runId`、`checkedAt` 与 `checks`；「用户启用」始终是 Host 配置里保存的开关，「能力就绪」来自本次真正跑过的六条**只读**探测：只读表达式求值、目标列表、结构化快照、截图、计算样式、网络元数据读取；它们不改页面、不导航、不落盘（截图只留字节数/尺寸/哈希摘要，快照只留节点数与 id）。六条全过才标「可用」，部分通过标「部分可用」，冷态没有连接时标「未探测」。「本次 run / 就绪快照 / 副作用 / 实际调用」这些运行信息不占版面，放在状态胶囊的**悬停提示**里；「开始诊断」会不会启动浏览器、会不会重启，也在按钮的**悬停提示**里说明。没有 run 时才回退到 readiness 快照并标明来源。事件流每个 `stage-end` 一行，显示 Host 实测 `durationMs`、状态、原因与 `blockedBy`；SKIPPED 阶段没有实际耗时，显示「—」而不是 0。run 进行中暂停 5 秒 readiness 轮询；run 结束后六轴与拓扑以 run 结果为准，轮询只更新「就绪快照」时间戳，不会把结果换回 readiness。证据边界：readiness 快照只说明配置与探测结果，不等于一次真实调用；只有本 run 的 `actualCalls`（`browser_capabilities`、只读 `browser_eval`）才是真实执行的证据。
 - 依赖探测只做低干扰检查（可执行文件是否存在），不启动浏览器、不扫描未启用环境；连接与能力探测在需要时另行执行，读取型探测不证明输入已生效。
 - 面板顶栏「运行环境」选择器读取同一份 Host 配置的 `enabledEnvironments`；切换时 `POST /plugins/ui-testing/config/select` 只写当前会话，成功才更新本地状态。未实现环境仍禁用，且不会触发任何探测。
 - 生效方式：`client.js` 改动刷新当前 DSH GUI 后生效；`index.js`、工具注册、Skill provider 与配置存储改动需要重启或重挂插件。已注入历史的 Skill 正文不会被开关自动移除，切换只对后续轮次生效。

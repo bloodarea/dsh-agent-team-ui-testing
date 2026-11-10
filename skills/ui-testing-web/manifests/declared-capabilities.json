@@ -767,7 +767,7 @@
       "status": "verified",
       "tool": "browser_tabs",
       "source_lines": "RuntimeRegistry selectedTab/browser_tabs",
-      "constraints": "P0-E 第 36 个工具；list/current 只读；select 原子 claim；open 新建 about:blank；close 仅本人有效 lease；每 workspace 4 tabs/3 child、全局 8；错误 TAB_NOT_FOUND/TAB_LIMIT/TAB_FORBIDDEN/BUSY；Agent selectedTab 默认 primary，GUI active 独立。"
+      "constraints": "P0-E 第 36 个工具，九个动作（list/current/select/open/close/wait/acquire/release/transfer）；list/current/wait 只读，select 只改调用者自己的选择、不 claim 租约；open 新建 about:blank；close 按长期归属/控制权判定（owner 或 controller，本 root Lead 亦可）；acquire/release/transfer 仅本 root Lead，expectedControlRevision（transfer 另需 expectedOwnershipRevision）必填，acquire 先 draining 再等安全边界、超时 BUSY 且撤销 draining、不中断在途操作；页面组按 (workspace, provider, 团队根) 划分：child 最多 3 个按 (workspace, provider) 跨 root 合计，全局 live 8，primary 每个 (workspace, provider, 根) 一个；错误 TAB_NOT_FOUND（跨 root 统一，不泄露存在性）/TAB_FORBIDDEN/TAB_CONTROL_CHANGED/TAB_OWNERSHIP_STALE/TAB_IDENTITY_UNAVAILABLE/TAB_LIMIT/BUSY(仅短暂忙)/WAIT_TIMEOUT/INVALID_ARGUMENT；每会话独立 workSelection 与 observationSelection（work 默认 primary，observation 未设回退 work），GUI active 独立。"
     }
   ],
   "unsupported_tiers": [],

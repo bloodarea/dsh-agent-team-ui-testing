@@ -57,7 +57,7 @@
 | 分组 | 工具 | 能力 |
 | --- | --- | --- |
 | **程序化**（10） | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_viewport` `browser_state` `browser_capabilities` | 导航、JavaScript、控制台/网络检查、独立 HTTP 请求、计算样式、截图、原始鼠标/滚轮/键盘输入、共享视口状态与能力发现 |
-| **页面组**（1） | `browser_tabs` | 每工作区 primary + 最多 3 个 child 标签、每标签独立租约、Agent selectedTab 与标签生命周期（list/current/select/open/close/wait） |
+| **页面组**（1） | `browser_tabs` | 按 (workspace, provider, 团队根) 分组的 primary + 最多 3 个 child、每标签独立短租约、每会话 work/observation 双选择、长期归属与队长控制权（acquire/release/transfer）与标签生命周期（list/current/select/open/close/wait/acquire/release/transfer） |
 | **结构化 GUI**（7） | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | 快照 → ref 定位、可信输入、表单、节点状态与等待，返回结构化证据和类型化错误 |
 | **静态视觉**（6） | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | PNG 裁剪/缩放/预处理/标注，颜色/组件/边缘/模板确定性识别，YIQ 差异，坐标输入，受管基线与视觉断言 |
 | **动态行为**（5） | `browser_dynamic_session` `browser_motion_observe` `browser_motion_analyze` `browser_motion_control` `browser_dynamic_correlate` | 带完整性计数的有界帧采集、只交付指定区域的帧、七类运动/过渡分析、WAAPI 暂停/跳转/变速/恢复，以及六向「帧↔网络」关联 |

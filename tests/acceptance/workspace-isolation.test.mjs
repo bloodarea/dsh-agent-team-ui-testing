@@ -155,7 +155,10 @@ try {
   const registry = h.ctx.__internal.plugin.registry;
   // Materialise the (lazy, no-Chromium) BrowserHost so pageCount/proc can be inspected.
   const host = registry.browserHost();
-  const runtimeOf = (workspaceId) => registry.peek(`workspace:${workspaceId}`)?.runtime;
+  // Entries are keyed `<provider>\0<base>` since the per-browser provider split, so address them by
+  // their base key instead of guessing the composed key.
+  const runtimeOf = (workspaceId) => [...registry.entries.values()]
+    .find((entry) => entry.baseKey === `workspace:${workspaceId}`)?.runtime;
 
   const scopeHeaders = (identity = {}) => {
     const headers = { 'x-ui-testing-scope-version': '1' };
@@ -291,11 +294,16 @@ try {
       host.profileDir && runtimeOf('ws-a').host === runtimeOf('ws-b').host, { profileDir: host.profileDir });
     observe('pages=2 rssKb', await rssKb(host.proc.pid));
 
-    // Same workspace, two different sessions -> the SAME runtime (runtimeId + lease scope).
+    // M2a：旧断言写的是「同工作区两个不同 session 共享同一 runtime」，那正是本轮修掉的缺陷
+    // （workspace 被当成页面域，两个独立会话抢同一页）。新契约：**workspace 仍然只有一个**
+    // （realpath alias 必须解析到同一个 workspaceId），但每个 session 有自己独立的页面域。
     const stateA2 = (await api('GET', '/state', { identity: { sid: 'sid-a2' } })).json;
     const stateAlias = (await api('GET', '/state', { identity: { sid: 'sid-alias' } })).json;
-    check('同工作区两个 session（含 realpath alias）共享同一 runtimeId',
-      stateA2.ui?.runtimeId === runtimeIdA && stateAlias.ui?.runtimeId === runtimeIdA
+    check('同工作区不同 session 各自独立页域（realpath alias 仍解析到同一 workspace）',
+      Boolean(stateA2.ui?.runtimeId) && Boolean(stateAlias.ui?.runtimeId)
+      && stateA2.ui.runtimeId !== runtimeIdA && stateAlias.ui.runtimeId !== runtimeIdA
+      && stateA2.ui.runtimeId !== stateAlias.ui.runtimeId
+      && stateA2.scope?.id === stateAlias.scope?.id
       && stateA2.scope?.workspaceId === 'ws-a' && stateAlias.scope?.workspaceId === 'ws-a',
       { A: runtimeIdA, A2: stateA2.ui?.runtimeId, alias: stateAlias.ui?.runtimeId, aliasScope: stateAlias.scope });
   }
@@ -418,8 +426,13 @@ try {
     await waitFor(() => runtimeOf('ws-a')?.active > 0 && runtimeOf('ws-a')?.lease?.sessionId === 'sid-a', { timeoutMs: 5000, label: 'A lease' });
     const a2 = await h.invoke('browser_eval', { expression: '1' }, execA2);
     const b = await h.invoke('browser_eval', { expression: '2' }, execB);
-    check('A 持 lease 时同工作区 A2 BUSY，B 成功', a2.threw === true && a2.error?.code === 'BUSY' && a2.error?.retryable === true && b.ok === true && b.value?.ok === true,
-      { a2: a2.error, b: b.error || b.value });
+    // M2a：旧断言要求 A2（同工作区、不同 session）被 A 的写租约挡住并返回 BUSY —— 那也是旧缺陷的
+    // 一部分（短租约被当成跨会话权限）。新契约：15 秒 lease 只表示「某人正在忙」，不决定权限；
+    // A2 落在自己的页面域，既不继承 A 的租约也不打扰它。
+    check('A 持 lease 时同工作区另一 session（A2）不受其租约约束，B 成功',
+      a2.ok === true && a2.value?.ok === true && b.ok === true && b.value?.ok === true
+      && runtimeOf('ws-a')?.lease?.sessionId === 'sid-a',
+      { a2: a2.error || a2.value?.value, b: b.error || b.value?.value, lease: runtimeOf('ws-a')?.lease?.sessionId });
 
     const startedA = Date.now();
     controller.abort();
@@ -648,7 +661,11 @@ try {
     const before = registry.entries.size;
     const httpTool = await h.invoke('browser_http_request', { url: fixture.url + 'api/data' }, freshExec);
     check('browser_http_request 只带 scope 证据，不创建 page/entry', httpTool.ok === true && httpTool.value?.scope?.workspaceId === 'ws-9'
-      && registry.entries.size === before && !registry.peek('workspace:ws-9'), { ok: httpTool.ok, entriesBefore: before, entriesAfter: registry.entries.size });
+      && registry.entries.size === before
+      // M2a：entry key 现在带 root，不能再用裸 workspace key 直接命中；按完整维度查询，
+      // 这样「http_request 不创建 entry」仍是一次真实查询，而不是因为 key 形状变了而恒为真。
+      && !registry.peek({ key: 'workspace:ws-9', provider: 'chrome', rootSessionId: 's9' }),
+      { ok: httpTool.ok, entriesBefore: before, entriesAfter: registry.entries.size });
   }
 
   /* ------------------------------------------------------- non-goal observation: shared storage */
@@ -687,7 +704,10 @@ try {
     if (saved.idleMs === undefined) delete process.env.DSH_UI_TESTING_IDLE_MS; else process.env.DSH_UI_TESTING_IDLE_MS = saved.idleMs;
     const life = hLife.ctx.__internal.plugin.registry;
     const wsBySid = { s1: 'ws-1', s2: 'ws-2', s3: 'ws-3', s4: 'ws-4', s5: 'ws-5', s6: 'ws-6', s7: 'ws-7', s8: 'ws-8', s9: 'ws-9' };
-    const lifeRuntime = (sid) => life.entries.get(`workspace:${wsBySid[sid]}`)?.runtime;
+    // M2a：按 (workspace, root) 精确寻址页面组；裸 key 不再存在。
+    const lifeEntry = (sid) => [...life.entries.values()]
+      .find((entry) => entry.kind === 'primary' && entry.baseKey === `workspace:${wsBySid[sid]}` && entry.rootSessionId === sid);
+    const lifeRuntime = (sid) => lifeEntry(sid)?.runtime;
 
     const ensureLife = (sid) => hLife.request({ method: 'POST', path: '/plugins/ui-testing/ensure', body: { url: fixture.url }, headers: scopeHeaders({ sid }) });
     for (const sid of ['s1', 's2', 's3']) await ensureLife(sid);
@@ -740,7 +760,9 @@ try {
     if (saved.idleMs === undefined) delete process.env.DSH_UI_TESTING_IDLE_MS; else process.env.DSH_UI_TESTING_IDLE_MS = saved.idleMs;
     if (saved.viewer === undefined) delete process.env.DSH_UI_TESTING_VIEWER_TTL_MS; else process.env.DSH_UI_TESTING_VIEWER_TTL_MS = saved.viewer;
     const idle = hIdle.ctx.__internal.plugin.registry;
-    const idleRuntime = () => idle.entries.get('workspace:ws-1')?.runtime;
+    const idleEntry = () => [...idle.entries.values()]
+      .find((entry) => entry.kind === 'primary' && entry.baseKey === 'workspace:ws-1' && entry.rootSessionId === 's1');
+    const idleRuntime = () => idleEntry()?.runtime;
     const idleEnsure = await hIdle.request({ method: 'POST', path: '/plugins/ui-testing/ensure', body: { url: fixture.url }, headers: scopeHeaders({ sid: 's1' }) });
     const idleRuntimeId = idleRuntime()?.runtimeId;
     observe('idle harness', { status: idleEnsure.statusCode, idleMs: idle.idleMs, viewerTtlMs: idle.viewerTtlMs, runtimeId: idleRuntimeId, page: Boolean(idleRuntime()?.page), keys: [...idle.entries.keys()] });
@@ -750,8 +772,8 @@ try {
       await sleep(150);
     }
     await waitFor(() => idleRuntime()?.page === undefined, { timeoutMs: 6000, label: 'idle page swept' }).catch(() => {});
-    check('idle 回收 page（state 轮询不续 idle），entry 保留为冷实例', idleRuntime()?.page === undefined && idle.peek('workspace:ws-1') !== undefined,
-      { page: Boolean(idleRuntime()?.page), entry: Boolean(idle.peek('workspace:ws-1')), keys: [...idle.entries.keys()], idleMs: idle.idleMs, lastUsedAt: idle.peek('workspace:ws-1')?.lastUsedAt });
+    check('idle 回收 page（state 轮询不续 idle），entry 保留为冷实例', idleRuntime()?.page === undefined && idleEntry() !== undefined,
+      { page: Boolean(idleRuntime()?.page), entry: Boolean(idleEntry()), keys: [...idle.entries.keys()], idleMs: idle.idleMs, lastUsedAt: idleEntry()?.lastUsedAt });
     const reEnsureIdle = await hIdle.request({ method: 'POST', path: '/plugins/ui-testing/ensure', body: { url: fixture.url }, headers: scopeHeaders({ sid: 's1' }) });
     check('idle 回收后可重新 ensure（同一 runtimeId）', reEnsureIdle.statusCode === 200 && idleRuntime()?.running === true && idleRuntime()?.runtimeId === idleRuntimeId,
       { status: reEnsureIdle.statusCode, runtimeId: idleRuntime()?.runtimeId, expected: idleRuntimeId, entries: [...idle.entries.keys()] });

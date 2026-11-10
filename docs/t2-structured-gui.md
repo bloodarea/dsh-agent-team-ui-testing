@@ -56,7 +56,7 @@ provenance / targets / before / after / dispatch / networkDelta / escalation / i
 | `NOT_INTERACTABLE` | 隐藏/禁用/零面积/离屏/被遮挡/持续运动；`details.reason` 说明原因 |
 | `WAIT_TIMEOUT` | 等待超时，页面不关闭 |
 | `INVALID_ARGUMENT` | 参数非法或条件互斥 |
-| `BUSY` | 工作区页面被其他 owner 占用 |
+| `BUSY` | 该页队列正被其他会话的写操作占用（短暂忙，不是权限答案）；只读工具不占写租约 |
 
 只读的 `snapshot`/`node_state`/`wait_for` 同样受 BUSY 限制。
 

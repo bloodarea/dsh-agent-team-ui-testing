@@ -18,3 +18,7 @@ export * from './readiness.js';
 // P0 neutral models live in core/p0.js (separate write scope); the barrel exposes them so
 // adapters/providers have one import surface. No symbol names collide with the modules above.
 export * from './p0.js';
+// Team/page access model (M1): Principal, page-group keys, operation effects, control state
+// machine. Integration code imports it from this barrel; the module itself imports nothing but
+// `contracts.js`/`errors.js`, so authorisation stays testable without a browser or a Host.
+export * from './tab-access.js';

@@ -34,7 +34,7 @@ description: 调试与测试已授权 Web 页面的默认入口——下列常�
 - **工程状态与运行态分开**：静态文档、manifest 与台账只记录工程状态，不构成可用性证明；是否可用以注册表与 `browser_capabilities` 为准。
 - **能力报告不能自证**：若 `browser_capabilities` 抛错或字段与注册 schema 不符，按证据不足处理（`BLOCKED`/`INCONCLUSIVE`），不要反向推断某能力可用或不可用。
 - 独立 HTTP 请求由 `browser_http_request` 提供：Host 侧 HTTP(S) 客户端，不启动 Chromium、不依赖页面/页面 Cookie、不受页面租约与串行队列约束；默认不跟随重定向、默认 5s 总超时与 64 KiB 保留上限，每跳重定向都复验目标策略。`browser_eval` 内的页面 `fetch` 仍属页面上下文（受 CORS/Cookie/CSP/导航状态影响），不能替代它。
-- **按 DSH 工作区隔离 page，不是一个 page 共享。** 同一时刻最多一个 headless Chromium/profile；每个工作区有 primary page，GUI 内部标签页（真人点击 `target=_blank`/`window.open`）会为同工作区创建受控 child page；每个 page 独立 URL/viewport/history/网络缓冲/串行队列/租约/ref 表。Agent 的 `browser_*` 工具默认路由到**当前会话的 selectedTab**（默认 primary），可用 `browser_tabs select` 切换、用 `wait` 等待新标签、用 `list` 看生命周期与 blocked-popup notices；多个 tab 之间不自动聚合网络/帧/证据，跨标签结论必须逐 tab 取证。Cookie、localStorage、cache 仍共享（明确非安全隔离）。Agent 没有 frame 选择、下载、上传、Cookie 导出、文件选择工具。
+- **按 DSH 工作区隔离 page，不是一个 page 共享。** 同一时刻最多一个 headless Chromium/profile；每个工作区有 primary page，GUI 内部标签页（真人点击 `target=_blank`/`window.open`）会为同工作区创建受控 child page；每个 page 独立 URL/viewport/history/网络缓冲/串行队列/租约/ref 表。Agent 的 `browser_*` 工具默认路由到**当前会话自己的页**（写用 workSelection：默认指向自己已拥有的页，团队里没有自有页时是未绑定 → `TARGET_NOT_BOUND`，先 `open`），可用 `browser_tabs select` 切换、用 `wait` 等待新标签、用 `list` 看生命周期与 blocked-popup notices；多个 tab 之间不自动聚合网络/帧/证据，跨标签结论必须逐 tab 取证。Cookie、localStorage、cache 仍共享（明确非安全隔离）。Agent 没有 frame 选择、下载、上传、Cookie 导出、文件选择工具。
 - 共享视口：每个工作区 Runtime 一份权威 `view={version,mode,x,y,width,height,scale,source,revision}`（文档 CSS px），Agent 的 `browser_viewport` 与面板读写同一对象；默认 1280×800@100%、DPR 固定 1、mobile=false。`scale` 0.1–2（10–200%）只是显示比例与默认截图密度，**不改变页面 CSS 视口、DPR 或页面 zoom**；只有显式改 width/height 才发 `Emulation.setDeviceMetricsOverride`。
 - 面板 screencast 是事件驱动的 JPEG 预览（同源 WS 优先、HTTP 轮询回退）；`/metrics` 是预览诊断，不是 Agent 页面证据或 T4 帧序列。
 - 关闭清空网络/请求/URL/标题/帧缓存并回收进程与 profile，同时清空 T2 的 snapshot/ref 表。引用记录仍须核对 action 时间，避免引用同一次运行中更早的页面。
@@ -106,18 +106,28 @@ browser_viewport { "action": "set", "canvasX": 300, "canvasY": 200 }      // 画
 
 `browser_tabs` 是唯一的 page 组管理工具，权威行为见 `docs/multi-tab.md`。
 
-```json
-{ "action": "list | current | select | open | close | wait",
-  "tabId": "select/close/wait 可选；close 省略=当前标签",
+```jsonc
+{ "action": "list | current | select | open | close | wait | acquire | release | transfer",
+  "tabId": "select/close/wait/acquire/release/transfer 使用；close 省略=当前标签",
+  "mode": "仅 select：work（默认）| observe",
   "kind": "仅 wait：primary | tab；source：primary | gui-popup | agent-open",
-  "timeoutMs": "仅 wait：0–30000，默认 5000；pollMs：50–1000，默认 100" }
+  "timeoutMs": "仅 wait（等待预算）/acquire（等待安全边界）：0–30000，默认 5000；pollMs 仅 wait：50–1000，默认 100",
+  "expectedControlRevision": "仅 acquire/release/transfer：必填",
+  "expectedOwnershipRevision": "仅 transfer：必填",
+  "toSessionId": "仅 transfer：本 root 内有效成员" }
 ```
 
-- `list` 只读：每项 `tabId/runtimeId/kind/title/url/status/selected/busy/owner/reset` 之外还有 `source`（primary/gui-popup/agent-open）、`parentTabId`（popup 的 opener；primary 为 null）、`openEventId`、`createdAt`/`lastUsedAt`、`idleRemainingMs`、`manageable`；同时返回 `notices`（被策略阻断的 popup：reason/parentTabId/openEventId/at，≤8）与 `recentClosed`（closed/idle/evicted，≤8）。
+字段按 action 归类：非所属 action 的字段（例如 `list` 带 `tabId`、`close` 带 `timeoutMs`）一律 `INVALID_ARGUMENT`，不会静默忽略。
+
+- `list` 只读：每项 `tabId/runtimeId/kind/title/url/status/selected/busy/owner/reset` 之外还有 `source`（primary/gui-popup/agent-open）、`parentTabId`（popup 的 opener；primary 为 null）、`openEventId`、`createdAt`/`lastUsedAt`、`idleRemainingMs`、`manageable`，以及长期权属投影 `accessVersion/rootSessionId/creatorSessionId/ownerSessionId/controllerSessionId/ownershipRevision/controlRevision/accessState/permissions{read,write,close,manage}`；同时返回 `notices`（被策略阻断的 popup：reason/parentTabId/openEventId/at，≤8）与 `recentClosed`（closed/idle/evicted，≤8）。**判权限看 `permissions`**，`busy`/`owner`/`manageable` 只是短租约投影。
 - **`click` 成功 ≠ 有新页**：原生 `target=_blank`/`window.open` 只有在真人 GUI 手势下才会被接管成 child tab。Agent 经 T2 点击触发的新页通常被策略阻断；先 `list` 看 `notices` 的 `reason`（如 `automatic-popup`/`popup-limit`/`no-opener`），再决定写 BLOCKED 还是等真人操作。**不要用 `browser_tabs.open` 自建空白页冒充原生弹窗链路**——那是替代路径，必须在 `coverage` 里标 partial 并写清缺失断言（opener/焦点/postMessage）。
 - `wait` 是纯内存轮询（不启动 Chromium、不取租约）：不带 `tabId` 时只匹配**调用开始后**新出现的标签；命中在 `matchedTab`（统一信封的 `tab` 仍是调用路由标签）。
-- `select` 原子 claim；被其他会话占用返回 `BUSY`。`close` 需要本人有效 lease；省略 tabId 关闭当前标签。child 被关闭/退休后旧 selection 进 `pendingReset`，下一次页面工具返回 `TARGET_NOT_FOUND(selected-tab-closed, fallbackTabId:primary)`，必须先 `current`/`select` 确认。
-- 每个 tab 独立 lease/队列/ref/网络/帧，`BUSY` 按 tab 计；不能把 A tab 的证据当作 B tab 的结论。
+- **选择分两路**：`select{mode:"work"}`（默认）设写目标，需要本会话可写该页或本 root 的 Lead 可管理它；`select{mode:"observe"}` 只设只读目标，不改写目标。读工具走 observationSelection（未设则用 workSelection），写工具只走 workSelection。`select` **不 claim 租约、不切换前台**，被拒绝时不改变你已有的选择。
+- `close` 按长期权属判定（owner 或当前 controller；本 root 的 Lead 也可以），不再要求"你持有 15 秒租约"。child 被关闭/退休后旧选择进 `pendingReset`，下一次页面工具返回 `TARGET_NOT_FOUND(selected-tab-closed, fallbackTabId:primary)`，必须先 `current`/`select` 确认。
+- **队长接管（`acquire/release/transfer`）**：只有本 root 的 Lead 能用，且 `expectedControlRevision`（transfer 还要 `expectedOwnershipRevision`）必填——没有"默认取当前版本"。`acquire` 先关门再等当前操作到安全边界（有界、可取消，**不中断**成员的在途操作）：超时 `BUSY` 且 controller 与版本原样不变、撤销 draining；取消 `ABORTED`；版本过期 `TAB_CONTROL_CHANGED`（不要自动重放）。Lead 对成员空闲页的普通写会**自动接管后派发**，响应带 `autoAcquired:true`，并一直持有到显式 `release`。
+- **跨会话/跨团队根**：目标一律 not-found 语义（`TAB_NOT_FOUND`，不回显对方 id/URL/标题）。别用"能不能看到"推断"能不能写"；被拒绝的码是 `TAB_FORBIDDEN`（角色/归属）、`TAB_CONTROL_CHANGED`（控制权/版本）或 `TAB_IDENTITY_UNAVAILABLE`（身份无法证明），`BUSY` 只表示短暂忙。
+- 每个 tab 独立队列/ref/网络/帧；不能把 A tab 的证据当作 B tab 的结论。
+- **限制（未实现，别当成承诺）**：只读工具既不占写租约、也不切前台（不调用 `activate()`），但**有头模式**下后台页可能不合成，截图/预览可能是旧帧（此时应报 `OBSERVATION_UNAVAILABLE`，该码尚未在全部观察路径接线）；GUI 面板侧没有 Principal，也没有接管入口；`browser_network*`/T3/T4 证据仍按 workspace/session 归属，未按 root 隔离；DevTools 直连地址仍会投影。
 
 ### T2（7 个，结构化 GUI）
 

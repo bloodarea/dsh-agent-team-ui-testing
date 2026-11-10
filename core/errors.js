@@ -15,6 +15,13 @@ export const ERROR_CATEGORIES = Object.freeze({
   CONFIG: 'config',
   TARGET: 'target',
   EVIDENCE: 'evidence',
+  // `authorization` is deliberately its own category (ruling §7.3): "you may not do this" is a
+  // policy answer, not a broken capability and not a bug. Folding it into `capability` would make
+  // a permission refusal indistinguishable from "this browser cannot do that at all".
+  AUTHORIZATION: 'authorization',
+  // `resource` is a declared budget (4/8 pages, 32 metadata entries), which is a capacity answer
+  // rather than a target answer, so it never collapses into `target`.
+  RESOURCE: 'resource',
   INTERNAL: 'internal',
 });
 
@@ -40,6 +47,20 @@ export const ERROR_TAXONOMY = Object.freeze({
   PROVIDER_UNAVAILABLE: [ERROR_CATEGORIES.ENVIRONMENT, true],
   EVIDENCE_INCOMPLETE: [ERROR_CATEGORIES.EVIDENCE, false],
   FORBIDDEN: [ERROR_CATEGORIES.CAPABILITY, false],
+  // Team/page access model (M1, ruling §7.3). These are *classified* answers, so they must be
+  // registered here: `AdapterError` normalizes an unknown code to INTERNAL, which would turn a
+  // permission or staleness refusal into "the plugin is broken" for every caller that branches on
+  // `category`. The three legacy tab codes were only known to browser-safety.js and degraded to
+  // INTERNAL on this side; registering them here is the missing half of the same table.
+  TAB_FORBIDDEN: [ERROR_CATEGORIES.AUTHORIZATION, false],
+  TAB_NOT_FOUND: [ERROR_CATEGORIES.TARGET, false],
+  TAB_LIMIT: [ERROR_CATEGORIES.RESOURCE, false],
+  TAB_CONTROL_CHANGED: [ERROR_CATEGORIES.STATE, false],
+  TAB_OWNERSHIP_STALE: [ERROR_CATEGORIES.STATE, false],
+  TAB_IDENTITY_UNAVAILABLE: [ERROR_CATEGORIES.AUTHORIZATION, false],
+  TAB_OBSERVATION_STALE: [ERROR_CATEGORIES.STATE, true],
+  OBSERVATION_UNAVAILABLE: [ERROR_CATEGORIES.CAPABILITY, false],
+  RUNTIME_LIMIT: [ERROR_CATEGORIES.RESOURCE, true],
   INVALID_ARGUMENT: [ERROR_CATEGORIES.INPUT, false],
   OUTPUT_WRITE_FAILED: [ERROR_CATEGORIES.INTERNAL, true],
   INTERNAL: [ERROR_CATEGORIES.INTERNAL, false],

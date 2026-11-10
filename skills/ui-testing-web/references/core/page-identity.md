@@ -50,8 +50,9 @@ browser_tabs current {}               # 确认本会话 selectedTab（多标签�
 
 ## 4. 新标签 / 弹窗归属
 
-- 每个 DSH 工作区是**页面组**：primary + 最多 3 个 child tab（每 workspace 4，全局 8）。每个 tab 有独立 URL/viewport/网络缓冲/ref 表/租约。
-- **Agent 工具默认只操作当前会话的 selectedTab**；`browser_tabs` 的 `list/current/select/open/close` 是唯一的标签管理入口。`list/current` 只读，`select` 需要同 workspace 且目标未被其他 owner 占用（否则 `BUSY`）。
+- 页面组按 **(workspace, provider, 团队根)** 划分：同一个团队根共享一组页，不同独立会话/团队根各有一组，互不可见、互不可写。每组一个 primary 槽 + child（child 最多 3 个是跨 root 合计，全局 live 8）。每个 tab 有独立 URL/viewport/网络缓冲/ref 表。
+- **Agent 工具默认只操作当前会话的选择**：写工具用 workSelection，读工具优先用 observationSelection；`browser_tabs` 的 `list/current/select/open/close/wait/acquire/release/transfer` 是唯一的标签管理入口。`list/current` 只读。
+- `select` **不 claim 租约、不切前台**：`mode:"work"` 需要本会话可写该页或本 root 的 Lead 可管理它，`mode:"observe"` 只要同 root 可读。判定顺序是 root → 角色 → controller/版本，**不是**"目标有没有被占用"：跨会话/跨团队根的目标一律 `TAB_NOT_FOUND`（不回显对方 id/URL/标题），同 root 但无权写是 `TAB_FORBIDDEN`，控制权/版本不匹配是 `TAB_CONTROL_CHANGED`。`BUSY` 只表示短暂忙（队列被占/接管等待超时），不能当权限结论。
 - 真人 GUI 触发的 `target=_blank`/`window.open` 可能被接管为同工作区 child page；**自动/未授权 popup 仍被目标策略阻断**。工具不会自动把新标签设为 selectedTab——先 `browser_tabs list` 看它是否存在、再 `select`。
 - `browser_tabs open` 自建标签**不是**原生新页：它是替代路径，必须按 [`reporting.md`](reporting.md) 写明"替代了什么、仍缺哪条原始断言"（例如 opener 关系、焦点归属、postMessage 时序都无法由此证明）。
 - child tab 被关闭或 idle 回收后，旧 selection 进入 `pendingReset`：下一次页面工具会 `TARGET_NOT_FOUND(reason:selected-tab-closed, fallbackTabId:primary)` 且**零派发**；用 `browser_tabs current` 或 `select` 明确确认后再继续，别把这次失败当成"元素不存在"。

@@ -19,6 +19,22 @@ import net from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { BrowserError, Cdp, asBrowserError, checkAbort, abortable, redactUrl, redactText, validateTarget } from './browser-safety.js';
 import { createCrossEnvironment } from './integration/cross-environment.js';
+import { createDiagnose } from './integration/diagnose.js';
+import { nowMonoMs } from './core/clock.js';
+import { webProviderSupport } from './core/config.js';
+// M2a: the neutral page-access model (M1) is the single authority for "who may touch which page".
+// index.js keeps no authorisation rules of its own beyond mapping a tool call onto that model: it
+// resolves a Principal (integration/tab-principal.js), expands the call's real effects
+// (core/tab-access.js `operationEffect`) and asks `authorize`/`authorizeAll`. Re-deriving "the
+// 15s lease means permission" here is exactly the confusion this milestone removes.
+import {
+  ACTOR_SELECTION_KEY_PREFIX, AUTHORIZE_REASON, CONTROL_EVENT, CONTROL_STATE, EFFECT,
+  PAGE_GROUP_KEY_PREFIX, PAGE_TARGET_KEY_PREFIX, PRINCIPAL_ROLE, RESOURCE,
+  PRINCIPAL_SOURCE, applyControlTransition, authorize, authorizeAll, makeActorSelectionKey,
+  makeControl, makeOwnership, makePageAccess, makePageGroupKey, makePageTargetKey, makePrincipal,
+  operationEffect, parsePageGroupKey, projectPermissions,
+} from './core/index.js';
+import { defaultTabPrincipalResolver, resolvePrincipal } from './integration/tab-principal.js';
 /*
  * Web-only host modules are loaded on demand (A14 按需加载).
  *
@@ -1086,12 +1102,58 @@ const MAX_PAGES_DEFAULT = 8;
 const DEFAULT_RUNTIME_PROVIDER = 'chrome';
 
 /**
- * The one function that composes a runtime entry key: `<provider>\u0000<baseKey>`.
- * Every lookup path (getOrCreate/peek/closeProvider) must go through it so the composed key is
- * byte-identical no matter how the caller addressed the entry.
+ * Every page group in this module belongs to the Web environment (index.js *is* the Web
+ * implementation); the neutral model still validates it like any other dimension.
  */
-function providerEntryKey(provider, baseKey) {
-  return String(provider ?? DEFAULT_RUNTIME_PROVIDER) + '\u0000' + String(baseKey);
+const PAGE_GROUP_ENVIRONMENT = 'web';
+
+/**
+ * Root dimension for callers that cannot carry a Principal at all: the legacy panel protocol
+ * (no scope headers) and any old client. It is a *separate* domain, never a wildcard — an unscoped
+ * caller must not inherit an Agent's page just because it named the same workspace.
+ */
+const UNSCOPED_ROOT = 'root:unscoped';
+
+/**
+ * The one function that composes a page-group key (M2a, ruling §7.4).
+ *
+ * It used to be `<provider>\u0000<baseKey>`, which made the workspace — not the Session — the unit
+ * of page ownership: two independent sessions in one workspace resolved to the *same* entry and
+ * therefore fought over one page. The root dimension is now part of the key, so "A's primary" and
+ * "B's primary" are simply different keys and can never alias, be evicted for each other, or be
+ * addressed across roots. No caller may hand-compose this string: everything goes through M1's
+ * factory, which rejects empty/composed dimensions instead of silently building a wrong root.
+ */
+function pageGroupKeyFor(provider, baseKey, rootSessionId) {
+  return makePageGroupKey({
+    environment: PAGE_GROUP_ENVIRONMENT,
+    workspaceKey: String(baseKey),
+    provider: String(provider ?? DEFAULT_RUNTIME_PROVIDER),
+    rootSessionId: String(rootSessionId || UNSCOPED_ROOT),
+  });
+}
+
+/** Canonical identity of one physical target inside a page group (primary stays a group alias). */
+function pageTargetKeyFor(groupKey, tabId) {
+  return makePageTargetKey({ groupKey: String(groupKey), tabId: String(tabId) });
+}
+
+/** True when the value is already a composed page-group key (binding/recent addressing). */
+function isPageGroupKey(value) {
+  return typeof value === 'string' && value.startsWith(PAGE_GROUP_KEY_PREFIX);
+}
+
+/** Root recorded in a group key; a malformed key degrades to the unscoped domain, never to "any". */
+function rootOfPageGroupKey(key) {
+  try { return parsePageGroupKey(key).rootSessionId; } catch { return UNSCOPED_ROOT; }
+}
+
+/**
+ * Provider index key: the provider fallback must also be per root, otherwise one root's last-used
+ * browser could silently become another root's routing decision for the same workspace.
+ */
+function providerIndexKey(baseKey, rootSessionId) {
+  return String(baseKey) + '\u0000' + String(rootSessionId || UNSCOPED_ROOT);
 }
 const IDLE_MS_DEFAULT = 600000;
 /** A viewer is only "visible" while the panel keeps posting metrics (WS liveness alone can leak). */
@@ -1109,6 +1171,17 @@ const TAB_WAIT_TIMEOUT_MAX_MS = 30000;
 const TAB_WAIT_POLL_DEFAULT_MS = 100;
 const TAB_WAIT_POLL_MIN_MS = 50;
 const TAB_WAIT_POLL_MAX_MS = 1000;
+/**
+ * Bounded drain budget for a Lead takeover (ruling §5.1: default 5000ms, 0–30000).
+ *
+ * The budget covers *waiting for the current operation to reach a safe boundary*, never interrupting
+ * it: `Runtime.run` closes the page on ABORTED/CDP_TIMEOUT, so a forced takeover would destroy a
+ * member's logged-in page. Exceeding the budget is BUSY and leaves the record untouched.
+ */
+const TAB_ACQUIRE_TIMEOUT_DEFAULT_MS = 5000;
+const TAB_ACQUIRE_TIMEOUT_MAX_MS = 30000;
+/** How often the drain loop re-samples `active`/`inflight` (host memory only, no CDP). */
+const TAB_DRAIN_POLL_MS = 25;
 /** Per-workspace bounded lifecycle projections: blocked popup notices + close audit. */
 const POPUP_NOTICES_LIMIT = 8;
 const CLOSED_HISTORY_LIMIT = 8;
@@ -4662,7 +4735,17 @@ export class Runtime {
     return { aborted: true, reason };
   }
 
-  async run(operation, { signal, sessionId = 'anonymous', agent = false, action } = {}) {
+  /**
+   * Run one operation in the page queue.
+   *
+   * `activate` (default true) fronts the page so Chromium keeps compositing it — required for real
+   * page operations, and the reason a panel preview follows the operated tab. A **read-only
+   * observation** must pass `activate:false`: bringing a teammate's page to the front changes its
+   * `visibilityState` and can stall its background frames, which is exactly the interference the
+   * non-destructive-observation rule forbids. It still enters this queue (serialised with writes) —
+   * only the foreground switch is skipped.
+   */
+  async run(operation, { signal, sessionId = 'anonymous', agent = false, action, activate = true } = {}) {
     signal = this.#effectiveSignal(signal);
     checkAbort(signal);
     this.inflight += 1;
@@ -4684,7 +4767,9 @@ export class Runtime {
         this.active += 1;
       }
       // The page being operated must be the compositing one, otherwise its preview freezes.
-      this.activate();
+      // A pure observation opts out (`activate:false`) so looking at somebody's page cannot move
+      // their foreground page or toggle their `visibilityState`.
+      if (activate) this.activate();
       await abortable(previous, signal);
       checkAbort(signal);
       if (agent) this.claim(sessionId);
@@ -12643,9 +12728,35 @@ function scopeHttpStatus(code) {
     case 'SCOPE_NOT_FOUND': return 404;
     case 'SCOPE_UNAVAILABLE': return 503;
     case 'RUNTIME_LIMIT': return 503;
+    // Team/page access model (M2a, ruling §7.3). The HTTP surface must answer with the same code
+    // the tool surface uses, otherwise a refused page write looks like a Host crash over HTTP.
+    case 'TAB_FORBIDDEN': return 403;
+    case 'TAB_NOT_FOUND': return 404;
+    case 'TARGET_GONE': return 410;
+    case 'TAB_CONTROL_CHANGED': return 409;
+    case 'TAB_OWNERSHIP_STALE': return 409;
+    case 'TAB_OBSERVATION_STALE': return 409;
+    case 'TAB_LIMIT': return 409;
+    case 'TAB_IDENTITY_UNAVAILABLE': return 503;
+    case 'OBSERVATION_UNAVAILABLE': return 503;
+    case 'TARGET_NOT_BOUND': return 400;
+    case 'INVALID_ARGUMENT': return 400;
     default: return 500;
   }
 }
+
+/**
+ * Codes that are *pre-dispatch refusals* and must never become a page's `lastError` (ruling §7.3).
+ *
+ * A page's lastError answers "what went wrong with this page". "You may not write it", "your
+ * revision is stale" and "the budget is full" are answers about the *caller*, and writing them onto
+ * the target would blame the page — and its owner — for somebody else's refusal.
+ */
+const NON_PAGE_ERROR_CODES = new Set([
+  'TAB_FORBIDDEN', 'TAB_NOT_FOUND', 'TAB_CONTROL_CHANGED', 'TAB_OWNERSHIP_STALE',
+  'TAB_OBSERVATION_STALE', 'TAB_IDENTITY_UNAVAILABLE', 'TAB_LIMIT', 'OBSERVATION_UNAVAILABLE',
+  'RUNTIME_LIMIT', 'TARGET_NOT_BOUND', 'INVALID_ARGUMENT', 'SCOPE_FORBIDDEN', 'SCOPE_NOT_FOUND',
+]);
 
 function hostService(ctx, name) {
   try {
@@ -12749,14 +12860,138 @@ async function resolveSessionScope(ctx, sessionId, { cwd, signal } = {}) {
   return sessionScope(sessionId);
 }
 
+/**
+ * The fake registry a host *without* `ctx.agents` gets (M2a).
+ *
+ * It can only ever confirm the exact object the host already attached to this execution, and it is
+ * one stable instance so the resolver's `membershipRevision` does not churn merely because a fresh
+ * adapter object was passed on every call. It is not a second identity source: nothing else may
+ * write to it.
+ */
+const DEGRADED_AGENT_OBJECTS = new Map();
+const DEGRADED_AGENT_REGISTRY = {
+  get(id) { return DEGRADED_AGENT_OBJECTS.get(String(id)); },
+};
+
+/**
+ * One stable stand-in object per Session id for the no-registry host.
+ *
+ * With no Agent registry there is nothing to compare against, so the *domain identity* is the
+ * Session id itself. Minting a fresh object per call would look — correctly, to the resolver — like
+ * a replaced instance, revoke the previous epoch and refuse every later call; callers legitimately
+ * pass copies of `exec.agent` (the acceptance suites spread it to attach a signal), so the copy must
+ * not be able to invalidate the domain.
+ */
+function degradedAgentIdentity(actorId) {
+  const id = String(actorId);
+  let canonical = DEGRADED_AGENT_OBJECTS.get(id);
+  if (canonical === undefined) {
+    canonical = Object.freeze({ id, degraded: 'host-has-no-agent-registry' });
+    DEGRADED_AGENT_OBJECTS.set(id, canonical);
+  }
+  return canonical;
+}
+
+/**
+ * Resolve the calling Agent's trusted Principal.
+ *
+ * Three host states, three different answers — conflating them is what makes a permission model
+ * either useless or unusable:
+ *   1. `ctx.agents` present: identity must be *proved*. The exact object must come back from
+ *      `agents.get(id)`, and the Team service (when installed) must return a native membership
+ *      whose root is still the exact registry object. `tryMembership === undefined` is
+ *      TAB_IDENTITY_UNAVAILABLE — never "this must be a standalone session".
+ *   2. `ctx.agents` present, `ctx.agentTeams` absent (Team plugin not installed): exact-object
+ *      proof plus the host's explicit standalone proof from ruling §2.2. The root is the actor, so
+ *      it reaches exactly its own pages.
+ *   3. `ctx.agents` absent (the acceptance harness, a non-Team host): there is nothing to compare
+ *      against, so the caller degrades to a standalone domain keyed by its own Session id. This is
+ *      the *only* allowed degradation and it is deliberately not a wildcard: a missing service
+ *      grants "my own domain", never "any page". Note it still cannot be forged — `exec.agent` is
+ *      put on the execution by the Host, and no tool argument, header or query can set it.
+ */
+function resolveToolPrincipal(ctx, exec) {
+  const agent = exec && exec.agent;
+  if (!agent || typeof agent !== 'object' || typeof agent.id !== 'string' || agent.id.trim() === '') {
+    // No subject at all: the documented legacy tool protocol (an old client, or a harness that
+    // drives tools without an exec identity). This is *not* "a session we could not verify" — there
+    // is no session — so it keeps its own isolated domain (`root:unscoped`, where `legacy:default`
+    // already lived) instead of being refused. It can therefore never reach an Agent's page, which
+    // is strictly stronger than the old behaviour where the legacy entry shared the workspace.
+    return resolvePrincipal(degradedAgentIdentity(UNSCOPED_ROOT), {
+      agentRegistry: DEGRADED_AGENT_REGISTRY,
+      teamService: undefined,
+      standaloneProof: () => true,
+    });
+  }
+  const agents = hostService(ctx, 'agents');
+  if (!agents || typeof agents.get !== 'function') {
+    return resolvePrincipal(degradedAgentIdentity(agent.id), {
+      agentRegistry: DEGRADED_AGENT_REGISTRY,
+      teamService: undefined,
+      standaloneProof: () => true,
+    });
+  }
+  const agentTeams = hostService(ctx, 'agentTeams');
+  const hasTeamService = Boolean(agentTeams)
+    && (typeof agentTeams.tryMembership === 'function' || typeof agentTeams.membership === 'function');
+  return resolvePrincipal(agent, {
+    agentRegistry: agents,
+    teamService: hasTeamService ? agentTeams : undefined,
+    // Without a Team service the host itself is the proof of "no team": the actor is its own root.
+    standaloneProof: hasTeamService ? undefined : () => true,
+  });
+}
+
+/**
+ * Principal for one **diagnostic dispatcher** probe (task-12), or `null` for every other call.
+ *
+ * `integration/diagnose.js` runs a fixed set of read-only probes against a page it already froze.
+ * That page belongs to a *root* (page groups are keyed by workspace × provider × root), so the probe
+ * has to act inside that root; the frozen entry records its owner, which is exactly the identity the
+ * probe is entitled to use.
+ *
+ * Why this is not an identity backdoor:
+ *   - it exists only when `exec.diagnosticScope.entry` is present, which only the diagnose
+ *     dispatcher sets — no tool call, header, argument or RPC can attach it;
+ *   - the entry was resolved by the same authenticated GUI scope resolution every other panel route
+ *     uses (session header, or a binding that must hit an existing runtime), so the panel could
+ *     already read that page through `/state|/frame`;
+ *   - the probe set and its arguments come from `DISPATCHER_ALLOWED` + `validateProbeArgs`
+ *     (expression `1`, snapshot, screenshot, computedStyle, network list): no navigation, no input,
+ *     no arbitrary script, and the response is a structural summary, never page content;
+ *   - the principal is `source:'panel'`, is never persisted into any long-lived record and cannot be
+ *     handed to another call, so it buys exactly one probe round.
+ *
+ * It deliberately does NOT consult `ctx.agents`: a panel may diagnose a session whose agent is not
+ * currently loaded, and the subject here is the panel acting on its own resolved page — not a turn.
+ */
+function diagnosticPrincipalFor(exec) {
+  const entry = exec?.diagnosticScope?.entry;
+  const owner = entry?.ownership?.ownerSessionId || entry?.rootSessionId || null;
+  if (!owner) return null;
+  return makePrincipal({
+    actorSessionId: String(owner),
+    rootSessionId: String(entry.rootSessionId || owner),
+    role: PRINCIPAL_ROLE.STANDALONE,
+    membershipRevision: 1,
+    executionEpoch: 1,
+    source: PRINCIPAL_SOURCE.PANEL,
+    hostEpoch: defaultTabPrincipalResolver().hostEpoch,
+  });
+}
+
 /** Tools carry the Agent's session header; no exec identity at all is the old protocol. */
-function toolScopeRequest(exec) {
+function toolScopeRequest(exec, principal = null) {
   const agent = exec && exec.agent;
   if (!agent || !agent.id) return { mode: 'legacy' };
   const headerCwd = agent.session && agent.session.header && agent.session.header.cwd;
   return {
     mode: 'session',
     sessionId: String(agent.id),
+    // The verified identity decides the page domain. A tool call never gets to name its own root:
+    // it is whatever `integration/tab-principal.js` proved from the exact agent object.
+    ...(principal ? { rootSessionId: principal.rootSessionId, creatorSessionId: principal.actorSessionId } : {}),
     ...(typeof headerCwd === 'string' && headerCwd ? { cwd: headerCwd } : {}),
     ...(exec && exec.signal ? { signal: exec.signal } : {}),
   };
@@ -12766,21 +13001,52 @@ function toolScopeRequest(exec) {
  * Resolve a parsed scope request to { key, scope }. A `binding` must hit an existing runtime
  * (404 otherwise) and is owner-only at the HTTP/WS layer; `recent` never falls back to legacy.
  */
+/**
+ * Resolve a parsed scope request to `{ key, scope, provider, rootSessionId, creatorSessionId }`.
+ *
+ * The **root** dimension is resolved here and nowhere else (M2a, ruling §7.4):
+ *   - a tool call supplies the verified Principal's root (`request.rootSessionId`);
+ *   - a bound/recent GUI request inherits the root of the entry it already names (the runtime id is
+ *     the only thing it knows, and it was minted inside one group);
+ *   - a session-addressed GUI request resolves to *that session's* domain, so a panel bound to a
+ *     session still shows exactly the page that session drives — the pre-M5 panel has no verified
+ *     actor of its own, and inventing one would be worse than reusing the addressed session id;
+ *   - the legacy protocol (no scope headers at all) gets `UNSCOPED_ROOT`, its own domain: an old
+ *     client must not silently inherit an Agent's page just because it named the workspace.
+ */
 async function resolveScopeRequest(ctx, registry, request) {
-  if (!request || request.mode === 'legacy') return LEGACY_SCOPE;
-  if (request.mode === 'unassigned') return UNASSIGNED_SCOPE;
+  if (!request || request.mode === 'legacy') return { ...LEGACY_SCOPE, rootSessionId: UNSCOPED_ROOT };
+  if (request.mode === 'unassigned') {
+    return { ...UNSCOPED_SCOPE_FACTORY(), rootSessionId: String(request.rootSessionId || UNSCOPED_ROOT) };
+  }
   if (request.mode === 'recent') {
-    const entry = registry.recentEntry();
-    return entry ? { key: entry.key, scope: entry.scope } : UNASSIGNED_SCOPE;
+    // A tool/GUI request that carries a root only follows that root; a rootless (legacy panel)
+    // request keeps the historical global pointer. See RuntimeRegistry#recentEntry.
+    const entry = registry.recentEntry(request.rootSessionId);
+    const rootSessionId = String(request.rootSessionId || entry?.rootSessionId || UNSCOPED_ROOT);
+    return entry
+      ? { key: entry.key, scope: entry.scope, provider: entry.provider, rootSessionId: entry.rootSessionId }
+      : { ...UNSCOPED_SCOPE_FACTORY(), rootSessionId };
   }
   if (request.mode === 'binding') {
     const entry = registry.findByRuntimeId(request.runtimeId);
     if (!entry) throw new BrowserError('SCOPE_NOT_FOUND', 'scope binding 指向的运行时不存在', { scope: 'binding' });
-    return { key: entry.key, scope: entry.scope };
+    // `key` is the entry's own page-group key (root + provider + workspace, or a PageTargetKey);
+    // the provider and root travel with it so a bound lookup never has to guess them back.
+    return { key: entry.key, scope: entry.scope, provider: entry.provider, rootSessionId: entry.rootSessionId };
   }
   // Bounded: tools pass exec.signal; HTTP/WS requests get a 5s metadata-read budget.
-  return resolveSessionScope(ctx, request.sessionId, { cwd: request.cwd, signal: request.signal || AbortSignal.timeout(5000) });
+  const resolved = await resolveSessionScope(ctx, request.sessionId, { cwd: request.cwd, signal: request.signal || AbortSignal.timeout(5000) });
+  const rootSessionId = String(request.rootSessionId || request.sessionId || UNSCOPED_ROOT);
+  return {
+    ...resolved,
+    rootSessionId,
+    creatorSessionId: String(request.creatorSessionId || request.sessionId || rootSessionId),
+  };
 }
+
+/** A fresh (mutable) copy of the unassigned scope so a root dimension can be attached. */
+function UNSCOPED_SCOPE_FACTORY() { return { key: UNASSIGNED_SCOPE.key, scope: UNASSIGNED_SCOPE.scope }; }
 
 function emptyMetrics() {
   return {
@@ -12832,7 +13098,8 @@ export class RuntimeRegistry {
     /** base scope key -> provider that most recently used it (GUI/session fallback, §16 open item 2). */
     this.providerByBaseKey = new Map();
     this.reservations = 0;
-    this.recentKey = undefined;
+    /** rootSessionId -> entry key of the last real interaction in that root (never cross-root). */
+    this.recentByRoot = new Map();
     this.disposed = false;
     this.sweeping = false;
     this.sweepTimer = setInterval(() => { this.sweep().catch(() => {}); }, Math.max(1000, Math.min(60000, Math.floor(idleMs / 4))));
@@ -12904,7 +13171,9 @@ export class RuntimeRegistry {
       ? resolved.provider
       : null;
     if (explicit !== null) return { provider: explicit, providerResolved: 'binding' };
-    const recent = this.providerByBaseKey.get(resolved?.key);
+    // The provider fallback is per (workspace, root): another root's last-used browser must never
+    // become this root's routing decision for the same workspace.
+    const recent = this.providerByBaseKey.get(providerIndexKey(resolved?.key, resolved?.rootSessionId));
     return {
       provider: typeof recent === 'string' && recent.length > 0 ? recent : DEFAULT_RUNTIME_PROVIDER,
       providerResolved: 'recent',
@@ -12930,31 +13199,351 @@ export class RuntimeRegistry {
     // Both addressing styles must produce the identical composed key (asserted in the contract suite).
     if (typeof input === 'string') return this.entries.get(input);
     if (!input || typeof input !== 'object') return undefined;
+    // A `binding` resolves to an entry key that ALREADY carries the provider prefix
+    // (`<provider>\0<base>`, or `<provider>\0<base>:view:<id>` for a child tab), so composing the
+    // provider again would double it and miss every bound runtime — that silently broke every
+    // panel request addressed by runtime id (child tab /state + /frame, the tab `+` and the `×`).
+    // Exact entry keys win; a bare workspace/scope key still goes through the provider composition.
+    const exact = this.entries.get(String(input.key));
+    if (exact) return exact;
+    // A binding/recent request already carries a composed page-group key: composing it again would
+    // manufacture a second root and silently miss the bound runtime.
+    if (isPageGroupKey(input.key)) return undefined;
     const { provider } = this.providerFor(input);
-    return this.entries.get(providerEntryKey(provider, input.key));
+    return this.entries.get(pageGroupKeyFor(provider, input.key, input.rootSessionId));
   }
 
+  /**
+   * Get (or lazily create) the page group of one (workspace, provider, **root**).
+   *
+   * The root dimension is what makes two independent sessions in one workspace stop sharing a
+   * page: their keys can never collide, so neither can address, evict or write the other's target.
+   * Creation is still cold (no page, no Chromium); it only binds an ownership record so the first
+   * real operation has an owner to authorise against.
+   */
   getOrCreate(resolved) {
     if (this.disposed) throw new BrowserError('SCOPE_UNAVAILABLE', '插件正在卸载');
     const { scope } = resolved;
     const baseKey = resolved.key;
+    // A `recent` resolution hands back an ALREADY composed entry key (`<provider>\0<base>`), so
+    // composing the provider again would manufacture a second runtime — with its own page — for a
+    // workspace that already has one, on every `scope=recent` request (and it burns the global
+    // page budget until `+` answers TAB_LIMIT for a workspace with two tabs). An exact key wins.
+    const exact = this.entries.get(String(baseKey));
+    if (exact) return exact;
     const { provider, providerResolved } = this.providerFor(resolved);
-    // §6: an entry is owned by (workspace, provider, tab). The base key stays the workspace/scope
-    // identity; the provider prefix keeps two browsers from ever sharing one runtime.
-    const key = providerEntryKey(provider, baseKey);
+    const rootSessionId = String(resolved.rootSessionId || UNSCOPED_ROOT);
+    // §6/§7.4: an entry is owned by (workspace, provider, root). `baseKey` stays the raw
+    // workspace/scope identity (aggregate counting and config transitions address it that way);
+    // the composed key carries all four dimensions and is never built by hand.
+    const key = pageGroupKeyFor(provider, baseKey, rootSessionId);
     const existing = this.entries.get(key);
     if (existing) return existing;
     if (this.entries.size >= this.maxEntries) this.#evictColdEntry();
     const runtime = new Runtime(this.log, {
       host: this.browserHost(provider), origins: this.origins, scope, registry: this, viewerTtlMs: this.viewerTtlMs,
     });
+    // Ownership is bound at first sight of the group, not at first page: an entry that exists but
+    // has no owner could never be authorised, and "no owner yet" would have to mean "anyone".
+    const creatorSessionId = String(resolved.creatorSessionId || resolved.sessionId || rootSessionId);
+    const access = makePageAccess({ rootSessionId, creatorSessionId });
     const entry = { key, baseKey, provider, providerResolved, scope, runtime, kind: 'primary',
-      viewId: 'primary', primaryKey: key,
+      viewId: 'primary', primaryKey: key, rootSessionId,
+      ownership: access.ownership, control: access.control,
       parentRuntimeId: null, parentTabId: null, openEventId: null, createdBy: 'host',
       tabId: 'primary', createdAt: Date.now(), lastUsedAt: Date.now() };
     this.entries.set(key, entry);
-    this.providerByBaseKey.set(baseKey, provider);
+    this.providerByBaseKey.set(providerIndexKey(baseKey, rootSessionId), provider);
     return entry;
+  }
+
+  /**
+   * Frozen M1 records of one physical page.
+   *
+   * Every entry (primary slot *and* child) carries its own ownership/control pair: a child page is
+   * a separate page with a separate controller, and sharing the primary's records would let a
+   * takeover of one silently authorise the other.
+   */
+  accessOf(entry) {
+    const target = entry || {};
+    return { ownership: target.ownership ?? null, control: target.control ?? null };
+  }
+
+  /** Replace an entry's records after a transition (M1 returns fresh frozen objects). */
+  setAccess(entry, next) {
+    if (!entry || !next) return;
+    entry.ownership = next.ownership;
+    entry.control = next.control;
+  }
+
+  /**
+   * Authorise one effect against one page, throwing the mapped structured error on refusal.
+   *
+   * This is the only place index.js turns a permission verdict into an error, so every surface
+   * reports the same code for the same reason (and the cross-root answer carries no details).
+   */
+  authorizePage(entry, principal, effect, operation = null, extra = {}) {
+    const { ownership, control } = this.accessOf(entry);
+    const verdict = authorize({ principal, ownership, control, effect, operation, ...extra });
+    if (verdict.allowed) return verdict;
+    throw this.accessError(verdict, operation);
+  }
+
+  accessError(verdict, operation) {
+    if (verdict.notFound || verdict.reason === AUTHORIZE_REASON.CROSS_ROOT) {
+      // Uniform, detail-free: a foreign root learns nothing about whether the page exists.
+      return new BrowserError('TAB_NOT_FOUND', '标签不存在或不属于当前调用者', {
+        hidden: true, operation: operation || null,
+      });
+    }
+    const reason = verdict.reason;
+    const message = reason === AUTHORIZE_REASON.ROLE_FORBIDDEN ? '当前会话无权操作该标签'
+      : reason === AUTHORIZE_REASON.NOT_CONTROLLER ? '该标签当前由其他会话控制（读取最新状态后重新决策，不要自动重试）'
+      : reason === AUTHORIZE_REASON.CONTROL_DRAINING ? '该标签正在被接管，旧版本写入已关闭'
+      : reason === AUTHORIZE_REASON.TARGET_RETIRED ? '该标签已关闭或退休'
+      : reason === AUTHORIZE_REASON.CONTROL_REVISION_STALE ? '标签控制版本已变化'
+      : reason === AUTHORIZE_REASON.OWNERSHIP_REVISION_STALE ? '标签归属版本已变化'
+      : reason === AUTHORIZE_REASON.IDENTITY_UNAVAILABLE ? '当前调用者身份无法证明'
+      : reason === AUTHORIZE_REASON.HOST_MANAGE_FORBIDDEN ? '该操作只能由独立宿主管理通道执行'
+      : '该操作不被允许';
+    return new BrowserError(verdict.code || 'TAB_FORBIDDEN', message, {
+      reason, effect: verdict.effect, resource: verdict.resource, operation: operation || null,
+    });
+  }
+
+  /**
+   * Read projection of one page's long-lived ownership/control (ruling §5: management replies carry
+   * `changed` plus the final controller/versions, so callers never re-derive them from `busy`).
+   */
+  controlProjection(entry) {
+    const { ownership, control } = this.accessOf(entry);
+    return {
+      accessVersion: 1,
+      tabId: entry ? this.#tabId(entry) : null,
+      rootSessionId: entry?.rootSessionId ?? null,
+      creatorSessionId: ownership?.creatorSessionId ?? null,
+      ownerSessionId: ownership?.ownerSessionId ?? null,
+      ownershipRevision: ownership?.ownershipRevision ?? null,
+      controllerSessionId: control?.controllerSessionId ?? null,
+      controlRevision: control?.controlRevision ?? null,
+      state: control?.state ?? null,
+      pendingControllerSessionId: control?.pendingControllerSessionId ?? null,
+    };
+  }
+
+  /**
+   * Undo our own drain marker, leaving the record byte-identical (ruling §5.2 step 6).
+   *
+   * Only the actor that started the drain may cancel it, and only while the record is still the one
+   * we drained (same state + same revision). Anything else is somebody else's move: the controller
+   * must never "quietly" change because our request finished late, so we simply do not touch it.
+   */
+  cancelDrain(entry, principal, expectedControlRevision) {
+    const { ownership, control } = this.accessOf(entry);
+    if (!control || control.state !== CONTROL_STATE.DRAINING) return false;
+    if (control.pendingControllerSessionId !== principal?.actorSessionId) return false;
+    if (control.controlRevision !== expectedControlRevision) return false;
+    try {
+      const cancelled = applyControlTransition({ ownership, control }, {
+        type: CONTROL_EVENT.ACQUIRE_CANCEL, principal, expectedControlRevision,
+      });
+      this.setAccess(entry, cancelled);
+      return true;
+    } catch {
+      // The record moved on (closed/retired/transferred): never invent a state we cannot prove.
+      return false;
+    }
+  }
+
+  /**
+   * Lead takeover: drain, wait for a safe boundary, then commit. Never abort in-flight work.
+   *
+   * Sequence (plan §5.2 / ruling §5.1):
+   *   1. root → role → expected control version, all before anything moves (zero dispatch on refuse)
+   *   2. mark draining: older writes now see a closed gate, while the controller is still the member
+   *   3. wait (bounded, cancellable) until nothing is queued or running — `active`/`inflight` reach 0,
+   *      which is host memory only: no CDP, no lease games, no interruption
+   *   4. re-read the version, then commit controller=Lead with controlRevision+1 — or, on
+   *      timeout/cancel/race, revoke the drain marker and report BUSY/ABORTED/CHANGED with the
+   *      controller exactly where it was
+   *
+   * @returns {{changed:boolean, ownership:object, control:object, state:string, waitedMs:number}}
+   */
+  async acquireControl(entry, principal, {
+    expectedControlRevision, timeoutMs = TAB_ACQUIRE_TIMEOUT_DEFAULT_MS, signal = undefined,
+  } = {}) {
+    this.authorizePage(entry, principal,
+      { effect: EFFECT.MANAGE, resource: RESOURCE.PAGE, targetRequired: true },
+      'browser_tabs.acquire', { expectedControlRevision });
+    const runtime = entry.runtime;
+    const startedAt = Date.now();
+    const drained = applyControlTransition(this.accessOf(entry), {
+      type: CONTROL_EVENT.ACQUIRE, principal, expectedControlRevision,
+    });
+    this.setAccess(entry, drained);
+    if (!drained.changed) {
+      return { changed: false, ownership: entry.ownership, control: entry.control, state: entry.control.state, waitedMs: 0 };
+    }
+
+    let outcome = 'settled';
+    try {
+      const deadline = startedAt + timeoutMs;
+      for (;;) {
+        if (runtime.active === 0 && runtime.inflight === 0) break;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) { outcome = 'timeout'; break; }
+        await this.#waitNextPoll(Math.min(TAB_DRAIN_POLL_MS, remaining), signal);
+      }
+    } catch (error) {
+      outcome = asBrowserError(error).code === 'ABORTED' ? 'aborted' : 'failed';
+    }
+
+    if (outcome === 'settled') {
+      const current = this.accessOf(entry);
+      const stillOurs = current.control
+        && current.control.state === CONTROL_STATE.DRAINING
+        && current.control.controlRevision === expectedControlRevision
+        && current.control.pendingControllerSessionId === principal.actorSessionId;
+      if (stillOurs) {
+        const committed = applyControlTransition(current, {
+          type: CONTROL_EVENT.ACQUIRE_COMMIT, principal, expectedControlRevision,
+        });
+        this.setAccess(entry, committed);
+        // The drain proved there is no in-flight work, so the member's stale "recently wrote" lease
+        // must not block the new controller's first write.
+        this.clearForeignLease(entry, principal.actorSessionId);
+        return {
+          changed: committed.changed, ownership: entry.ownership, control: entry.control,
+          state: entry.control.state, waitedMs: Date.now() - startedAt,
+        };
+      }
+      outcome = 'raced';
+    }
+
+    this.cancelDrain(entry, principal, expectedControlRevision);
+    const waitedMs = Date.now() - startedAt;
+    if (outcome === 'aborted') {
+      throw new BrowserError('ABORTED', '接管已取消：controller 与 controlRevision 均未改变', {
+        reason: 'acquire-cancelled', controlRevision: entry.control?.controlRevision ?? null, waitedMs,
+      });
+    }
+    if (outcome === 'raced') {
+      throw new BrowserError('TAB_CONTROL_CHANGED', '接管期间控制版本已变化（draining 已撤销）', {
+        reason: 'control-revision-stale', controlRevision: entry.control?.controlRevision ?? null, waitedMs,
+      });
+    }
+    if (outcome === 'failed') {
+      throw new BrowserError('TAB_CONTROL_CHANGED', '接管等待失败（draining 已撤销）', {
+        reason: 'drain-failed', controlRevision: entry.control?.controlRevision ?? null, waitedMs,
+      });
+    }
+    // BUSY, never "we finished it in the background": the drain marker is already gone.
+    throw new BrowserError('BUSY', `接管在 ${timeoutMs}ms 内未等到安全边界，已撤销 draining，controller 未改变`, {
+      reason: 'drain-timeout', timeoutMs, waitedMs, controlRevision: entry.control?.controlRevision ?? null,
+    });
+  }
+
+  /**
+   * A completed control transition voids the previous writer's short lease.
+   *
+   * The 15s lease only means "this session wrote recently"; it is not an ACL. Once control has moved
+   * — and the drain certified there is no in-flight work — keeping the old lease would refuse the new
+   * controller's very first write with BUSY, making the takeover useless for the 15s that follow.
+   */
+  clearForeignLease(entry, keepSessionId) {
+    const runtime = entry?.runtime;
+    if (!runtime || !runtime.lease) return false;
+    if (runtime.lease.sessionId === keepSessionId) return false;
+    runtime.release(runtime.lease.sessionId);
+    return true;
+  }
+
+  /** Lead gives control back to the owner (controlRevision+1, ownership untouched). */
+  releaseControl(entry, principal, { expectedControlRevision } = {}) {
+    this.authorizePage(entry, principal,
+      { effect: EFFECT.MANAGE, resource: RESOURCE.PAGE, targetRequired: true },
+      'browser_tabs.release', { expectedControlRevision });
+    const next = applyControlTransition(this.accessOf(entry), {
+      type: CONTROL_EVENT.RELEASE, principal, expectedControlRevision,
+    });
+    this.setAccess(entry, next);
+    this.clearForeignLease(entry, entry.ownership.ownerSessionId);
+    return { changed: next.changed, ownership: entry.ownership, control: entry.control, state: entry.control.state };
+  }
+
+  /**
+   * Lead transfers ownership+control to another valid member of this root.
+   *
+   * The roster is re-read from the native service **before** the metadata commit (ruling §2.2):
+   * a cached membership list could already be stale, and handing a page to somebody who left the
+   * team is exactly the kind of grant that must not survive on stale data.
+   */
+  transferControl(entry, principal, { toSessionId, expectedControlRevision, expectedOwnershipRevision } = {}) {
+    this.authorizePage(entry, principal,
+      { effect: EFFECT.MANAGE, resource: RESOURCE.PAGE, targetRequired: true },
+      'browser_tabs.transfer', { expectedControlRevision, expectedOwnershipRevision });
+    const row = this.assertTransferTarget(principal, toSessionId);
+    const next = applyControlTransition(this.accessOf(entry), {
+      type: CONTROL_EVENT.TRANSFER, principal, toSessionId: String(toSessionId).trim(),
+      expectedControlRevision, expectedOwnershipRevision,
+    });
+    this.setAccess(entry, next);
+    this.clearForeignLease(entry, String(toSessionId).trim());
+    return {
+      changed: next.changed, ownership: entry.ownership, control: entry.control,
+      state: entry.control.state, to: row,
+    };
+  }
+
+  /**
+   * Validate a transfer target against the **fresh** native roster.
+   *
+   * A transfer is a grant, so "cannot prove membership" must never read as "allowed": without a
+   * roster service the answer is TAB_IDENTITY_UNAVAILABLE, an unknown row is TAB_FORBIDDEN, and a
+   * failed/provisioning row is TAB_FORBIDDEN too. Self-transfer is an argument error.
+   */
+  assertTransferTarget(principal, toSessionId) {
+    const to = typeof toSessionId === 'string' ? toSessionId.trim() : '';
+    if (!to || to.length > 128) {
+      throw new BrowserError('INVALID_ARGUMENT', 'transfer.toSessionId 必须是 1–128 字符', { field: 'toSessionId' });
+    }
+    if (to === principal?.actorSessionId) {
+      throw new BrowserError('INVALID_ARGUMENT', 'transfer 不能转交给自己', { field: 'toSessionId' });
+    }
+    const teams = hostService(this.ctx, 'agentTeams');
+    const agents = hostService(this.ctx, 'agents');
+    if (!teams || typeof teams.listMembers !== 'function' || !agents || typeof agents.get !== 'function') {
+      throw new BrowserError('TAB_IDENTITY_UNAVAILABLE', 'transfer 需要原生 roster 才能证明目标成员身份', {
+        reason: 'transfer-needs-roster',
+      });
+    }
+    const rootAgent = agents.get(principal.rootSessionId);
+    if (!rootAgent) {
+      throw new BrowserError('TAB_IDENTITY_UNAVAILABLE', 'root 未加载，无法核对 roster', {
+        reason: 'root-not-loaded', rootSessionId: principal.rootSessionId,
+      });
+    }
+    let rows;
+    try {
+      rows = teams.listMembers(rootAgent);
+    } catch {
+      throw new BrowserError('TAB_IDENTITY_UNAVAILABLE', 'roster 读取失败', { reason: 'roster-failed' });
+    }
+    if (!Array.isArray(rows)) {
+      throw new BrowserError('TAB_IDENTITY_UNAVAILABLE', 'roster 形状异常', { reason: 'roster-malformed' });
+    }
+    const row = rows.find((candidate) => candidate && candidate.id === to);
+    if (!row) {
+      throw new BrowserError('TAB_FORBIDDEN', 'transfer 目标不是本 root 的成员', {
+        reason: 'not-a-member', toSessionId: to,
+      });
+    }
+    if (row.status === 'failed' || row.status === 'provisioning') {
+      throw new BrowserError('TAB_FORBIDDEN', 'transfer 目标成员当前无有效身份', {
+        reason: 'member-not-active', toSessionId: to, status: row.status,
+      });
+    }
+    return { id: row.id, role: row.role ?? null, status: row.status ?? null };
   }
 
   findByRuntimeId(runtimeId) {
@@ -12975,9 +13564,27 @@ export class RuntimeRegistry {
     return this.entries.get(key) || (entry.kind === 'primary' ? entry : undefined);
   }
 
-  popupCount(primaryKey) {
+  /**
+   * Child pages of one **(workspace, provider)** — deliberately *not* of one root.
+   *
+   * The product budget is "4 pages per workspace/provider" (1 primary + 3 children). Counting per
+   * page-group key would turn that into "3 children per root", so two roots in one workspace could
+   * hold 8 pages there and the per-workspace ceiling would be multiplied by the root count. The
+   * global `maxPages` ceiling stays one number across every provider and root (a later quota slice
+   * rewrites the full reservation algorithm; this is the minimal correction that keeps today's
+   * numbers true).
+   */
+  popupCount(primaryEntry) {
+    if (!primaryEntry) return 0;
+    const workspaceKey = primaryEntry.baseKey;
+    const provider = primaryEntry.provider ?? DEFAULT_RUNTIME_PROVIDER;
     let count = 0;
-    for (const entry of this.entries.values()) if (entry.kind === 'popup' && entry.primaryKey === primaryKey) count += 1;
+    for (const entry of this.entries.values()) {
+      if (entry.kind !== 'popup') continue;
+      if (entry.baseKey !== workspaceKey) continue;
+      if ((entry.provider ?? DEFAULT_RUNTIME_PROVIDER) !== provider) continue;
+      count += 1;
+    }
     return count;
   }
 
@@ -12989,10 +13596,13 @@ export class RuntimeRegistry {
   /** Reserve one popup slot without ever evicting a parent or another workspace. */
   reservePopupSlot(primaryEntry) {
     if (this.disposed) throw new BrowserError('SCOPE_UNAVAILABLE', '插件正在卸载');
-    if (!primaryEntry) throw new BrowserError('TAB_LIMIT', '找不到 popup 所属的 primary 工作区');
-    if (this.popupCount(primaryEntry.key) >= this.maxPopupChildren) {
+    // A missing page group is a scope-resolution failure, never a tab-count limit: answering
+    // TAB_LIMIT here made the panel tell a user with two tabs "最多 4 个标签".
+    if (!primaryEntry) throw new BrowserError('SCOPE_NOT_FOUND', '找不到 popup 所属的 primary 工作区', { scope: 'binding' });
+    if (this.popupCount(primaryEntry) >= this.maxPopupChildren) {
       throw new BrowserError('TAB_LIMIT', `每个工作区最多 ${this.maxPopupChildren} 个 popup 子页`, {
-        maxPopupChildren: this.maxPopupChildren, popupCount: this.popupCount(primaryEntry.key),
+        dimension: 'workspace-provider',
+        maxPopupChildren: this.maxPopupChildren, popupCount: this.popupCount(primaryEntry),
       });
     }
     const provider = primaryEntry.provider ?? DEFAULT_RUNTIME_PROVIDER;
@@ -13013,13 +13623,21 @@ export class RuntimeRegistry {
     };
   }
 
-  addPopupEntry({ parentEntry, runtime, viewId, openEventId, sourcePanelId }) {
+  addPopupEntry({ parentEntry, runtime, viewId, openEventId, sourcePanelId, creatorSessionId = null }) {
     const primaryKey = parentEntry.primaryKey || parentEntry.key;
-    const key = `${parentEntry.key}:view:${viewId}`;
+    // A child is its own target inside the same page group (ruling §7.4: PageTargetKey wraps the
+    // group key, never a hand-built colon suffix on a composed key).
+    const key = pageTargetKeyFor(primaryKey, viewId);
+    const access = makePageAccess({
+      rootSessionId: parentEntry.rootSessionId,
+      creatorSessionId: creatorSessionId || parentEntry.rootSessionId,
+    });
     const entry = {
       key, baseKey: parentEntry.baseKey ?? key, provider: parentEntry.provider ?? DEFAULT_RUNTIME_PROVIDER,
       providerResolved: parentEntry.providerResolved ?? 'recent',
       scope: parentEntry.scope, runtime, kind: 'popup', viewId, tabId: viewId,
+      rootSessionId: parentEntry.rootSessionId,
+      ownership: access.ownership, control: access.control,
       primaryKey, parentKey: parentEntry.key, parentRuntimeId: parentEntry.runtime.runtimeId,
       parentTabId: parentEntry.tabId || (parentEntry.kind === 'primary' ? 'primary' : parentEntry.viewId),
       openEventId: openEventId || null, sourcePanelId: sourcePanelId || null,
@@ -13146,13 +13764,59 @@ export class RuntimeRegistry {
       && entry.primaryKey === primaryKey && (entry.tabId === tabId || entry.viewId === tabId));
   }
 
+  /**
+   * Selection identity: one row per (page group, actor). Both dimensions matter — a selection is
+   * the *actor's* view of *their* group, so it can never be inherited across roots or actors.
+   */
   #selectionKey(primaryEntry, sessionId) {
-    return String(primaryEntry.key) + '\u0000' + String(sessionId || 'anonymous');
+    return makeActorSelectionKey({
+      groupKey: String(primaryEntry.key),
+      actorSessionId: String(sessionId || 'anonymous'),
+    });
   }
 
+  /**
+   * One actor's two selections inside one page group.
+   *
+   * `tabId` is the **work** selection and stays the compatibility projection (`selection` in every
+   * response). `observationTabId` is the read-only selection: it is set only by an explicit
+   * `select(mode:'observe')` and never by a write, so watching a teammate's page cannot redirect
+   * either side's writes.
+   */
   selectionFor(primaryEntry, sessionId) {
     const key = this.#selectionKey(primaryEntry, sessionId);
-    return this.selectedBySession.get(key) || { tabId: 'primary', revision: 0, resetReason: null, pendingReset: false };
+    const stored = this.selectedBySession.get(key);
+    if (stored) return stored;
+    const actor = String(sessionId || 'anonymous');
+    return {
+      // No record yet: default to the page this actor *already owns* in this group — its primary if
+      // it owns the primary, otherwise a child it created — and to "no work page" when it owns
+      // nothing. Defaulting a teammate to the Lead's primary turned "you have no page yet"
+      // (TARGET_NOT_BOUND, "open one") into "you may not touch this page" (TAB_FORBIDDEN), which is
+      // both the wrong code and a misleading story.
+      tabId: this.#ownWorkTabId(primaryEntry, actor),
+      observationTabId: null, revision: 0, resetReason: null, pendingReset: false,
+      groupKey: String(primaryEntry.key), actorSessionId: actor,
+      rootSessionId: primaryEntry.rootSessionId ?? rootOfPageGroupKey(primaryEntry.key),
+      workspaceKey: primaryEntry.baseKey ?? null, provider: primaryEntry.provider ?? null,
+    };
+  }
+
+  /**
+   * The tab id this actor already owns in the group, or `null` when it owns none.
+   *
+   * Ownership — not the short lease and not "the group has a primary" — decides it: a teammate that
+   * never opened a page must have no work selection at all rather than borrow somebody else's.
+   */
+  #ownWorkTabId(primaryEntry, actor) {
+    if (!primaryEntry) return null;
+    const primary = this.entries.get(primaryEntry.primaryKey || primaryEntry.key) || primaryEntry;
+    if (primary?.ownership?.ownerSessionId === actor) return this.#tabId(primary);
+    for (const entry of this.tabEntries(primaryEntry)) {
+      if (entry.kind !== 'popup') continue;
+      if (entry.ownership?.ownerSessionId === actor) return this.#tabId(entry);
+    }
+    return null;
   }
 
   /** Confirm a pending tab retirement (browser_tabs.current / explicit select). */
@@ -13164,49 +13828,97 @@ export class RuntimeRegistry {
     if (!record.pendingReset) return { ...record, confirmedResetReason: null };
     record.pendingReset = false;
     record.resetReason = null;
-    record.tabId = 'primary';
+    // Back to the page this actor actually owns (their own primary, a child they created, or
+    // nothing) — never blindly to "primary", which may belong to the Lead.
+    record.tabId = this.#ownWorkTabId(primaryEntry, String(sessionId || 'anonymous'));
+    record.observationTabId = null;
+    delete record.resetTabId;
     record.revision += 1;
     this.selectedBySession.set(key, record);
     return { ...record, confirmedResetReason: previous };
   }
 
-  /** Resolve the page tool target for one Agent session; pending retirement is a zero-dispatch error. */
-  resolveSessionTab(primaryEntry, sessionId) {
+  /**
+   * Resolve the page tool target for one Agent session.
+   *
+   * Reads use the observation selection when the caller set one, writes always use the work
+   * selection (plan §5: "只读默认 observationSelection，未设再取 workSelection；写仅取 workSelection").
+   * A pending retirement is a zero-dispatch error: the caller must confirm instead of being silently
+   * re-pointed at another tab.
+   */
+  resolveSessionTab(primaryEntry, sessionId, { mode = 'work' } = {}) {
     const record = this.selectionFor(primaryEntry, sessionId);
     if (record.pendingReset) {
       throw new BrowserError('TARGET_NOT_FOUND', '选中的标签已关闭或退休，需用 browser_tabs.current 或 select 确认', {
         reason: record.resetReason || 'selected-tab-closed', tabId: record.tabId, fallbackTabId: 'primary',
       });
     }
-    if (record.tabId === 'primary') return { entry: this.entries.get(primaryEntry.key) || primaryEntry, selection: record };
-    const entry = this.tabEntry(primaryEntry, record.tabId);
+    const tabId = mode === 'read' ? (record.observationTabId || record.tabId) : record.tabId;
+    if (tabId === null || tabId === undefined) {
+      // "You have no page of your own yet" is a binding answer, not a permission one (plan §6.1).
+      throw new BrowserError('TARGET_NOT_BOUND', '当前会话还没有自己的工作页：先用 browser_tabs open 新建，或 select 自己拥有的标签', {
+        reason: 'no-work-page', fallbackTabId: null, hint: 'browser_tabs.open', mode,
+      });
+    }
+    if (tabId === 'primary') return { entry: this.entries.get(primaryEntry.key) || primaryEntry, selection: record };
+    const entry = this.tabEntry(primaryEntry, tabId);
     if (!entry) {
       const key = this.#selectionKey(primaryEntry, sessionId);
-      const next = { ...record, tabId: 'primary', resetReason: 'tab-closed', pendingReset: true, revision: record.revision + 1 };
+      const next = {
+        ...record, tabId: null, observationTabId: null, resetTabId: tabId,
+        resetReason: 'tab-closed', pendingReset: true, revision: record.revision + 1,
+      };
       this.selectedBySession.set(key, next);
       throw new BrowserError('TARGET_NOT_FOUND', '选中的标签已被关闭', {
-        reason: 'selected-tab-closed', tabId: record.tabId, fallbackTabId: 'primary',
+        reason: 'selected-tab-closed', tabId, fallbackTabId: 'primary',
       });
     }
     return { entry, selection: record };
   }
 
-  selectTab(primaryEntry, sessionId, tabId) {
+  /**
+   * Select a tab for one actor, in two independent modes (plan §5, ruling §7.5).
+   *
+   * `mode:'work'` needs the right to *write* that page (owner/controller, or this root's Lead);
+   * `mode:'observe'` needs only the right to *read* it. Selecting never claims the short lease and
+   * never activates the page: a selection is a routing preference, and the old "select claims, so
+   * everyone else is BUSY" behaviour was the very thing that made two sessions fight over one tab.
+   * A refused selection leaves the caller's existing selection untouched.
+   */
+  selectTab(primaryEntry, sessionId, tabId, { mode = 'work', principal = null } = {}) {
     if (!sessionId || sessionId === 'anonymous') {
       throw new BrowserError('UNSUPPORTED', 'browser_tabs 需要真实 Agent 会话身份', { reason: 'agent-session-required' });
     }
     const target = this.tabEntry(primaryEntry, tabId);
     if (!target) throw new BrowserError('TAB_NOT_FOUND', '标签不存在或不属于当前 workspace', { tabId, fallbackTabId: 'primary' });
-    if (target !== primaryEntry && target.scope !== primaryEntry.scope) {
-      throw new BrowserError('TAB_FORBIDDEN', '标签属于其他 workspace', { tabId });
+    // `tabEntry` already filters by page group, so a foreign root's tabId cannot resolve here at
+    // all; the ACL below is about role/control *inside* the group.
+    if (principal) {
+      if (mode === 'observe') {
+        this.authorizePage(target, principal, { effect: EFFECT.OBSERVE, resource: RESOURCE.PAGE, targetRequired: true }, 'browser_tabs.select');
+      } else {
+        const verdict = authorize({
+          principal, ...this.accessOf(target),
+          effect: { effect: EFFECT.WRITE, resource: RESOURCE.PAGE, targetRequired: true },
+          operation: 'browser_tabs.select',
+        });
+        // A Lead who may *manage* the page may also aim work at it (the takeover happens on the
+        // first write, M4); a teammate who may not write it may not work-select it either.
+        const manageable = verdict.allowed || authorize({
+          principal, ...this.accessOf(target),
+          effect: { effect: EFFECT.MANAGE, resource: RESOURCE.PAGE, targetRequired: true },
+          operation: 'browser_tabs.acquire',
+        }).allowed;
+        if (!manageable) throw this.accessError(verdict, 'browser_tabs.select');
+      }
     }
     const record = this.selectionFor(primaryEntry, sessionId);
-    const previous = this.tabEntry(primaryEntry, record.tabId) || primaryEntry;
-    target.runtime.claim(sessionId);
-    if (previous !== target) previous.runtime.release(sessionId);
     const next = {
-      tabId: target.tabId || target.viewId || 'primary', revision: (record.revision || 0) + 1,
-      resetReason: null, pendingReset: false,
+      ...record,
+      ...(mode === 'observe'
+        ? { observationTabId: target.tabId || target.viewId || 'primary' }
+        : { tabId: target.tabId || target.viewId || 'primary', pendingReset: false, resetReason: null }),
+      revision: (record.revision || 0) + 1,
     };
     this.selectedBySession.set(this.#selectionKey(primaryEntry, sessionId), next);
     return { entry: target, selection: next };
@@ -13229,7 +13941,7 @@ export class RuntimeRegistry {
   }
 
   /** One list row. Read-only: no ensure, no queue, no lease, no CDP. */
-  #tabView(entry, selection, sessionId, now = Date.now()) {
+  #tabView(entry, selection, sessionId, now = Date.now(), principal = null) {
     const runtime = entry.runtime;
     const owner = runtime.lease && runtime.hasLease() ? runtime.lease.sessionId : null;
     const tabId = this.#tabId(entry);
@@ -13243,7 +13955,8 @@ export class RuntimeRegistry {
       status: runtime.page && runtime.cdp && !runtime.cdp.closed ? 'ready' : 'closed',
       selected: selection.tabId === tabId,
       busy: Boolean(owner), owner: owner === sessionId ? 'self' : (owner ? 'other' : null),
-      reset: selection.pendingReset && selection.tabId === tabId ? selection.resetReason || null : null,
+      reset: selection.pendingReset && (selection.resetTabId || selection.tabId) === tabId
+        ? selection.resetReason || null : null,
       // P0-E lifecycle projection: where the tab came from, who opened it and how long it lives.
       source: this.#tabSource(entry),
       parentTabId: entry.kind === 'popup' ? (entry.parentTabId || null) : null,
@@ -13253,15 +13966,28 @@ export class RuntimeRegistry {
       idleRemainingMs: Number.isFinite(this.idleMs) && Number.isFinite(lastUsedAt)
         ? Math.max(0, this.idleMs - Math.max(0, now - lastUsedAt)) : null,
       // `manageable` = this Agent session may act on the tab now (not another session's lease).
-      // Closing additionally needs the caller's own lease and no in-flight operation.
+      // Kept ONLY as the legacy short-lease projection (ruling §5): it never expressed an ACL, and
+      // new callers must read `permissions` instead.
       manageable: owner === null || owner === sessionId,
+      // Long-lived ownership/control projection (ruling §5 "每页返回", all of it root-scoped: the
+      // rows only ever describe pages inside the caller's own page group).
+      accessVersion: 1,
+      rootSessionId: entry.rootSessionId ?? null,
+      creatorSessionId: entry.ownership?.creatorSessionId ?? null,
+      ownerSessionId: entry.ownership?.ownerSessionId ?? null,
+      controllerSessionId: entry.control?.controllerSessionId ?? null,
+      ownershipRevision: entry.ownership?.ownershipRevision ?? null,
+      controlRevision: entry.control?.controlRevision ?? null,
+      accessState: entry.control?.state ?? null,
+      permissions: principal ? projectPermissions({ principal, ...this.accessOf(entry) }) : null,
     };
   }
 
-  listTabs(primaryEntry, sessionId) {
+  listTabs(primaryEntry, sessionId, principal = null) {
     const selection = this.selectionFor(primaryEntry, sessionId);
     const now = Date.now();
-    return this.tabEntries(primaryEntry).map((entry) => this.#tabView(entry, selection, sessionId, now));
+    return this.tabEntries(primaryEntry)
+      .map((entry) => this.#tabView(entry, selection, sessionId, now, principal));
   }
 
   /**
@@ -13339,9 +14065,15 @@ export class RuntimeRegistry {
   }
 
   /** P0-E explicit open: create about:blank child and select it for this session. */
-  async openTab(primaryEntry, sessionId, source = 'agent', { select = true } = {}) {
+  async openTab(primaryEntry, sessionId, source = 'agent', { select = true, principal = null } = {}) {
     if (!sessionId || sessionId === 'anonymous') {
       throw new BrowserError('UNSUPPORTED', 'browser_tabs 需要真实 Agent 会话身份', { reason: 'agent-session-required' });
+    }
+    // Creation authorisation runs *before* the reservation and before any CDP: a caller that may
+    // not create pages in this group must not even reach `createTarget`.
+    if (principal) {
+      this.authorizePage(primaryEntry, principal,
+        { effect: EFFECT.WRITE, resource: RESOURCE.PAGE, targetRequired: false }, 'browser_tabs.open');
     }
     const release = this.reservePopupSlot(primaryEntry);
     const viewId = randomUUID().replace(/-/gu, '').slice(0, 20);
@@ -13351,14 +14083,29 @@ export class RuntimeRegistry {
       kind: 'popup', parentRuntimeId: primary.runtime.runtimeId, viewId, parentKey: primary.key,
       openEventId: null, sourcePanelId: null, createdBy: source, inheritView: primary.runtime.view,
     });
-    const entry = this.addPopupEntry({ parentEntry: primary, runtime: child, viewId, openEventId: null, sourcePanelId: null });
+    // Who owns a page the *panel* opened? The session the panel is showing, not the panel's own
+    // synthetic actor: the panel is a view of that session's domain, and a tab opened from it must
+    // stay drivable by that session. A tool-driven open is owned by the calling actor.
+    const creatorSessionId = principal ? sessionId : (primary.ownership?.ownerSessionId || sessionId);
+    const entry = this.addPopupEntry({
+      parentEntry: primary, runtime: child, viewId, openEventId: null, sourcePanelId: null,
+      creatorSessionId,
+    });
     entry.status = 'initializing';
     try {
       const page = await this.browserHost().createPage(child, AbortSignal.timeout(10000));
       await child.adoptPage(page, { signal: AbortSignal.timeout(10000) });
       entry.status = 'ready';
       this.bumpViews(entry.primaryKey);
-      const selected = select ? this.selectTab(primary, sessionId, viewId) : { selection: this.selectionFor(primary, sessionId) };
+      // `open` sets both selections for its own actor (plan §5): the caller asked for this page
+      // as its work target *and* as the thing it is looking at.
+      const selected = select
+        ? this.selectTab(primary, sessionId, viewId, { mode: 'work', principal })
+        : { selection: this.selectionFor(primary, sessionId) };
+      if (select) {
+        const record = this.selectionFor(primary, sessionId);
+        this.selectedBySession.set(this.#selectionKey(primary, sessionId), { ...record, observationTabId: viewId });
+      }
       return { entry, selection: selected.selection };
     } catch (error) {
       try { await child.close(); } catch { /* ignore */ }
@@ -13369,13 +14116,35 @@ export class RuntimeRegistry {
     }
   }
 
-  /** Close one tab. Agent close requires the caller's own live lease; primary only goes cold. */
-  async closeTab(primaryEntry, sessionId, tabId, { gui = false } = {}) {
-    const target = this.tabEntry(primaryEntry, tabId || this.selectionFor(primaryEntry, sessionId).tabId);
+  /**
+   * Close one tab. Primary only goes cold; children are destroyed.
+   *
+   * Agent close is now authorised by *ownership/control* (M1 `authorize`), not by holding the 15s
+   * lease: the lease says "someone is busy right now", which is a scheduling fact, not a permission.
+   * A teammate closing a teammate's page is refused here; a foreign root never resolves the tab at
+   * all. The GUI path (`gui:true`) keeps its historical shape — it has no Principal until M5, which
+   * is reported as a known gap rather than papered over with a fake one.
+   */
+  async closeTab(primaryEntry, sessionId, tabId, { gui = false, principal = null } = {}) {
+    const wanted = tabId || this.selectionFor(primaryEntry, sessionId).tabId;
+    if (!wanted) {
+      // Same rule as a page tool: nothing selected means "no page yet", never "the primary".
+      throw new BrowserError('TARGET_NOT_BOUND', '当前会话没有可关闭的页：省略 tabId 时需要先 open/select', {
+        reason: 'no-work-page', hint: 'browser_tabs.open',
+      });
+    }
+    const target = this.tabEntry(primaryEntry, wanted);
     if (!target) throw new BrowserError('TAB_NOT_FOUND', '标签不存在或不属于当前 workspace', { tabId });
     if (!gui) {
-      const owner = target.runtime.lease && target.runtime.hasLease() ? target.runtime.lease.sessionId : null;
-      if (owner !== sessionId) throw new BrowserError('TAB_FORBIDDEN', '关闭标签需要当前会话持有该标签的 lease', { tabId, owner });
+      if (principal) {
+        this.authorizePage(target, principal,
+          { effect: EFFECT.MANAGE, resource: RESOURCE.PAGE, targetRequired: true }, 'browser_tabs.close');
+      } else {
+        // Legacy/GUI callers without a Principal keep the old short-lease rule (M5 will replace it
+        // with a verified panel seat; until then this must not silently become "anyone may close").
+        const owner = target.runtime.lease && target.runtime.hasLease() ? target.runtime.lease.sessionId : null;
+        if (owner !== sessionId) throw new BrowserError('TAB_FORBIDDEN', '关闭标签需要当前会话持有该标签的 lease', { tabId, owner });
+      }
     }
     if (gui && target.runtime.hasLease()) throw new BrowserError('BUSY', '标签正由 Agent 操作，GUI 暂不能关闭', { tabId });
     if (target.runtime.active > 0 || target.runtime.inflight > 0) {
@@ -13383,6 +14152,17 @@ export class RuntimeRegistry {
     }
     // Primary close only makes primary cold; children stay live (P0-E §1).
     target.closeReason = 'closed';
+    // Lifecycle versioning (ruling §7.1): a close always advances controlRevision, so a management
+    // CAS that was in flight against the old page can never land on the reopened one. A child page
+    // is retired outright; a primary slot keeps its history and stays `owned` because it will be
+    // reopened in place (M4 adds the explicit acquire/release/transfer transitions).
+    if (target.ownership && target.control) {
+      target.control = makeControl({
+        state: target.kind === 'popup' ? CONTROL_STATE.RETIRED : CONTROL_STATE.OWNED,
+        controllerSessionId: target.kind === 'popup' ? null : target.ownership.ownerSessionId,
+        controlRevision: target.control.controlRevision + 1,
+      });
+    }
     await target.runtime.run(() => target.runtime.close(), { sessionId, agent: false });
     return { closed: target.tabId || (target.kind === 'primary' ? 'primary' : target.viewId) };
   }
@@ -13401,9 +14181,22 @@ export class RuntimeRegistry {
     if (entry.kind === 'popup') {
       const tabId = entry.tabId || entry.viewId;
       for (const [key, record] of this.selectedBySession) {
-        if (record && record.tabId === tabId) {
-          this.selectedBySession.set(key, { ...record, tabId: 'primary', resetReason: 'tab-closed', pendingReset: true, revision: record.revision + 1 });
-        }
+        // Only selections *inside this page group* may be reset: a same-named tabId in another
+        // root's group is a different page and must not be disturbed.
+        if (!record || record.groupKey !== entry.primaryKey) continue;
+        const touchesWork = record.tabId === tabId;
+        const touchesObserve = record.observationTabId === tabId;
+        if (!touchesWork && !touchesObserve) continue;
+        this.selectedBySession.set(key, {
+          ...record,
+          // The retired tab must not be replaced by "primary": for a teammate the primary belongs to
+          // the Lead, and pointing there would turn the confirm flow into "you may not touch this
+          // page". The work selection becomes *unbound* and `resetTabId` keeps the audit of what
+          // retired (the panel still shows which tab was reset).
+          ...(touchesWork ? { tabId: null, resetTabId: tabId, resetReason: 'tab-closed', pendingReset: true } : {}),
+          ...(touchesObserve ? { observationTabId: null } : {}),
+          revision: record.revision + 1,
+        });
       }
       this.entries.delete(entry.key);
       this.bumpViews(entry.primaryKey);
@@ -13412,13 +14205,39 @@ export class RuntimeRegistry {
     }
   }
 
-  recentEntry() { return this.recentKey ? this.entries.get(this.recentKey) : undefined; }
+  /**
+   * Last real interaction, per root when a root is named.
+   *
+   * A root-scoped caller only ever sees its own root's entry. A **rootless** caller (the legacy
+   * panel protocol, which carries no session identity at all) keeps the historical single
+   * "most recently used page" pointer: that is a navigation convenience, not an authorisation —
+   * every page operation re-authorises against the caller's own identity, and M5 replaces the
+   * unbound panel with a verified seat. Answering `undefined` there would break the panel without
+   * making anything safer.
+   */
+  recentEntry(rootSessionId) {
+    if (rootSessionId !== undefined && rootSessionId !== null && rootSessionId !== '') {
+      const root = String(rootSessionId);
+      const key = this.recentByRoot.get(root);
+      if (!key) return undefined;
+      const entry = this.entries.get(key);
+      if (!entry) this.recentByRoot.delete(root);
+      return entry;
+    }
+    let best;
+    for (const entry of this.entries.values()) {
+      if (entry.kind === 'popup') continue;
+      if (entry.baseKey === LEGACY_SCOPE.key) continue;
+      if (!best || (entry.lastUsedAt || 0) > (best.lastUsedAt || 0)) best = entry;
+    }
+    return best;
+  }
 
   markRecent(entry) {
-    if (!entry || entry.key === LEGACY_SCOPE.key) return;
+    if (!entry || entry.baseKey === LEGACY_SCOPE.key) return;
     // A popup child never becomes the Agent's recent/primary target.
     if (entry.kind === 'popup') return;
-    this.recentKey = entry.key;
+    this.recentByRoot.set(String(entry.rootSessionId || UNSCOPED_ROOT), entry.key);
   }
 
   touch(entry) { if (entry) entry.lastUsedAt = Date.now(); }
@@ -13490,7 +14309,8 @@ export class RuntimeRegistry {
     } catch { /* audit only */ }
     this.entries.delete(entry.key);
     if (entry.kind === 'popup' && entry.primaryKey) this.bumpViews(entry.primaryKey);
-    if (this.recentKey === entry.key) this.recentKey = undefined;
+    else if (entry.kind === 'primary') this.pruneSelections();
+    for (const [root, key] of [...this.recentByRoot]) if (key === entry.key) this.recentByRoot.delete(root);
     try { this.onRetire?.(entry.runtime); } catch { /* ignore */ }
     try { entry.runtime.frameTransport?.dispose?.(); } catch { /* ignore */ }
     // A retired scope runtime is gone: its stored images must not outlive it (a later productId
@@ -13505,7 +14325,7 @@ export class RuntimeRegistry {
     try {
       const now = Date.now();
       for (const entry of [...this.entries.values()]) {
-        if (entry.key === LEGACY_SCOPE.key) continue; // old client compatibility: keep the entry
+        if (entry.baseKey === LEGACY_SCOPE.key) continue; // old client compatibility: keep the entry
         const runtime = entry.runtime;
         const idleFor = now - entry.lastUsedAt;
         if (idleFor < this.idleMs) continue;
@@ -13549,12 +14369,33 @@ export class RuntimeRegistry {
 
   releaseSession(sessionId) {
     for (const entry of this.entries.values()) entry.runtime.release(sessionId);
-    // Selection keys are `<primaryKey>\u0000<sessionId>`: drop the records of a session that ended,
-    // otherwise every closed agent session pins one small record per workspace it touched.
-    const suffix = '\u0000' + String(sessionId || 'anonymous');
-    for (const key of [...this.selectedBySession.keys()]) {
-      if (key.endsWith(suffix)) this.selectedBySession.delete(key);
+    // Selections are deliberately NOT dropped here any more.
+    //
+    // A real host emits `agent/disposed` at almost every turn boundary, so deleting the record there
+    // reset the selection revision to 0 and silently discarded `pendingReset`: the caller was never
+    // told "your tab was retired, confirm with current", it just got a fresh default that pointed at
+    // the Lead's primary. A selection is (page group, actor) state — it outlives an execution
+    // instance and is pruned when its page group disappears (see `pruneSelections`).
+    this.pruneSelections();
+  }
+
+  /** Drop selection rows whose page group is gone (bounded by the live entry table). */
+  pruneSelections() {
+    if (this.selectedBySession.size === 0) return 0;
+    const liveGroups = new Set();
+    for (const entry of this.entries.values()) {
+      if (entry.kind === 'primary') liveGroups.add(entry.key);
+      if (entry.primaryKey) liveGroups.add(entry.primaryKey);
     }
+    let dropped = 0;
+    for (const [key, record] of [...this.selectedBySession]) {
+      const groupKey = record && record.groupKey;
+      if (!groupKey || !liveGroups.has(groupKey)) {
+        this.selectedBySession.delete(key);
+        dropped += 1;
+      }
+    }
+    return dropped;
   }
 
   capabilities() {
@@ -13576,7 +14417,7 @@ export class RuntimeRegistry {
     clearInterval(this.sweepTimer);
     const runtimes = [...this.entries.values()].map((entry) => entry.runtime);
     this.entries.clear();
-    this.recentKey = undefined;
+    this.recentByRoot.clear();
     for (const runtime of runtimes) {
       try { await runtime.close(); } catch { /* ignore */ }
       try { this.onRetire?.(runtime); } catch { /* ignore */ }
@@ -13602,7 +14443,7 @@ export class RuntimeRegistry {
       try { await entry.runtime.close(); } catch { /* ignore */ }
       try { this.onRetire?.(entry.runtime); } catch { /* ignore */ }
       this.entries.delete(entry.key);
-      if (this.recentKey === entry.key) this.recentKey = undefined;
+      for (const [root, key] of [...this.recentByRoot]) if (key === entry.key) this.recentByRoot.delete(root);
     }
     for (const [baseKey, owner] of [...this.providerByBaseKey]) {
       if (owner === id) this.providerByBaseKey.delete(baseKey);
@@ -14690,6 +15531,30 @@ export function apply(ctx) {
     return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
   };
 
+  /**
+   * Provider diagnostics (Host slice): `POST /plugins/ui-testing/diagnose` streams NDJSON and runs
+   * five real checks. It reuses the registered tool handlers (never `/test/invoke`) through a
+   * restricted dispatcher; `toolDefinitions` is read lazily because it is declared later.
+   */
+  const diagnose = createDiagnose({
+    log,
+    crossEnvironment,
+    registry,
+    readJson,
+    sendJson,
+    nowMonoMs,
+    resolveProviderExecutable,
+    randomUUID,
+    webProviderSupport: (providerId) => {
+      try { return webProviderSupport(providerId); } catch { return undefined; }
+    },
+    toolDefinitions: {
+      get(name) { return toolDefinitions.get(name); },
+      keys() { return [...toolDefinitions.keys()]; },
+      has(name) { return toolDefinitions.has(name); },
+    },
+  });
+
   const handle = async (req, res) => {
     // A14: the HTTP surface (panel/WS/legacy routes) may create or drive a page; resolve the Web
     // module chain before the first such request instead of at module load.
@@ -14750,6 +15615,22 @@ export function apply(ctx) {
         const status = scopeAuthorization(req);
         if (status) { scopeAuthError(res, status); return; }
       }
+      // Host-side provider diagnostics. Handled before the page-route dispatch so it never creates
+      // a Runtime or starts Chromium just by being routed (observe must stay cheap).
+      if (await diagnose.handleHttp(req, res, {
+        action,
+        url,
+        scopeRequest: parseHttpScope(req),
+        scoped,
+        requestRejection,
+        rejectUi,
+        readJson,
+        sendJson,
+        // Bound resolver: this seam calls `resolveScopeRequest(request)`. Passing the 3-argument
+        // module function unbound left `request` undefined, so every diagnose run silently froze
+        // the LEGACY scope instead of the panel's own session/binding.
+        resolveScopeRequest: (request) => resolveScopeRequest(ctx, registry, request),
+      })) return;
       const scopeRequest = parseHttpScope(req);
       if (req.headers?.host) {
         try { origins.add(new URL('http://' + req.headers.host).origin); } catch { /* invalid host */ }
@@ -14786,7 +15667,7 @@ export function apply(ctx) {
         rejectUi,
         readJson,
         sendJson,
-        resolveScopeRequest,
+        resolveScopeRequest: (request) => resolveScopeRequest(ctx, registry, request),
       })) return;
       // Scoped callers are owner-only by construction; legacy callers keep the old fail-closed
       // requestRejection projection. `ui.devtools` is scoped-only: the legacy uiState() shape must
@@ -15156,13 +16037,23 @@ export function apply(ctx) {
         // scope binding remain stable; the shared host exits only when no page is left.
         const { entry } = await select({ create: false });
         selected = entry;
-        if (entry) {
-          registry.touch(entry);
-          // P0-E: primary close only makes it cold; child tabs stay live. Closing a page is a
-          // lifecycle action, not page input, so it is not gated by the per-tab Agent lease;
-          // browser_tabs.close keeps its own session/lease rule.
-          await entry.runtime.run(() => entry.runtime.close());
+        if (!entry) {
+          // A scoped close that names no live runtime must not answer ok:true: the panel would
+          // drop its tab locally while the Host kept the page (an unresolved scope binding used to
+          // look like a successful close). Legacy callers keep the historical idempotent reply.
+          if (!scoped) {
+            sendJson(res, 200, { ok: true });
+            return;
+          }
+          const error = new BrowserError('SCOPE_NOT_FOUND', '关闭请求指向的运行时不存在', { scope: 'binding' });
+          sendJson(res, 404, { ok: false, ...error.payload(), error: error.message });
+          return;
         }
+        registry.touch(entry);
+        // P0-E: primary close only makes it cold; child tabs stay live. Closing a page is a
+        // lifecycle action, not page input, so it is not gated by the per-tab Agent lease;
+        // browser_tabs.close keeps its own session/lease rule.
+        await entry.runtime.run(() => entry.runtime.close());
         sendJson(res, 200, { ok: true });
         return;
       }
@@ -15170,7 +16061,7 @@ export function apply(ctx) {
       sendJson(res, 404, { ok: false, ...error.payload(), error: error.message });
     } catch (error) {
       const classified = asBrowserError(error);
-      if (selected) {
+      if (selected && !NON_PAGE_ERROR_CODES.has(classified.code)) {
         selected.runtime.setError(classified.message, {
           actionId: null,
           target: selected.runtime.url ? redactUrl(selected.runtime.url) : null,
@@ -15257,6 +16148,17 @@ export function apply(ctx) {
       }
       const admissionSnapshot = crossEnvironment.snapshotForAgent(exec.agent);
       const sessionId = String(exec.agent?.id || 'anonymous');
+      // M2a: prove *who* is calling before any scope resolution, entry creation or CDP. An
+      // unprovable identity must fail while there is still nothing to dispatch to.
+      // The diagnostic dispatcher is the one narrow exception: its probes act as the panel inside the
+      // root of the page the run froze (see `diagnosticPrincipalFor`).
+      const principal = diagnosticPrincipalFor(exec) || resolveToolPrincipal(ctx, exec);
+      // The call's real effects are known before any scope/entry work: they decide which selection
+      // this call uses (observation vs work) and later authorise its page part. One expansion, one
+      // truth — re-deriving "is this a read?" from the tool name is how a read tool ends up writing.
+      const callEffects = operationEffect(definition.name, args);
+      const observeOnlyCall = callEffects.length > 0
+        && callEffects.every((row) => row.effect === EFFECT.OBSERVE || row.effect === EFFECT.CALLER_LOCAL);
       const meta = { actionId: randomUUID(), sessionId, startedAt: Date.now(), tool: definition.name,
         configRevision: admissionSnapshot.revision,
         environment: admissionSnapshot.environment,
@@ -15300,7 +16202,23 @@ export function apply(ctx) {
       let runtime;
       let resolvedScope = null;
       try {
-        const resolved = await resolveScopeRequest(ctx, registry, toolScopeRequest(exec));
+        // Diagnostic dispatcher (integration/diagnose.js): the caller already froze the scope and
+        // the runtime it is looking at, and re-resolving here would manufacture a second runtime
+        // for the same workspace (or fail with SCOPE_NOT_FOUND for an unassigned scope). The call
+        // still goes through admission, the adapter and Runtime.run below.
+        const diagnostic = exec.diagnosticScope;
+        if (diagnostic && diagnostic.entry && diagnostic.resolved) {
+          resolvedScope = diagnostic.resolved;
+          meta.scope = resolvedScope.scope;
+          if (definition.name !== 'browser_http_request' && definition.name !== 'browser_fake_probe' && !neutralWithoutWeb) {
+            entry = diagnostic.entry;
+            primaryEntry = entry;
+            runtime = entry.runtime;
+            selection = null;
+          }
+          throw { __diagnosticScope: true };
+        }
+        const resolved = await resolveScopeRequest(ctx, registry, toolScopeRequest(exec, principal));
         resolvedScope = resolved;
         meta.scope = resolved.scope;
         // The independent HTTP tool is evidence-only: resolve identity, but never create/touch a
@@ -15311,14 +16229,18 @@ export function apply(ctx) {
           if (isTabsTool) {
             runtime = entry.runtime;
           } else {
-            const selected = registry.resolveSessionTab(entry, sessionId);
+            const selected = registry.resolveSessionTab(entry, sessionId, {
+              mode: observeOnlyCall ? 'read' : 'work',
+            });
             entry = selected.entry;
             selection = selected.selection;
             runtime = entry.runtime;
           }
         }
       } catch (error) {
-        if (!isHttpRequest && !isFakeTool && !neutralWithoutWeb) {
+        if (error && error.__diagnosticScope) {
+          // Scope already frozen by the diagnostic dispatcher: nothing left to resolve.
+        } else if (!isHttpRequest && !isFakeTool && !neutralWithoutWeb) {
           const classified = asBrowserError(error);
           const evidence = { ...meta, finishedAt: Date.now(), target: '' };
           classified.details = losslessJson({ ...classified.details, ...evidence }, definition.name + '.details', []);
@@ -15338,6 +16260,41 @@ export function apply(ctx) {
       const actionTarget = definition.name === 'browser_navigate'
         ? redactUrl(String((args && args.url) || ''))
         : (runtime && runtime.url ? redactUrl(runtime.url) : null);
+      // M2a: authorise the *page* part of this call before it can touch a target.
+      //
+      // This runs after the target has been resolved (so the verdict is about the page this call
+      // will really drive) and before `runtime.run` — i.e. before ensure, bringToFront, the queue
+      // and any CDP command. `browser_tabs` is excluded here because it authorises per action and
+      // per tab inside its own implementation, where the target is known.
+      let pageEffects = null;
+      let pageControlRevision = null;
+      let autoAcquired = false;
+      if (pageOperation && entry && !isTabsTool) {
+        const effects = callEffects.filter((row) => row.resource === RESOURCE.PAGE);
+        if (effects.length > 0) {
+          pageEffects = effects;
+          const verdict = authorizeAll({
+            principal,
+            ...registry.accessOf(entry),
+            effects,
+            operation: definition.name,
+          });
+          if (!verdict.allowed) throw registry.accessError(verdict.verdict, definition.name);
+          if (verdict.verdict.autoAcquire === true) {
+            // Atomic "take over, then dispatch" (plan §5.1): a Lead writing an idle member page
+            // acquires control *inside this call* and keeps it until an explicit release, so a
+            // member cannot slip a write into the middle of a multi-step Lead flow. The drain/commit
+            // pair is the same bounded, non-aborting one the explicit `acquire` action uses.
+            const acquired = await registry.acquireControl(entry, principal, {
+              expectedControlRevision: registry.accessOf(entry).control.controlRevision,
+              timeoutMs: TAB_ACQUIRE_TIMEOUT_DEFAULT_MS,
+              signal: exec.signal,
+            });
+            autoAcquired = acquired.changed === true;
+          }
+          pageControlRevision = registry.accessOf(entry).control?.controlRevision ?? null;
+        }
+      }
       // Every tool value leaves through this single lossless-JSON boundary.
       const finish = (value, target) => {
         // Envelope ordering matters per tool family (docs/network-p0.md):
@@ -15347,9 +16304,12 @@ export function apply(ctx) {
         const tabMeta = selection
           ? { id: selection.tabId, runtimeId: runtime ? runtime.runtimeId : null, selectionRevision: selection.revision }
           : (runtime ? { id: 'primary', runtimeId: runtime.runtimeId, selectionRevision: 0 } : null);
+        const controlMeta = autoAcquired
+          ? { autoAcquired: true, control: registry.controlProjection(entry) }
+          : {};
         const result = isNetworkRead
-          ? { ...meta, ...value, agentSessionId: meta.sessionId, ...(tabMeta ? { tab: tabMeta } : {}), finishedAt: Date.now(), target }
-          : { ...value, ...meta, ...(tabMeta ? { tab: tabMeta } : {}), finishedAt: Date.now(), target };
+          ? { ...meta, ...value, agentSessionId: meta.sessionId, ...(tabMeta ? { tab: tabMeta } : {}), ...controlMeta, finishedAt: Date.now(), target }
+          : { ...value, ...meta, ...(tabMeta ? { tab: tabMeta } : {}), ...controlMeta, finishedAt: Date.now(), target };
         const notes = [];
         const clean = losslessJson(result, definition.name, notes);
         if (!clean || typeof clean !== 'object' || Array.isArray(clean)) throw new BrowserError('INTERNAL', '工具返回值不是对象');
@@ -15375,14 +16335,16 @@ export function apply(ctx) {
       });
       try {
         if (isTabsTool) {
-          const value = await runThroughAdapter(() => execute(args, { ...exec, meta, sessionId, runtime, primaryEntry, registry, httpClient }), 'tabs');
+          const value = await runThroughAdapter(() => execute(args, {
+            ...exec, meta, sessionId, principal, runtime, primaryEntry, registry, httpClient,
+          }), 'tabs');
           return finish(value, runtime && runtime.url ? redactUrl(runtime.url) : '');
         }
         if (isHttpRequest || isNetworkRead || isFakeTool) {
           // Independent dispatch branch: no ensure/run/claim/touchAgent, no page queue, no
           // profile, no page lastError. The implementation does its own argument validation.
           const value = await runThroughAdapter(
-            () => execute(args, { ...exec, meta, sessionId, runtime, httpClient }),
+            () => execute(args, { ...exec, meta, sessionId, principal, runtime, httpClient }),
             isFakeTool ? 'page' : (isHttpRequest ? 'independentHttp' : 'networkRead'),
           );
           return finish(value, meta.target || '');
@@ -15396,12 +16358,26 @@ export function apply(ctx) {
           // wait behind the queue, claim the lease or mark the entry recent.
           meta.target = runtime.url ? redactUrl(runtime.url) : '';
           const value = await runThroughAdapter(
-            () => execute(args, { ...exec, meta, sessionId, runtime, httpClient }),
+            () => execute(args, { ...exec, meta, sessionId, principal, runtime, httpClient }),
             hostOnly ? 'hostOnly' : 'readOnly',
           );
           return finish(value, meta.target);
         }
         const value = await runtime.run(async () => {
+          // Dispatch-time re-check (plan §5.3 last bullet: "真正派发前重验 … ownership/controlRevision").
+          // Between admission and this point another actor may have drained the page; the answer is
+          // TAB_CONTROL_CHANGED with ZERO dispatch — never a write against a page whose control moved
+          // while the call was queued.
+          if (pageEffects) {
+            const recheck = authorizeAll({
+              principal,
+              ...registry.accessOf(entry),
+              effects: pageEffects,
+              operation: definition.name,
+              expectedControlRevision: pageControlRevision,
+            });
+            if (!recheck.allowed) throw registry.accessError(recheck.verdict, definition.name);
+          }
           meta.target = runtime.url ? redactUrl(runtime.url) : '';
           if (pageOperation) runtime.touchAgent(definition.name === 'browser_navigate' ? '正在打开 ' + redactUrl(String(args?.url || '')) : ({
             browser_eval: '执行脚本', browser_input: '派发输入事件', browser_network: '读取网络记录',
@@ -15420,14 +16396,26 @@ export function apply(ctx) {
           runtime.netMark({ tool: definition.name, actionId: meta.actionId, kind: 'tool', text: 'begin' });
           try {
             return await runThroughAdapter(
-              () => execute(args, { ...exec, meta, runtime, httpClient }),
+              () => execute(args, { ...exec, meta, runtime, httpClient, sessionId, principal }),
               diagnostic ? 'diagnostic' : 'page',
             );
           } finally {
             runtime.netMark({ tool: definition.name, actionId: meta.actionId, kind: 'tool', text: 'end' });
           }
-        }, { signal: exec.signal, sessionId, agent: pageOperation,
-          action: pageOperation ? { actionId: meta.actionId, target: actionTarget } : undefined });
+        }, {
+          signal: exec.signal,
+          sessionId,
+          // A read-only page operation must not take the single-owner write lease: claiming it made
+          // "look at a teammate's page" block that teammate's next write for 15s. `activate()` still
+          // runs inside run() — non-interference of the *foreground* switch is NOT implemented here
+          // (see the M4 report: measured, reported, not papered over).
+          agent: pageOperation && !observeOnlyCall,
+          // An all-observe call must not bring the page to the front: that is what made a read of a
+          // teammate's page flip its visibilityState / freeze its background frames. Reads still run
+          // in this queue and still need read authorisation — only `activate()` is skipped.
+          activate: !observeOnlyCall,
+          action: pageOperation ? { actionId: meta.actionId, target: actionTarget } : undefined,
+        });
         if (pageOperation) {
           registry.touch(entry);
           registry.markRecent(entry);
@@ -16659,15 +17647,25 @@ export function apply(ctx) {
     description: 'P0-E 多标签页：list/current 只读诊断；wait 纯内存等待调用开始后新出现的标签（0–30000ms，不启动 Chromium、不取 lease），命中返回 matched/matchedTab/elapsedMs/polls，超时抛 WAIT_TIMEOUT；'
       + 'select 选择当前 Agent 会话的 tab（原子 claim，不启动页面）；open 新建 about:blank 并选中；close 关闭当前会话持有 lease 的 tab（primary 只变 cold）。'
       + 'list 每项含 source/parentTabId/openEventId/createdAt/lastUsedAt/idleRemainingMs/manageable，并返回本 workspace 最近 8 条 blocked popup notices 与最近 8 条 recentClosed（reason closed|idle|evicted）。'
-      + '每个 Agent session 独立 selectedTab，默认 primary。',
+      + 'select 的 mode=work（默认）设置写目标、observe 设置只读观察目标；select 不再 claim 15 秒写租约，被拒绝的 select 不改变调用者已有选择。'
+      + '页面按 (workspace, provider, root) 分组：跨会话/跨 root 的标签根本不在同一组，因此 tabId 只会解析到本 root 的页。'
+      + '每行新增 accessVersion/rootSessionId/ownerSessionId/controllerSessionId/ownershipRevision/controlRevision/accessState/permissions；busy/owner/manageable 仍表示原短租约含义（不作为 ACL）。',
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['list', 'current', 'select', 'open', 'close', 'wait'] },
+        action: {
+          type: 'string',
+          enum: ['list', 'current', 'select', 'open', 'close', 'wait', 'acquire', 'release', 'transfer'],
+          description: 'acquire/release/transfer 为队长控制权动作（仅本 root Lead）：acquire 进入 draining 等安全边界后接管，release 归还 owner，transfer 转交本 root 有效成员。',
+        },
+        toSessionId: { type: 'string', minLength: 1, maxLength: 128, description: '仅 transfer：本 root 内有效 roster 成员 SessionId（提交前重取原生 roster 校验）。' },
+        expectedControlRevision: { type: 'integer', minimum: 1, maximum: 9007199254740991, description: '仅 acquire/release/transfer：CAS 期望的 controlRevision，不匹配返回 TAB_CONTROL_CHANGED。' },
+        expectedOwnershipRevision: { type: 'integer', minimum: 1, maximum: 9007199254740991, description: '仅 transfer：CAS 期望的 ownershipRevision，不匹配返回 TAB_OWNERSHIP_STALE。' },
+        mode: { type: 'string', enum: ['work', 'observe'], description: '仅 select：work（默认）=该页成为本会话写目标，需本会话可写或本 root Lead 可管理；observe=只读观察目标，只改 observationSelection，不 claim、不 activate。' },
         tabId: { type: 'string', description: '目标 tabId（1–128 字符）；select/close 使用；wait 用它是等待该 tabId 出现（已存在则立即命中），其余 action 忽略。' },
         kind: { type: 'string', enum: ['primary', 'tab'], description: '仅 wait：只匹配该 kind（list 中 primary/tab）。' },
         source: { type: 'string', enum: ['primary', 'gui-popup', 'agent-open'], description: '仅 wait：只匹配该来源（primary 槽 / GUI 真人 popup 或 GUI + / Agent open）。' },
-        timeoutMs: { type: 'integer', minimum: 0, maximum: 30000, description: '仅 wait：等待预算，默认 5000；0 表示只采样一次。超时抛 WAIT_TIMEOUT（details 含 elapsedMs/polls/condition）。' },
+        timeoutMs: { type: 'integer', minimum: 0, maximum: 30000, description: '仅 wait/acquire：wait 是等待预算（默认 5000，0 只采样一次，超时 WAIT_TIMEOUT）；acquire 是等待安全边界的预算（默认 5000，超时返回 BUSY 并撤销 draining）。' },
         pollMs: { type: 'integer', minimum: 50, maximum: 1000, description: '仅 wait：轮询间隔，默认 100。' },
       },
       required: ['action'],
@@ -16682,41 +17680,159 @@ export function apply(ctx) {
       const registry = exec.registry;
       const sessionId = exec.sessionId;
       if (!primary || !registry) throw new BrowserError('UNSUPPORTED', 'browser_tabs 需要 workspace 页面组');
-      const allowed = ['action', 'tabId', 'kind', 'source', 'timeoutMs', 'pollMs'];
+      const allowed = ['action', 'tabId', 'mode', 'kind', 'source', 'timeoutMs', 'pollMs',
+        'toSessionId', 'expectedControlRevision', 'expectedOwnershipRevision'];
       if (args && Object.keys(args).some((key) => !allowed.includes(key))) {
         throw new BrowserError('INVALID_ARGUMENT', 'browser_tabs 不接受未知字段', { field: 'additionalProperties', allowed });
       }
-      if (action !== 'wait' && args && ['kind', 'source', 'timeoutMs', 'pollMs'].some((key) => args[key] !== undefined)) {
-        throw new BrowserError('INVALID_ARGUMENT', 'kind/source/timeoutMs/pollMs 只用于 wait', { field: 'action' });
+      // Every action declares exactly the fields it owns (ruling §7.5: "非所属 action 字段拒绝").
+      // A field that belongs to another action is never ignored: silently dropping
+      // `expectedControlRevision` would turn a CAS-guarded management call into an unguarded one.
+      const actionFields = {
+        list: ['action'],
+        current: ['action'],
+        open: ['action'],
+        select: ['action', 'tabId', 'mode'],
+        close: ['action', 'tabId'],
+        wait: ['action', 'tabId', 'kind', 'source', 'timeoutMs', 'pollMs'],
+        acquire: ['action', 'tabId', 'expectedControlRevision', 'timeoutMs'],
+        release: ['action', 'tabId', 'expectedControlRevision'],
+        transfer: ['action', 'tabId', 'toSessionId', 'expectedControlRevision', 'expectedOwnershipRevision'],
+      };
+      const foreign = Object.keys(args || {}).filter((key) => !(actionFields[action] || ['action']).includes(key));
+      if (foreign.length > 0) {
+        throw new BrowserError('INVALID_ARGUMENT', `${action} 不接受字段 ${foreign.join(',')}`, {
+          field: 'action', action, allowed: actionFields[action] || ['action'], rejected: foreign,
+        });
       }
+      const principal = exec.principal || null;
       if (action === 'list') {
         // A01: the target list is a P0-E read; it goes through the provider so the projection and
         // its evidence come from one place (the provider binds the calling target internally).
         const listed = await p0(exec, 'E', 'list', {}, { entry: primary });
-        const tabs = Array.isArray(listed) ? listed : (Array.isArray(listed?.tabs) ? listed.tabs : []);
+        const providerRows = Array.isArray(listed) ? listed : (Array.isArray(listed?.tabs) ? listed.tabs : []);
+        // The provider projection answers "what target is this", not "may this caller act on it".
+        // The long-lived ownership/control/permission fields are added here, from the registry this
+        // call is authorised against, so the tool result carries one consistent ACL story (ruling
+        // §5 "每页返回") without teaching the P0 adapter about principals (that is M3's wiring).
+        const ownRows = new Map(registry.listTabs(primary, sessionId, principal)
+          .map((row) => [String(row.tabId), row]));
+        const tabs = providerRows.map((row) => {
+          const own = ownRows.get(String(row.tabId));
+          if (!own) return row;
+          return {
+            ...row,
+            accessVersion: own.accessVersion,
+            rootSessionId: own.rootSessionId,
+            creatorSessionId: own.creatorSessionId,
+            ownerSessionId: own.ownerSessionId,
+            controllerSessionId: own.controllerSessionId,
+            ownershipRevision: own.ownershipRevision,
+            controlRevision: own.controlRevision,
+            accessState: own.accessState,
+            permissions: own.permissions,
+          };
+        });
+        const selection = registry.selectionFor(primary, sessionId);
         return {
           ok: true, action, tabs,
           notices: registry.noticesView(primary), recentClosed: registry.recentClosedView(primary),
-          selection: registry.selectionFor(primary, sessionId),
+          accessVersion: 1,
+          // `selection` stays the workSelection compatibility projection (ruling §5).
+          selection,
+          workSelection: selection,
+          observationSelection: selection.observationTabId
+            ? { ...selection, tabId: selection.observationTabId }
+            : null,
         };
       }
       if (action === 'current') {
+        // current never claims: it only confirms the caller's own (possibly retired) selection.
         const selection = registry.confirmSelection(primary, sessionId);
-        return { ok: true, action, tabId: selection.tabId, selection, confirmedResetReason: selection.confirmedResetReason || null };
+        return {
+          ok: true, action, tabId: selection.tabId, selection, workSelection: selection,
+          observationSelection: selection.observationTabId ? { ...selection, tabId: selection.observationTabId } : null,
+          confirmedResetReason: selection.confirmedResetReason || null,
+        };
       }
       if (action === 'select') {
         if (typeof args.tabId !== 'string' || !args.tabId.trim()) throw new BrowserError('INVALID_ARGUMENT', 'select 需要 tabId', { field: 'tabId' });
-        const selected = registry.selectTab(primary, sessionId, args.tabId.trim());
-        return { ok: true, action, tabId: selected.entry.tabId || selected.entry.viewId || 'primary', selection: selected.selection };
+        if (args.tabId.trim().length > 128) throw new BrowserError('INVALID_ARGUMENT', 'select.tabId 必须是 1–128 字符', { field: 'tabId' });
+        const mode = args.mode === undefined ? 'work' : String(args.mode);
+        if (!['work', 'observe'].includes(mode)) {
+          throw new BrowserError('INVALID_ARGUMENT', 'select.mode 只接受 work/observe', { field: 'mode', allowed: ['work', 'observe'] });
+        }
+        // A refusal throws before anything is written, so a denied select leaves the caller's
+        // existing work/observation selection exactly as it was (plan §5).
+        const selected = registry.selectTab(primary, sessionId, args.tabId.trim(), { mode, principal });
+        return {
+          ok: true, action, mode,
+          tabId: selected.entry.tabId || selected.entry.viewId || 'primary',
+          selection: selected.selection,
+          workSelection: selected.selection.tabId ? selected.selection : null,
+          observationSelection: selected.selection.observationTabId
+            ? { ...selected.selection, tabId: selected.selection.observationTabId } : null,
+          // select never claims a lease any more: say so instead of leaving callers to infer it.
+          claimed: false,
+        };
       }
       if (action === 'open') {
-        const opened = await registry.openTab(primary, sessionId, 'agent');
+        const opened = await registry.openTab(primary, sessionId, 'agent', { principal });
         return { ok: true, action, tabId: opened.entry.tabId || opened.entry.viewId, selection: opened.selection };
       }
       if (action === 'close') {
         const tabId = typeof args.tabId === 'string' && args.tabId.trim() ? args.tabId.trim() : registry.selectionFor(primary, sessionId).tabId;
-        const closed = await registry.closeTab(primary, sessionId, tabId);
-        return { ok: true, action, tabId: closed.closed };
+        const closed = await registry.closeTab(primary, sessionId, tabId, { principal });
+        const closedEntry = registry.tabEntry(primary, tabId) || registry.primaryEntry(primary);
+        return { ok: true, action, tabId: closed.closed, changed: true, control: registry.controlProjection(closedEntry) };
+      }
+      if (action === 'acquire' || action === 'release' || action === 'transfer') {
+        // Management path. Order is the contract (plan §5.2): principal → same root → Lead role →
+        // target → expected version. `authorizePage` inside the registry enforces the first four,
+        // the transition enforces the versions, and the drain wait is the only thing that runs
+        // before the commit — never an abort of somebody's in-flight page operation.
+        if (typeof args.tabId !== 'string' || !args.tabId.trim()) {
+          throw new BrowserError('INVALID_ARGUMENT', `${action} 需要 tabId`, { field: 'tabId' });
+        }
+        const target = registry.tabEntry(primary, args.tabId.trim());
+        if (!target) throw new BrowserError('TAB_NOT_FOUND', '标签不存在或不属于当前 workspace', { tabId: args.tabId, fallbackTabId: 'primary' });
+        const revisionOf = (value, field) => {
+          if (value === undefined || value === null) {
+            throw new BrowserError('INVALID_ARGUMENT', `${action} 需要 ${field}`, { field });
+          }
+          if (!Number.isInteger(value) || value < 1 || value > Number.MAX_SAFE_INTEGER) {
+            throw new BrowserError('INVALID_ARGUMENT', `${field} 必须是 1–9007199254740991 的整数`, { field });
+          }
+          return value;
+        };
+        const expectedControlRevision = revisionOf(args.expectedControlRevision, 'expectedControlRevision');
+        if (action === 'acquire') {
+          const timeoutMs = args.timeoutMs === undefined ? TAB_ACQUIRE_TIMEOUT_DEFAULT_MS : args.timeoutMs;
+          if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > TAB_ACQUIRE_TIMEOUT_MAX_MS) {
+            throw new BrowserError('INVALID_ARGUMENT', `acquire.timeoutMs 必须是 0–${TAB_ACQUIRE_TIMEOUT_MAX_MS} 的整数`, {
+              field: 'timeoutMs', min: 0, max: TAB_ACQUIRE_TIMEOUT_MAX_MS,
+            });
+          }
+          const result = await registry.acquireControl(target, principal, {
+            expectedControlRevision, timeoutMs, signal: exec.signal,
+          });
+          return {
+            ok: true, action, changed: result.changed, waitedMs: result.waitedMs,
+            control: registry.controlProjection(target),
+          };
+        }
+        if (action === 'release') {
+          const result = registry.releaseControl(target, principal, { expectedControlRevision });
+          return { ok: true, action, changed: result.changed, control: registry.controlProjection(target) };
+        }
+        const expectedOwnershipRevision = revisionOf(args.expectedOwnershipRevision, 'expectedOwnershipRevision');
+        const result = registry.transferControl(target, principal, {
+          toSessionId: args.toSessionId, expectedControlRevision, expectedOwnershipRevision,
+        });
+        return {
+          ok: true, action, changed: result.changed, to: result.to,
+          control: registry.controlProjection(target),
+        };
       }
       if (action === 'wait') {
         const timeoutMs = args.timeoutMs === undefined ? TAB_WAIT_TIMEOUT_DEFAULT_MS : args.timeoutMs;
@@ -20761,9 +21877,13 @@ export function apply(ctx) {
         // Match the provider-qualified key *and* the bare workspace key: an entry key is now
         // `<provider>\u0000<baseKey>`, and a stale selection record may still reference either form.
         // A provider switch must invalidate the old selection, so both are purged.
-        const baseKey = entry.baseKey ?? entry.key;
-        if (key.includes(entry.key) || key.includes(baseKey)
-          || value?.workspaceKey === entry.key || value?.workspaceKey === baseKey) {
+        // Exact match on the complete dimensions this entry owns (its page-group key, or the
+        // group key a child belongs to). The old `key.includes(baseKey)` form matched every root
+        // sharing one workspace and deleted *other* roots' selections on an unrelated config
+        // change — the cross-root cleanup this milestone removes.
+        if (!value) continue;
+        const groupKey = entry.primaryKey || entry.key;
+        if (value.groupKey === groupKey || value.groupKey === entry.key) {
           registry.selectedBySession.delete(key);
         }
       }

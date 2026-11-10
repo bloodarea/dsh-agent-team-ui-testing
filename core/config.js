@@ -98,6 +98,11 @@ const PLANNED_ENVIRONMENTS = new Set(
   Object.values(KNOWN_ENVIRONMENTS).filter((meta) => meta.planned).map((meta) => meta.environment),
 );
 
+/** 该目标环境是否仍是"规划中"（v1 没有适配器，可启用但不可执行）。 */
+export function isPlannedEnvironment(environment) {
+  return PLANNED_ENVIRONMENTS.has(environment);
+}
+
 function deepFreeze(value) {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -189,13 +194,19 @@ function mergeProviderMaps(base, over) {
   return out;
 }
 
-function normalizeEnvironmentName(environment, field, { allowTestEnvironments = true } = {}) {
+/**
+ * `allowPlanned: true` 只用于**启用**类写入（`environments.<id>.enabled`）：
+ * v1 里 android / linux 等环境没有适配器，但允许用户先把开关打开——启用 ≠ 可执行，
+ * 可执行性由就绪六轴（adapter-not-registered / support=planned）如实表达。
+ * 选择"当前执行环境"仍然拒绝 planned（见 `environment` 的写入路径）。
+ */
+function normalizeEnvironmentName(environment, field, { allowTestEnvironments = true, allowPlanned = false } = {}) {
   if (typeof environment !== 'string' || environment.length === 0) {
     throw invalid(`${field} must be a non-empty string`, { field });
   }
   const meta = KNOWN_ENVIRONMENTS[environment];
   if (!meta) throw invalid(`unknown environment: ${environment}`, { field, environment });
-  if (meta.planned) {
+  if (meta.planned && !allowPlanned) {
     throw invalid(`environment ${environment} is planned and cannot be selected in v1`, {
       field,
       environment,
@@ -351,9 +362,10 @@ function normalizeEnvironmentMap(raw, field, { partial = false, strict = false }
   const source = assertPlainObject(raw, field);
   const out = {};
   for (const [environment, entry] of Object.entries(source)) {
-    // Unknown and planned environments are dropped, not silently enabled.
+    // 未知环境丢弃（不猜）；**planned 环境保留**——这一层是"每个环境的总开关"，
+    // 「启用」不等于「可执行」：v1 里 android 等环境没有适配器，但用户可以先把它打开，
+    // 是否真的能跑由就绪六轴与"当前执行环境"的校验表达。
     if (!Object.hasOwn(KNOWN_ENVIRONMENTS, environment)) continue;
-    if (PLANNED_ENVIRONMENTS.has(environment)) continue;
     out[environment] = normalizeEnvironmentEntry(entry, environment, { partial, strict });
   }
   return out;
@@ -493,7 +505,8 @@ function normalizePatchEnvironments(raw, field, options) {
   const source = assertPlainObject(raw, field);
   const out = {};
   for (const [environment, entry] of Object.entries(source)) {
-    normalizeEnvironmentName(environment, field, options);
+    // 这里是"每个环境的总开关"，不是"当前执行环境"：planned 环境允许被启用。
+    normalizeEnvironmentName(environment, field, { ...(options || {}), allowPlanned: true });
     const entrySource = assertPlainObject(entry, `${field}.${environment}`);
     for (const key of Object.keys(entrySource)) {
       if (!ENVIRONMENT_ENTRY_KEYS.has(key)) {

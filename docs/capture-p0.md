@@ -42,7 +42,7 @@
 | `OUTPUT_EXISTS` | 目标路径已存在 |
 | `OUTPUT_PATH_INVALID` | 持久根不可用或路径越界 |
 | `CAPTURE_FAILED` | CDP 截图失败或 PNG 校验不通过 |
-| `BUSY` | 工作区页面被其他 owner 占用 |
+| `BUSY` | 该页队列正被其他会话的写操作占用（短暂忙，不是权限答案） |
 
 ## 边界
 

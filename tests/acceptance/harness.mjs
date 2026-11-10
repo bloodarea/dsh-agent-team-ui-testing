@@ -273,7 +273,9 @@ export async function pathExists(target) {
 }
 
 /** Create the fake Cordis context surface used by index.js. */
-export function createFakeCordisContext({ connection, attachments, sessions, sessionPersistence, workspaceRegistry } = {}) {
+export function createFakeCordisContext({
+  connection, attachments, sessions, sessionPersistence, workspaceRegistry, agents, agentTeams,
+} = {}) {
   const toolDefs = new Map();
   const toolOptions = new Map();
   const httpHandlers = [];
@@ -406,6 +408,10 @@ export function createFakeCordisContext({ connection, attachments, sessions, ses
       if (name === 'sessions') return ctx.__internal.sessions;
       if (name === 'sessionPersistence') return ctx.__internal.sessionPersistence;
       if (name === 'workspaceRegistry') return ctx.__internal.workspaceRegistry;
+      // M2a identity seam: a host without `agents` (the default) exercises the standalone
+      // degradation; a test that injects them exercises the exact-object/roster path.
+      if (name === 'agents') return ctx.__internal.agents;
+      if (name === 'agentTeams') return ctx.__internal.agentTeams;
       return undefined;
     },
     // Cordis services can also be read as properties (ctx.connection?.requestRejection(...)).
@@ -413,12 +419,16 @@ export function createFakeCordisContext({ connection, attachments, sessions, ses
     get sessions() { return ctx.__internal.sessions; },
     get sessionPersistence() { return ctx.__internal.sessionPersistence; },
     get workspaceRegistry() { return ctx.__internal.workspaceRegistry; },
+    get agents() { return ctx.__internal.agents; },
+    get agentTeams() { return ctx.__internal.agentTeams; },
   };
   ctx.__internal = {
     toolDefs, toolOptions, httpHandlers, upgradeHandlers, skillRegistrations, skillProviders,
     skillControls, logs, effects,
     connection: connection ?? undefined,
     sessions, sessionPersistence, workspaceRegistry,
+    agents: agents ?? undefined,
+    agentTeams: agentTeams ?? undefined,
     plugin: undefined,
   };
   return ctx;
@@ -512,6 +522,39 @@ export function createFakeWorkspaceRegistry({ path, id = 'workspace-default', wo
   };
 }
 
+/**
+ * Fake Agent registry (`ctx.agents`): exact-object lookup only, like the native service.
+ *
+ * Returning a *different* object for the same id is the realistic stale-reference case, so tests
+ * must be able to express it — pass `objects` and mutate it, or use `replace()`.
+ */
+export function createFakeAgentRegistry(agents = []) {
+  const objects = new Map(agents.map((agent) => [String(agent.id), agent]));
+  return {
+    objects,
+    get(id) { return objects.get(String(id)); },
+    replace(agent) { objects.set(String(agent.id), agent); return agent; },
+    remove(id) { return objects.delete(String(id)); },
+  };
+}
+
+/**
+ * Fake native Team service (`ctx.agentTeams`): `tryMembership(agent)` + `listMembers(root)`.
+ *
+ * `membership` may be a value or a function of the exact agent; `rows` the same. A throwing
+ * function models the "probe could not prove anything" case the identity resolver must refuse.
+ */
+export function createFakeAgentTeamService({ membership, rows = [] } = {}) {
+  return {
+    tryMembership(agent) {
+      return typeof membership === 'function' ? membership(agent) : membership;
+    },
+    listMembers(root) {
+      return typeof rows === 'function' ? rows(root) : rows;
+    },
+  };
+}
+
 export function createFakeSessionPersistenceService({ entries = new Map(), error } = {}) {
   return {
     async stat(id) {
@@ -524,6 +567,11 @@ export function createFakeSessionPersistenceService({ entries = new Map(), error
 export async function createHarness({
   name = 'harness', connection, attachments, sessions, sessionPersistence, workspaceRegistry,
   configDir, allowTestEnvironments = false,
+  // M2a identity seam. `services.agents` = the native Agent registry (`get(id)` -> exact Agent),
+  // `services.agentTeams` = the native Team service (`tryMembership(agent)` + `listMembers(root)`).
+  // Omitting them is the real "host without those services" case and must keep working through the
+  // standalone degradation, so nothing here changes the behaviour of existing callers.
+  services = undefined,
 } = {}) {
   const workspaceDir = defaultWorkspaceDirectory();
   // Isolate authoritative config per harness: never read/write the user's DSH_HOME. The plugin
@@ -540,6 +588,8 @@ export async function createHarness({
     sessions: sessions ?? createFakeSessionsService({ cwd: workspaceDir }),
     workspaceRegistry: workspaceRegistry ?? createFakeWorkspaceRegistry({ path: workspaceDir }),
     sessionPersistence: sessionPersistence ?? createFakeSessionPersistenceService(),
+    agents: services?.agents,
+    agentTeams: services?.agentTeams,
   });
   // The plugin returns { registry } for the fake-ctx acceptance surface (Cordis ignores it).
   ctx.__internal.plugin = apply(ctx);

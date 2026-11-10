@@ -145,7 +145,7 @@
 | `DYNAMIC_SOURCE_UNAVAILABLE` | screencast 不支持 png/region/scale≠1，或核心不可用 | 换 `screenshot-loop`（PNG 精确）或去掉不支持字段 | 静默降级后宣称精确 |
 | `DYNAMIC_CONTROL_CONFLICT` / `DYNAMIC_RESTORE_FAILED` | 目标/字段被外部改动，恢复冲突 | 重新定位目标；如实报告 `restoreStatus` | 覆盖外部新状态 |
 | `DYNAMIC_EVENT_NOT_FOUND` | frame/event id 不属于本会话 | 用 `motion_observe` 重新取 id | 跨会话使用 id |
-| `TAB_NOT_FOUND` / `TAB_LIMIT` / `TAB_FORBIDDEN`(P0-E) | 标签不存在/超 3 child 或全局 8/跨 workspace | 重新 `list` 选 tab；关掉不需要的 child | 跨 workspace 读 tab |
+| `TAB_NOT_FOUND` / `TAB_LIMIT` / `TAB_FORBIDDEN` / `TAB_CONTROL_CHANGED` / `TAB_OWNERSHIP_STALE` / `TAB_IDENTITY_UNAVAILABLE`(P0-E) | 标签不存在或跨 root（统一 not-found）/超 child 或全局 8/同 root 但角色或归属不允许/控制权或 CAS 版本不匹配/身份无法证明 | 重新 `list` 选 tab；关掉不需要的 child；读 `control` 的最新版本再决策（`TAB_CONTROL_CHANGED` 不自动重放） | 用"能看见"推断"能写"；把 BUSY 当权限结论 |
 
 ## 8. 坐标空间对照表（最容易错的地方）
 
@@ -192,4 +192,4 @@ imagePx = (docCss - originCss) * cssPerPixel   # 文档 CSS → 帧图像像素�
 - T2：ref 表 2000 项 LRU；`snapshot maxNodes` 1–2000、`depth` 0–32；`wait_for timeoutMs` 0–30000；`fill_form` 1–20 项、文本合计 ≤65536 字节。
 - 网络：`events limit` ≤200；会话 `maxEvents` ≤20000、`maxBodyBytes` ≤1 MiB、`maxTotalBytes` ≤32 MiB、`maxWsFrames` ≤20000；规则 ≤32、`hold` ≤64、订阅 ≤16。
 - 独立 HTTP：总超时 1–20000ms（默认 5000）、保留正文 1–1048576 字节（默认 65536）、重定向 ≤5 跳、body ≤64 KiB。
-- 多标签：每 workspace primary+3 child=4，全局 8，lease idle 15s。
+- 多标签：页面组按 (workspace, provider, 团队根) 分组，每组一个 primary 槽；child 最多 3 个按 (workspace, provider) 跨 root 合计，全局 live 8；短租约 idle 15s 只表示"短暂忙"（观察不占写租约），写权限由 root/角色/控制权决定。

@@ -12,6 +12,9 @@ import {
   ERROR_CODES,
   IMPLEMENTED_WEB_PROVIDERS,
   WEB_PROVIDER_SUPPORT,
+  // The page-group key shape is owned by the neutral factory; the test decodes it instead of
+  // hard-coding a separator, which is exactly the coupling M2a removed.
+  parsePageGroupKey,
 } from '../../core/index.js';
 import { createWebTargetAdapter, resolveWebDriver } from '../../targets/web/adapter.js';
 
@@ -75,28 +78,43 @@ test('the implemented set is derived from the support table', () => {
   assert.equal(WEB_PROVIDER_SUPPORT.firefox, 'unsupported');
 });
 
-test('runtime entries are keyed by (provider, workspace) and one composer makes the key', () => {
+test('runtime entries are keyed by (provider, workspace, root) and one composer makes the key', () => {
+  // M2a (docs/internal/m0-rulings-20261109.md §7.4): the root is part of the entry key. The key is
+  // built by the neutral factory only — no hand-composed separator can ever address a page group —
+  // and the *raw* workspace key stays on `baseKey` because aggregate counting and config
+  // transitions address a workspace, not a page group.
   const reg = registry();
   const scope = { id: 'ws:1', workspaceId: 'ws1' };
-  const chromeEntry = reg.getOrCreate({ key: 'ws:1', scope, provider: 'chrome' });
+  const chromeEntry = reg.getOrCreate({ key: 'ws:1', scope, provider: 'chrome', rootSessionId: 'root-a' });
   assert.equal(chromeEntry.provider, 'chrome');
   assert.equal(chromeEntry.baseKey, 'ws:1');
   assert.equal(chromeEntry.providerResolved, 'binding');
-  assert.equal(chromeEntry.key, 'chrome\u0000ws:1');
+  assert.equal(chromeEntry.rootSessionId, 'root-a');
+  assert.deepEqual(parsePageGroupKey(chromeEntry.key), {
+    environment: 'web', workspaceKey: 'ws:1', provider: 'chrome', rootSessionId: 'root-a',
+  });
   assert.equal(chromeEntry.primaryKey, chromeEntry.key);
 
   // Same workspace, different provider -> a different runtime, never shared.
-  const edgeEntry = reg.getOrCreate({ key: 'ws:1', scope, provider: 'edge' });
+  const edgeEntry = reg.getOrCreate({ key: 'ws:1', scope, provider: 'edge', rootSessionId: 'root-a' });
   assert.notEqual(edgeEntry.key, chromeEntry.key);
   assert.notEqual(edgeEntry.runtime, chromeEntry.runtime);
   assert.equal(edgeEntry.baseKey, chromeEntry.baseKey);
 
-  // Both addressing styles must compute a byte-identical key.
+  // Same workspace and provider, different root -> a different runtime, never shared. This is the
+  // line that stops two independent sessions in one workspace from fighting over one page.
+  const otherRoot = reg.getOrCreate({ key: 'ws:1', scope, provider: 'chrome', rootSessionId: 'root-b' });
+  assert.notEqual(otherRoot.key, chromeEntry.key);
+  assert.notEqual(otherRoot.runtime, chromeEntry.runtime);
+  assert.equal(parsePageGroupKey(otherRoot.key).rootSessionId, 'root-b');
+
+  // Both addressing styles must compute a byte-identical key (a composed key is never re-composed).
   assert.equal(reg.peek(chromeEntry.key), chromeEntry);
-  assert.equal(reg.peek({ key: 'ws:1', provider: 'chrome' }), chromeEntry);
-  assert.equal(reg.peek({ key: 'ws:1', provider: 'edge' }), edgeEntry);
-  assert.equal(reg.peek('chrome\u0000ws:1').key, reg.peek({ key: 'ws:1', provider: 'chrome' }).key);
-  assert.equal(reg.peek({ key: 'ws:9', provider: 'chrome' }), undefined);
+  assert.equal(reg.peek({ key: 'ws:1', provider: 'chrome', rootSessionId: 'root-a' }), chromeEntry);
+  assert.equal(reg.peek({ key: 'ws:1', provider: 'edge', rootSessionId: 'root-a' }), edgeEntry);
+  assert.equal(reg.peek({ key: 'ws:1', provider: 'chrome', rootSessionId: 'root-b' }), otherRoot);
+  assert.equal(reg.peek(chromeEntry.key).key, chromeEntry.key);
+  assert.equal(reg.peek({ key: 'ws:9', provider: 'chrome', rootSessionId: 'root-a' }), undefined);
   void reg.dispose();
 });
 

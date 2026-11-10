@@ -72,7 +72,7 @@ view = { version, mode, x, y, canvasX, canvasY, width, height, scale, source, re
 - 标签栏可与标注栏、尺寸栏等横向栏上下叠加；「标注」按钮左侧的标签页开关控制显示/隐藏，单标签下同样生效，隐藏只收起栏，页面与标签状态保留。
 - 关闭标签会回收该页面的 Runtime；关闭当前标签后回到原页面或剩下的标签。每个工作区 primary + 最多 3 个 child（共 4 个），并计入全局 8 页上限；标签栏最右 `+` 新建空白标签，工具栏不常驻 `+`（标签栏隐藏时先打开标签栏再新建）。
 - 自动弹窗、没有真人输入、目标地址被导航策略拒绝或超容量时仍会阻断，并在面板给出提示；不会把这些 target 交给 Agent 工具。
-- 所有页面共享同一个浏览器 profile（Cookie、localStorage、cache）；这是浏览器语义，不是登录态隔离。Agent 的 `browser_*` 工具默认操作当前会话 selectedTab（无选择 primary），不会因为 GUI 切换标签而改目标；`browser_tabs` 提供 list/current/select/open/close。
+- 所有页面共享同一个浏览器 profile（Cookie、localStorage、cache）；这是浏览器语义，不是登录态隔离。Agent 的 `browser_*` 工具默认操作当前会话的选择（写用 workSelection、读优先 observationSelection，均无设置时 primary），不会因为 GUI 切换标签而改目标；`browser_tabs` 提供 list/current/select/open/close/wait/acquire/release/transfer，跨 root 的目标一律 not-found 语义。
 
 ## 限制
 

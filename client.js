@@ -3,22 +3,26 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
+    // Portal target for the diagnostics overlay: the DSH settings modal is its own layer, so the
+    // overlay has to live at <body> level (with a high z-index) to win the stacking order.
+    let reactDom = null;
+    try { reactDom = require('react-dom'); } catch { reactDom = null; }
 
     const ID = 'ui-testing-browser';
     const KIND = 'debug-view';
     const TITLE = '调试视图';
     /** 可选运行环境；本期只有 Web 视图可用，其余置灰。 */
     const ENVIRONMENTS = [
-      { id: 'web', label: 'Web 视图', ready: true },
-      { id: 'windows', label: 'Windows 视图', ready: false },
-      { id: 'android', label: 'Android 视图', ready: false },
-      { id: 'linux', label: 'Linux 视图', ready: false },
-      { id: 'macos', label: 'macOS 视图', ready: false },
-      { id: 'tui', label: 'TUI 视图', ready: false },
-      { id: 'harmonyos', label: 'HarmonyOS 视图', ready: false },
-      { id: 'game', label: '游戏视图', ready: false },
-      { id: 'three-d', label: '3D 视图', ready: false },
-      { id: 'miniprogram', label: '小程序视图', ready: false },
+      { id: 'web', label: 'Web 视图', short: 'Web', ready: true },
+      { id: 'windows', label: 'Windows 视图', short: 'Windows', ready: false },
+      { id: 'android', label: 'Android 视图', short: 'Android', ready: false },
+      { id: 'linux', label: 'Linux 视图', short: 'Linux', ready: false },
+      { id: 'macos', label: 'macOS 视图', short: 'macOS', ready: false },
+      { id: 'tui', label: 'TUI 视图', short: 'TUI', ready: false },
+      { id: 'harmonyos', label: 'HarmonyOS 视图', short: 'HarmonyOS', ready: false },
+      { id: 'game', label: '游戏视图', short: '游戏', ready: false },
+      { id: 'three-d', label: '3D 视图', short: '3D', ready: false },
+      { id: 'miniprogram', label: '小程序视图', short: '小程序', ready: false },
     ];
     /** 与 Host 半边的运行时通信（同源，走应用自身的鉴权）。 */
     const HOST_BASE = '/plugins/ui-testing';
@@ -102,30 +106,79 @@ window.__ModuleLoader__.load({
      * (`CONFIG_CONFLICT`, `CONFIG_UNAVAILABLE`, ...); callers render the failure and never fake a
      * saved state. `scope` is `null` on the settings page (legacy/default, no scope headers).
      * ------------------------------------------------------------------------------------- */
+    /**
+     * Upper bound for one config read, covering **both** the response headers and the JSON body.
+     * Without it a connection that never finishes would keep the poll's in-flight marker set
+     * forever: no new request, no stale marker, a page that looks frozen (M5).
+     */
+    const HOST_CONFIG_TIMEOUT_MS = 10000;
+
     async function requestHostConfig(method, path, body, options) {
       const scope = options && options.scope;
-      const signal = options && options.signal;
+      const outerSignal = options && options.signal;
+      const timeoutMs = options && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+        ? Number(options.timeoutMs)
+        : 0;
       const headers = Object.assign({}, scopeHeaders(scope));
-      const init = { method, credentials: 'same-origin', headers, signal, cache: 'no-store' };
+      // One controller per request: it carries its own deadline, and the caller's lifecycle signal
+      // (unmount) is forwarded into it so a hanging read is aborted on both paths.
+      const controller = timeoutMs && typeof AbortController === 'function' ? new AbortController() : null;
+      let timedOut = false;
+      let timer = null;
+      const onOuterAbort = () => { if (controller) controller.abort(); };
+      if (controller) {
+        if (outerSignal) {
+          if (outerSignal.aborted) controller.abort();
+          else outerSignal.addEventListener('abort', onOuterAbort, { once: true });
+        }
+        timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+      }
+      const init = {
+        method,
+        credentials: 'same-origin',
+        headers,
+        signal: controller ? controller.signal : outerSignal,
+        cache: 'no-store',
+      };
       if (body !== undefined) {
         headers['content-type'] = 'application/json';
         init.body = JSON.stringify(body);
       }
-      const response = await fetch(HOST_BASE + path, init);
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || payload.ok === false) {
-        const error = new Error(payload.error || ('配置请求失败：' + response.status));
-        error.code = payload.code || (response.status === 404 ? 'CONFIG_UNAVAILABLE' : 'CONFIG_REQUEST_FAILED');
-        error.status = response.status;
-        error.payload = payload;
+      try {
+        const response = await fetch(HOST_BASE + path, init);
+        // `response.json()` is a second, separate wait: keep it inside the same deadline.
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.ok === false) {
+          const error = new Error(payload.error || ('配置请求失败：' + response.status));
+          error.code = payload.code || (response.status === 404 ? 'CONFIG_UNAVAILABLE' : 'CONFIG_REQUEST_FAILED');
+          error.status = response.status;
+          error.payload = payload;
+          throw error;
+        }
+        return payload;
+      } catch (error) {
+        if (timedOut) {
+          // 超时是一个可渲染的失败（→ stale），而不是静默的悬挂。
+          const timeoutError = new Error('配置请求超时（' + timeoutMs + 'ms）');
+          timeoutError.code = 'CONFIG_TIMEOUT';
+          timeoutError.timeout = true;
+          throw timeoutError;
+        }
         throw error;
+      } finally {
+        if (timer !== null) clearTimeout(timer);
+        if (outerSignal && controller) outerSignal.removeEventListener('abort', onOuterAbort);
       }
-      return payload;
     }
 
     /** GET /config — `view` is `global` (settings page) or `session` (panel). */
-    function getHostConfig(scope, view, signal) {
-      return requestHostConfig('GET', '/config?view=' + encodeURIComponent(view || 'global'), undefined, { scope, signal });
+    function getHostConfig(scope, view, signal, timeoutMs) {
+      return requestHostConfig(
+        'GET',
+        '/config?view=' + encodeURIComponent(view || 'global'),
+        undefined,
+        { scope, signal, timeoutMs: timeoutMs || HOST_CONFIG_TIMEOUT_MS },
+      );
     }
 
     /** PUT /config — CAS write; resolves with the Host revision, never assumes success. */
@@ -796,7 +849,7 @@ window.__ModuleLoader__.load({
       const message = String((error && error.message) || '');
       if (code === 'UNSUPPORTED' || code === 'NOT_FOUND' || code === 'TOOL_NOT_FOUND'
         || /未知指令|unknown action|unsupported|not\s*found/i.test(message)) {
-        return '当前 Host 不支持选元素，请重启 DSH 后刷新面板';
+        return '当前宿主不支持选元素，请重启 DSH 后刷新面板';
       }
       return '获取元素失败，请稍后重试';
     }
@@ -1293,6 +1346,13 @@ window.__ModuleLoader__.load({
 .utb-menu-row.utb-menu-row > svg { flex: 0 0 auto; }
 .utb-menu-row.utb-menu-row:hover { background: rgba(164, 183, 229, 0.14); background: color-mix(in srgb, var(--dsw-alias-label-primary) 14%, transparent); }
 .utb-menu-row.utb-menu-row:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+/* 视图层没有该环境时的占位：问号图标 + 说明，不留空白面板 */
+.utb-noview { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; }
+.utb-noview-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: var(--dsw-alias-label-tertiary); background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent); }
+.utb-noview-text { display: flex; flex-direction: column; gap: 4px; font-size: 12px; line-height: 18px; }
+.utb-noview-text strong { font-size: 13px; color: var(--dsw-alias-label-primary); }
+.utb-noview-text p { margin: 0; color: var(--dsw-alias-label-tertiary); }
+
 `;
 
     function IconBrowser({ size = 16 }) {
@@ -2073,6 +2133,9 @@ window.__ModuleLoader__.load({
       const [inputNotice, setInputNotice] = React.useState('');
       const [tabNotice, setTabNotice] = React.useState('');
       const [tabOpening, setTabOpening] = React.useState(false);
+      // The tab group list is cached in a ref (it must survive a transient remote=null): a local
+      // prune after a Host-confirmed close needs its own render bump.
+      const [, setTabsTick] = React.useState(0);
       const [pending, setPending] = React.useState(false);
       const [navBusy, setNavBusy] = React.useState(false);
       const [mode, setMode] = React.useState('idle');
@@ -2345,14 +2408,42 @@ window.__ModuleLoader__.load({
       // Host config for this panel scope: the selector's allowed environments and current
       // resolution come from the Host, not from the static ENVIRONMENTS list.
       const hostConfig = useHostConfig(scope, 'session');
+      // 设置页改完开关/选择后立刻同步过来：重读一次配置，组合框与视图跟着变，不用等刷新。
+      useHostConfigChange(() => {
+        if (hostConfig && typeof hostConfig.reload === 'function') hostConfig.reload();
+      });
       const hostResolved = hostConfig.state.resolved || null;
       const resolvedEnvironment = hostResolved && hostResolved.environment ? String(hostResolved.environment) : '';
       const allowedEnvironments = hostResolved && Array.isArray(hostResolved.enabledEnvironments)
         ? hostResolved.enabledEnvironments.map(String) : null;
-      const envOptions = React.useMemo(() => {
-        if (!allowedEnvironments) return ENVIRONMENTS;
-        return ENVIRONMENTS.filter((option) => option.id === 'web' || allowedEnvironments.indexOf(option.id) !== -1);
-      }, [allowedEnvironments]);
+      /**
+       * 组合框**只列开关已打开的目标环境**（`environments.<id>.enabled`）：
+       * 开了 web + android，就只出现这两个选项。打开的但视图层没实现 → 选中后渲染空态
+       * （执行环境不变）。宿主配置还没读到（`config` 为 null）时按可执行集合 + web 兜底，
+       * 免得一上来列表是空的。
+       */
+      const envEnabledList = React.useMemo(() => ENVIRONMENTS
+        .map((option) => {
+          const fromConfig = enabledFromConfig(hostConfig.state.config, option.id);
+          const enabled = fromConfig === null
+            ? (option.id === 'web' || (allowedEnvironments ? allowedEnvironments.indexOf(option.id) !== -1 : false))
+            : fromConfig;
+          return Object.assign({}, option, { enabled });
+        })
+        .filter((option) => option.enabled), [hostConfig.state.config, allowedEnvironments]);
+      const envOptions = React.useMemo(() => (envEnabledList.length
+        ? envEnabledList
+        : ENVIRONMENTS.filter((option) => option.id === 'web').map((option) => Object.assign({}, option, { enabled: true }))),
+      [envEnabledList]);
+
+      // 当前选中的环境被关掉时（用户在设置页关开关），退回宿主当前执行环境，避免组合框空值。
+      React.useEffect(() => {
+        if (envOptions.some((option) => option.id === env)) return;
+        const fallback = envOptions.some((option) => option.id === resolvedEnvironment)
+          ? resolvedEnvironment
+          : ((envOptions[0] && envOptions[0].id) || 'web');
+        setEnv(fallback);
+      }, [envOptions, env, resolvedEnvironment]);
       React.useEffect(() => {
         if (!resolvedEnvironment) return;
         const option = ENVIRONMENTS.find((item) => item.id === resolvedEnvironment);
@@ -2480,6 +2571,16 @@ window.__ModuleLoader__.load({
         tabNoticeTimerRef.current = window.setTimeout(() => setTabNotice(''), 4000);
       }
 
+      /** Drop one view from the cached group list the moment the Host confirms its close. */
+      function dropClosedView(view) {
+        const current = stableViewsRef.current;
+        if (!current || !view) return;
+        const views = current.views.filter((item) => item && item.id !== view.id);
+        if (views.length === current.views.length) return;
+        stableViewsRef.current = { ...current, views, viewsRevision: (current.viewsRevision || 0) + 1 };
+        setTabsTick((value) => value + 1);
+      }
+
       function closeView(view) {
         if (!view) return;
         if (view.kind === 'primary') {
@@ -2504,6 +2605,9 @@ window.__ModuleLoader__.load({
         // Close with the child's own binding. The Host answer is the only success signal; on
         // success an active child falls back locally (its own /state may already be gone).
         callHost('close', {}, { scope: scopeSnapshot('recent', '', view.runtimeId, false) }).then(() => {
+          // The Host answer is the success signal: retire the view locally so the strip, the
+          // active tab and the empty state do not wait one more /state poll to agree.
+          dropClosedView(view);
           if (activeViewId === view.id) {
             viewSwitchRef.current = true;
             retiredRuntimeRef.current = '';
@@ -2511,8 +2615,10 @@ window.__ModuleLoader__.load({
           }
         }).catch((error) => {
           const code = String((error && error.code) || '');
+          // A refused close is never silent: the tab stays in the strip, so the user has to learn
+          // why (a stale/unknown binding now answers SCOPE_NOT_FOUND instead of a fake ok).
           if (code === 'BUSY') showTabNotice('标签正被 Agent 操作；稍后再关闭');
-          /* else: keep the current selection; the poll owns the real state */
+          else showTabNotice('关闭标签失败，请稍后重试');
         });
       }
 
@@ -6695,7 +6801,7 @@ window.__ModuleLoader__.load({
             : !pickRunning ? '需先启动内嵌浏览器'
               : !ready ? '运行环境未就绪'
                 : !viewSync ? '等待视口同步'
-                  : !canvasOn ? '当前 Host 不支持画布框选'
+                  : !canvasOn ? '当前宿主不支持画布框选'
                     : '选择元素发送到聊天框（点击画面中的元素，加入聊天框）';
       const pickEntryDisabled = !pickOn && !pickReadyNow;
       const pickBoxRect = pickOn && frameBoxRef.current ? frameBoxRef.current.getBoundingClientRect() : null;
@@ -6736,18 +6842,18 @@ window.__ModuleLoader__.load({
       const annotStale = annotStaleState;
       const annotNavHint = '标注按工作区保留，导航/刷新会清除当前页面标注';
       const annotSyncText = annotSyncState === 'unsupported'
-        ? '标注未同步（Host 无标注通道）'
+        ? '标注未同步（宿主无标注通道）'
         : annotSyncState === 'error'
           ? '标注未同步'
           : annotSyncState === 'pending'
             ? '标注同步中…'
             : '';
       const annotSyncTitle = (annotSyncState === 'unsupported'
-        ? '标注未同步：当前 Host 没有标注上报通道，标注只在本面板可见，Agent 看不到'
+        ? '标注未同步：当前宿主没有标注上报通道，标注只在本面板可见，Agent 看不到'
         : annotSyncState === 'error'
           ? '标注未同步：最近一次上报失败，Agent 看到的内容可能已过期'
           : annotSyncState === 'pending'
-            ? '标注同步中：正在把本次修改上报给 Host'
+            ? '标注同步中：正在把本次修改上报给宿主'
             : annotStale.stale && annotStale.staleReason === 'panel-unseen'
               ? '标注已保存到工作区，来源面板心跳已过期'
               : '标注已同步给 Agent（只读线索，不构成页面事实）') + '；' + annotNavHint;
@@ -6978,16 +7084,31 @@ window.__ModuleLoader__.load({
        * 带本面板 scope），成功后才改本地状态；失败保留旧值并显示错误，不静默切换。
        * 未实现环境（!ready）仍不可选，也不会因为选择而启动任何探测。
        */
+      /** 环境视图注册表（提前声明：changeEnv 要按它判断"这个环境有没有视图"）。 */
+      const ENV_VIEWS = { web: webViewBody };
+
       function changeEnv(next) {
         if (annotRef.current.on || envBusy) return;
         const option = ENVIRONMENTS.find((item) => item.id === next);
-        if (!option || !option.ready) return;
+        if (!option) return;
         if (next === env) return;
+        if (enabledFromConfig(hostConfig.state.config, next) === false) {
+          setEnvNotice('该目标环境还没有启用：请先在设置页打开它的开关');
+          return;
+        }
+        // 视图层没有这个环境：只切换“看哪个视图”（渲染空态），**不写宿主配置**——
+        // v1 宿主不接受 planned 环境，提交只会被拒并回滚，没有任何好处。
+        if (typeof ENV_VIEWS[next] !== 'function') {
+          setEnvNotice('');
+          setEnv(next);
+          return;
+        }
+        if (!option.ready) return;
         const config = hostConfig.state;
         if (config.revision === null) {
           setEnvNotice(config.loading
-            ? '正在读取 Host 配置，请稍后重试'
-            : (config.error || 'Host 未提供配置接口，无法切换运行环境'));
+            ? '正在读取宿主配置，请稍后重试'
+            : (config.error || '宿主未提供配置接口，无法切换运行环境'));
           return;
         }
         setEnvBusy(true);
@@ -7004,7 +7125,7 @@ window.__ModuleLoader__.load({
             setEnvNotice('配置已被其他窗口修改（CONFIG_CONFLICT），已刷新；本次切换未生效');
             return;
           }
-          setEnvNotice('切换运行环境失败：' + ((error && error.message) || '未知错误'));
+          setEnvNotice('切换运行环境失败：' + (configErrorText(error && error.message) || '未知错误'));
         });
       }
       /**
@@ -7102,76 +7223,14 @@ window.__ModuleLoader__.load({
         try { transport.retrySeedRefresh(seedContext()); } catch { /* transport must not break UI */ }
       }
 
-      return h('div', {
-        className: 'utb',
-        'data-utb-tabs-supported': tabsSupported ? 'true' : 'false',
-        'data-utb-tabs-visible': showTabs ? 'true' : 'false',
-        'data-utb-active-view': activeView ? String(activeView.id) : '',
-        'data-utb-runtime-id': ui ? String(ui.runtimeId || '') : '',
-        'data-utb-scope-binding': String(scope.binding || ''),
-        'data-utb-views-count': stableViews ? String(stableViews.views.length) : '0',
-        'data-utb-ready-views': String(readyViewList.length),
-        'data-utb-tabs-pref': tabsVisible ? 'true' : 'false',
-        'data-utb-active-busy': activeBusy ? 'true' : 'false',
-        'data-utb-display-mode': displayMode,
-        onPointerDown: markHuman,
-        onKeyDown: markHuman,
-        onWheel: markHuman,
-      },
-        h('style', null, CSS),
-        h('div', { className: 'utb-top' },
-          h('span', { className: 'utb-env-icon', 'aria-hidden': true }, h(IconWindow, null)),
-          h('div', { className: 'utb-env-text' },
-            h('span', { className: 'utb-env-title' }, 'Web · 调试视图')),
-          h('span', { className: 'utb-gap' }),
-          // Web-view-only run-mode switch: headless (default) vs headed (visible window + profile).
-          env === 'web' && h('div', {
-            className: 'utb-seg utb-display-seg',
-            role: 'group',
-            'aria-label': '运行模式',
-            'data-utb-display-mode': displayMode,
-          },
-            [['headless', '无头'], ['headed', '有头']].map(([id, label]) => {
-              const description = id === 'headed'
-                ? '有头模式（离屏隐藏窗口 + 持久 profile）\n'
-                  + '· 真实有头 Chromium，较不易被反爬识别；需要登录/过风控的站点用它\n'
-                  + '· 登录态 / Cookie 跨重启保留\n'
-                  + '· 启动较慢；切换会关闭所有页面，需重新打开'
-                : '无头模式（默认）\n'
-                  + '· 不显示浏览器窗口，启动快、资源占用低\n'
-                  + '· 容易被反爬 / 风控识别（Cloudflare、Turnstile 等会持续挑战或 403）\n'
-                  + '· 每次启动使用临时 profile，不保留登录态';
-              return h('button', {
-                key: id,
-                type: 'button',
-                className: 'utb-seg-btn',
-                'aria-pressed': displayMode === id,
-                'aria-description': description,
-                'data-utb-display': id,
-                title: description,
-                disabled: displaySwitching,
-                onClick: () => changeDisplayMode(id),
-              }, segDot(displayMode === id, 'display'), label);
-            })),
-          h('label', { className: 'utb-env-pick' },
-            h('span', { className: 'utb-sr' }, '选择运行环境'),
-            h('select', {
-              className: 'utb-select',
-              value: env,
-              'aria-label': '选择运行环境',
-              disabled: annotOn || envBusy,
-              title: envBusy ? '正在提交到 Host…' : (hostConfig.state.error || undefined),
-              'data-utb-env-busy': envBusy ? 'true' : 'false',
-              onChange: (e) => changeEnv(e.target.value),
-            }, envOptions.map((option) => h('option', { key: option.id, value: option.id, disabled: !option.ready }, option.label))),
-            h('span', { className: 'utb-env-caret', 'aria-hidden': true }, h(IconChevron, null))),
-          (hostConfig.state.error || envNotice) ? h('span', {
-            className: 'utb-env-error',
-            role: 'alert',
-            'data-uts-config-error': hostConfig.state.error ? 'read' : 'select',
-            title: hostConfig.state.error || envNotice,
-          }, hostConfig.state.error || envNotice) : null),
-        h('div', { className: 'utb-bar' },
+      /**
+       * 环境视图注册表：右上角组合框选哪个目标环境，下面就渲染哪个视图。
+       * 目前只有 web 实现了视图；其余目标环境在表里缺席 → 走「视图层暂不支持」占位。
+       * 接新环境时只加一项（或改成按宿主适配器声明注册），外壳不用动。
+       */
+      function webViewBody() {
+        return [
+h('div', { className: 'utb-bar' },
           button('后退', h(IconArrow, { dir: 'back' }), () => move('back'), backDisabled),
           button('前进', h(IconArrow, { dir: 'forward' }), () => move('forward'), forwardDisabled),
           button('刷新', h(IconReload, null), reload, reloadDisabled),
@@ -7406,7 +7465,7 @@ window.__ModuleLoader__.load({
                 ? '画布坐标 X（画布 CSS px，可为负）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
                 : viewSync
                   ? '页面顶层滚动位置 X（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
-                  : '旧 Host 不支持视口坐标同步',
+                  : '旧宿主不支持视口坐标同步',
               disabled: !viewSync || annotOn,
               onChange: (e) => changePositionField('x', e.target.value),
               onFocus: () => { viewFocusRef.current = 'x'; },
@@ -7427,7 +7486,7 @@ window.__ModuleLoader__.load({
                 ? '画布坐标 Y（画布 CSS px，可为负）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
                 : viewSync
                   ? '页面顶层滚动位置 Y（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
-                  : '旧 Host 不支持视口坐标同步',
+                  : '旧宿主不支持视口坐标同步',
               disabled: !viewSync || annotOn,
               onChange: (e) => changePositionField('y', e.target.value),
               onFocus: () => { viewFocusRef.current = 'y'; },
@@ -7757,7 +7816,111 @@ window.__ModuleLoader__.load({
           }, annotSyncText),
           h('span', { className: 'utb-gap' }),
           h('span', { className: 'utb-activity', title: remote.activity ? `运行时：${remote.activity}` : '视图状态' },
-            remote.activity || activity)));
+            remote.activity || activity))
+        ];
+      }
+      const envOption = ENVIRONMENTS.find((item) => item.id === env) || { id: env, label: env, short: env };
+      const envViewTitle = (envOption.short || envOption.label || env) + ' · 调试视图';
+      const envViewSupported = typeof ENV_VIEWS[env] === 'function';
+
+      /** 视图层没有该环境时占位：问号图标 + 一句人话，不留空白面板。 */
+      function noEnvView() {
+        const hostEnvOption = ENVIRONMENTS.find((item) => item.id === (resolvedEnvironment || 'web'));
+        const hostEnvLabel = (hostEnvOption && (hostEnvOption.label || hostEnvOption.id)) || (resolvedEnvironment || 'Web 视图');
+        return h('div', { className: 'utb-noview', 'data-utb-noview': env },
+          h('span', { className: 'utb-noview-icon', 'aria-hidden': true },
+            h('svg', { viewBox: '0 0 24 24', width: 28, height: 28, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' },
+              h('circle', { cx: 12, cy: 12, r: 9 }),
+              h('path', { d: 'M9.6 9.4a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.4' }),
+              h('circle', { cx: 12, cy: 17, r: .95, fill: 'currentColor', stroke: 'none' }))),
+          h('div', { className: 'utb-noview-text' },
+            h('strong', null, '视图层暂不支持'),
+            h('p', null, (envOption.label || env) + ' 的调试视图还没有实现（适配器未接入）。'),
+            h('p', { className: 'utb-noview-hint' }, '执行环境仍然是 ' + hostEnvLabel + '，这里只切换视图。'),
+            h('p', { className: 'utb-noview-hint' }, '可以在设置页查看该环境的适配器与依赖状态。')));
+      }
+
+      return h('div', {
+        className: 'utb',
+        'data-utb-tabs-supported': tabsSupported ? 'true' : 'false',
+        'data-utb-tabs-visible': showTabs ? 'true' : 'false',
+        'data-utb-active-view': activeView ? String(activeView.id) : '',
+        'data-utb-runtime-id': ui ? String(ui.runtimeId || '') : '',
+        'data-utb-scope-binding': String(scope.binding || ''),
+        'data-utb-views-count': stableViews ? String(stableViews.views.length) : '0',
+        'data-utb-ready-views': String(readyViewList.length),
+        'data-utb-tabs-pref': tabsVisible ? 'true' : 'false',
+        'data-utb-active-busy': activeBusy ? 'true' : 'false',
+        'data-utb-display-mode': displayMode,
+        // 组合框当前选中的目标环境，以及视图层是否已实现该环境
+        'data-utb-view': env,
+        'data-utb-view-supported': envViewSupported ? 'true' : 'false',
+        onPointerDown: markHuman,
+        onKeyDown: markHuman,
+        onWheel: markHuman,
+      },
+        h('style', null, CSS),
+        h('div', { className: 'utb-top' },
+          h('span', { className: 'utb-env-icon', 'aria-hidden': true }, h(IconWindow, null)),
+          h('div', { className: 'utb-env-text' },
+            h('span', { className: 'utb-env-title', 'data-utb-env-title': env }, envViewTitle)),
+          h('span', { className: 'utb-gap' }),
+          // Web-view-only run-mode switch: headless (default) vs headed (visible window + profile).
+          env === 'web' && envViewSupported && h('div', {
+            className: 'utb-seg utb-display-seg',
+            role: 'group',
+            'aria-label': '运行模式',
+            'data-utb-display-mode': displayMode,
+          },
+            [['headless', '无头'], ['headed', '有头']].map(([id, label]) => {
+              const description = id === 'headed'
+                ? '有头模式（离屏隐藏窗口 + 持久 profile）\n'
+                  + '· 真实有头 Chromium，较不易被反爬识别；需要登录/过风控的站点用它\n'
+                  + '· 登录态 / Cookie 跨重启保留\n'
+                  + '· 启动较慢；切换会关闭所有页面，需重新打开'
+                : '无头模式（默认）\n'
+                  + '· 不显示浏览器窗口，启动快、资源占用低\n'
+                  + '· 容易被反爬 / 风控识别（Cloudflare、Turnstile 等会持续挑战或 403）\n'
+                  + '· 每次启动使用临时 profile，不保留登录态';
+              return h('button', {
+                key: id,
+                type: 'button',
+                className: 'utb-seg-btn',
+                'aria-pressed': displayMode === id,
+                'aria-description': description,
+                'data-utb-display': id,
+                title: description,
+                disabled: displaySwitching,
+                onClick: () => changeDisplayMode(id),
+              }, segDot(displayMode === id, 'display'), label);
+            })),
+          h('label', { className: 'utb-env-pick' },
+            h('span', { className: 'utb-sr' }, '选择运行环境'),
+            h('select', {
+              className: 'utb-select',
+              value: env,
+              'aria-label': '选择运行环境',
+              disabled: annotOn || envBusy,
+              title: envBusy ? '正在提交到宿主…' : (hostConfig.state.error || undefined),
+              'data-utb-env-busy': envBusy ? 'true' : 'false',
+              onChange: (e) => changeEnv(e.target.value),
+              // 打开下拉时重读一次：另一个窗口改了开关，这里也能立刻看到最新的可选项
+              onFocus: () => { if (hostConfig && typeof hostConfig.reload === 'function') hostConfig.reload(); },
+            // 没有视图的环境也允许选：选中后渲染空态（只切视图，不写宿主配置）。
+            // 只有“有视图但宿主不允许执行”的环境才禁用。
+            }, envOptions.map((option) => h('option', {
+              key: option.id,
+              value: option.id,
+              'data-utb-env-enabled': 'true',
+            }, option.label))),
+            h('span', { className: 'utb-env-caret', 'aria-hidden': true }, h(IconChevron, null))),
+          (hostConfig.state.error || envNotice) ? h('span', {
+            className: 'utb-env-error',
+            role: 'alert',
+            'data-uts-config-error': hostConfig.state.error ? 'read' : 'select',
+            title: hostConfig.state.error || envNotice,
+          }, hostConfig.state.error || envNotice) : null),
+                  ...(envViewSupported ? ENV_VIEWS[env]() : [noEnvView()]));
     }
 
     /* =====================================================================================
@@ -7794,7 +7957,7 @@ window.__ModuleLoader__.load({
 
     const TARGET_ENV_GROUPS = [
       {
-        id: 'web', title: 'Web视图',
+        id: 'web', title: 'Web 视图',
         targets: [
           { id: 'chrome', name: 'Chrome', note: 'Chrome / Chromium 中运行的网页', chain: TARGET_CHAINS.chromium,
             state: 'supported' },
@@ -7809,7 +7972,7 @@ window.__ModuleLoader__.load({
         ],
       },
       {
-        id: 'linux', title: 'Linux视图',
+        id: 'linux', title: 'Linux 视图',
         targets: [
           plannedTarget('linux-native', 'Linux 原生桌面应用', 'GTK / Qt / Flutter 等原生窗口', TARGET_CHAINS.linux),
           plannedTarget('electron', 'Electron 应用', 'Chromium 页面与原生应用窗口', TARGET_CHAINS.electron),
@@ -7817,7 +7980,7 @@ window.__ModuleLoader__.load({
         ],
       },
       {
-        id: 'windows', title: 'Windows视图',
+        id: 'windows', title: 'Windows 视图',
         targets: [
           plannedTarget('windows-native', 'Windows 原生桌面应用', 'Win32 / Qt / Flutter 等原生窗口', TARGET_CHAINS.windows),
           plannedTarget('dotnet', '.NET 桌面应用', 'WPF / Windows Forms', TARGET_CHAINS.windows),
@@ -7827,7 +7990,7 @@ window.__ModuleLoader__.load({
         ],
       },
       {
-        id: 'macos', title: 'macOS视图',
+        id: 'macos', title: 'macOS 视图',
         targets: [
           plannedTarget('macos-native', 'macOS 原生桌面应用', 'AppKit / SwiftUI / Qt / Flutter', TARGET_CHAINS.macos),
           plannedTarget('mac-electron', 'Electron 应用', 'Chromium 页面与原生应用窗口', TARGET_CHAINS.electron),
@@ -7835,7 +7998,7 @@ window.__ModuleLoader__.load({
         ],
       },
       {
-        id: 'android', title: 'Android视图',
+        id: 'android', title: 'Android 视图',
         targets: [
           plannedTarget('android-native', 'Android 原生应用', 'Android Views / Jetpack Compose', TARGET_CHAINS.android),
           plannedTarget('android-webview', 'Android WebView 应用', '内嵌网页；Capacitor / Cordova', TARGET_CHAINS.androidWeb),
@@ -7844,7 +8007,7 @@ window.__ModuleLoader__.load({
         ],
       },
       {
-        id: 'tui', title: 'TUI视图',
+        id: 'tui', title: 'TUI 视图',
         targets: [
           plannedTarget('python-tui', 'Python 终端应用', 'Textual 等终端界面', TARGET_CHAINS.terminal),
           plannedTarget('node-tui', 'Node.js 终端应用', 'Ink / blessed 等终端界面', TARGET_CHAINS.terminal),
@@ -7853,7 +8016,7 @@ window.__ModuleLoader__.load({
         ],
       },
       {
-        id: 'harmonyos', title: 'HarmonyOS视图',
+        id: 'harmonyos', title: 'HarmonyOS 视图',
         targets: [
           plannedTarget('harmony-native', '鸿蒙原生应用', 'ArkUI / ArkTS', TARGET_CHAINS.harmonyos),
           plannedTarget('arkui-x', 'ArkUI-X 应用', 'ArkUI 跨平台应用', TARGET_CHAINS.harmonyos),
@@ -7876,16 +8039,29 @@ window.__ModuleLoader__.load({
           plannedTarget('cocos', 'Cocos 游戏', 'Cocos 原生或 Web 游戏实例', {
             communication: 'CDP / RPC', backend: 'DevTools / 引擎辅助程序（待选）',
           }),
-          plannedTarget('browser-game', '浏览器游戏', 'Phaser 等 Web 游戏实例', TARGET_CHAINS.chromium),
         ],
       },
       {
-        id: 'three-d', title: '3D视图',
+        id: 'three-d', title: '3D 视图',
         targets: [
           plannedTarget('web-3d', 'Web 三维应用', 'Three.js / Babylon.js / PlayCanvas；WebGL / WebGPU', TARGET_CHAINS.chromium),
           plannedTarget('native-3d', '原生三维应用', '原生窗口中的三维场景', TARGET_CHAINS.native3d),
           plannedTarget('three-unity', 'Unity 三维应用', 'Unity Player 中的交互式三维场景', {
             communication: 'RPC / IPC', backend: 'Unity 调试辅助程序（待选）',
+          }),
+          // 用户 2026-11-10 要求：3D 场景补上建模/动画工具。它们都是原生桌面程序，
+          // 没有现成调试协议，先按 native3d 链路登记为 planned，避免"3D 只有引擎"的误解。
+          plannedTarget('blender', 'Blender', 'Blender 场景、模型与渲染设置界面', {
+            communication: 'Python / RPC（bpy 待评估）', backend: 'Blender 内置 Python 控制台（待实现）',
+          }),
+          plannedTarget('3dsmax', '3ds Max', '3ds Max 场景、模型与材质编辑器', {
+            communication: 'RPC / IPC（MAXScript 待评估）', backend: '3ds Max 脚本与辅助程序（待实现）',
+          }),
+          plannedTarget('mmd', 'MikuMikuDance（MMD）', 'MMD 动画、模型预览与动作编辑（PMD/PMX/VMD）', {
+            communication: 'RPC / IPC（待评估）', backend: 'MMD 辅助程序（待实现）',
+          }),
+          plannedTarget('pmx-editor', 'PMX Editor', 'PMX 模型结构、材质与变形编辑', {
+            communication: 'RPC / IPC（待评估）', backend: 'PMX Editor 辅助程序（待实现）',
           }),
         ],
       },
@@ -7924,14 +8100,14 @@ window.__ModuleLoader__.load({
 .uts-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .uts-card-title { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .uts-card-switch { flex: none; display: inline-flex; align-items: center; }
-.uts-card-actions { display: flex; gap: 6px; margin-top: 6px; }
+.uts-card-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; margin-top: auto; }
+.uts-card-actions { display: flex; gap: 6px; }
+.uts-card-foot .uts-card-actions { margin: 0 0 0 auto; }
 .uts-diagnose-btn { box-sizing: border-box; padding: 2px 8px; font: inherit; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); background: transparent; border: .5px solid var(--dsw-alias-border-l2); border-radius: 6px; cursor: pointer; }
 .uts-diagnose-btn:hover { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l1); }
 .uts-diagnostics .uts-axes { margin-top: 8px; }
 .uts-diagnostics .uts-head-row { gap: 8px; }
 .uts-group-env { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 2px 8px; font-size: 12px; font-weight: 400; color: var(--dsw-alias-label-secondary); }
-.uts-current-tag { margin-left: 8px; font-weight: 400; }
-.uts-current-tag[data-uts-current="true"] { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l1); }
 .uts-group-toggle { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0; padding: 4px 8px; font: inherit; font-weight: 600; line-height: 20px; color: var(--dsw-alias-label-primary); text-align: left; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
 .uts-group-toggle:hover { background: var(--dsw-alias-bg-layer-2); }
 .uts-group-toggle:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
@@ -7943,7 +8119,8 @@ window.__ModuleLoader__.load({
 .uts-item { display: flex; flex-direction: column; min-width: 0; }
 .uts-card { box-sizing: border-box; width: 100%; flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: .5px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }
 .uts-card-name { font-size: 13px; font-weight: 600; line-height: 20px; overflow-wrap: anywhere; }
-.uts-card-note { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.uts-card-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+  font-size: 12px; line-height: 18px; max-height: 36px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
 .uts-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .uts-field-inline { flex-direction: row; align-items: center; gap: 8px; }
 .uts-field-label { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
@@ -7951,8 +8128,10 @@ window.__ModuleLoader__.load({
 .uts-field-value[data-uts-valid="false"], .uts-field-value[data-uts-valid="unknown"] { color: var(--dsw-alias-label-tertiary); }
 .uts-empty { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
 .uts-tags { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-top: auto; min-width: 0; }
+.uts-card-state { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
 .uts-tag { box-sizing: border-box; display: inline-flex; align-items: center; min-height: 18px; max-width: 100%; padding: 2px 7px; border-radius: 6px; font-size: 11px; line-height: 16px; white-space: normal; overflow-wrap: anywhere; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-2); border: .5px solid var(--dsw-alias-border-l2); }
 .uts-tag[data-uts-tag="supported"] { color: #16a34a; background: color-mix(in srgb, #16a34a 12%, transparent); border-color: color-mix(in srgb, #16a34a 35%, transparent); }
+.uts-chain { margin-top: 0; margin-bottom: 10px; }
 .uts-axes { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 14px; padding: 8px 10px; border: .5px dashed var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); }
 .uts-axis { display: flex; flex-direction: column; min-width: 0; }
 .uts-axis-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
@@ -7984,6 +8163,124 @@ window.__ModuleLoader__.load({
 .uts-switch-input:disabled + .uts-switch-track { opacity: .45; }
 .uts-switch-input:focus-visible + .uts-switch-track { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { .uts-switch-track, .uts-switch-thumb, .uts-group-chevron { transition: none; } }
+/* --- 诊断页四个板块：实时调试拓扑 / 各模块诊断状态（六轴卡片）/ 诊断日志 / 调试节点职责 --- */
+.uts-diag-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
+.uts-diag-overall { box-sizing: border-box; display: inline-flex; align-items: center; gap: 7px; padding: 3px 11px; border-radius: 999px; font-size: 12px; line-height: 18px; color: #d97706; background: color-mix(in srgb, #d97706 12%, transparent); border: .5px solid color-mix(in srgb, #d97706 38%, transparent); }
+/* 胶囊跟随五态（旧的三态 ready/pending/broken 已全部退役，写成 ready 会永远不匹配、只剩默认橙色）。 */
+.uts-diag-overall[data-uts-overall="PASS"] { color: #16a34a; background: color-mix(in srgb, #16a34a 12%, transparent); border-color: color-mix(in srgb, #16a34a 38%, transparent); }
+.uts-diag-overall[data-uts-overall="WARN"] { color: #d97706; background: color-mix(in srgb, #d97706 12%, transparent); border-color: color-mix(in srgb, #d97706 38%, transparent); }
+.uts-diag-overall[data-uts-overall="FAIL"] { color: #b91c1c; background: color-mix(in srgb, #b91c1c 12%, transparent); border-color: color-mix(in srgb, #b91c1c 38%, transparent); }
+.uts-diag-overall[data-uts-overall="SKIPPED"] { color: var(--dsw-alias-label-tertiary); background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent); border-style: dashed; border-color: color-mix(in srgb, var(--dsw-alias-label-tertiary) 55%, transparent); }
+.uts-diag-overall[data-uts-overall="UNKNOWN"] { color: var(--dsw-alias-label-tertiary); background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent); border-style: dotted; border-color: color-mix(in srgb, var(--dsw-alias-label-tertiary) 45%, transparent); }
+.uts-diag-overall-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.uts-diag-stale { flex: 1 1 100%; margin: 0; font-size: 11px; line-height: 16px; color: #d97706; overflow-wrap: anywhere; }
+.uts-diag-panel { display: flex; flex-direction: column; gap: 10px; padding: 13px 15px; border: .5px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }
+.uts-diag-panel-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
+.uts-diag-panel-title { margin: 0; font-size: 13px; font-weight: 600; line-height: 20px; }
+.uts-diag-flow { margin: 0; font-size: 10px; line-height: 15px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.uts-diag-chain-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
+.uts-diag-chain { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 56px minmax(0, 1fr) 56px minmax(0, 1fr) 56px minmax(0, 1fr) 56px minmax(0, 1fr); align-items: center; min-width: 760px; padding-top: 16px; }
+/* 纯装饰导轨（不承载状态）：虚线 + 右端静态小点，颜色只取中性值。 */
+.uts-diag-rail { position: absolute; left: 7.5%; right: 7.5%; top: 4px; height: 0; border-top: 1px dashed color-mix(in srgb, var(--dsw-alias-label-tertiary) 55%, transparent); pointer-events: none; }
+.uts-diag-rail-dot { position: absolute; right: -2px; top: -3px; width: 5px; height: 5px; border-radius: 50%; background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 70%, transparent); opacity: .65; }
+.uts-diag-node { box-sizing: border-box; display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 10px 11px; border: .5px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-layer-2); }
+.uts-diag-node[data-uts-node-state="PASS"] { border-color: color-mix(in srgb, #16a34a 42%, transparent); }
+.uts-diag-node[data-uts-node-state="WARN"] { border-color: color-mix(in srgb, #d97706 42%, transparent); }
+.uts-diag-node[data-uts-node-state="FAIL"] { border-color: color-mix(in srgb, #b91c1c 45%, transparent); }
+.uts-diag-node[data-uts-node-state="SKIPPED"] { border-style: dashed; border-color: color-mix(in srgb, var(--dsw-alias-label-tertiary) 55%, transparent); }
+.uts-diag-node[data-uts-node-state="UNKNOWN"] { border-style: dashed; border-color: color-mix(in srgb, var(--dsw-alias-label-tertiary) 40%, transparent); }
+.uts-diag-node[data-uts-stage-phase="running"] { border-color: var(--dsw-alias-brand-primary); animation: uts-diag-pulse 1s ease-in-out infinite alternate; }
+@keyframes uts-diag-pulse { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 0%, transparent); } to { box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent); } }
+.uts-diag-node-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.uts-diag-node-index { font-size: 9px; line-height: 14px; letter-spacing: .1em; color: var(--dsw-alias-label-tertiary); }
+.uts-diag-node-glyph { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: 7px; color: var(--dsw-alias-label-tertiary); background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent); }
+.uts-diag-node[data-uts-node-state="PASS"] .uts-diag-node-glyph { color: #16a34a; background: color-mix(in srgb, #16a34a 12%, transparent); }
+.uts-diag-node[data-uts-node-state="WARN"] .uts-diag-node-glyph { color: #d97706; background: color-mix(in srgb, #d97706 12%, transparent); }
+.uts-diag-node[data-uts-node-state="FAIL"] .uts-diag-node-glyph { color: #b91c1c; background: color-mix(in srgb, #b91c1c 12%, transparent); }
+.uts-diag-node-role { font-size: 10px; line-height: 15px; color: var(--dsw-alias-label-tertiary); }
+.uts-diag-node-name { font-size: 12px; font-weight: 600; line-height: 18px; color: var(--dsw-alias-label-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 职责描述固定占两行（15px × 2 = 30px）：卡片高度不随文案长短跳动 */
+.uts-diag-node-sub { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-height: 30px; font-size: 10px; line-height: 15px; color: var(--dsw-alias-label-secondary); }
+.uts-diag-node-status { display: flex; align-items: flex-start; gap: 5px; min-width: 0; font-size: 10px; line-height: 15px; color: var(--dsw-alias-label-tertiary); }
+/* 状态信息预留两行（30px = 2 × 15px），超出两行才截断；完整内容在节点悬停提示里。 */
+.uts-diag-node-status > span { min-width: 0; min-height: 30px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.uts-diag-node[data-uts-node-state="WARN"] .uts-diag-node-status { color: #d97706; }
+.uts-diag-node[data-uts-node-state="FAIL"] .uts-diag-node-status { color: #b91c1c; }
+.uts-diag-dot { flex: none; width: 5px; height: 5px; margin-top: 5px; border-radius: 50%; background: var(--dsw-alias-label-tertiary); }
+.uts-diag-node[data-uts-node-state="PASS"] .uts-diag-dot { background: #16a34a; }
+.uts-diag-node[data-uts-node-state="WARN"] .uts-diag-dot { background: #d97706; }
+.uts-diag-node[data-uts-node-state="FAIL"] .uts-diag-dot { background: #b91c1c; }
+.uts-diag-edge { position: relative; display: flex; align-items: center; justify-content: center; align-self: center; width: 100%; }
+.uts-diag-edge-line { position: relative; display: block; width: 100%; height: 1.5px; background: #16a34a; }
+.uts-diag-edge[data-uts-edge-state="PASS"] .uts-diag-edge-line { background: #16a34a; }
+.uts-diag-edge[data-uts-edge-state="PASS"] .uts-diag-edge-line::before { content: ""; position: absolute; top: 50%; right: 0; transform: translateY(-50%); border-left: 4px solid #16a34a; border-top: 3px solid transparent; border-bottom: 3px solid transparent; }
+.uts-diag-edge[data-uts-edge-state="WARN"] .uts-diag-edge-line { background: #d97706; }
+.uts-diag-edge[data-uts-edge-state="WARN"] .uts-diag-edge-label { color: #d97706; }
+.uts-diag-edge[data-uts-edge-state="SKIPPED"] .uts-diag-edge-line { background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--dsw-alias-label-tertiary) 60%, transparent) 0 4px, transparent 4px 8px); }
+.uts-diag-edge[data-uts-edge-state="UNKNOWN"] .uts-diag-edge-line { background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--dsw-alias-label-tertiary) 45%, transparent) 0 2px, transparent 2px 6px); }
+.uts-diag-edge[data-uts-edge-state="FAIL"] .uts-diag-edge-line { background: repeating-linear-gradient(90deg, #b91c1c 0 4px, transparent 4px 8px); }
+.uts-diag-edge[data-uts-edge-state="FAIL"] .uts-diag-edge-label { color: #b91c1c; }
+/* 沿通路移动的小球：绝对定位，不参与布局；只有本 run 里 PASS 且下游已 stage-end 的段才跑。 */
+.uts-diag-edge-dot { position: absolute; top: 50%; left: 0; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; background: #16a34a; box-shadow: 0 0 6px color-mix(in srgb, #16a34a 55%, transparent); opacity: .9; display: none; pointer-events: none; }
+.uts-diag-edge[data-uts-edge-live="true"] .uts-diag-edge-dot { display: block; animation: uts-diag-flow 2.1s linear infinite; }
+@keyframes uts-diag-flow { 0% { left: 0; opacity: 0; } 12% { opacity: .9; } 88% { opacity: .9; } 100% { left: calc(100% - 6px); opacity: 0; } }
+.uts-diag-edge-break { position: absolute; display: grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; font-size: 10px; line-height: 1; color: #b91c1c; background: var(--dsw-alias-bg-layer-1); border: .5px solid color-mix(in srgb, #b91c1c 50%, transparent); }
+.uts-diag-edge-label { position: absolute; top: calc(50% + 7px); left: 50%; transform: translateX(-50%); font-size: 9px; line-height: 13px; color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
+.uts-diag-panel-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
+.uts-diag-panel-title { margin: 0; font-size: 13px; font-weight: 600; line-height: 20px; }
+.uts-diag-flow { margin: 0; font-size: 10px; line-height: 15px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.uts-diag-flow { margin: 0; font-size: 10px; line-height: 15px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.uts-diag-axes { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.uts-diag-axis { box-sizing: border-box; display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 11px 12px; border: .5px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-2); }
+.uts-diag-axis-icon { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; color: var(--dsw-alias-label-secondary); background: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent); }
+.uts-diag-axis[data-uts-status="supported"] .uts-diag-axis-icon, .uts-diag-axis[data-uts-status="ok"] .uts-diag-axis-icon, .uts-diag-axis[data-uts-status="bound"] .uts-diag-axis-icon, .uts-diag-axis[data-uts-status="available"] .uts-diag-axis-icon, .uts-diag-axis[data-uts-status="true"] .uts-diag-axis-icon { color: #16a34a; background: color-mix(in srgb, #16a34a 12%, transparent); }
+.uts-diag-axis[data-uts-status="failed"] .uts-diag-axis-icon, .uts-diag-axis[data-uts-status="degraded"] .uts-diag-axis-icon, .uts-diag-axis[data-uts-status="stale"] .uts-diag-axis-icon, .uts-diag-axis[data-uts-status="partial"] .uts-diag-axis-icon, .uts-diag-axis[data-uts-status="unavailable"] .uts-diag-axis-icon { color: #d97706; background: color-mix(in srgb, #d97706 12%, transparent); }
+.uts-diag-axis-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; }
+.uts-diag-axis-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.uts-diag-axis-name { font-size: 11px; line-height: 16px; font-weight: 600; color: var(--dsw-alias-label-secondary); }
+.uts-diag-axis-value { flex: none; font-size: 11px; line-height: 16px; font-weight: 600; white-space: nowrap; color: var(--dsw-alias-label-tertiary); }
+.uts-diag-axis[data-uts-status="supported"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="ok"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="bound"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="available"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="true"] .uts-diag-axis-value { color: #16a34a; }
+.uts-diag-axis[data-uts-status="failed"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="degraded"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="stale"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="partial"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="unavailable"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="unsupported"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="unbound"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="not-probed"] .uts-diag-axis-value, .uts-diag-axis[data-uts-status="false"] .uts-diag-axis-value { color: #d97706; }
+.uts-diag-axis-reason { font-family: inherit; font-size: 10px; line-height: 16px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+/* 占位固定三行（16px × 3）：六张卡片高度一致，且 run 结果变化时卡片不会跳动 */
+.uts-diag-axis-checks { display: block; min-height: 48px; font-family: inherit; font-size: 10px; line-height: 16px; color: var(--dsw-alias-label-tertiary); }
+/* 一行一项：不用分隔符串成一句，逐行列出更易读；单项过长用省略号，完整列表看悬停提示 */
+.uts-diag-axis-checks-item { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 「+n」是计数标签：字号更小、颜色更淡，与描述文字明显区分 */
+.uts-diag-axis-checks-more { margin-left: 5px; font-size: 9px; line-height: 16px; letter-spacing: .02em; color: color-mix(in srgb, var(--dsw-alias-label-tertiary) 55%, transparent); }
+.uts-diag-bottom { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: 12px; }
+.uts-diag-events { display: flex; flex-direction: column; gap: 7px; }
+.uts-diag-event { display: grid; grid-template-columns: 62px 8px minmax(0, 1fr); align-items: start; gap: 8px; min-width: 0; font-size: 11px; line-height: 16px; }
+.uts-diag-event-time { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; line-height: 16px; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+/* 圆点颜色只跟随事件状态（旧写法按 kind="change" 上橙色，把所有 stage 行都染成告警色）。 */
+.uts-diag-event-pin { width: 5px; height: 5px; margin-top: 6px; border-radius: 50%; background: var(--dsw-alias-label-tertiary); }
+.uts-diag-event-pin[data-uts-event-status="PASS"] { background: #16a34a; }
+.uts-diag-event-pin[data-uts-event-status="WARN"] { background: #d97706; }
+.uts-diag-event-pin[data-uts-event-status="FAIL"] { background: #b91c1c; }
+.uts-diag-event-pin[data-uts-event-status="SKIPPED"] { background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 85%, transparent); }
+.uts-diag-event-pin[data-uts-event-status="UNKNOWN"] { background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 60%, transparent); }
+.uts-diag-event-pin[data-uts-event-status="INFO"] { background: var(--dsw-alias-label-tertiary); }
+.uts-diag-event[data-uts-event-time-source="observed"] .uts-diag-event-time { font-style: italic; opacity: .75; }
+.uts-diag-event-text { min-width: 0; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.uts-diag-duties { display: flex; flex-direction: column; gap: 8px; }
+.uts-diag-duty { display: flex; align-items: flex-start; gap: 8px; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.uts-diag-duty-arrow { flex: none; color: #16a34a; }
+.uts-diag-duty-text strong { font-weight: 600; color: var(--dsw-alias-label-primary); }
+.uts-diag-empty { margin: 0; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary); }
+@media (max-width: 900px) { .uts-diag-bottom { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) {
+  .uts-diag-edge[data-uts-edge-live="true"] .uts-diag-edge-dot { animation: none; }
+  .uts-diag-node[data-uts-stage-phase="running"] { animation: none; }
+}
+.uts-diag-modal-overlay { position: fixed; inset: 0; z-index: 3000; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, .45); pointer-events: auto; }
+.uts-diag-modal-panel { box-sizing: border-box; position: relative; display: flex; flex-direction: column; width: min(1180px, 94vw); max-height: 86vh; overflow: auto; border-radius: 14px; border: .5px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); box-shadow: 0 24px 64px rgba(0, 0, 0, .32); }
+.uts-diag-modal-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; border-bottom: .5px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); }
+.uts-diag-modal-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.uts-diag-modal-close { flex: none; }
+.uts-diag-modal-body { padding: 14px 16px 18px; }
+.uts-diagnostics-body { display: flex; flex-direction: column; gap: 12px; }
+.uts-diag-action { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+
 `;
 
     /* ---- Host config (M4): one authoritative revision for the settings page and the panel ---- */
@@ -8017,12 +8314,559 @@ window.__ModuleLoader__.load({
       }
       if (axis.evidenceKind) parts.push('证据 ' + axis.evidenceKind);
       if (axis.checks && typeof axis.checks === 'object') {
-        const failed = Object.entries(axis.checks)
-          .filter(([, check]) => check && check.status && check.status !== 'ok')
-          .map(([name, check]) => name + '=' + String(check.status) + (check.reason ? '(' + check.reason + ')' : ''));
-        if (failed.length) parts.push('未就绪 ' + failed.join(', '));
+        // readiness 轴历史上的 check 用 `ok`，诊断 run 的探测用 `pass`：两种都算通过（大小写不敏感），
+        // 只有真正没通过的项才列进提示，别再把「六条全 pass」说成「未通过」。
+        const statusOf = (check) => {
+          if (typeof check === 'string') return check;
+          if (check && typeof check === 'object' && typeof check.status === 'string') return check.status;
+          return '';
+        };
+        const passed = (status) => ['ok', 'pass'].includes(String(status || '').toLowerCase());
+        const rows = Object.entries(axis.checks).map(([name, check]) => ({
+          name,
+          status: statusOf(check),
+          reason: check && typeof check === 'object' ? check.reason || '' : '',
+        }));
+        const failed = rows.filter((row) => !passed(row.status));
+        if (failed.length) {
+          parts.push('未通过 ' + failed.map((row) => row.name + '=' + (row.status || 'unknown') + (row.reason ? '(' + row.reason + ')' : '')).join(', '));
+        } else if (rows.length) {
+          parts.push('全部通过 ' + rows.map((row) => row.name + '=' + row.status).join(', '));
+        }
       }
       return parts.join(' · ');
+    }
+
+    /* ---- Provider diagnostics page: topology / six axes / event stream / duties ---------------- */
+
+    /**
+     * Prototype display order for the six axes on the diagnostics page. `AXIS_ORDER` stays the
+     * data/probe order (other code and the acceptance script read it), this one is presentation
+     * only: it reorders the same six keys, it never adds or drops an axis.
+     */
+    const DIAG_AXIS_ORDER = ['support', 'target', 'enabled', 'capability', 'dependency', 'connection'];
+    /** Diagnostics page polls the existing `/config?view=global`; no new Host endpoint. */
+    const DIAG_POLL_MS = 5000;
+    const DIAG_EVENT_LIMIT = 30;
+    const DIAG_EVENT_ROWS = 8;
+
+    /** Node ids are fixed by the prototype: five logical links from agent to target. */
+    const DIAG_DUTY_TEXT = {
+      agent: '理解任务目标，发起工具调用并消费诊断结果',
+      controller: '统一调度，选择能力与执行路径',
+      interface: '通过通信接口传递命令、事件与会话数据',
+      backend: '调用浏览器调试执行后端执行操作',
+      target: '提供实际运行状态与调试证据',
+    };
+
+    /** 14px inline SVG per axis/node — inline paths, never an external font, image or sprite. */
+    function diagSvg(children) {
+      return h('svg', {
+        width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+        strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+      }, ...children);
+    }
+    function diagAxisIcon(axisKey) {
+      if (axisKey === 'support') {
+        return diagSvg([h('path', { key: 'a', d: 'm12 3 8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4Z' }),
+          h('path', { key: 'b', d: 'm8 12 2.5 2.5L16 9' })]);
+      }
+      if (axisKey === 'target') {
+        return diagSvg([h('path', { key: 'a', d: 'M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1' }),
+          h('path', { key: 'b', d: 'M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1' })]);
+      }
+      if (axisKey === 'enabled') {
+        return diagSvg([h('circle', { key: 'a', cx: 12, cy: 12, r: 9 }), h('path', { key: 'b', d: 'M12 7v5l3 2' })]);
+      }
+      if (axisKey === 'capability') {
+        return diagSvg([h('path', { key: 'a', d: 'M4 5h16v14H4z' }),
+          h('path', { key: 'b', d: 'M8 9h8M8 12.5h5M8 16h7' })]);
+      }
+      if (axisKey === 'dependency') {
+        return diagSvg([h('circle', { key: 'a', cx: 12, cy: 12, r: 4 }),
+          h('path', { key: 'b', d: 'M12 3v3M5.6 5.6l2.1 2.1M3 12h3M5.6 18.4l2.1-2.1M12 18v3M18.4 18.4l-2.1-2.1M18 12h3M18.4 5.6l-2.1 2.1' })]);
+      }
+      return diagSvg([h('path', { key: 'a', d: 'M12 3 20 7v5c0 4.5-3.2 7.5-8 9-4.8-1.5-8-4.5-8-9V7l8-4Z' }),
+        h('path', { key: 'b', d: 'M9 12h6' })]);
+    }
+    function diagNodeIcon(nodeId) {
+      if (nodeId === 'agent') {
+        return diagSvg([h('path', { key: 'a', d: 'M12 3 14 8l5-2-2 5 4 3-5 1-1 5-3-4-5 2 2-5-4-3 5-1 2-5Z' }),
+          h('circle', { key: 'b', cx: 12, cy: 12, r: 2 })]);
+      }
+      if (nodeId === 'controller') {
+        return diagSvg([h('rect', { key: 'a', x: 4, y: 4, width: 16, height: 16, rx: 3 }),
+          h('path', { key: 'b', d: 'M8 9h8M8 13h5M8 17h8' })]);
+      }
+      if (nodeId === 'interface') {
+        return diagSvg([h('path', { key: 'a', d: 'M8 8 4 12l4 4M16 8l4 4-4 4M14 5l-4 14' })]);
+      }
+      if (nodeId === 'backend') {
+        return diagSvg([h('rect', { key: 'a', x: 3, y: 4, width: 18, height: 13, rx: 2 }),
+          h('path', { key: 'b', d: 'M8 21h8M12 17v4M7 9h4M7 12h8' })]);
+      }
+      return diagSvg([h('circle', { key: 'a', cx: 12, cy: 12, r: 8 }),
+        h('path', { key: 'b', d: 'M4 12h16M12 4a13 13 0 0 1 0 16M12 4a13 13 0 0 0 0 16' })]);
+    }
+
+    /**
+     * A Host readiness `checkedAt` (ms number, numeric string or ISO string) as an ISO string, or
+     * `''` when the value cannot be parsed. Timestamps are never invented: an unusable value shows
+     * as `--:--:--` instead of the current clock.
+     */
+    function diagIsoAt(value) {
+      if (value === null || value === undefined || value === '') return '';
+      const numeric = typeof value === 'number' ? value : (/^\d{6,}$/u.test(String(value)) ? Number(value) : null);
+      const at = numeric === null ? new Date(String(value)) : new Date(numeric);
+      return Number.isNaN(at.getTime()) ? '' : at.toISOString();
+    }
+    /** `HH:MM:SS` for the local clock; `--:--:--` when the timestamp is missing or unparseable. */
+    function diagClock(iso) {
+      const at = new Date(String(iso || ''));
+      if (!iso || Number.isNaN(at.getTime())) return '--:--:--';
+      const pad = (value) => String(value).padStart(2, '0');
+      return pad(at.getHours()) + ':' + pad(at.getMinutes()) + ':' + pad(at.getSeconds());
+    }
+    /**
+     * The machine-readable shape of a non-ready node: the Host's own reason code when it sent one
+     * (`no-target`, `executable-missing`, `provider-not-selected`, …), else `<axis>-<status>`.
+     */
+    function diagReasonCode(axisKey, axis) {
+      const reason = axis && axis.reason ? String(axis.reason).trim() : '';
+      if (/^[a-z][a-z0-9-]{1,}$/iu.test(reason)) return reason;
+      return axisKey + '-' + ((axis && axis.status) || 'not-probed');
+    }
+    /** What a node says under its name: the Host's reason code, else the axis status text. */
+    function diagStatusText(axisKey, axis) {
+      const reason = axis && axis.reason ? String(axis.reason).trim() : '';
+      if (/^[a-z][a-z0-9-]{1,}$/iu.test(reason)) return reason;
+      if (axis && axis.status) return axisText(axisKey, axis.status);
+      return '未探测';
+    }
+
+    /* ---- Provider diagnostics: one real Host run (NDJSON) → five states ------------------ */
+
+    /**
+     * 五态：本页所有节点/边只说这五个词，且只由 Host 的 stage 事件决定。
+     *
+     * 中文按英语状态本身直译，**不用**「待处理」这类动作语气：`WARN` 是本次 run 已经得出的
+     * 结论（后面紧跟 `provider-mismatch`、`executable-missing` 这类原因码），写成「待处理」
+     * 会被读成「还没点开始诊断」。还没跑出结论的那一屏另有独立说法（`待诊断` / `诊断未完成`），
+     * 见 `diagRunlessText`，与五态不共用词。
+     */
+    const DIAG_STATES = ['PASS', 'WARN', 'FAIL', 'SKIPPED', 'UNKNOWN'];
+    const DIAG_STATE_TEXT = { PASS: '正常', WARN: '警告', FAIL: '异常', SKIPPED: '跳过', UNKNOWN: '未知' };
+    const DIAG_STAGE_IDS = ['1', '2', '3', '4', '5'];
+    const DIAG_RUN_ROWS = 8;
+    /** 能力就绪的检查项最多显示三行；每张卡片都按三行占位（悬停看全部）。 */
+    const DIAG_CHECK_LINES = 3;
+    /** 最近一次 run，按 envId/providerId 保留：重进诊断页显示它，但不重放动画、不自动重跑。 */
+    const DIAG_RUNS = new Map();
+    const diagRunKey = (groupId, providerId) => (groupId || '') + '/' + (providerId || '');
+    /**
+     * 五态在界面上**只写中文**：大写状态码是给调用方 agent 的，留在 `data-uts-*-state` 属性与
+     * NDJSON 里，不挤进可见文案。没有中文的非五态值（如事件流的 `INFO`）原样返回，不编造。
+     */
+    function diagStateLabel(state) {
+      const key = String(state || '').toUpperCase();
+      return DIAG_STATE_TEXT[key] || String(state || '');
+    }
+    /**
+     * 还没有 run 结果时的说法，**不是第六个状态**，只是「本轮还没有结论」：
+     * `待诊断` = 这一屏还没跑过任何 run；`诊断未完成` = 跑过但没拿到结果（错误另起一行说明）。
+     * 有结论时返回空串，调用方回落到五态文案。这样「没开始」和「已经诊断出问题」用词不同，
+     * 不会再把 `WARN · provider-mismatch` 读成「等你操作」。
+     */
+    function diagRunlessText(run) {
+      const current = run || {};
+      if ((current.events || []).length) return '';
+      if (current.phase === 'running') return '';
+      return current.error ? '诊断未完成' : '待诊断';
+    }
+
+    /**
+     * 状态码的中英对照：**英文码是 Host 的机器契约**（`data-uts-*`、NDJSON、工具返回值里一律
+     * 保持原样，agent 直接读），**中文只给前端客户看**。界面上渲染成 `中文（english-code）`，
+     * 两种写法同时在场：人读得懂，agent 也解析得到。
+     *
+     * 收录范围 = 诊断页可能出现的一切码：① `integration/diagnose.js` 五阶段的原因；
+     * ② 就绪六轴来自 `core/readiness.js` / `integration/cross-environment.js` 的原因；
+     * ③ 页面自身造的两个（`no-run`、`run-in-progress`）。工具级错误码（`index.js` 里的
+     * `reason`）不进这张表——它们不出现在本页。
+     *
+     * 表没收录的码**不猜**：原样显示英文；`tool-call-*`、`stage-<n>` 这两个动态族按前缀兜底。
+     * 词表与 `docs/diagnose-reason-codes.md` 必须逐条一致，由
+     * `tests/contracts/diagnose-status-text.test.mjs` 强制。
+     */
+    const DIAG_REASON_ZH = {
+      // ① 诊断 run 的五个阶段
+      'scope-unresolved': '无法确定当前作用域（不知道要查哪个工作区）',
+      'registration-unreadable': '读取工具注册信息失败',
+      'registration-broken': '工具声明与实际注册对不上',
+      'tool-call-not-attempted': '没能发起工具调用',
+      'tool-call-failed': '工具调用失败',
+      'tool-not-admitted': '本作用域未放行这些工具',
+      'config-invalid': '宿主配置无效',
+      'adapter-unresolved': '没取到该运行环境的执行适配器',
+      'no-runtime-entry': '插件还没建立运行时入口',
+      'busy': '插件正在处理别的操作，稍后再试',
+      'browser-not-running': '浏览器未运行',
+      'provider-mismatch': '实际在跑的浏览器与所选运行环境不一致',
+      'cdp-protocol-error': '浏览器调试协议返回错误',
+      'cancelled': '本轮检查已被取消',
+      'executable-missing': '没找到该浏览器的可执行文件',
+      'identity-mismatch': '启动起来的浏览器不是所选的那一个',
+      'identity-unverified': '拿不到浏览器版本信息，无法确认身份',
+      'blocked-by-provider-mismatch': '上游运行环境不一致，这一段没执行',
+      'blocked-by-stage-1': '第 1 段失败，这一段没执行',
+      'blocked-by-stage-3': '第 3 段未通过，这一段没执行',
+      'stage-timeout': '这一段超时，没拿到结果',
+      'target-list-failed': '读取标签页列表失败',
+      'no-bound-target': '还没有绑定调试目标',
+      'readonly-eval-failed': '只读求值失败（在页面里跑只读脚本出错）',
+      'readonly-eval-unexpected': '只读求值的结果不是预期的 1',
+      'target-not-in-list': '目标已不在标签页列表里（可能已被关闭）',
+      'capability-partial': '部分能力不可用',
+      // ② 就绪六轴（readiness / cross-environment / 运行环境自身）
+      'not-probed': '未探测',
+      'probe-failed': '探测失败',
+      'environment-disabled': '环境总开关已关闭',
+      'adapter-not-registered': '该环境还没接入适配器',
+      'no-capabilities': '没有上报能力清单',
+      'no-runtime': '宿主里还没有这个环境的运行时',
+      'no-target': '还没有目标',
+      'target-not-bound': '目标未绑定',
+      'target-unbound': '目标已解绑',
+      'target-gone': '调试目标已消失',
+      'cdp-not-attached': '还没连上浏览器调试端口',
+      'collector-missing': '缺少网络采集器',
+      'frame-source-missing': '没有可用的帧来源',
+      'input-unsupported': '该浏览器后端不支持模拟输入',
+      'provider-not-selected': '未选择该运行环境',
+      'provider-disabled': '该运行环境已停用',
+      'provider-driver-pending': '该运行环境的驱动待接入',
+      'provider-not-implemented': '该运行环境尚未实现',
+      'provider-dependency-not-verified': '还没验证该运行环境的依赖',
+      'provider-missing': '没有这个运行环境',
+      'capability-disabled': '该能力已关闭',
+      'capability-unknown': '未知的能力名',
+      'cold': '浏览器还没启动',
+      'host-idle-no-transport': '宿主空闲，没有可用的传输通道',
+      'session-missing': '调试会话已不存在',
+      'no-session': '没有调试会话',
+      'aborted': '已中止',
+      // core/contracts.js 的 WEB_PROVIDER_REASONS（驱动拒绝 / 就绪 / 工具错误共用同一批拼写）
+      'driver-pending': '该运行环境的驱动待接入',
+      'unknown-provider': '没有这个运行环境',
+      'provider-unsupported': '该运行环境不受支持',
+      'override-invalid': '指定的浏览器路径不可用',
+      // ③ 页面自身造的状态（不是 Host 的码）
+      'no-run': '还没有诊断结果',
+      'run-in-progress': '诊断进行中',
+    };
+    /**
+     * 术语对照：这些词在**界面上一律用中文**，英文原样只留在 `data-uts-*`、NDJSON 和代码里
+     * （agent 与排障用）。翻译按上下文取用户能看懂的词，不做字对字直译。
+     */
+    const DIAG_TERM_ZH = {
+      'run': '本轮',
+      'Host': '宿主',
+      'Failed to fetch': '连不上宿主（请求失败）',
+      'stage-start': '阶段开始',
+      'stage-end': '阶段结束',
+      'readonly-eval': '只读求值',
+      'target-list': '目标列表',
+      'snapshot': '快照',
+      'screenshot': '截图',
+      'computed-style': '计算样式',
+      'network-read': '网络记录',
+      'pass': '通过',
+      'fail': '失败',
+      'skip': '跳过',
+      'ok': '通过',
+      'PASS': '正常',
+    };
+    /** 术语 / 原因码 / 检查项 → 中文；都没有译文时原样返回英文。 */
+    function diagTermLabel(term) {
+      const key = String(term || '').trim();
+      if (!key) return '';
+      if (Object.prototype.hasOwnProperty.call(DIAG_TERM_ZH, key)) return DIAG_TERM_ZH[key];
+      return diagReasonLabel(key);
+    }
+    /** 码 → 中文；动态族按前缀兜底，未收录返回空串（调用方原样显示英文）。 */
+    function diagReasonZh(code) {
+      const key = String(code || '').trim();
+      if (!key) return '';
+      if (Object.prototype.hasOwnProperty.call(DIAG_REASON_ZH, key)) return DIAG_REASON_ZH[key];
+      if (/^tool-call-/u.test(key)) return '工具调用失败';
+      if (/^stage-\d$/u.test(key)) return '该段没有给出原因';
+      return '';
+    }
+    /**
+     * 原因码在界面上**只写中文**；英文原码是给调用方 agent 的，留在 `data-uts-stage-reason` /
+     * `data-uts-axis-reason-code` / `data-uts-event-reason` 与 NDJSON 的 `reason` 里。
+     * 没有译文时原样显示英文码，绝不编造中文。
+     */
+    function diagReasonLabel(code) {
+      const key = String(code || '').trim();
+      if (!key) return '';
+      return diagReasonZh(key) || key;
+    }
+    /* ---- Diagnostics overlay (frame-wide `shell.overlay`) ---------------------------------- */
+    // The diagnostics page used to live inside the settings modal, which is far too narrow for the
+    // five-node chain. It now opens in its own frame-wide overlay; the settings page only keeps the
+    // entry buttons. State is module-level so both entry points live in the same bundle.
+    const diagOverlayStore = {
+      state: { open: false, groupId: '', providerId: '', trigger: null },
+      listeners: new Set(),
+    };
+    function diagOverlayGet() { return diagOverlayStore.state; }
+    function diagOverlaySet(next) {
+      diagOverlayStore.state = Object.assign({}, diagOverlayStore.state, next);
+      for (const listener of Array.from(diagOverlayStore.listeners)) {
+        try { listener(); } catch { /* ignore */ }
+      }
+    }
+    function diagOverlaySubscribe(listener) {
+      diagOverlayStore.listeners.add(listener);
+      return () => { diagOverlayStore.listeners.delete(listener); };
+    }
+    function openDiagnostics(groupId, providerId, trigger) {
+      // Prefer the element that actually opened the overlay (the card button): a keyboard/secondary
+      // activation may leave document.activeElement on <body>, and focus must come back to the card.
+      const active = trigger || (typeof document !== 'undefined' ? document.activeElement : null);
+      diagOverlaySet({ open: true, groupId: groupId || '', providerId: providerId || '', trigger: active || null });
+    }
+    function closeDiagnostics() {
+      diagOverlaySet({ open: false });
+    }
+    function useDiagnosticsOverlay() {
+      if (typeof React.useSyncExternalStore === 'function') {
+        return React.useSyncExternalStore(diagOverlaySubscribe, diagOverlayGet, diagOverlayGet);
+      }
+      const [state, setState] = React.useState(diagOverlayGet);
+      React.useEffect(() => diagOverlaySubscribe(() => setState(diagOverlayGet())), []);
+      return state;
+    }
+
+    const diagEmptyRun = (providerId) => ({
+      runId: '', provider: providerId || '', mode: '', phase: 'idle',
+      events: [], stages: {}, stagePhase: {}, axes: null, overall: null,
+      actualCalls: [], sideEffects: [], configRevision: null,
+      startedAt: null, finishedAt: null, error: '',
+    });
+
+    function diagRequestId() {
+      try {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+      } catch { /* fall through */ }
+      return 'diag-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    }
+
+    /**
+     * Start one real diagnosis run and stream its NDJSON events.
+     *
+     * `observe` (default) never starts a browser; `start` is only used after the user explicitly
+     * asks for it. The caller owns the AbortController: leaving the page aborts the stream (the
+     * Host then stops the run — it does not keep executing behind a closed page).
+     */
+    async function startDiagnoseRun({ provider, mode, signal, onEvent }) {
+      const response = await fetch(HOST_BASE + '/diagnose', {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        // `/diagnose` is a scoped-GUI surface (an unscoped call is 401 by design). The settings page
+        // works on the global/default scope, so it asks for `unassigned` explicitly and never lets
+        // the Host guess with `recent`.
+        headers: {
+          'content-type': 'application/json',
+          'X-UI-Testing-Scope-Version': SCOPE_VERSION,
+          'X-UI-Testing-Scope': 'unassigned',
+        },
+        body: JSON.stringify({ provider: provider || undefined, mode: mode || 'observe', requestId: diagRequestId() }),
+        signal,
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const error = new Error(payload.error || ('诊断请求失败：' + response.status));
+        error.code = payload.code || 'DIAGNOSE_REQUEST_FAILED';
+        error.status = response.status;
+        throw error;
+      }
+      if (!response.body || typeof response.body.getReader !== 'function') {
+        throw Object.assign(new Error('诊断响应不是可读流'), { code: 'DIAGNOSE_STREAM_UNAVAILABLE' });
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let index;
+        while ((index = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, index).trim();
+          buffer = buffer.slice(index + 1);
+          if (!line) continue;
+          let event;
+          try { event = JSON.parse(line); } catch { continue; }
+          if (event && typeof event === 'object' && typeof onEvent === 'function') onEvent(event);
+        }
+      }
+      return true;
+    }
+
+    /** Fold one NDJSON event into the run state (pure; used by both live streaming and replay). */
+    function diagApplyEvent(run, event) {
+      const next = Object.assign({}, run);
+      next.events = (run.events || []).concat([event]);
+      next.stagePhase = Object.assign({}, run.stagePhase);
+      next.stages = Object.assign({}, run.stages);
+      if (event.type === 'run-start') {
+        next.runId = event.runId || '';
+        next.provider = event.provider || run.provider;
+        next.mode = event.mode || run.mode;
+        next.phase = 'running';
+        next.startedAt = event.startedAt || null;
+        next.configRevision = event.configRevision ?? null;
+        next.error = '';
+      } else if (event.type === 'stage-start') {
+        next.stagePhase[event.stageId] = 'running';
+      } else if (event.type === 'stage-end') {
+        next.stagePhase[event.stageId] = 'finished';
+        next.stages[event.stageId] = {
+          stageId: event.stageId,
+          phase: 'finished',
+          status: DIAG_STATES.includes(event.status) ? event.status : 'UNKNOWN',
+          reason: event.reason || null,
+          blockedBy: event.blockedBy ?? null,
+          startedAt: event.startedAt ?? null,
+          finishedAt: event.finishedAt ?? null,
+          durationMs: event.durationMs === undefined ? null : event.durationMs,
+          checks: Array.isArray(event.checks) ? event.checks : [],
+          evidenceRef: event.evidenceRef || null,
+          seq: event.seq,
+        };
+      } else if (event.type === 'run-end') {
+        next.phase = 'finished';
+        next.finishedAt = event.finishedAt || null;
+        next.axes = event.axes || null;
+        next.overall = event.overall || null;
+        next.actualCalls = Array.isArray(event.actualCalls) ? event.actualCalls : [];
+        next.sideEffects = Array.isArray(event.sideEffects) ? event.sideEffects : [];
+        next.stages = Object.assign({}, next.stages, event.stages || {});
+        next.stagePhase = Object.assign({}, next.stagePhase);
+        for (const stageId of DIAG_STAGE_IDS) next.stagePhase[stageId] = 'finished';
+      }
+      return next;
+    }
+
+    /**
+     * Node/edge model for one run.
+     *
+     * Node state = that stage's own status (UNKNOWN until the stage reports). An edge is decided by
+     * **both** ends: a FAIL above stops the flow (FAIL), a skipped downstream segment is SKIPPED, and
+     * anything still unknown keeps the edge UNKNOWN. Nothing here can turn green without a stage
+     * that actually finished PASS.
+     */
+    /**
+     * 诊断日志左侧的「操作名」：界面写中文，`data-uts-event-operation` 仍保留英文 id
+     * （`run-start` / `stage-N` / `run-end`），agent 与排障不受影响。
+     */
+    function diagOperationLabel(operation) {
+      const key = String(operation || '');
+      if (key === 'run-start') return '本轮开始';
+      if (key === 'run-end') return '本轮结束';
+      const stage = /^stage-(\d+)$/u.exec(key);
+      return stage ? '第 ' + stage[1] + ' 段' : key;
+    }
+
+    /** 调试节点的完整信息（悬停提示）：角色/名称、职责、状态、原因码、阻塞与耗时。 */
+    function diagNodeTitle(node, statusText, stage, phase) {
+      return [
+        String(node.role || '') + ' · ' + String(node.name || ''),
+        String(node.sub || ''),
+        '状态：' + String(statusText || ''),
+        stage && stage.reason ? '原因码：' + String(stage.reason) : '',
+        stage && stage.blockedBy !== null && stage.blockedBy !== undefined ? '阻塞于阶段 ' + String(stage.blockedBy) : '',
+        stage && stage.durationMs !== null && stage.durationMs !== undefined ? '耗时 ' + String(stage.durationMs) + 'ms' : '',
+        phase === 'running' ? '本段正在检查' : '',
+      ].filter(Boolean).join('\n');
+    }
+
+    function diagRunModel(run, target) {
+      const current = run || diagEmptyRun(target && target.id);
+      const stages = current.stages || {};
+      const stageOf = (id) => stages[id] || null;
+      const stateOf = (id) => (stageOf(id) ? stageOf(id).status : 'UNKNOWN');
+      const chain = (target && target.chain) || {};
+      const interfaceName = chain.communication ? String(chain.communication) : 'CDP';
+      const interfaceNameWithSuffix = /接口$/.test(interfaceName) ? interfaceName : interfaceName + '接口';
+      const backendName = chain.backend ? String(chain.backend) : 'Chromium DevTools';
+      const targetName = target && (target.name || target.id) ? String(target.name || target.id) : 'Chrome';
+      const nodeSubs = {
+        1: '检查宿主集成、工具注册及调用通道',
+        2: '检查插件 Core、配置和调度能力',
+        3: '执行通信接口探测',
+        4: '检查执行后端及依赖可用性',
+        5: '查询目标列表，验证目标绑定与连接状态',
+      };
+      const nodes = [
+        { index: 1, id: 'agent', name: 'DeepSeekHarness', role: 'AI代理', sub: nodeSubs[1], state: stateOf('1'), stage: stageOf('1') },
+        { index: 2, id: 'controller', name: 'dsh-agent-team-ui-testing', role: '调试控制器', sub: nodeSubs[2], state: stateOf('2'), stage: stageOf('2') },
+        { index: 3, id: 'interface', name: interfaceNameWithSuffix, role: '通信接口', sub: nodeSubs[3], state: stateOf('3'), stage: stageOf('3') },
+        { index: 4, id: 'backend', name: backendName, role: '调试后端', sub: nodeSubs[4], state: stateOf('4'), stage: stageOf('4') },
+        { index: 5, id: 'target', name: targetName + '页面', role: '目标运行环境', sub: nodeSubs[5], state: stateOf('5'), stage: stageOf('5') },
+      ];
+      const edgeState = (up, down) => {
+        if (up === 'FAIL' || down === 'FAIL') return 'FAIL';
+        if (down === 'SKIPPED') return 'SKIPPED';
+        if (up === 'UNKNOWN' || down === 'UNKNOWN') return 'UNKNOWN';
+        if (up === 'WARN' || down === 'WARN') return 'WARN';
+        return 'PASS';
+      };
+      // A dot only runs on a segment whose downstream stage really finished PASS in this run.
+      const liveEdge = (downIndex) => {
+        const stage = stageOf(String(downIndex));
+        return Boolean(stage && stage.status === 'PASS' && (current.stagePhase || {})[String(downIndex)] === 'finished');
+      };
+      const edges = [
+        { index: 1, state: edgeState(nodes[0].state, nodes[1].state), label: '指令', live: liveEdge(2) },
+        { index: 2, state: edgeState(nodes[1].state, nodes[2].state), label: '标准化命令', live: liveEdge(3) },
+        { index: 3, state: edgeState(nodes[2].state, nodes[3].state), label: interfaceName + ' 通信', live: liveEdge(4) },
+        { index: 4, state: edgeState(nodes[3].state, nodes[4].state), label: liveEdge(5) ? interfaceName + ' 会话正常' : '等待目标绑定', live: liveEdge(5) },
+      ];
+      for (const edge of edges) if (edge.state !== 'PASS') edge.live = false;
+      const duties = nodes.map((node) => ({ node: node.id, name: node.name, text: DIAG_DUTY_TEXT[node.id] || '' }));
+      const overall = current.overall
+        ? { status: current.overall.status || 'UNKNOWN', reason: current.overall.reason || '' }
+        : { status: current.phase === 'running' ? 'UNKNOWN' : 'UNKNOWN', reason: current.phase === 'running' ? 'run-in-progress' : 'no-run' };
+      return { run: current, nodes, edges, duties, overall, stageOf };
+    }
+
+    /** Event rows: one per stage-end plus the run markers, newest first, bounded to 8. */
+    function diagRunRows(run) {
+      const current = run || diagEmptyRun('');
+      const rows = [];
+      for (const event of current.events || []) {
+        if (event.type === 'run-start') {
+          rows.push({ kind: 'run-start', seq: event.seq, at: event.startedAt || null, operation: 'run-start', runId: event.runId || '', status: 'UNKNOWN', reason: null, blockedBy: null, durationMs: null, evidenceRef: null });
+        } else if (event.type === 'stage-end') {
+          rows.push({
+            kind: 'stage', stageId: event.stageId, seq: event.seq, at: event.finishedAt || event.startedAt || null,
+            operation: 'stage-' + event.stageId, runId: event.runId || '',
+            status: DIAG_STATES.includes(event.status) ? event.status : 'UNKNOWN',
+            reason: event.reason || null, blockedBy: event.blockedBy ?? null,
+            durationMs: event.durationMs === undefined ? null : event.durationMs,
+            evidenceRef: event.evidenceRef || null,
+          });
+        } else if (event.type === 'run-end') {
+          rows.push({ kind: 'run-end', seq: event.seq, at: event.finishedAt || null, operation: 'run-end', runId: event.runId || '', status: (event.overall && event.overall.status) || 'UNKNOWN', reason: (event.overall && event.overall.reason) || null, blockedBy: null, durationMs: event.durationMs === undefined ? null : event.durationMs, evidenceRef: null });
+        }
+      }
+      return rows
+        .sort((left, right) => (right.seq || 0) - (left.seq || 0))
+        .slice(0, DIAG_RUN_ROWS);
     }
 
     /**
@@ -8170,20 +9014,20 @@ window.__ModuleLoader__.load({
           if (configLoaded) {
             const providers = providersFromConfig(state.config, envId);
             if (providers === null) {
-              return { axis, status: 'not-probed', reason: 'Host 配置未包含 providers', source: 'unavailable' };
+              return { axis, status: 'not-probed', reason: '宿主配置未包含运行环境清单', source: 'unavailable' };
             }
             return providers[providerId] === true
-              ? { axis, status: 'true', reason: 'Host 配置已启用该运行环境', source: 'host' }
-              : { axis, status: 'false', reason: 'Host 配置未启用该运行环境', source: 'host' };
+              ? { axis, status: 'true', reason: '宿主配置已启用该运行环境', source: 'host' }
+              : { axis, status: 'false', reason: '宿主配置未启用该运行环境', source: 'host' };
           }
-          return { axis, status: 'not-probed', reason: 'Host 配置不可用，未读取到该运行环境的启用状态', source: 'unavailable' };
+          return { axis, status: 'not-probed', reason: '宿主配置不可用，未读取到该运行环境的启用状态', source: 'unavailable' };
         }
         const host = hostAxes ? hostAxes[axis] : null;
         if (host && host.status) {
           return {
             axis,
             status: host.status,
-            reason: host.reason || '来自 Host 就绪结果',
+            reason: host.reason || '来自宿主就绪结果',
             source: 'host',
             checkedAt: host.checkedAt ?? null,
             expiresAt: host.expiresAt ?? null,
@@ -8192,7 +9036,7 @@ window.__ModuleLoader__.load({
             checks: host.checks || null,
           };
         }
-        return { axis, status: 'not-probed', reason: 'Host 未提供该运行环境的探测结果', source: 'unavailable' };
+        return { axis, status: 'not-probed', reason: '宿主未提供该运行环境的探测结果', source: 'unavailable' };
       });
     }
 
@@ -8212,23 +9056,23 @@ window.__ModuleLoader__.load({
           if (configLoaded) {
             const enabled = enabledFromConfig(state.config, groupId);
             if (enabled === null) {
-              return { axis, status: 'not-probed', reason: 'Host 配置未包含环境策略', source: 'unavailable' };
+              return { axis, status: 'not-probed', reason: '宿主配置未包含环境策略', source: 'unavailable' };
             }
             return {
               axis,
               status: enabled ? 'true' : 'false',
-              reason: enabled ? 'Host 配置已启用该环境' : 'Host 配置未启用该环境',
+              reason: enabled ? '宿主配置已启用该环境' : '宿主配置未启用该环境',
               source: 'host',
             };
           }
           if (state && state.error) {
-            return { axis, status: 'not-probed', reason: 'Host 配置读取失败，无法确认用户启用状态', source: 'unavailable' };
+            return { axis, status: 'not-probed', reason: '宿主配置读取失败，无法确认用户启用状态', source: 'unavailable' };
           }
           const hostEnabled = hostAxes.enabled;
           if (hostEnabled && hostEnabled.status) {
-            return { axis, status: hostEnabled.status, reason: hostEnabled.reason || '来自 Host 就绪结果', source: 'host' };
+            return { axis, status: hostEnabled.status, reason: hostEnabled.reason || '来自宿主就绪结果', source: 'host' };
           }
-          return { axis, status: 'not-probed', reason: 'Host 配置不可用，未读取到用户启用状态', source: 'unavailable' };
+          return { axis, status: 'not-probed', reason: '宿主配置不可用，未读取到用户启用状态', source: 'unavailable' };
         }
         const host = hostAxes[axis];
         if (host && host.status) {
@@ -8237,7 +9081,7 @@ window.__ModuleLoader__.load({
           return {
             axis,
             status: host.status,
-            reason: host.reason || '来自 Host 就绪结果',
+            reason: host.reason || '来自宿主就绪结果',
             source: 'host',
             checkedAt: host.checkedAt ?? null,
             expiresAt: host.expiresAt ?? null,
@@ -8247,14 +9091,17 @@ window.__ModuleLoader__.load({
           };
         }
         if (axis === 'support') {
-          return { axis, status: staticSupportOf(groupId), reason: '静态候选清单（Host 未提供 support 探测）', source: 'static' };
+          return { axis, status: staticSupportOf(groupId), reason: '静态候选清单（宿主未提供 support 探测）', source: 'static' };
         }
-        return { axis, status: 'not-probed', reason: 'Host 未提供该轴的探测结果', source: 'unavailable' };
+        return { axis, status: 'not-probed', reason: '宿主未提供该轴的探测结果', source: 'unavailable' };
       });
     }
 
     const EMPTY_HOST_CONFIG = Object.freeze({
       loading: true, error: '', revision: null, config: null, resolved: null, readiness: {}, checkedAt: '',
+      // Local observation time of the last *successful* read (ms). `checkedAt` is the Host's probe
+      // time; this one answers "how long ago did this page last hear from the Host".
+      lastReadAt: 0,
     });
 
     /** Adopt one Host config payload; a payload without a numeric revision is a failed read. */
@@ -8263,7 +9110,7 @@ window.__ModuleLoader__.load({
       if (revision === null) {
         return Object.assign({}, previous, {
           loading: false,
-          error: 'Host 未提供配置接口（响应缺少 revision）',
+          error: '宿主未提供配置接口（响应缺少 revision）',
         });
       }
       const readiness = payload.readiness !== undefined ? normalizeReadiness(payload.readiness) : previous.readiness;
@@ -8278,56 +9125,147 @@ window.__ModuleLoader__.load({
         resolved: payload.resolved !== undefined ? payload.resolved : previous.resolved,
         readiness,
         checkedAt,
+        lastReadAt: previous.lastReadAt || 0,
       };
+    }
+
+    /**
+     * 宿主配置类错误的英文原因 → 中文。宿主返回的是机器可读英文（`environment android is
+     * planned and cannot be selected in v1` 等），直接上屏对用户没有信息量；这里按已知模式翻译，
+     * 未识别的原样保留（不猜），原文仍留在悬停提示里。
+     */
+    function configErrorText(message) {
+      const raw = String(message || '').trim();
+      if (!raw) return '';
+      let match = /^environment\s+(\S+)\s+is planned and cannot be selected in v1/iu.exec(raw);
+      if (match) return 'v1 还不支持启用 ' + match[1] + '：该环境仍是规划中';
+      match = /^environment\s+(\S+)\s+is test-only/iu.exec(raw);
+      if (match) return match[1] + ' 仅供测试使用';
+      match = /^unknown environment:\s*(\S+)/iu.exec(raw);
+      if (match) return '没有这个目标环境：' + match[1];
+      match = /^unknown provider:\s*(\S+)/iu.exec(raw);
+      if (match) return '没有这个运行环境：' + match[1];
+      return raw;
     }
 
     function hostConfigError(error) {
       const code = String((error && error.code) || '');
+      if (code === 'CONFIG_TIMEOUT') return '读取宿主配置超时（' + HOST_CONFIG_TIMEOUT_MS + 'ms 内未完成）';
       if (code === 'CONFIG_CONFLICT') return '配置已被其他窗口修改（CONFIG_CONFLICT）';
       if (code === 'CONFIG_UNAVAILABLE' || (error && error.status === 404)) {
-        return 'Host 未提供配置接口，无法读取或保存配置';
+        return '宿主未提供配置接口，无法读取或保存配置';
       }
       const detail = error && error.message ? String(error.message) : '';
-      return '读取 Host 配置失败' + (detail ? '：' + detail : '');
+      // `Failed to fetch` 是浏览器原话，对用户没有信息量：说清「连不上谁」。
+      if (/failed to fetch/iu.test(detail)) return '连不上宿主：请求没送到 DSH（可能已经停止运行）';
+      return '读取宿主配置失败' + (detail ? '：' + detail : '');
     }
 
     /**
      * Read one Host config view and keep the Host revision as the only truth. `scope` is `null` on
      * the settings page (legacy/default, no scope headers) and the panel's own snapshot in the
      * panel. A failed read leaves the caller usable but exposes `error`; nothing reports ready.
+     *
+     * `options` is optional and every field defaults to the original single-read behaviour, so the
+     * existing call sites (`useHostConfig(scope, 'session')`, `useHostConfig(null, 'global')`) are
+     * unchanged:
+     *   - `pollMs`  > 0 keeps re-reading on that interval while the component is mounted. A tick is
+     *               skipped when the document is hidden and when a request is already in flight, so
+     *               at most one GET is ever outstanding and the page is silent in the background.
+     *   - `initial` seeds the very first state (the list page already holds a Host read), which is
+     *               what keeps a sub-page from flashing "not probed" for one frame.
+     *   - `silent`  never toggles `loading` (no spinner/blank flicker on a poll); a failed poll keeps
+     *               the previous payload and only sets `error`, which the page renders as `stale`.
      */
-    function useHostConfig(scope, view) {
-      const [state, setState] = React.useState(EMPTY_HOST_CONFIG);
+    /**
+     * 同页面配置变更总线：设置页写完配置后通知调试视图重读，避免两个面板靠轮询或等刷新才同步。
+     * 订阅方只做「重新读一次」，不做本地合并——宿主 revision 仍是唯一真值。
+     */
+    const hostConfigBus = { listeners: new Set() };
+    function publishHostConfigChange() {
+      for (const listener of Array.from(hostConfigBus.listeners)) {
+        try { listener(); } catch { /* 一个订阅者出错不影响其它订阅者 */ }
+      }
+    }
+    function useHostConfigChange(listener) {
+      const ref = React.useRef(listener);
+      ref.current = listener;
+      React.useEffect(() => {
+        const handler = () => { if (typeof ref.current === 'function') ref.current(); };
+        hostConfigBus.listeners.add(handler);
+        return () => { hostConfigBus.listeners.delete(handler); };
+      }, []);
+    }
+
+    function useHostConfig(scope, view, options) {
+      const opts = options && typeof options === 'object' ? options : {};
+      const pollMs = Number.isFinite(opts.pollMs) && opts.pollMs > 0 ? Number(opts.pollMs) : 0;
+      const silent = opts.silent === true;
+      const initial = opts.initial && typeof opts.initial === 'object' ? opts.initial : null;
+      const [state, setState] = React.useState(() => (
+        initial ? Object.assign({}, initial, { loading: false }) : EMPTY_HOST_CONFIG
+      ));
       const stateRef = React.useRef(state);
       stateRef.current = state;
       const epochRef = React.useRef(0);
+      // The in-flight marker is a request **identity**, not a boolean: a superseded request that
+      // finishes late must not clear the marker of the request that replaced it (M5).
+      const inFlightRef = React.useRef(0);
+      const requestIdRef = React.useRef(0);
+      // How many snapshots *this instance* successfully adopted. The diagnostics page uses it to
+      // tell "a real fresh Host read" from the caller-supplied `initial` snapshot (M3).
+      const [reads, setReads] = React.useState(0);
       const load = React.useCallback((signal) => {
         const epoch = ++epochRef.current;
-        setState((current) => Object.assign({}, current, { loading: true, error: '' }));
+        const requestId = ++requestIdRef.current;
+        inFlightRef.current = requestId;
+        const settle = () => { if (inFlightRef.current === requestId) inFlightRef.current = 0; };
+        if (!silent) setState((current) => Object.assign({}, current, { loading: true, error: '' }));
         getHostConfig(scope, view, signal).then((payload) => {
+          settle();
           if (epoch !== epochRef.current) return;
-          setState(mergeHostConfig(stateRef.current, payload));
+          const merged = mergeHostConfig(stateRef.current, payload);
+          // `lastReadAt` is the "last complete, valid config adopted" time: a response that only
+          // carries an error (e.g. no numeric revision) must not move it forward (M4).
+          if (!merged.error && merged.revision !== null) merged.lastReadAt = Date.now();
+          setState(merged);
+          if (!merged.error && merged.revision !== null) setReads((value) => value + 1);
         }).catch((error) => {
+          settle();
           if (epoch !== epochRef.current) return;
+          if (error && error.name === 'AbortError') return;
           setState(Object.assign({}, stateRef.current, { loading: false, error: hostConfigError(error) }));
         });
-      }, [scope, view]);
+      }, [scope, view, silent]);
       React.useEffect(() => {
         let controller = null;
         if (typeof AbortController === 'function') controller = new AbortController();
-        load(controller ? controller.signal : undefined);
+        const visible = () => !(typeof document !== 'undefined' && document.visibilityState === 'hidden');
+        // The page promises "hidden means no request", so even the first read waits for visibility.
+        if (!pollMs || visible()) load(controller ? controller.signal : undefined);
+        let timer = null;
+        if (pollMs) {
+          timer = setInterval(() => {
+            // Background tabs keep their data but stop asking the Host for more.
+            if (!visible()) return;
+            if (inFlightRef.current !== 0) return;
+            load(controller ? controller.signal : undefined);
+          }, pollMs);
+        }
         return () => {
+          if (timer !== null) clearInterval(timer);
           epochRef.current += 1;
+          // Abort the current request (its own deadline timer is cleared by the request itself).
           if (controller) controller.abort();
         };
-      }, [load]);
+      }, [load, pollMs]);
       const reload = React.useCallback(() => load(undefined), [load]);
       const adopt = React.useCallback((payload) => {
         const next = mergeHostConfig(stateRef.current, payload);
         setState(next);
         return next;
       }, []);
-      return { state, reload, adopt };
+      return { state, reload, adopt, reads };
     }
 
     /** A CAS conflict carries the latest revision: adopt it, or re-read when it does not. */
@@ -8392,32 +9330,31 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 第五节点目标卡片；接口、执行端与实现状态是底部同级标签。
+     * 第五节点目标卡片：名称 + 启用分开关，页脚左侧「可用」（已实现）/「未支持 · 未接入」（灰字占位）、右侧「诊断」。
+     *
+     * 不再显示的东西：当前使用 / 未选中标签（开关已经反映启用状态）、已实现 / 未支持 / 未接入
+     * 标签（改用「可用」一枚）、接口 / 执行端（③④，在诊断页）、依赖状态（诊断页六轴之一）。
      * 不显示任何写死版本：启用状态来自 Host 配置，目标状态来自 Host 就绪结果。
      */
     function TargetEnvCard(props) {
       const target = props.target || {};
-      const tag = target.state === 'supported' ? '已实现' : target.state === 'unsupported' ? '未支持' : '未接入';
-      const candidate = target.state !== 'supported';
-      const chain = target.chain || {};
       const configReady = props.configReady === true;
       const busy = props.busy === true;
       const providerSupported = target.state === 'supported';
+      // 未实现卡片左槽位的灰色占位：工程未支持 vs 还没接入，措辞不混用。
+      const stateText = target.state === 'unsupported' ? '未支持' : '未接入';
       // 总闸（目标环境）与分开关（运行环境）是两层：分开关只在总闸打开时才可操作，
       // 但关闭总闸不会改写各 provider 已保存的值。
       const masterEnabled = props.masterEnabled === true;
       const providerCurrent = props.providerCurrent === true;
-      const depAxis = (props.axes || []).find((axis) => axis.axis === 'dependency') || null;
-      const dependencyStatus = depAxis ? depAxis.status : 'not-probed';
-      const dependencyReason = depAxis ? depAxis.reason : 'Host 未提供该运行环境的依赖状态';
       const switchDisabled = !providerSupported || !configReady || busy || !masterEnabled;
       const switchTitle = !providerSupported
         ? '当前运行环境未实现，不能启用'
         : !configReady
-          ? (props.configError || 'Host 配置不可用，无法提交启用状态')
-          : busy ? '正在提交到 Host…'
+          ? (props.configError || '宿主配置不可用，无法提交启用状态')
+          : busy ? '正在提交到宿主…'
             : !masterEnabled ? '目标环境总开关已关闭：已保存的开关值保留，重新打开后恢复'
-              : '提交到 Host（按 Host revision 保存）';
+              : '提交到宿主（按宿主版本号保存）';
       return h('div', {
         className: 'uts-item',
         'data-uts-target': target.id,
@@ -8430,13 +9367,10 @@ window.__ModuleLoader__.load({
         h('div', { className: 'uts-card' },
           h('div', { className: 'uts-card-head' },
             h('span', { className: 'uts-card-title' },
-              h('span', { className: 'uts-card-name' }, target.name),
-              h('span', {
-                className: 'uts-tag uts-current-tag',
-                'data-uts-tag': 'current',
-                'data-uts-current': providerCurrent ? 'true' : 'false',
-              }, providerCurrent ? '当前使用' : '未选中')),
-            // 开关挪到卡片右上角：卡片里不再有“用户启用：”这类说明文字。
+              h('span', { className: 'uts-card-name' }, target.name)),
+            // 开关挪到卡片右上角：卡片里不再有“用户启用：”这类说明文字；
+            // 「当前使用 / 未选中」也不再单独标一枚标签——开关本身就反映了启用状态。
+            // （provider 仍是 Host 解析出来的单选值，只是不再在卡片上重复写一遍。）
             h('span', { className: 'uts-card-switch', 'data-uts-switch-provider': target.id },
               h(TargetEnvSwitch, {
                 label: '是否启用运行环境：' + target.name,
@@ -8448,32 +9382,33 @@ window.__ModuleLoader__.load({
                   if (typeof props.onToggleProvider === 'function') props.onToggleProvider(target.id, next);
                 },
               }))),
-          target.note ? h('div', { className: 'uts-card-note' }, target.note) : null,
-          // 卡片只留一眼可读的那条（依赖＝"这台机器上能不能跑"），完整的六轴去二级诊断页看：
-          // 六条状态塞进 145px 宽的卡片会变成噪音，而它们诊断的是**这一个**运行环境，不是环境汇总。
-          h('div', { className: 'uts-field uts-field-inline' },
-            h('span', { className: 'uts-field-label' }, '依赖：'),
-            h('span', {
-              className: 'uts-field-value',
-              'data-uts-dependency-status': dependencyStatus,
-              title: dependencyReason || '',
-            }, axisText('dependency', dependencyStatus))),
-          h('div', { className: 'uts-card-actions' },
-            h('button', {
-              type: 'button',
-              className: 'uts-diagnose-btn',
-              'data-uts-diagnose': target.id,
-              title: '单独查看 ' + target.name + ' 的六轴诊断',
-              onClick: () => {
-                if (typeof props.onDiagnose === 'function') props.onDiagnose(target.id);
-              },
-            }, '诊断')),
-          h('div', { className: 'uts-tags', 'aria-label': '调试链路与实现状态' },
-            h('span', { className: 'uts-tag', 'data-uts-tag': 'interface' },
-              (candidate ? '③ 候选接口：' : '③ 接口：') + chain.communication),
-            h('span', { className: 'uts-tag', 'data-uts-tag': 'backend' },
-              (candidate ? '④ 候选执行端：' : '④ 执行端：') + chain.backend),
-            h('span', { className: 'uts-tag', 'data-uts-tag': target.state }, tag))));
+          // 说明统一压到两行（超出省略，完整文字在 title 里）：卡片不再因为说明多一行就高低不齐。
+          target.note ? h('div', { className: 'uts-card-note', title: target.note }, target.note) : null,
+          // 卡片页脚：左边是状态槽（已实现一枚绿色「可用」；未实现一行灰字「未支持 / 未接入」），
+          // 右边固定「诊断」按钮，永远贴右下角。原来的 已实现/未支持/未接入 标签样式（药丸）不再用，
+          // 未实现只作灰字占位，避免它和「可用」抢同一层的视觉重量。
+          h('div', { className: 'uts-card-foot' },
+            providerSupported
+              ? h('span', {
+                className: 'uts-tag uts-available-tag',
+                'data-uts-tag': 'supported',
+                'data-uts-available': 'true',
+              }, '可用')
+              // 未实现也占住左槽位（灰色小字，非标签）：不然整行只剩右侧按钮，左轻右重。
+              : h('span', {
+                className: 'uts-card-state',
+                'data-uts-card-state': target.state || 'planned',
+              }, stateText),
+            h('div', { className: 'uts-card-actions' },
+              h('button', {
+                type: 'button',
+                className: 'uts-diagnose-btn',
+                'data-uts-diagnose': target.id,
+                title: '单独查看 ' + target.name + ' 的六轴诊断',
+                onClick: (event) => {
+                  if (typeof props.onDiagnose === 'function') props.onDiagnose(target.id, event && event.currentTarget);
+                },
+              }, '诊断')))));
     }
 
     /**
@@ -8516,9 +9451,9 @@ window.__ModuleLoader__.load({
               disabled: props.configReady !== true || props.busy === true,
               busy: props.busy === true,
               title: props.configReady !== true
-                ? (props.configError || 'Host 配置不可用，无法提交启用状态')
+                ? (props.configError || '宿主配置不可用，无法提交启用状态')
                 : props.busy === true
-                  ? '正在提交到 Host…'
+                  ? '正在提交到宿主…'
                   : '关闭后停用整块执行；各运行环境已保存的开关值保留',
               onChange: (next) => {
                 if (typeof props.onToggleEnv === 'function') props.onToggleEnv(next);
@@ -8528,11 +9463,8 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'uts-cards', id: regionId, role: 'region', 'aria-label': group.title },
               group.targets.length
                 ? group.targets.map((target) => {
-                    // 每张卡读自己的 provider 六轴；没有就把目标轴如实报成未探测，
-                    // 绝不复用同组另一个浏览器的连接/目标证据。
-                    const axesFor = props.providerAxesById && props.providerAxesById[target.id]
-                      ? props.providerAxesById[target.id]
-                      : null;
+                    // 卡片只读 Host 配置（启用开关）与静态实现状态；六轴与 ③④ 在它自己的诊断页，
+                    // 因此这里不再把 axes 传下去——同一事实只在一处渲染。
                     return h(TargetEnvCard, {
                       key: target.id,
                       target,
@@ -8542,7 +9474,6 @@ window.__ModuleLoader__.load({
                       configReady: props.configReady,
                       configError: props.configError,
                       busy: props.busy,
-                      axes: axesFor,
                       onDiagnose: props.onDiagnose,
                       onToggleProvider: props.onToggleProvider,
                     });
@@ -8554,58 +9485,487 @@ window.__ModuleLoader__.load({
     /**
      * 二级页：单个运行环境（provider）的诊断。
      *
-     * 六轴是**这一个浏览器**的六轴（`readiness.environments.<env>.providers.<id>.axes`），
-     * 不是目标环境的汇总：同组 Chrome 的"依赖可用"不能给 Edge 背书，未启用的 provider 也不会被探测。
-     * 这里只读 Host 已经给出的结果，不触发新探测。
+     * 打开就**真实跑一次 Host 诊断**（`POST /plugins/ui-testing/diagnose`，NDJSON）：节点/边只用
+     * Host 的五个 stage 结果说话（PASS/WARN/FAIL/SKIPPED/UNKNOWN），动画只由 stage-start /
+     * stage-end 推动，六轴与事件流都来自本 run 的 run-end。没有 run 就没有绿色：这里不拿
+     * readiness 快照冒充「已检查」。
      */
     function TargetEnvDiagnostics(props) {
-      const group = props.group || { id: '', title: '' };
+      const group = props.group || { id: '', title: '', targets: [] };
       const target = props.target || {};
-      const axes = props.axes || [];
-      const tag = target.state === 'supported' ? '已实现' : target.state === 'unsupported' ? '未支持' : '未接入';
+      const runKey = diagRunKey(group.id, target.id);
+      const [run, setRun] = React.useState(() => DIAG_RUNS.get(runKey) || diagEmptyRun(target.id));
+      // readiness 只用于「就绪快照」时间戳与（没有 run 时的）六轴兜底，run 期间不轮询。
+      const hostConfig = useHostConfig(null, 'global', {
+        pollMs: run.phase === 'running' ? 0 : DIAG_POLL_MS,
+        initial: props.initialState,
+        silent: true,
+      });
+      const state = hostConfig.state;
+      const lastGoodRef = React.useRef(
+        props.initialState && props.initialState.revision !== null && !props.initialState.error
+          ? props.initialState
+          : null,
+      );
+      if (!state.error && state.revision !== null) lastGoodRef.current = state;
+      const stateError = String(state.error || '');
+      const live = stateError ? (lastGoodRef.current || state) : state;
+      const abortRef = React.useRef(null);
+      const aliveRef = React.useRef(true);
+
+      const applyRun = React.useCallback((next) => {
+        if (!aliveRef.current) return;
+        setRun(next);
+        DIAG_RUNS.set(runKey, next);
+      }, [runKey]);
+
+      const startRun = React.useCallback((mode) => {
+        try {
+          startRunUnsafe(mode);
+        } catch (error) {
+          const message = '诊断 run 启动失败：' + String((error && error.message) || error);
+          try { console.error('[ui-testing] ' + message, error); } catch { /* ignore */ }
+          applyRun(Object.assign(diagEmptyRun(target.id), { phase: 'finished', error: message }));
+        }
+      }, [applyRun, target.id]);
+      // The run keeps its own AbortController: the readiness polling controller must never abort it.
+      const startRunUnsafe = React.useCallback((mode) => {
+        if (abortRef.current) { try { abortRef.current.abort(); } catch { /* ignore */ } }
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        abortRef.current = controller;
+        let current = Object.assign(diagEmptyRun(target.id), { phase: 'running', provider: target.id, mode });
+        applyRun(current);
+        startDiagnoseRun({
+          provider: target.id,
+          mode,
+          signal: controller ? controller.signal : undefined,
+          onEvent: (event) => {
+            current = diagApplyEvent(current, event);
+            applyRun(Object.assign({}, current));
+          },
+        }).then(() => {
+          if (!aliveRef.current) return;
+          if (current.phase !== 'finished') {
+            current = Object.assign({}, current, { phase: 'finished' });
+            applyRun(current);
+          }
+        }).catch((error) => {
+          if (!aliveRef.current) return;
+          if (error && error.name === 'AbortError') return;
+          current = Object.assign({}, current, { phase: 'finished', error: hostConfigError(error) });
+          applyRun(current);
+        });
+      }, [applyRun, target.id]);
+
+      React.useEffect(() => {
+        aliveRef.current = true;
+        // 每次进入诊断页（= 每次点卡片「诊断」）都发起一次新的 observe run：用户点诊断就是要
+        // 真实走一遍工具调用，缓存只用于「离开/失败时把上次结果回显出来」，绝不阻止新 run。
+        // 旧动画不会被重放：动画只由本次 run 的 stage 事件打开。
+        const stored = DIAG_RUNS.get(runKey);
+        if (stored && stored.phase === 'finished' && stored.error) setRun(stored);
+        startRun('observe');
+        return () => {
+          aliveRef.current = false;
+          if (abortRef.current) { try { abortRef.current.abort(); } catch { /* ignore */ } }
+        };
+      }, [runKey, startRun]);
+
+      const model = diagRunModel(run, target);
+      const rows = diagRunRows(run);
+      const overall = model.overall;
+      // 本轮还没有结论时（没跑过 / 没跑出结果）统一说 `待诊断` / `诊断未完成`，不用五态里的词。
+      const runless = diagRunlessText(run);
+      const activeStage = DIAG_STAGE_IDS.find((stageId) => (run.stagePhase || {})[stageId] === 'running') || '';
+      // 胶囊文案（可见）与标题共用同一份文本：胶囊窄的时候悬停仍能看到全句。
+      const overallText = run.phase === 'running'
+        ? '诊断进行中 · 第 ' + (activeStage || '?') + ' 阶段'
+        : (runless || (diagStateLabel(overall.status) + (overall.reason ? ' · ' + diagReasonLabel(overall.reason) : '')));
+      // ③ WARN browser-not-running 时才提供「启动浏览器后继续诊断」，用户点之前绝不启动。
+      const coldBrowser = (run.stages || {})['3'] && run.stages['3'].status === 'WARN'
+        && String(run.stages['3'].reason || '').includes('browser-not-running');
+      // A run is in flight until its stream closes: the action is disabled meanwhile.
+      const runBusy = run.phase === 'running';
+      // "Already connected" = this run really reached the CDP stage (③ PASS).
+      const hasConnection = Boolean((run.stages || {})['3'] && run.stages['3'].status === 'PASS');
+      const runId = run.runId || '';
+      const axesSource = run.axes
+        ? DIAG_AXIS_ORDER.map((axisKey) => {
+          const value = run.axes[axisKey];
+          const status = typeof value === 'string' ? value : (value && value.status) || 'not-probed';
+          // `run-end.axes.checks` is keyed by *check id* (`readonly-eval`, `target-list`), never by
+          // axis: it is only evidence for the capability axis (which is what those checks measured).
+          const rawChecks = run.axes.checks && typeof run.axes.checks === 'object' && !Array.isArray(run.axes.checks)
+            ? run.axes.checks : null;
+          return {
+            axis: axisKey,
+            status,
+            reason: '来自本轮诊断',
+            source: 'run',
+            runId,
+            checkedAt: run.finishedAt || null,
+            checks: axisKey === 'capability' && rawChecks
+              ? Object.fromEntries(Object.entries(rawChecks).map(([name, value]) => [name, { status: typeof value === 'string' ? value : String((value && value.status) || 'unknown') }]))
+              : null,
+            targetId: '',
+          };
+        })
+        : providerAxes(live, group.id || '', target.id || '');
+      // 没有真正读过 readiness 时不要编一个时间（06:00 那种 epoch 文案会被当成真实读数）。
+      const updatedIso = live.lastReadAt ? diagIsoAt(live.lastReadAt) : '';
+      const runTimeIso = diagIsoAt(run.finishedAt || run.startedAt || 0);
+
       return h('section', {
-        className: 'uts-settings uts-diagnostics',
+        className: 'uts-diagnostics-body',
         'data-uts-diagnostics': target.id || '',
         'data-uts-diagnostics-group': group.id || '',
         'data-uts-diagnostics-state': target.state || '',
+        'data-uts-diag-poll': String(DIAG_POLL_MS),
+        'data-uts-diag-stale': stateError ? 'true' : 'false',
+        'data-uts-diag-updated': updatedIso,
+        'data-uts-run-id': runId,
+        'data-uts-run-phase': run.phase || 'idle',
+        'data-uts-run-mode': run.mode || '',
+        'data-uts-run-source': run.axes ? 'run' : 'readiness',
       },
-        h('header', { className: 'uts-head' },
-          h('div', { className: 'uts-head-row' },
+        h('p', { className: 'uts-page-desc', 'data-uts-diag-scope': 'run' },
+          '打开本页会真实执行一次诊断检查（不会启动浏览器），结果按五个阶段逐条返回；'
+          + '需要浏览器时可用下方动作显式启动，离开本页会中止本次检查。'
+          + '本页只反映当前作用域这一次诊断的结果，不代表其它会话中的调试目标不可用。'),
+        h('div', { className: 'uts-diag-summary' },
+          h('span', {
+            className: 'uts-diag-overall',
+            'data-uts-diag-overall': 'true',
+            'data-uts-overall': overall.status,
+            'data-uts-overall-reason': overall.reason || '',
+            // 证据不删只收：本次 run / 就绪快照 / 副作用 / 实际调用 从可见文本挪到胶囊的悬停提示与
+            // 机器可读属性上，界面保持干净但读得到同样的值。
+            'data-uts-run-mode': run.mode || '',
+            'data-uts-diag-updated-clock': updatedIso ? diagClock(updatedIso) : '',
+            'data-uts-diag-side-effects': (run.sideEffects || []).map((effect) => effect.kind).join(','),
+            'data-uts-diag-actual-calls': (run.actualCalls || []).map((call) => call.tool).join(','),
+            title: [
+              '状态：' + overallText,
+              run.phase === 'running'
+                ? '正在读取宿主事件流'
+                : (run.mode ? '本轮：' + run.mode + (runTimeIso ? ' · ' + diagClock(runTimeIso) : '') : '尚无诊断记录'),
+              updatedIso ? '就绪快照 ' + diagClock(updatedIso) : '',
+              (run.sideEffects || []).length ? '副作用 ' + (run.sideEffects || []).map((effect) => effect.kind).join(' · ') : '',
+              (run.actualCalls || []).length ? '实际调用 ' + (run.actualCalls || []).map((call) => call.tool).join(' · ') : '',
+            ].filter(Boolean).join('；'),
+            role: 'status',
+          },
+            h('i', { className: 'uts-diag-overall-dot', 'aria-hidden': true }),
+            h('span', { 'data-uts-overall-text': 'true' }, overallText)),
+          run.error
+            ? h('p', { className: 'uts-diag-stale', 'data-uts-diag-error': 'true' }, run.error)
+            : null,
+          stateError
+            ? h('p', { className: 'uts-diag-stale', 'data-uts-diag-error': 'true' },
+              '就绪快照读取失败（不影响本轮结果）：' + stateError)
+            : null,
+          // 常驻动作：打开页面本身只做 observe（不启动浏览器），"开始诊断"才手动触发一轮 start。
+          // 浏览器没在跑时由这一轮自己启动；已连接时只重新检查，不重启。run 进行中禁用，避免并发两轮。
+          h('div', { className: 'uts-diag-action', 'data-uts-diag-action': 'start' },
             h('button', {
               type: 'button',
               className: 'uts-link-btn',
-              'data-uts-diagnostics-back': 'true',
-              onClick: () => { if (typeof props.onBack === 'function') props.onBack(); },
-            }, '← 返回'),
-            h('h2', { className: 'uts-page-title' }, (target.name || target.id) + ' 诊断'),
-            h('span', { className: 'uts-tag', 'data-uts-tag': target.state || 'planned' }, tag))),
-        h('p', { className: 'uts-page-desc' },
-          '这是「' + (group.title || group.id) + '」下的运行环境 ' + (target.name || target.id)
-          + ' 的单独诊断：六条状态各自回答一个独立问题，未探测 ≠ 不可用，工程支持 ≠ 用户启用。'),
-        axes.length
-          ? h('div', { className: 'uts-axes', 'data-uts-axes': target.id || '', 'data-uts-axes-checked-at': props.checkedAt || '' },
-              axes.map((axis) => h('div', {
-                key: axis.axis,
-                className: 'uts-axis',
-                'data-uts-axis': axis.axis,
-                'data-uts-status': axis.status,
-                'data-uts-axis-provider': target.id || '',
-                'data-uts-axis-source': axis.source || 'host',
-                'data-uts-axis-target': axis.targetId || '',
-                'data-uts-axis-checked-at': axis.checkedAt ? String(axis.checkedAt) : '',
-                title: axisDetail(axis),
+              'data-uts-diag-start': 'true',
+              'data-uts-diag-run': 'start',
+              'data-uts-action-disabled': runBusy ? 'true' : 'false',
+              'data-uts-diag-action-note': runBusy ? 'busy' : coldBrowser || !hasConnection ? 'cold' : 'warm',
+              // 说明文字不再占版面：搬到按钮的悬停提示里（三种分支同一套文案）。
+              title: runBusy
+                ? '本次诊断正在进行中，完成后再开始下一轮。'
+                : (coldBrowser || !hasConnection
+                  ? '会启动所选浏览器（' + (target.name || target.id) + '）并创建受管调试页；不会接管其它会话的标签。'
+                  : '会重新执行五个阶段的检查，不会重启浏览器。'),
+              disabled: runBusy,
+              onClick: () => { if (!runBusy) startRun('start'); },
+            }, '开始诊断'))),
+
+        /* ① 实时调试拓扑：五节点 + 四条边（横排），全部取本次 run 的 stage 结果 */
+        h('section', { className: 'uts-diag-panel', 'data-uts-diag-section': 'topology' },
+          h('div', { className: 'uts-diag-panel-head' },
+            h('h3', { className: 'uts-diag-panel-title' }, '调试流程')),
+          h('div', { className: 'uts-diag-chain-scroll' },
+            h('div', {
+              className: 'uts-diag-chain',
+              'data-uts-topology': 'true',
+              'data-uts-topology-state': overall.status,
+              'data-uts-run-phase': run.phase || 'idle',
+            }, (() => {
+              const cells = [h('div', {
+                key: 'rail',
+                className: 'uts-diag-rail',
+                'data-uts-diag-rail': 'true',
+                'aria-hidden': true,
+              }, h('i', { className: 'uts-diag-rail-dot', 'data-uts-diag-rail-dot': 'true' }))];
+              model.nodes.forEach((node, index) => {
+                const stage = node.stage || null;
+                const phase = (run.stagePhase || {})[String(node.index)] || 'idle';
+                // 没有 run 结果时说「待诊断 / 诊断未完成」，有结果才用五态 + 原因码（中文在前、
+                // 英文码在括号里，agent 仍可从 data-uts-stage-reason 读到原码）。
+                const nodeStatusText = phase === 'running'
+                  ? '检查中…'
+                  : (runless || (diagStateLabel(node.state) + (stage && stage.reason ? ' · ' + diagReasonLabel(stage.reason) : '')));
+                cells.push(h('div', {
+                  key: 'node-' + node.index,
+                  className: 'uts-diag-node',
+                  'data-uts-node': String(node.index),
+                  'data-uts-node-id': node.id,
+                  'data-uts-node-state': node.state,
+                  'data-uts-node-note': node.sub,
+                  'data-uts-stage': String(node.index),
+                  'data-uts-stage-status': node.state,
+                  'data-uts-stage-phase': phase,
+                  'data-uts-stage-reason': (stage && stage.reason) || '',
+                  'data-uts-stage-blocked-by': stage && stage.blockedBy !== null && stage.blockedBy !== undefined ? String(stage.blockedBy) : '',
+                  'data-uts-stage-duration': stage && stage.durationMs !== null && stage.durationMs !== undefined ? String(stage.durationMs) : '',
+                  // 卡片里 name / 职责 / 状态都可能被截断：悬停给出完整四行，不留信息黑洞。
+                  title: diagNodeTitle(node, nodeStatusText, stage, phase),
+                },
+                  h('div', { className: 'uts-diag-node-top' },
+                    h('span', { className: 'uts-diag-node-index' }, '步骤 ' + node.index),
+                    h('span', { className: 'uts-diag-node-glyph', 'aria-hidden': true }, diagNodeIcon(node.id))),
+                  h('div', { className: 'uts-diag-node-role' }, node.role),
+                  h('div', { className: 'uts-diag-node-name', 'data-uts-node-name': node.name, title: node.name }, node.name),
+                  h('div', { className: 'uts-diag-node-sub', 'data-uts-node-sub': node.sub, title: node.sub }, node.sub),
+                  h('div', { className: 'uts-diag-node-status' },
+                    h('i', { className: 'uts-diag-dot', 'aria-hidden': true }),
+                    h('span', { 'data-uts-node-status': node.state }, nodeStatusText))));
+                const edge = model.edges[index];
+                if (edge) {
+                  cells.push(h('div', {
+                    key: 'edge-' + edge.index,
+                    className: 'uts-diag-edge',
+                    'data-uts-edge': String(edge.index),
+                    'data-uts-edge-state': edge.state,
+                    'data-uts-edge-label': edge.label,
+                    'data-uts-edge-live': edge.live ? 'true' : 'false',
+                  },
+                    h('span', { className: 'uts-diag-edge-line', 'aria-hidden': true },
+                      h('i', { className: 'uts-diag-edge-dot', 'data-uts-edge-dot': 'true' })),
+                    edge.state === 'FAIL'
+                      ? h('span', { className: 'uts-diag-edge-break', 'aria-hidden': true }, '×')
+                      : null,
+                    h('span', { className: 'uts-diag-edge-label' }, edge.label)));
+                }
+              });
+              return cells;
+            })())),
+          h('p', { className: 'uts-diag-flow' },
+            '动画只跟随宿主事件回填：这一段开始检查时对应步骤脉冲，检查结束后该段静止；'
+            + '只有本轮结论为「正常」的段才继续走球；结论是「异常」的，小球停在那个步骤上并写明原因。')),
+
+        /* ② 六轴：来自 run-end.axes（原词表），没有 run 时才回退 readiness */
+        h('section', { className: 'uts-diag-panel', 'data-uts-diag-section': 'axes' },
+          h('div', { className: 'uts-diag-panel-head' },
+            h('h3', { className: 'uts-diag-panel-title' }, '各模块诊断状态')),
+          h('div', { className: 'uts-diag-axes', 'data-uts-axes': target.id || '' },
+            axesSource.map((axis, order) => h('div', {
+              key: axis.axis,
+              className: 'uts-diag-axis',
+              'data-uts-axis': axis.axis,
+              'data-uts-status': axis.status,
+              'data-uts-axis-order': String(order),
+              'data-uts-axis-provider': target.id || '',
+              'data-uts-axis-source': axis.source || 'readiness',
+              'data-uts-axis-run-id': axis.runId || '',
+              'data-uts-axis-target': axis.targetId || '',
+              'data-uts-axis-checked-at': axis.checkedAt ? String(axis.checkedAt) : '',
+              title: axisDetail(axis),
+            },
+              h('span', { className: 'uts-diag-axis-icon', 'aria-hidden': true }, diagAxisIcon(axis.axis)),
+              h('div', { className: 'uts-diag-axis-body' },
+                h('div', { className: 'uts-diag-axis-head' },
+                  h('span', { className: 'uts-diag-axis-name' }, AXIS_LABEL[axis.axis] || axis.axis),
+                  h('span', { className: 'uts-diag-axis-value' }, axisText(axis.axis, axis.status))),
+                h('code', {
+                  className: 'uts-diag-axis-reason',
+                  'data-uts-axis-reason': axis.axis,
+                  // 英文码单独留一个属性：界面上是「中文（code）」，agent 读这个属性拿纯码。
+                  'data-uts-axis-reason-code': axis.reason || '',
+                }, diagReasonLabel(axis.reason) || '无附加原因'),
+                (() => {
+                    // 六条探测逐行列出；完整列表（含英文 id）在悬停提示里。
+                    // 没有检查项的卡片也渲染这块（空内容），保证六张卡片都按三行占位。
+                    const rawChecks = axis.checks && typeof axis.checks === 'object' ? axis.checks : {};
+                    const rows = Object.entries(rawChecks)
+                      .map(([name, check]) => ({ name, status: String(check && check.status ? check.status : check) }));
+                    // 界面上的检查项名与状态都写中文（只读求值：跳过），英文 id 留给属性与悬停提示。
+                    const zh = rows.map((row) => diagTermLabel(row.name) + '：' + diagTermLabel(row.status));
+                    // 一行一项、最多三行；还有几条用 `+n` 写在第三行末尾（完整列表见悬停提示）。
+                    const shown = zh.slice(0, DIAG_CHECK_LINES);
+                    const hidden = zh.length - shown.length;
+                    const truncated = hidden > 0;
+                    const pieces = shown.map((textValue, index) => {
+                      const last = index === shown.length - 1;
+                      if (!(truncated && last)) {
+                        return h('span', { key: 'item-' + index, className: 'uts-diag-axis-checks-item' }, textValue);
+                      }
+                      // 「+n」单独一个 span：更小字号 + 更淡的颜色，读起来是计数标签，不是又一条描述。
+                      return h('span', { key: 'item-' + index, className: 'uts-diag-axis-checks-item' },
+                        textValue,
+                        h('span', {
+                          className: 'uts-diag-axis-checks-more',
+                          'data-uts-axis-checks-more': String(hidden),
+                        }, '+' + hidden));
+                    });
+                    return h('code', {
+                      className: 'uts-diag-axis-checks',
+                      'data-uts-axis-checks': axis.axis,
+                      'data-uts-axis-checks-total': String(rows.length),
+                      // agent 读纯英文对：readonly-eval: skip · target-list: skip · …
+                      'data-uts-axis-checks-en': rows.map((row) => row.name + ': ' + row.status).join(' · '),
+                      // 被省略的条数：界面上写成「+n」，外部断言可读这个值
+                      'data-uts-axis-checks-truncated': truncated ? String(hidden) : '',
+                      title: rows.map((row) => diagTermLabel(row.name) + '（' + row.name + '）：' + diagTermLabel(row.status)).join(' · '),
+                    }, pieces);
+                })()))))),
+
+        /* ③ 诊断日志 + ④ 调试节点职责 */
+        h('div', { className: 'uts-diag-bottom' },
+          h('section', { className: 'uts-diag-panel', 'data-uts-diag-section': 'events' },
+            h('div', { className: 'uts-diag-panel-head' },
+              h('h3', { className: 'uts-diag-panel-title' }, '诊断日志')),
+            h('div', {
+              className: 'uts-diag-events',
+              'data-uts-events': 'true',
+              'data-uts-event-count': String((run.events || []).length),
+            },
+              rows.length
+                ? rows.map((row) => {
+                  // Host 的时间戳是 Date.now() 的数字，先统一转 ISO，否则 `diagClock` 解析失败 →
+                  // 每行都显示 `--:--:--`。DOM 属性也写 ISO，方便外部核对。
+                  const atIso = diagIsoAt(row.at);
+                  const observedIso = diagIsoAt(run.finishedAt);
+                  // run-start 不是检查结果，别拿「未知」冒充状态：文案「开始」+ INFO 中性灰点。
+                  const statusKey = row.kind === 'run-start' ? 'INFO' : row.status;
+                  const statusText = row.kind === 'run-start' ? '开始' : diagStateLabel(row.status);
+                  return h('div', {
+                    key: 'event-' + (row.seq || 0),
+                    className: 'uts-diag-event',
+                    'data-uts-event': 'true',
+                    'data-uts-event-kind': row.kind,
+                    'data-uts-event-axis': row.operation,
+                    'data-uts-event-time': atIso,
+                    'data-uts-event-time-source': 'host',
+                    'data-uts-event-host-checked-at': atIso,
+                    'data-uts-event-observed-at': observedIso,
+                    'data-uts-event-from': '',
+                    'data-uts-event-to': statusKey,
+                    'data-uts-event-status': statusKey,
+                    'data-uts-event-run-id': row.runId || '',
+                    'data-uts-event-seq': String(row.seq || ''),
+                    'data-uts-event-operation': row.operation,
+                    'data-uts-event-evidence-ref': row.evidenceRef || '',
+                    // 英文码单独留属性（agent 读纯码），可见文本走中英对照。
+                    'data-uts-event-reason': row.reason || '',
+                    title: diagOperationLabel(row.operation) + ' · ' + statusText + (row.reason ? ' · ' + diagReasonLabel(row.reason) : ''),
+                  },
+                    // SKIPPED 阶段从未执行，Host 就没有 finishedAt：显示「—」而不是假时间或占位符。
+                    h('time', { className: 'uts-diag-event-time' }, atIso ? diagClock(atIso) : '—'),
+                    h('i', { className: 'uts-diag-event-pin', 'data-uts-event-status': statusKey, 'aria-hidden': true }),
+                    h('div', { className: 'uts-diag-event-text' },
+                      diagOperationLabel(row.operation) + ' · ' + statusText
+                      + (row.reason ? ' · ' + diagReasonLabel(row.reason) : '')
+                      // 上游阻塞：写中文，英文键 blockedBy 只留在属性与 NDJSON 里。
+                      + (row.blockedBy ? ' · 阻塞于第 ' + row.blockedBy + ' 段' : '')
+                      + ' · ' + (row.durationMs === null || row.durationMs === undefined ? '—' : Math.round(row.durationMs * 10) / 10 + 'ms')));
+                })
+                : h('p', { className: 'uts-diag-empty', 'data-uts-events-empty': 'true' }, '尚未取得宿主诊断结果'))),
+          h('section', { className: 'uts-diag-panel', 'data-uts-diag-section': 'duties' },
+            h('div', { className: 'uts-diag-panel-head' },
+              h('h3', { className: 'uts-diag-panel-title' }, '步骤职责')),
+            h('div', { className: 'uts-diag-duties', 'data-uts-duties': 'true' },
+              model.duties.map((duty) => h('div', {
+                key: 'duty-' + duty.node,
+                className: 'uts-diag-duty',
+                'data-uts-duty': 'true',
+                'data-uts-duty-node': duty.node,
               },
-                h('span', { className: 'uts-axis-head' },
-                  h('span', { className: 'uts-axis-label' }, AXIS_LABEL[axis.axis] || axis.axis),
-                  h('span', { className: 'uts-axis-status' }, axisText(axis.axis, axis.status))),
-                h('span', { className: 'uts-axis-reason', 'data-uts-axis-reason': axis.axis }, axis.reason || '无附加原因'),
-                axis.checks && typeof axis.checks === 'object'
-                  ? h('span', { className: 'uts-axis-checks', 'data-uts-axis-checks': axis.axis },
-                    Object.entries(axis.checks)
-                      .map(([name, check]) => name + ':' + String(check && check.status ? check.status : 'unknown'))
-                      .join(' '))
-                  : null)))
-          : h('p', { className: 'uts-empty' }, 'Host 未返回这个运行环境的诊断结果'));
+                h('span', { className: 'uts-diag-duty-arrow', 'aria-hidden': true }, '↗'),
+                h('span', { className: 'uts-diag-duty-text' },
+                  h('strong', null, duty.name),
+                  ' ' + duty.text)))))));
+    }
+
+    /**
+     * 诊断弹层（DSH 的 frame-wide `shell.overlay` 插槽）。
+     *
+     * 设置弹层太窄，横排五节点链路放不下；这里用一个独立的全宽覆盖层。插槽层本身是
+     * click-through，所以条目自己开 `pointer-events`。关闭方式：✕ 按钮、Esc、点遮罩；
+     * 关闭即中止进行中的 run（内容组件卸载时 abort）。
+     */
+    function DiagnosticsOverlay() {
+      const overlay = useDiagnosticsOverlay();
+      const open = overlay.open === true;
+      const closeRef = React.useRef(null);
+      React.useEffect(() => {
+        if (!open) return undefined;
+        const trigger = overlay.trigger;
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape' || event.key === 'Esc') {
+            event.stopPropagation();
+            event.preventDefault();
+            closeDiagnostics();
+          }
+        };
+        document.addEventListener('keydown', onKeyDown, true);
+        const focusTimer = setTimeout(() => {
+          if (closeRef.current && typeof closeRef.current.focus === 'function') closeRef.current.focus();
+        }, 0);
+        return () => {
+          document.removeEventListener('keydown', onKeyDown, true);
+          document.body.style.overflow = previousOverflow;
+          clearTimeout(focusTimer);
+          if (trigger && trigger.isConnected && typeof trigger.focus === 'function') trigger.focus();
+        };
+      }, [open, overlay.trigger]);
+      if (!open) return null;
+      const group = TARGET_ENV_GROUPS.find((item) => item.id === overlay.groupId)
+        || { id: overlay.groupId, title: overlay.groupId, targets: [] };
+      const target = (group.targets || []).find((item) => item.id === overlay.providerId)
+        || { id: overlay.providerId, name: overlay.providerId, state: 'planned' };
+      const titleText = (target.name || target.id) + ' 诊断';
+      const tag = target.state === 'supported' ? '已实现' : target.state === 'unsupported' ? '未支持' : '未接入';
+      const tree = h('div', {
+        className: 'uts-diag-modal-overlay',
+        'data-uts-diag-modal-overlay': 'true',
+        onClick: (event) => {
+          if (event.target === event.currentTarget) closeDiagnostics();
+        },
+      },
+        h('div', {
+          className: 'uts-diag-modal-panel',
+          'data-uts-diag-modal': target.id || '',
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-label': titleText,
+          onClick: (event) => event.stopPropagation(),
+        },
+          h('header', { className: 'uts-diag-modal-head' },
+            h('div', { className: 'uts-diag-modal-title' },
+              h('h2', { className: 'uts-page-title' }, titleText),
+              h('span', { className: 'uts-tag', 'data-uts-tag': target.state || 'planned' }, tag)),
+            h('button', {
+              type: 'button',
+              className: 'uts-link-btn uts-diag-modal-close',
+              'data-uts-diagnostics-back': 'true',
+              ref: closeRef,
+              onClick: () => closeDiagnostics(),
+            }, '关闭')),
+          h('div', { className: 'uts-diag-modal-body' },
+            h(TargetEnvDiagnostics, { group, target }))));
+      // `shell.overlay` items can end up inside a stacking context that sits below the settings
+      // modal; portalling to <body> is the only placement that is reliably on top.
+      if (reactDom && typeof reactDom.createPortal === 'function' && typeof document !== 'undefined') {
+        return reactDom.createPortal(tree, document.body);
+      }
+      return tree;
     }
 
     /**
@@ -8647,9 +10007,10 @@ window.__ModuleLoader__.load({
           if (!aliveRef.current) return;
           const merged = hostConfig.adopt(payload);
           if (payload.config === undefined) hostConfig.reload();
+          publishHostConfigChange();
           setSubmittingEnv('');
           setNotice(merged.error
-            ? { kind: 'error', text: merged.error }
+            ? { kind: 'error', text: configErrorText(merged.error) }
             : { kind: 'ok', text: (next ? '已启用 ' : '已禁用 ') + group.title + ' · revision ' + merged.revision });
         }).catch((error) => {
           if (!aliveRef.current) return;
@@ -8664,7 +10025,7 @@ window.__ModuleLoader__.load({
           }
           setNotice({
             kind: 'error',
-            text: '保存失败，已回滚为 Host 当前值：' + ((error && error.message) || '未知错误'),
+            text: '保存失败，已回滚为宿主当前值：' + (configErrorText(error && error.message) || '未知错误'),
           });
         });
       }
@@ -8681,11 +10042,12 @@ window.__ModuleLoader__.load({
           if (!aliveRef.current) return;
           const merged = hostConfig.adopt(payload);
           if (payload.config === undefined) hostConfig.reload();
+          publishHostConfigChange();
           setSubmittingProvider('');
           const target = (group.targets || []).find((item) => item.id === providerId);
           const name = target && target.name ? target.name : providerId;
           setNotice(merged.error
-            ? { kind: 'error', text: merged.error }
+            ? { kind: 'error', text: configErrorText(merged.error) }
             : { kind: 'ok', text: (next ? '已启用运行环境 ' : '已禁用运行环境 ') + name + ' · revision ' + merged.revision });
         }).catch((error) => {
           if (!aliveRef.current) return;
@@ -8700,7 +10062,7 @@ window.__ModuleLoader__.load({
           }
           setNotice({
             kind: 'error',
-            text: '保存失败，已回滚为 Host 当前值：' + ((error && error.message) || '未知错误'),
+            text: '保存失败，已回滚为宿主当前值：' + (configErrorText(error && error.message) || '未知错误'),
           });
         });
       }
@@ -8716,14 +10078,9 @@ window.__ModuleLoader__.load({
         h('header', { className: 'uts-head' },
           h('div', { className: 'uts-head-row' },
             h('h2', { className: 'uts-page-title' }, 'UI 测试'),
+            // 不再提供「重新读取」按钮：面板一打开就会自动读一次 Host 配置
+            // （useHostConfig 挂载即 GET /config?view=global），CONFIG_CONFLICT 时也会自动 adopt/reload。
             h('div', { className: 'uts-config-actions' },
-              h('button', {
-                type: 'button',
-                className: 'uts-link-btn',
-                'data-uts-config-reload': 'true',
-                disabled: state.loading,
-                onClick: () => hostConfig.reload(),
-              }, state.loading ? '读取中…' : '重新读取'),
               h('div', { className: 'uts-filter' },
                 h('span', null, '隐藏未实现'),
                 h(TargetEnvSwitch, { label: '隐藏未实现', checked: hideUnimplemented, onChange: setHideUnimplemented })))),
@@ -8739,24 +10096,7 @@ window.__ModuleLoader__.load({
             ? h('p', { className: 'uts-config-meta', role: 'status', 'data-uts-config-notice': 'ok' }, notice.text)
             : null),
         h('div', { className: 'uts-body' },
-          diagnosing
-            ? h(TargetEnvDiagnostics, {
-                group: (() => {
-                  const found = TARGET_ENV_GROUPS.find((item) => item.id === diagnosing.groupId);
-                  return found || { id: diagnosing.groupId, title: diagnosing.groupId, targets: [] };
-                })(),
-                target: (() => {
-                  const found = TARGET_ENV_GROUPS.find((item) => item.id === diagnosing.groupId);
-                  const hit = found && found.targets.find((item) => item.id === diagnosing.providerId);
-                  return hit || { id: diagnosing.providerId, name: diagnosing.providerId, state: 'planned' };
-                })(),
-                axes: providerAxes(state, diagnosing.groupId, diagnosing.providerId),
-                checkedAt: state.readiness && state.readiness[diagnosing.groupId]
-                  ? state.readiness[diagnosing.groupId].checkedAt
-                  : '',
-                onBack: () => setDiagnosing(null),
-              })
-            : h('div', { className: 'uts-groups' }, groups.length
+          h('div', { className: 'uts-groups' }, groups.length
             ? groups.map((group) => {
                 const axes = environmentAxes(state, group.id);
                 const targetAxis = axes.find((axis) => axis.axis === 'target') || { status: 'not-probed', reason: '' };
@@ -8771,16 +10111,11 @@ window.__ModuleLoader__.load({
                   envEnabled: enabledFromConfig(state.config, group.id) === true,
                   providers: providersFromConfig(state.config, group.id),
                   currentProvider: currentProviderFromState(state),
-                  providerAxesById: (() => {
-                    const byId = {};
-                    for (const target of group.targets) byId[target.id] = providerAxes(state, group.id, target.id);
-                    return byId;
-                  })(),
                   configReady,
-                  configError: state.loading ? '正在读取 Host 配置…' : state.error,
+                  configError: state.loading ? '正在读取宿主配置…' : state.error,
                   busy: submittingEnv === group.id || submittingProvider !== '',
                   targetAxis,
-                  onDiagnose: (providerId) => setDiagnosing({ groupId: group.id, providerId }),
+                  onDiagnose: (providerId, trigger) => openDiagnostics(group.id, providerId, trigger),
                   onToggleEnv: (next) => toggleEnvironment(group, next),
                   onToggleProvider: (providerId, next) => toggleProvider(group, providerId, next),
                 });
@@ -8807,6 +10142,14 @@ window.__ModuleLoader__.load({
           order: 50,
           label: () => 'UI 测试',
         }, TargetEnvSettingsPage));
+
+        // 诊断页放在 frame-wide 覆盖层（`shell.overlay`）里：设置弹层太窄，横排五节点链路放不下。
+        // 该插槽层本身是 click-through，条目自己开 pointer-events（见 .uts-diag-modal-overlay）。
+        ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+          name: 'shell.overlay',
+          id: 'ui-testing.diagnostics',
+          order: 50,
+        }, DiagnosticsOverlay));
 
         // 左侧「更多」下拉里的一行：打开调试视图，不再占用左侧图标栏
         function MoreRow(props) {

@@ -11,7 +11,7 @@ await new Promise(r=>server.listen(0,'127.0.0.1',r));const fixture=`http://127.0
 const harness=await createHarness({connection:createFakeConnectionService({rejection:undefined,admit:()=>({peer:{id:'owner'}}),browserPeer:{id:'owner'}})});
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const cwd = process.env.DSH_UI_TESTING_REPO_ROOT || REPO_ROOT;
-const execA={agent:{id:'agent-a',session:{header:{cwd}}}};const execB={agent:{id:'agent-b',session:{header:{cwd}}}};
+const execA={agent:{id:'agent-a',session:{header:{cwd}}}};const execB={agent:{id:'agent-b',session:{header:{cwd}}}};const execC={agent:{id:'agent-c',session:{header:{cwd}}}};
 const call=async(name,args,exec)=>harness.invoke(name,args,exec);
 const tabs=(args,exec)=>call('browser_tabs',args,exec);
 notRun('E09/E12/E13 GUI client surface','client active/status/+ /popup source are covered by popup-tabs/client smoke, not this Host fixture');
@@ -91,12 +91,28 @@ try{
    {recent:afterClose.value?.recentClosed?.length,tabs:afterClose.value?.tabs?.map((t)=>t.tabId)});
  check('notices: list returns a bounded array (shape checked with a real blocked popup below)',
    Array.isArray(afterClose.value?.notices)&&afterClose.value.notices.length<=8,true,afterClose.value?.notices);
- r=await tabs({action:'select',tabId:'primary'},execA);check('A select primary releases child',r.ok,true,r);
- r=await tabs({action:'select',tabId:childId},execB);check('B select child succeeds',r.ok,true,r);
+ // M2a/计划书 §11.3：这两条断言在旧的「workspace = 页面域」契约下成立，与新 root 语义相反，已按 root 重写。
+ // select(work) 只改本会话选择，不再 claim 15 秒写租约（路由不是加锁）。
+ r=await tabs({action:'select',tabId:'primary'},execA);
+ check('A select(work) primary 回到自己页且不 claim 租约',r.ok&&r.value?.claimed===false,{ok:true,claimed:false},r.value||r.error);
+ const selBefore=(await tabs({action:'list'},execA)).value?.selection;
+ r=await tabs({action:'select',tabId:childId},execB);
+ check('B select A 的 child → TAB_NOT_FOUND（跨 root，不泄露存在性）',
+   r.ok===false&&r.error?.code==='TAB_NOT_FOUND','TAB_NOT_FOUND',r.error);
+ const selAfter=(await tabs({action:'list'},execA)).value?.selection;
+ check('被拒绝的 select 不改变任何一方已有选择',
+   JSON.stringify(selAfter)===JSON.stringify(selBefore)&&selAfter?.tabId==='primary',true,{before:selBefore,after:selAfter});
  const toolNames=harness.toolNames();check('E01 tool surface is 36 and browser_tabs is registered',toolNames.length===36&&toolNames.includes('browser_tabs'),{count:36},toolNames.length);
  const tabDef=harness.toolDefinitions().find((d)=>d.name==='browser_tabs'); check('E01 browser_tabs schema action enum + tabId',Boolean(tabDef&&Array.isArray(tabDef.parameters?.properties?.action?.enum)&&tabDef.parameters.properties.action.enum.includes('select')&&tabDef.parameters.properties.tabId),true,tabDef&&tabDef.parameters);
- const childList=await tabs({action:'list'},execA); const childRow=childList.value?.tabs?.find(t=>t.tabId===childId);check('list reports owner=self/selected for B tab',childRow?.owner==='other'&&childRow?.busy===true&&childRow?.manageable===false,true,childRow);
- const foreignClose=await tabs({action:'close',tabId:childId},execA);check('closing another session tab is TAB_FORBIDDEN',foreignClose.ok===false&&foreignClose.error?.code==='TAB_FORBIDDEN','TAB_FORBIDDEN',foreignClose.error);
+ const childList=await tabs({action:'list'},execA); const childRow=childList.value?.tabs?.find(t=>t.tabId===childId);
+ check('本 root 的行带上长期归属与权限投影（busy/owner 仍是短租约语义）',
+   childRow?.accessVersion===1&&childRow?.rootSessionId==='agent-a'&&childRow?.ownerSessionId==='agent-a'
+   &&childRow?.controllerSessionId==='agent-a'&&childRow?.permissions?.read===true
+   &&childRow?.permissions?.write===true&&childRow?.permissions?.close===true
+   &&childRow?.busy===false&&childRow?.manageable===true,true,childRow);
+ const foreignClose=await tabs({action:'close',tabId:childId},execC);
+ check('跨 root 关闭他人标签 → 统一 TAB_NOT_FOUND（不再是 TAB_FORBIDDEN 泄露存在性）',
+   foreignClose.ok===false&&foreignClose.error?.code==='TAB_NOT_FOUND','TAB_NOT_FOUND',foreignClose.error);
  const [ea,eb]=await Promise.all([call('browser_eval',{expression:'window.__a=(window.__a||0)+1'},execA),call('browser_eval',{expression:'window.__b=(window.__b||0)+1'},execB)]);
  check('A/B different tabs eval in parallel',ea.ok&&eb.ok,true,{a:ea.error,b:eb.error});
  const [ovA,ovB]=await Promise.all([
@@ -105,11 +121,19 @@ try{
  ]);
  const ia=ovA.value?.value, ib=ovB.value?.value;
  check('E06 A/B different-tab operations overlap in real time',Boolean(ia&&ib&&ia.start<ib.end&&ib.start<ia.end),{overlap:true},{a:ia,b:ib});
+ // 旧断言「同一 tab 第二次 select 是 BUSY」把「两个会话抢同一页」当成契约；新契约下两 root 各有
+ // 自己的 primary，两个 select 都应成功且都不 claim，谁也不会把对方挤成 BUSY。
  const sameA=await tabs({action:'select',tabId:'primary'},execA);const sameB=await tabs({action:'select',tabId:'primary'},execB);
- check('same tab second selection is BUSY',sameA.ok&&sameB.ok===false&&sameB.error?.code==='BUSY',{a:true,b:'BUSY'},sameB);
+ check('两 root 各自 select primary 均成功且互不 BUSY',sameA.ok&&sameB.ok&&sameA.value?.claimed===false&&sameB.value?.claimed===false,
+   {a:true,b:true,claimed:false},{a:sameA.error||sameA.value?.claimed,b:sameB.error||sameB.value?.claimed});
  // GUI preview busy primary, input BUSY
+ const bPrimaryRow=(await tabs({action:'list'},execB)).value?.tabs?.find(t=>t.kind==='primary');
  const bState=await harness.request({method:'GET',path:'/plugins/ui-testing/state',headers:{'x-ui-testing-scope-version':'1','x-ui-testing-session-id':'agent-b'}});
- check('HTTP session state follows selected child',bState.statusCode===200&&bState.json?.ui?.runtimeId===child?.runtimeId,child?.runtimeId,bState.json?.ui?.runtimeId);
+ // GUI 仍按「它被绑定到的 session」解析页面域：B 的 state 必须是 B 自己的 primary，
+ // 绝不能是 A 的 child（跨 root 串流）。
+ check('HTTP session state 解析到该会话自己的 primary（不是他人的 child）',
+   bState.statusCode===200&&Boolean(bPrimaryRow?.runtimeId)&&bState.json?.ui?.runtimeId===bPrimaryRow?.runtimeId
+   &&bState.json.ui.runtimeId!==child?.runtimeId,{own:bPrimaryRow?.runtimeId},{status:bState.statusCode,got:bState.json?.ui?.runtimeId,other:child?.runtimeId});
  const states=await harness.request({method:'GET',path:'/plugins/ui-testing/state',headers:{'x-ui-testing-scope-version':'1','x-ui-testing-session-id':'agent-a'}});
  const primaryRuntime=states.json?.ui?.runtimeId;
  const binding={'x-ui-testing-scope-version':'1','x-ui-testing-scope-binding':primaryRuntime};
@@ -120,11 +144,28 @@ try{
  check('GUI /input is BUSY while Agent owns tab',input.statusCode===409&&input.json?.code==='BUSY',409,{status:input.statusCode,body:input.json});
  const evAfter=await call('browser_eval',{expression:'window.__ev'},execA);
  check('E08 BUSY /input dispatches zero page events',evAfter.value?.value===0,0,evAfter.value?.value);
+ // GUI binding addressing (docs/multi-tab.md §panel): the panel addresses a tab by runtime id
+ // (`scope-binding`), never by session. Every one of these routes used to miss the entry because
+ // the provider prefix was composed twice, which showed up as "最多 4 个标签" on `+` and a dead `×`.
+ const boundState=await harness.request({method:'GET',path:'/plugins/ui-testing/state',headers:binding});
+ check('binding /state resolves the bound runtime',boundState.statusCode===200&&boundState.json?.ui?.runtimeId===primaryRuntime,primaryRuntime,{status:boundState.statusCode,runtimeId:boundState.json?.ui?.runtimeId});
+ const boundOpen=await harness.request({method:'POST',path:'/plugins/ui-testing/tabs',headers:binding,body:{action:'open'}});
+ check('binding /tabs open opens a tab instead of TAB_LIMIT',boundOpen.statusCode===200&&Boolean(boundOpen.json?.tabId),{status:200,opened:true},{status:boundOpen.statusCode,body:boundOpen.json});
+ const guiChild=(await tabs({action:'list'},execA)).value?.tabs?.find((tab)=>tab.tabId===boundOpen.json?.tabId);
+ const childBinding={'x-ui-testing-scope-version':'1','x-ui-testing-scope-binding':guiChild?.runtimeId};
+ const childBoundState=await harness.request({method:'GET',path:'/plugins/ui-testing/state',headers:childBinding});
+ check('binding /state resolves a child tab runtime',childBoundState.statusCode===200&&childBoundState.json?.ui?.runtimeId===guiChild?.runtimeId,guiChild?.runtimeId,{status:childBoundState.statusCode,runtimeId:childBoundState.json?.ui?.runtimeId});
+ const boundClose=await harness.request({method:'POST',path:'/plugins/ui-testing/close',headers:childBinding,body:{}});
+ const afterBoundClose=(await tabs({action:'list'},execA)).value?.tabs||[];
+ check('binding /close really closes that tab',boundClose.statusCode===200&&!afterBoundClose.some((tab)=>tab.runtimeId===guiChild?.runtimeId),{closed:true},afterBoundClose.map((tab)=>tab.tabId));
+ const ghostClose=await harness.request({method:'POST',path:'/plugins/ui-testing/close',headers:{'x-ui-testing-scope-version':'1','x-ui-testing-scope-binding':'no-such-runtime'},body:{}});
+ check('binding /close on an unknown runtime is SCOPE_NOT_FOUND, never a fake ok',ghostClose.statusCode===404&&ghostClose.json?.code==='SCOPE_NOT_FOUND',{status:404,code:'SCOPE_NOT_FOUND'},{status:ghostClose.statusCode,code:ghostClose.json?.code});
  // close child by B, then B page tool pending reset
- r=await tabs({action:'select',tabId:childId},execB); // may be BUSY? B still owns child
- r=await tabs({action:'close',tabId:childId},execB);check('B closes own child',r.ok,true,r);
- r=await call('browser_eval',{expression:'1'},execB);check('closed selected tab requires confirmation',r.ok===false&&r.error?.code==='TARGET_NOT_FOUND',{code:'TARGET_NOT_FOUND'},r.error);
- r=await tabs({action:'current'},execB);check('browser_tabs.current confirms reset to primary',r.ok&&r.value?.tabId==='primary',{tabId:'primary'},r.value);
+ r=await tabs({action:'close',tabId:childId},execC);check('非属主仍无法关闭该 child（TAB_NOT_FOUND，零副作用）',r.ok===false&&r.error?.code==='TAB_NOT_FOUND','TAB_NOT_FOUND',r.error);
+ r=await tabs({action:'select',tabId:childId},execA);check('A select(work) 自己的 child',r.ok,true,r.error||r.value);
+ r=await tabs({action:'close',tabId:childId},execA);check('A 关闭自己的 child',r.ok,true,r.error||r.value);
+ r=await call('browser_eval',{expression:'1'},execA);check('closed selected tab requires confirmation',r.ok===false&&r.error?.code==='TARGET_NOT_FOUND',{code:'TARGET_NOT_FOUND'},r.error);
+ r=await tabs({action:'current'},execA);check('browser_tabs.current confirms reset to primary',r.ok&&r.value?.tabId==='primary',{tabId:'primary'},r.value);
  // 4-tab cap
  await tabs({action:'select',tabId:'primary'},execA);
  const opened=[];for(let i=0;i<3;i++){const x=await tabs({action:'open'},execA);if(x.ok)opened.push(x.value.tabId);}
@@ -135,12 +176,20 @@ try{
  // default B primary after confirm
  const defB=await tabs({action:'list'},execB);check('B without selection defaults primary',defB.value?.tabs?.find(t=>t.kind==='primary')?.selected===true,true,defB.value);
  // T2 refs are globally unique across sibling tabs.
+ // M4/§5 双选择：读工具默认取 observationSelection，写工具只取 workSelection。A 之前 open 过 child，
+ // 观察选择还停在那个 about:blank 子页上，所以这里显式把**两个**选择都指回 primary（这正是新客户端
+ // 该做的事），而不是让读偷偷沿用写选择。
  await tabs({action:'select',tabId:'primary'},execA);
+ await tabs({action:'select',tabId:'primary',mode:'observe'},execA);
  await call('browser_navigate',{url:fixture},execA);
  const snapA=await call('browser_snapshot',{},execA);
- await tabs({action:'select',tabId:opened[0]},execB);
+ // B 不再「借」A 的 child 来取 refs（跨 root 已不可达）：B 在它自己的 primary 上取。
  await call('browser_navigate',{url:fixture},execB);
  const snapB=await call('browser_snapshot',{},execB);
+ check('A/B 快照来自各自页（runtimeId 不同，未串流）',
+   Boolean(snapA.value?.tab?.runtimeId)&&Boolean(snapB.value?.tab?.runtimeId)
+   &&snapA.value.tab.runtimeId!==snapB.value.tab.runtimeId,true,
+   {a:snapA.value?.tab?.runtimeId,b:snapB.value?.tab?.runtimeId});
  const refsA=Object.keys(snapA.value?.refs||{}); const refsB=Object.keys(snapB.value?.refs||{});
  check('T2 refs are global/unique across sibling tabs',refsA.length>0&&refsB.length>0&&!refsA.some(r=>refsB.includes(r)),{overlap:0},{a:refsA.slice(0,3),b:refsB.slice(0,3),overlap:refsA.filter(r=>refsB.includes(r))});
  // Cross-workspace: switch B's cwd/workspace and reject A's tab.
@@ -159,7 +208,9 @@ try{
  const popupHarness=await createHarness({connection:createFakeConnectionService({rejection:undefined,admit:()=>({peer:{id:'owner'}}),browserPeer:{id:'owner'}})});
  try{
   const popupExec={agent:{id:'popup-agent',session:{header:{cwd}}}};
-  const guiHeaders={'x-ui-testing-scope-version':'1','x-ui-testing-session-id':'gui-p0e'};
+  // 面板的 scope 身份必须是它正在显示的 session（M2a 起 root 由 session 决定）：
+  // 用一个自造的 'gui-p0e' 会把页面放进另一个 root，Agent 就看不到自己的页面与 popup 了。
+  const guiHeaders={'x-ui-testing-scope-version':'1','x-ui-testing-session-id':'popup-agent'};
   const procBaseline=scanPluginChromeProcesses().map((entry)=>entry.pid);
   const coldList=await popupHarness.invoke('browser_tabs',{action:'list'},popupExec);
   const coldWait=await popupHarness.invoke('browser_tabs',{action:'wait',timeoutMs:300,pollMs:50},popupExec);
@@ -222,7 +273,7 @@ try{
  try{
   idleHarness=await createHarness({connection:createFakeConnectionService({rejection:undefined,admit:()=>({peer:{id:'owner'}}),browserPeer:{id:'owner'}})});
   const idleExec={agent:{id:'idle-agent',session:{header:{cwd}}}};
-  const idleHeaders={'x-ui-testing-scope-version':'1','x-ui-testing-session-id':'gui-idle'};
+  const idleHeaders={'x-ui-testing-scope-version':'1','x-ui-testing-session-id':'idle-agent'};
   const idleCaps=await idleHarness.invoke('browser_capabilities',{},idleExec);
   check('TTL: capabilities.tabs/limits.tabs report the configured idleMs',
     idleCaps.value?.tabs?.idleMs===1000&&idleCaps.value?.limits?.tabs?.idleMs===1000,1000,

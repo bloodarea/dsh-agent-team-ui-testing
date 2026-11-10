@@ -34,7 +34,7 @@
 
 | 工具 | 主要参数 | 要点 |
 | --- | --- | --- |
-| `browser_tabs` | `action:"list"\|"current"\|"select"\|"open"\|"close"\|"wait"` `tabId?` `kind?` `source?` `timeoutMs?` `pollMs?` | `list/current/wait` 只读（wait 纯内存轮询，不启动 Chromium、不取 lease，超时 `WAIT_TIMEOUT`）；`select` 原子 claim；`open` 新建 about:blank；`close` 仅本人有效 lease；`list` 每项含 `source/parentTabId/openEventId/createdAt/lastUsedAt/idleRemainingMs/manageable` 并返回 `notices`/`recentClosed`（各最多 8 条）；错误 `TAB_NOT_FOUND/TAB_LIMIT/TAB_FORBIDDEN/BUSY/WAIT_TIMEOUT` |
+| `browser_tabs` | `action:"list"\|"current"\|"select"\|"open"\|"close"\|"wait"\|"acquire"\|"release"\|"transfer"` `tabId?` `mode?`（仅 select，work/observe）`kind?` `source?` `timeoutMs?`（wait/acquire）`pollMs?`（wait）`expectedControlRevision?`（acquire/release/transfer 必填）`expectedOwnershipRevision?`（transfer 必填）`toSessionId?`（transfer） | `list/current/wait` 只读（wait 纯内存轮询，不启动 Chromium、不取 lease，超时 `WAIT_TIMEOUT`）；`select` 只改调用者自己的选择（work 写目标 / observe 只读目标），**不 claim 租约、不切前台**；`open` 新建 about:blank；`close` 按长期归属/控制权判定（owner 或 controller，本 root Lead 亦可）；`acquire/release/transfer` 仅本 root Lead，带 CAS 版本，`acquire` 先 draining 再等安全边界（不中断在途操作，超时 `BUSY` 且撤销 draining）；页面组按 (workspace, provider, 团队根) 划分，child 最多 3 个按 (workspace, provider) 跨 root 合计、全局 live 8；`list` 每项含 `source/parentTabId/openEventId/createdAt/lastUsedAt/idleRemainingMs/manageable` 与 `accessVersion/rootSessionId/creatorSessionId/ownerSessionId/controllerSessionId/ownershipRevision/controlRevision/accessState/permissions`，并返回 `notices`/`recentClosed`（各最多 8 条）；错误 `TAB_NOT_FOUND`（跨 root 统一，不泄露存在性）`/TAB_FORBIDDEN/TAB_CONTROL_CHANGED/TAB_OWNERSHIP_STALE/TAB_IDENTITY_UNAVAILABLE/TAB_LIMIT/BUSY(仅短暂忙)/WAIT_TIMEOUT/INVALID_ARGUMENT` |
 
 ## 程序化（T1）
 
@@ -117,7 +117,7 @@
 | 错误码 | 含义 |
 | --- | --- |
 | `INVALID_ARGUMENT` | 参数不合法（含未知字段、互斥字段同时出现） |
-| `BUSY` | 当前工作区页面被其他 owner 占用 |
+| `BUSY` | 该页队列正被其他会话的**写**操作占用（短暂忙；只读观察不占写租约，权限问题不会报 BUSY） |
 | `REF_STALE` | ref 所属快照或文档已失效，需要重新 snapshot |
 | `NOT_INTERACTABLE` | 目标不可见/被遮挡/持续运动，零派发 |
 | `TARGET_NOT_UNIQUE` | selector 命中多个元素 |

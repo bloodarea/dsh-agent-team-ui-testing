@@ -99,8 +99,13 @@ test('asAdapterError preserves AdapterError and wraps other values', () => {
   const plain = core.asAdapterError('nope');
   assert.equal(plain.code, 'INTERNAL');
   assert.equal(plain.message, 'nope');
+  // M1 (docs/internal/m0-rulings-20261109.md §7.3) added two categories that the old eight could
+  // not express honestly: `authorization` ("you may not") is not a broken capability, and
+  // `resource` (a 4/8-page or 32-entry budget) is not a target answer. Both are additive; no
+  // existing code changed category, so old callers that branch on the eight keep working.
   assert.deepEqual(Object.keys(core.ERROR_CATEGORIES).sort(), [
-    'CAPABILITY', 'CONFIG', 'ENVIRONMENT', 'EVIDENCE', 'INPUT', 'INTERNAL', 'STATE', 'TARGET',
+    'AUTHORIZATION', 'CAPABILITY', 'CONFIG', 'ENVIRONMENT', 'EVIDENCE', 'INPUT', 'INTERNAL',
+    'RESOURCE', 'STATE', 'TARGET',
   ]);
 });
 

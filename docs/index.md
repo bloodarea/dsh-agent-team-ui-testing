@@ -7,6 +7,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [快速开始](getting-started.md) | 安装要求、安装与接入、打开面板与首次调用 |
+| [诊断状态码（中英对照）](diagnose-reason-codes.md) | 诊断页每个状态码的英文机器契约与中文界面文案、出现阶段、动态码族与维护方式 |
 | [工具参考](tools.md) | 36 个工具的参数、返回与错误分类 |
 | [能力分层与限制](capability-tiers.md) | WEB-P0 与 T1–T4 的职责、选路与支持边界 |
 
@@ -14,7 +15,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [多标签页](multi-tab.md) | 每工作区 primary + 3 child、per-tab BUSY、Agent selectedTab、`browser_tabs`、GUI 内部标签栏与 `+` |
+| [多标签页](multi-tab.md) | 页面组按 (workspace, provider, 团队根) 分组、双选择（work/observe）、`browser_tabs` 九动作含队长 acquire/release/transfer、长期归属与控制权、GUI 内部标签栏与 `+` |
 | [视口、画布与标注](viewport-control.md) | 共享视口、坐标、缩放、拖拽、标注与并发控制 |
 | [选元素加入聊天框](element-picker.md) | 面板选元素模式、悬浮框选、文档坐标、`@` 元素引用 chip（显示紧凑、模型文本完整）、降级与限制 |
 | [截图与图片交付](capture-p0.md) | 截图区域、分辨率、文件留存与证据边界 |
