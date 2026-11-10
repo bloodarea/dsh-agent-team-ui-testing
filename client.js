@@ -5790,7 +5790,8 @@ window.__ModuleLoader__.load({
       }
 
       function selectPopIsCurrent(pop) {
-        return pop && pop.epoch === scopeEpochRef.current && pop.seq === selectPopSeqRef.current
+        // A visible hint survives newer probes; only their responses/option popovers depend on seq.
+        return pop && pop.epoch === scopeEpochRef.current && (pop.reason || pop.seq === selectPopSeqRef.current)
           && pop.document === selectPopDocument() && pop.canvas === selectPopCanvas()
           && readyRef.current && !writesPausedRef.current && !annotRef.current.on && !pickRef.current.on;
       }
@@ -5819,6 +5820,10 @@ window.__ModuleLoader__.load({
           const element = payload && payload.element;
           const projection = element && element.select ? element.select : null;
           if (!projection || !projection.target) { selectPopClose(); return; }
+          const reason = selectPopReason(projection);
+          const current = selectPopRef.current;
+          // Keep the existing DOM/live region until dismissal instead of re-triggering the hint.
+          if (reason && current?.reason && selectPopIsCurrent(current)) return;
           const options = projection.options || [];
           const selectedIndex = options.findIndex((option) => option.selected);
           setSelectPop({
@@ -5826,7 +5831,7 @@ window.__ModuleLoader__.load({
             anchor: { x: event.clientX - rect.left, y: event.clientY - rect.top },
             bounds: { width: rect.width, height: rect.height },
             select: projection,
-            reason: selectPopReason(projection),
+            reason,
             activeIndex: selectedIndex >= 0 ? selectedIndex : 0,
           });
         }).catch(() => {
@@ -5903,6 +5908,8 @@ window.__ModuleLoader__.load({
         const onDocumentPointerDown = (event) => {
           const node = selectPopElementRef.current;
           if (node && event.target && typeof node.contains === 'function' && node.contains(event.target)) return;
+          // Re-clicking page controls must not collapse/reinsert the outside-preview hint row.
+          if (selectPopRef.current?.reason && frameImgRef.current?.contains(event.target)) return;
           selectPopClose();
         };
         document.addEventListener('pointerdown', onDocumentPointerDown, true);

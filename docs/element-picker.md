@@ -118,7 +118,7 @@ outerHTML: 截断 <显示>/<原始> 码点（末尾 …，完整文本未取得�
 - 写入用 `HTMLSelectElement.prototype.selectedIndex` 的 native setter，随后依次派发 `input`、`change`，返回 `200 {ok:true, value, selectedIndex, selector}`。禁用控件、禁用 option 和禁用 optgroup 均在写前拒绝。
 - 拒绝统一 `400 INVALID_ARGUMENT`，`details.reason` 包括 `stale-target`（文档变化或节点无法解析）、`target-detached`、`option-index-out-of-range`、`option-value-mismatch`、`option-disabled`、`no-focused-element`、`not-a-select`、`select-disabled`、`unsupported-shape`（`multiple`/`size>1`）、`no-options`、`value-not-in-options` 与上述 selector 三类。
 - 浮层等待页面点击完成后读取选项；关闭、scope/标签/文档切换、画布原点或比例变化会使在途结果失效。选中或按 Esc 关闭后，键盘焦点交回预览。
-- `multiple`、`size>1` 和无选项的控件只在地址栏下方、预览区域外显示键盘提示，不在页面画面上渲染提示浮层，也不抢走预览的键盘焦点；按 Esc 或点击其他位置可关闭提示。
+- `multiple`、`size>1` 和无选项的控件只在地址栏下方、预览区域外显示键盘提示，不在页面画面上渲染提示浮层，也不抢走预览的键盘焦点。提示仍可见时，重复点击不支持的控件会保留同一条提示，不重新触发或改变预览布局；关闭后才可再次触发。按 Esc、点击预览外或其他内容可关闭提示，正常单选仍可直接打开选项列表。
 
 ## 限制
 

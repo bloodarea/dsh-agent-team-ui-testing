@@ -55,6 +55,28 @@ export async function runPanelSelectChecks(api) {
   check('S9a', 'unsupported hint does not create a listbox or take keyboard focus', !(await readPop()) && multi.focused, 'no popover, preview focused', multi);
   observations.selectUnsupportedNotice = multi;
   await capturePng('select-unsupported-outside.png');
+  await pageEvaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  await pageEvaluate(`(()=>{
+    const notice=document.querySelector('[data-utb-select-unsupported]');
+    const stage=document.querySelector('.utb-stage'),image=document.querySelector('.utb-frame');
+    const geometry=()=>[stage,image].flatMap(n=>{const r=n.getBoundingClientRect();return [r.x,r.y,r.width,r.height]});
+    const baseline=geometry();
+    const monitor=window.__selectHintRepeat={notice,removals:0,replacements:0,samples:0,maxDeviation:0};
+    monitor.observer=new MutationObserver(records=>{for(const r of records)for(const n of r.removedNodes){if(n===notice||n.contains?.(notice))monitor.removals++}});
+    monitor.observer.observe(document.querySelector('.utb'),{subtree:true,childList:true});
+    const sample=()=>{monitor.samples++;monitor.maxDeviation=Math.max(monitor.maxDeviation,...geometry().map((v,i)=>Math.abs(v-baseline[i])));if(document.querySelector('[data-utb-select-unsupported]')!==notice)monitor.replacements++;monitor.frame=requestAnimationFrame(sample)};
+    sample();
+  })()`);
+  for (const id of ['multiple','multiple','list','multiple']) {
+    const previousRequests = state.elementTraffic.length;
+    await clickControl(id);
+    await waitFor(() => state.elementTraffic.length > previousRequests && state.elementTraffic.at(-1)?.status === 200, { label: 'repeat hint probe completes' });
+    await pageEvaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  }
+  const repeated = await pageEvaluate(`(()=>{const m=window.__selectHintRepeat;cancelAnimationFrame(m.frame);m.observer.disconnect();return {removals:m.removals,replacements:m.replacements,samples:m.samples,maxDeviation:m.maxDeviation,sameNotice:document.querySelector('[data-utb-select-unsupported]')===m.notice}})()`);
+  observations.selectHintRepeat = repeated;
+  check('S9b', 'visible hint is not removed or replaced by repeated unsupported clicks', repeated.sameNotice && repeated.removals===0 && repeated.replacements===0, 'one unchanged hint node', repeated);
+  check('S9c', 'preview geometry stays fixed throughout repeated hint triggers', repeated.samples>2 && repeated.maxDeviation<=0.5, 'max deviation <=0.5 CSS px', repeated);
   const beforeKey = (await truth()).values.find(x=>x.id==='multiple').index;
   const expectedIndex = Math.min(2, beforeKey + 1);
   await state.chrome.cdp.send('Input.dispatchKeyEvent', { type:'keyDown',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40 });
@@ -64,7 +86,11 @@ export async function runPanelSelectChecks(api) {
   await pressEscape();
   await waitFor(async () => pageEvaluate(`!document.querySelector('[data-utb-select-unsupported]')`), {label:'Escape dismisses unsupported notice'});
   check('S10a', 'Escape dismisses the outside hint', await pageEvaluate(`!document.querySelector('[data-utb-select-unsupported]')`), true, true);
+  await clickControl('multiple');
+  await waitFor(() => pageEvaluate(`!!document.querySelector('[data-utb-select-unsupported]')`), {label:'hint can trigger after dismissal'});
+  check('S10b', 'hint may trigger again after dismissal', await pageEvaluate(`document.querySelector('[data-utb-select-unsupported]')!==window.__selectHintRepeat.notice`), true, true);
   await open('space');
+  check('S10c', 'normal select can still open while an unsupported hint is visible', await pageEvaluate(`!document.querySelector('[data-utb-select-unsupported]') && !!document.querySelector('[data-utb-select-pop]')`), true, true);
   await hostEvalJson(`document.getElementById('duplicate').focus()`);
   await choose(2);
   observed = await waitFor(async () => { const t=await truth();return t.values.find(x=>x.id==='space').value==='local'?t:null; }, { label: 'bound target after focus change' });
