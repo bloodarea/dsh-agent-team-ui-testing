@@ -49,8 +49,12 @@ export async function runPanelSelectChecks(api) {
   await pressEscape();
   await waitFor(async () => !(await readPop()), { label: 'Escape closes select' });
   check('S8', 'Escape restores preview focus', await pageEvaluate(`document.activeElement === document.querySelector('.utb-frame')`), true, await pageEvaluate('document.activeElement.tagName'));
-  const multi = await open('multiple');
-  check('S9', 'multiple shape shows keyboard hint', multi.state === 'multiple', 'multiple', multi);
+  await clickControl('multiple');
+  const multi = await waitFor(() => pageEvaluate(`(()=>{const n=document.querySelector('[data-utb-select-unsupported]'),img=document.querySelector('.utb-frame'),bar=document.querySelector('.utb-bar');if(!n||!img||!bar)return null;const r=n.getBoundingClientRect(),p=img.getBoundingClientRect(),b=bar.getBoundingClientRect();return {reason:n.dataset.utbSelectUnsupported,noteBottom:r.bottom,previewTop:p.top,noteTop:r.top,addressBottom:b.bottom,inPreview:!!n.closest('.utb-stage'),focused:document.activeElement===img,position:getComputedStyle(n).position}})()`), {label:'unsupported notice outside preview'});
+  check('S9', 'multiple shape shows keyboard hint outside preview below address bar', multi.reason === 'multiple' && !multi.inPreview && multi.noteBottom <= multi.previewTop && multi.noteTop >= multi.addressBottom && multi.position === 'static', 'normal-flow note between address and preview', multi);
+  check('S9a', 'unsupported hint does not create a listbox or take keyboard focus', !(await readPop()) && multi.focused, 'no popover, preview focused', multi);
+  observations.selectUnsupportedNotice = multi;
+  await capturePng('select-unsupported-outside.png');
   const beforeKey = (await truth()).values.find(x=>x.id==='multiple').index;
   const expectedIndex = Math.min(2, beforeKey + 1);
   await state.chrome.cdp.send('Input.dispatchKeyEvent', { type:'keyDown',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40 });
@@ -58,6 +62,8 @@ export async function runPanelSelectChecks(api) {
   await waitFor(async () => (await truth()).values.find(x=>x.id==='multiple').index === expectedIndex, { label: 'unsupported shape keyboard forwarding' });
   check('S10', 'unsupported shape still forwards keyboard to page', beforeKey !== expectedIndex && (await truth()).values.find(x=>x.id==='multiple').index === expectedIndex, expectedIndex, await truth());
   await pressEscape();
+  await waitFor(async () => pageEvaluate(`!document.querySelector('[data-utb-select-unsupported]')`), {label:'Escape dismisses unsupported notice'});
+  check('S10a', 'Escape dismisses the outside hint', await pageEvaluate(`!document.querySelector('[data-utb-select-unsupported]')`), true, true);
   await open('space');
   await hostEvalJson(`document.getElementById('duplicate').focus()`);
   await choose(2);

@@ -1338,7 +1338,6 @@ window.__ModuleLoader__.load({
 .utb-select-pop-item:hover { background: var(--dsw-alias-bg-layer-2); }
 .utb-select-pop-item[data-utb-select-item="active"] { background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-2)); color: var(--dsw-alias-brand-primary); }
 .utb-select-pop-item[data-utb-select-item="disabled"] { color: var(--dsw-alias-label-secondary); opacity: .55; cursor: not-allowed; }
-.utb-select-pop-note { padding: 6px 8px; font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
 /* 调试工具弹窗被拦截时的本地提示 + 可点击降级链接（不写 Runtime lastError）。 */
 .utb-devtools-note { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; padding: 6px 8px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
 .utb-devtools-note a { color: var(--dsw-alias-brand-primary); text-decoration: underline; }
@@ -7698,6 +7697,12 @@ h('div', { className: 'utb-bar' },
             onClick: newTab,
           }, '+')),
         tabNotice && h('div', { className: 'utb-sync-note utb-tab-note', role: 'status', 'aria-live': 'polite', 'data-utb-tab-notice': 'true' }, tabNotice),
+        selectPop && selectPop.reason && h('div', {
+          className: 'utb-sync-note utb-select-note',
+          role: 'status',
+          'aria-live': 'polite',
+          'data-utb-select-unsupported': selectPop.reason,
+        }, '该下拉不支持浮层，请用键盘 ↑↓ + Enter'),
         activeBusy && h('div', { className: 'utb-sync-note utb-agent-note', role: 'status', 'aria-live': 'polite', 'data-utb-agent-busy': 'true' }, 'Agent 正在操作此标签；预览继续，输入暂不可用'),
         latestPopupNotice && h('div', {
           className: 'utb-sync-note utb-popup-note',
@@ -8064,6 +8069,7 @@ h('div', { className: 'utb-bar' },
                     if (annotRef.current.on) return; // annotation mode: zero page input
                     if (pickRef.current.on) return; // pick mode: zero page keyboard input
                     if (event.isComposing) return; // IME 组合中：别抢字符
+                    if (event.key === 'Escape' && selectPopRef.current?.reason) selectPopClose();
                     const commandKey = event.ctrlKey === true || event.metaKey === true;
                     const keyName = String(event.key || '').toLowerCase();
                     if (commandKey && event.altKey !== true && (keyName === 'c' || keyName === 'x')) {
@@ -8098,8 +8104,8 @@ h('div', { className: 'utb-bar' },
                 // 原生 <select> 的面板侧浮层：绝对定位在画面框内、点击点附近。
                 // 浏览器自己的弹层在 UI 图层（帧里看不到），所以选项列表由面板绘制；
                 // 写回走 POST /select（与 /input 同一套门禁）。
-                selectPop ? (() => {
-                  const rowCount = selectPop.reason ? 1 : (selectPop.select.options || []).length;
+                selectPop && !selectPop.reason ? (() => {
+                  const rowCount = (selectPop.select.options || []).length;
                   const layout = selectPopLayout(selectPop.anchor, rowCount, selectPop.bounds);
                   return h('div', {
                     className: 'utb-select-pop',
@@ -8129,12 +8135,7 @@ h('div', { className: 'utb-bar' },
                       zIndex: 6,
                     },
                     onKeyDown: onSelectPopKeyDown,
-                  }, selectPop.reason
-                    ? h('div', {
-                        className: 'utb-select-pop-note',
-                        'data-utb-select-unsupported': selectPop.reason,
-                      }, '该下拉不支持浮层，请用键盘 ↑↓ + Enter')
-                    : (selectPop.select.options || []).map((option, index) => h('div', {
+                  }, (selectPop.select.options || []).map((option, index) => h('div', {
                         key: `${index}:${option.value}`,
                         className: 'utb-select-pop-item',
                         role: 'option',
