@@ -58,6 +58,7 @@ selector: <稳健 CSS path>（degraded 时标注「非唯一定位，仅作线�
 role: <role> · name: <name>
 rect(文档坐标): x=…, y=…, w×h
 page: <url>
+frame: <子 frame 文档地址>（selector 在该 frame 文档内有效）   ← 仅嵌套 frame 命中时出现
 outerHTML: 截断 <显示>/<原始> 码点（末尾 …，完整文本未取得）   ← 仅截断时出现
 ```
 
@@ -96,12 +97,12 @@ outerHTML: 截断 <显示>/<原始> 码点（末尾 …，完整文本未取得�
 - 命中：`200 {ok:true, element:{tag,id,classes,rect,frameId,scroll,page:{url,title},loaderId?}}`；`detail:true` 追加 `selector` 与 `selectorQuality`（`unique`/`degraded`/`none`）、`outerHTML` 与 `outerHTMLTruncated`/`outerHTMLLength`、`text` 与 `textTruncated`/`textLength`、`role`/`name`（AX best-effort）以及 shadow 事实 `shadowHost`/`closedShadow`。
 - 命中原生控件时排除浏览器自带的 UA shadow 节点，读取控件本身；页面作者创建的 open/closed shadow 命中规则不变。
 - 命中 `<select>` 时追加 `select:{multiple,size,value,options:[{value,label,disabled,selected}],truncated,target?}`（最多 200 项，超出置 `truncated:true`）。`disabled` 包含控件、fieldset、option 和 optgroup 的有效禁用状态。可读取文档身份时，`target:{backendNodeId,loaderId}` 绑定该节点与文档；只有命中 select 才追加 `select` 字段。
+- 命中嵌套 frame（同进程的 `<iframe>`）内的元素时，`rect` 仍是**顶层页面**文档坐标（iframe 偏移与滚动已折算），并追加 `frame:{id,url,main:false}`：`selector`/`outerHTML` 来自该 frame 的文档，`loaderId`/`select.target.loaderId` 也是该 frame 的文档代次。主帧命中不带 `frame` 字段，形状不变。
 - 截断是显式的：`outerHTML` 超过 240 码点时切到 240 并以 `…` 结尾（`outerHTMLTruncated:true`、`outerHTMLLength` 为原始码点数）；`text` 同理（上限 160）。
 - 未命中：`200 {ok:true, element:null, reason}`，`reason` 为：
   - `no-page`：该 scope 没有运行中的页面（冷态）；
-  - `no-hit`：空白页面背景或该点没有节点；
-  - `stale`：CDP 读取失败/超时，或主帧身份无法核对；
-  - `frame`：命中在子 frame（v1 只选主帧）；
+  - `no-hit`：空白页面背景或该点没有节点（含子 frame 的 `html`/`body`）；
+  - `stale`：CDP 读取失败/超时、主帧身份无法核对，或命中帧已不在当前 frame 树里；
   - `out-of-viewport`：文档点在当前可见视口之外。
 - 只读：不启动 Chromium、不进串行队列、不占租约、不记录客户端指标、不写 `lastError`；每次 CDP 调用上限 1500ms。
 
@@ -113,16 +114,16 @@ outerHTML: 截断 <显示>/<原始> 码点（末尾 …，完整文本未取得�
 { "value": "world", "optionIndex": 1, "target": { "backendNodeId": 42, "loaderId": "文档身份" } }
 ```
 
-- `value` 必填且必须是字符串。面板提交 `/element` 返回的 `target` 与点击的 `optionIndex`；Host 校验文档仍相同并解析同一节点，不受后续聚焦变化影响。`optionIndex` 是非负安全整数，写前校验对应 option 的 value，因此重复 value 也能精确选择。
+- `value` 必填且必须是字符串。面板提交 `/element` 返回的 `target` 与点击的 `optionIndex`；Host 按**整棵 frame 树**校验该 `loaderId` 仍是活着的文档（主帧或嵌套 frame），再解析同一节点，不受后续聚焦变化影响。`optionIndex` 是非负安全整数，写前校验对应 option 的 value，因此重复 value 也能精确选择。
 - 兼容调用可给唯一 `selector`（否则 `selector-not-found` / `selector-not-unique` / `selector-invalid`）；没有 `target` 或 `selector` 时才使用当前聚焦的 `<select>`。
 - 写入用 `HTMLSelectElement.prototype.selectedIndex` 的 native setter，随后依次派发 `input`、`change`，返回 `200 {ok:true, value, selectedIndex, selector}`。禁用控件、禁用 option 和禁用 optgroup 均在写前拒绝。
 - 拒绝统一 `400 INVALID_ARGUMENT`，`details.reason` 包括 `stale-target`（文档变化或节点无法解析）、`target-detached`、`option-index-out-of-range`、`option-value-mismatch`、`option-disabled`、`no-focused-element`、`not-a-select`、`select-disabled`、`unsupported-shape`（`multiple`/`size>1`）、`no-options`、`value-not-in-options` 与上述 selector 三类。
-- 浮层等待页面点击完成后读取选项；关闭、scope/标签/文档切换、画布原点或比例变化会使在途结果失效。选中或按 Esc 关闭后，键盘焦点交回预览。
+- 浮层等待页面点击完成后读取选项；关闭、scope/标签/文档切换（含嵌套 frame 导航）、画布原点或比例变化会使在途结果失效。选中或按 Esc 关闭后，键盘焦点交回预览。
 - `multiple`、`size>1` 和无选项的控件只在地址栏下方、预览区域外显示键盘提示，不在页面画面上渲染提示浮层，也不抢走预览的键盘焦点。提示仍可见时，重复点击不支持的控件会保留同一条提示，不重新触发或改变预览布局；关闭后才可再次触发。按 Esc、点击预览外或其他内容可关闭提示，正常单选仍可直接打开选项列表。
 
 ## 限制
 
-- **只选主帧**：iframe / OOPIF 内部元素返回 `reason:"frame"`，与 T2 `snapshot` 的 `frame:"main"` 范围一致；跨帧坐标/selector 不做推断。
+- **同进程嵌套 frame 可选**：页面内 `<iframe>` 的元素可以命中，`rect` 是顶层文档坐标、`selector` 属于该 frame 文档（响应里带 `frame`），`<select>` 浮层与写回同样可用。跨进程 OOPIF、closed shadow root 内部与不归属本页 frame 树的命中仍不支持，按 `no-hit`/`stale` 处理，不做坐标/selector 推断。
 - **closed shadow**：可命中 shadow root 内元素，但 `selector` 是该 root 作用域的路径，`document.querySelector(selector)` 可能找不到；`detail.shadowHost` 给出宿主信息、`closedShadow` 标明 root 是否 closed。
 - **主面板 `recent` 限制**：主面板身份解析不到会话时不写入聊天框，只提示；请使用右侧边栏的 session 面板。
 - **画布平移 `O ≠ 0`**：本版 GUI 验收只覆盖 `O = 0` 与页面滚动（`C` 变化）；平移后的悬浮映射按共享画布的既有 fail-closed 规则处理。
@@ -133,8 +134,8 @@ outerHTML: 截断 <显示>/<原始> 码点（末尾 …，完整文本未取得�
 ## 验证
 
 ```bash
-node tests/acceptance/pick-element-host.mjs   # Host：坐标空间/命中/detail/只读语义/边界（140 checks）
-node tests/acceptance/pick-element-gui.mjs    # GUI：隔离 DSH + 无头 Chrome 的真实面板操作（58 checks）
+node tests/acceptance/pick-element-host.mjs   # Host：坐标空间/命中/detail/嵌套 frame/只读语义/边界（145 checks）
+node tests/acceptance/pick-element-gui.mjs    # GUI：隔离 DSH + 无头 Chrome 的真实面板操作（选元素/悬停/@ 引用 + `--select-only` 29 checks）
 ```
 
 两个套件都自启资源：Host 套件使用 fake-Cordis harness + 插件自己的无头 Chromium；GUI 套件自建隔离 DSH（临时 `DSH_HOME`、随机端口，绝不用 3080/3081）并另开无头 Chrome 驱动真实面板。报告与截图分别写入 `tests/acceptance/runs/`、`tests/acceptance/evidence/`；`NOT_RUN` 原样保留，不当作通过。

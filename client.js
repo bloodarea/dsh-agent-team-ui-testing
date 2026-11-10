@@ -424,6 +424,13 @@ window.__ModuleLoader__.load({
           title: pickCollapseText(page.title) || null,
         },
         frameId: source.frameId === undefined || source.frameId === null ? null : String(source.frameId),
+        // 嵌套 frame 命中：Host 只在子 frame 上给 frame，selector 属于该 frame 的文档。
+        frame: source.frame && source.frame.main === false
+          ? {
+            id: pickCollapseText(source.frame.id) || null,
+            url: pickCollapseText(source.frame.url) || null,
+          }
+          : null,
         outerHTML: pickCollapseText(source.outerHTML) || null,
         outerHTMLTruncated: source.outerHTMLTruncated === true,
         outerHTMLLength: finite(source.outerHTMLLength),
@@ -471,6 +478,8 @@ window.__ModuleLoader__.load({
       lines.push('rect(文档坐标): x=' + pickNumberText(rect.x) + ', y=' + pickNumberText(rect.y)
         + ', ' + pickNumberText(rect.width) + '×' + pickNumberText(rect.height));
       if (payload.page && payload.page.url) lines.push('page: ' + payload.page.url);
+      // 嵌套 frame 的 selector 只在那个 frame 的文档里有效：不写出来，模型会当成主文档选择器。
+      if (payload.frame && payload.frame.url) lines.push('frame: ' + payload.frame.url + '（selector 在该 frame 文档内有效）');
       if (payload.outerHTMLTruncated) {
         const shown = Math.max(0, Array.from(payload.outerHTML || '').length - 1);
         const total = payload.outerHTMLLength === null ? '?' : String(payload.outerHTMLLength);

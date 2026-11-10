@@ -16,6 +16,7 @@
 <label>列表<select id="list" size="3"><option>A</option><option>B</option><option>C</option></select></label>
 <label>长列表<select id="long"></select></label>
 <label>键盘<input id="keyboard" value="keyboard sample"></label>
+<iframe id="frame" title="select-frame" style="display:block;width:320px;height:96px;border:0;margin:0 0 24px" srcdoc="<!doctype html><body style='margin:0;background:#0e1726'><select id='inner'><option value='frame-a'>iframe-A</option><option value='frame-b'>iframe-B</option></select><script>window.frameSelectEvents=[];for(const type of ['input','change'])document.addEventListener(type,function(event){if(event.target.tagName!=='SELECT')return;window.frameSelectEvents.push({type:type,value:event.target.value,index:event.target.selectedIndex});parent.selectEvents.push({type:type,id:event.target.id,value:event.target.value,index:event.target.selectedIndex,frame:true});});</script></body>"></iframe>
 <label>禁用域<fieldset disabled><select id="fieldset"><option value="a">A</option><option value="b">B</option></select></fieldset></label>
 <button id="plain">普通按钮</button>
 <output id="events">[]</output>

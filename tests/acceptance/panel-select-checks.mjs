@@ -16,9 +16,21 @@ export async function runPanelSelectChecks(api) {
     await clickAt(point.x, point.y);
   };
   const readPop = () => pageEvaluate(`(()=>{const p=document.querySelector('[data-utb-select-pop]');return p?{state:p.dataset.utbSelectPop,items:Array.from(p.querySelectorAll('[role=option]')).map(n=>({text:n.textContent,value:n.dataset.utbSelectValue,disabled:n.getAttribute('aria-disabled')})),rect:(()=>{const r=p.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()}:null})()`);
+  // 面板在刚导航/刚滚动的瞬间可能还没收到第一帧或指针事件，单次点击偶尔会落空；重试不改语义
+  // （功能真坏了三次都开不出来），只是去掉这类环境抖动。
   const open = async id => {
-    await clickControl(id);
-    return waitFor(readPop, { label: `select popover ${id}`, timeoutMs: 10000 });
+    let last = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await clickControl(id);
+      try {
+        return await waitFor(readPop, { label: `select popover ${id}`, timeoutMs: 5000 });
+      } catch (error) {
+        last = error;
+        await pressEscape();
+        await pageEvaluate('new Promise(resolve=>requestAnimationFrame(()=>setTimeout(resolve,120)))');
+      }
+    }
+    throw last;
   };
   const choose = async index => {
     const point = await centerOf(`document.querySelectorAll('[data-utb-select-item]')[${index}]`);
@@ -98,6 +110,78 @@ export async function runPanelSelectChecks(api) {
   const long = await open('long');
   check('S12', 'large list is bounded at 200 options', long.items.length === 200, 200, {count:long.items.length});
   await pressEscape();
+
+  /* ---- iframe 内的 <select>：Host 只给可核验的子 frame 命中，浮层与写回必须照旧工作 ---- */
+  const syncScroll = async (label) => {
+    await waitFor(async () => {
+      const live = await hostEvalJson('scrollY');
+      const snapshot = await hostState();
+      return Number.isFinite(live) && Math.abs(Number(snapshot.ui?.view?.y) - live) <= 1;
+    }, { label });
+    const snapshot = await hostState();
+    const preview = await measurePreview();
+    return { snapshot, preview };
+  };
+  await hostEvalJson(`document.getElementById('frame').scrollIntoView({block:'center',inline:'nearest'})`);
+  let frameSync = await syncScroll('iframe scrolled into view');
+  const frameSelect = await hostEvalJson(`(()=>{const f=document.getElementById('frame');const fr=f.getBoundingClientRect();const s=f.contentDocument.getElementById('inner');const r=s.getBoundingClientRect();return {x:fr.x+r.x+scrollX,y:fr.y+r.y+scrollY,width:r.width,height:r.height,mainSelectorHits:!!document.querySelector('#inner')}})()`);
+  observations.selectIframeTarget = frameSelect;
+  const frameDocPoint = {x:frameSelect.x+frameSelect.width/2, y:frameSelect.y+frameSelect.height/2};
+  const frameClick = screenPointFor(frameSync.preview, frameDocPoint, frameSync.snapshot.ui.view, frameSync.snapshot.ui.canvas);
+  observations.selectIframeClick = { docPoint: frameDocPoint, screenPoint: frameClick, preview: frameSync.preview.painted, view: frameSync.snapshot.ui.view, canvas: frameSync.snapshot.ui.canvas };
+  // 先做一次样式化的指针移动：面板会按它自己的映射发一次 hover 命中，用它的 doc 坐标核对映射。
+  const trafficBeforeHover = state.elementTraffic.length;
+  await state.chrome.cdp.send('Input.dispatchMouseEvent', { type:'mouseMoved', x:frameClick.x, y:frameClick.y, buttons:0 });
+  await pageEvaluate('new Promise(resolve=>requestAnimationFrame(()=>setTimeout(resolve,250)))');
+  const hoverEntry = state.elementTraffic.slice(trafficBeforeHover).find((entry) => String(entry.method || 'POST') === 'POST');
+  const panelHitTest = await pageEvaluate(`(()=>{const n=document.elementFromPoint(${frameClick.x},${frameClick.y});const img=document.querySelector('.utb-frame');const r=img.getBoundingClientRect();return {tag:n&&n.tagName,cls:n&&String(n.className||''),isImage:n===img,insideImage:!!(img&&img.contains(n)),imgRect:{x:r.x,y:r.y,w:r.width,h:r.height}}})()`);
+  observations.selectIframeMapping = { click: frameClick, docPoint: frameDocPoint, hoverPostData: hoverEntry?.postData || null, panelHitTest };
+  let framePop = null;
+  for (let attempt = 0; attempt < 3 && !framePop; attempt += 1) {
+    await clickAt(frameClick.x, frameClick.y);
+    try {
+      framePop = await waitFor(readPop, {label:'iframe select popover', timeoutMs:5000});
+    } catch {
+      framePop = null;
+      await pressEscape();
+      await pageEvaluate('new Promise(resolve=>requestAnimationFrame(()=>setTimeout(resolve,120)))');
+    }
+  }
+  if (!framePop) {
+    // 失败诊断：Host 对同一点的真实投影、iframe 内焦点、面板浮层 DOM、最近 /element 流量。
+    const hostProjection = await pageHostFetch('/element', {method:'POST', headers:jsonHeaders(), body:frameDocPoint}).catch((error) => ({error:String(error && error.message || error)}));
+    const iframeFocus = await hostEvalJson(`(()=>{const d=document.getElementById('frame').contentDocument;return {active:d.activeElement&&d.activeElement.id,value:d.getElementById('inner').value}})()`);
+    const panelPop = await pageEvaluate(`(()=>{const p=document.querySelector('[data-utb-select-pop]');const n=document.querySelector('[data-utb-select-unsupported]');return {pop:p?p.dataset.utbSelectPop:null,items:document.querySelectorAll('[data-utb-select-item]').length,note:n?n.dataset.utbSelectUnsupported:null}})()`);
+    const traffic = state.elementTraffic.slice(-3).map((entry) => ({ status: entry.status, postData: entry.postData, failure: entry.failure }));
+    observations.selectIframeDiagnostics = { hostProjection: hostProjection.json || hostProjection, iframeFocus, panelPop, traffic };
+  }
+  check('S16', 'iframe 内 <select> 打开真实面板选项', (framePop?.items || []).map(x=>x.text).join('|') === 'iframe-A|iframe-B', 'iframe-A|iframe-B', framePop || observations.selectIframeDiagnostics);
+  await capturePng('select-iframe-open.png');
+  const frameRequest = state.elementTraffic.at(-1);
+  if (frameRequest) {
+    try {
+      const body = await state.chrome.cdp.send('Network.getResponseBody', { requestId: frameRequest.requestId });
+      observations.selectIframeResponse = JSON.parse(body.body);
+    } catch { observations.selectIframeResponse = null; }
+  }
+  const frameElement = observations.selectIframeResponse?.element || null;
+  check('S16a', '/element 对 iframe 命中给出子 frame 标识与该 frame 的 target',
+    frameElement?.frame?.main === false && typeof frameElement?.frame?.id === 'string' && frameElement.frame.id.length > 0
+      && !!frameElement?.select?.target?.loaderId && frameSelect.mainSelectorHits === false,
+    'frame.main=false, frame.id, child loaderId, main document has no #inner', frameElement && {frame:frameElement.frame, target:frameElement.select?.target, mainSelectorHits:frameSelect.mainSelectorHits});
+  check('S16b', 'iframe 命中的 selector 属于该 frame 文档（主文档同名选择器不存在）', frameSelect.mainSelectorHits === false, false, frameSelect.mainSelectorHits);
+  const mainSpaceBefore = (await truth()).values.find(x=>x.id==='space');
+  await choose(1);
+  const frameTruth = () => hostEvalJson(`(()=>{const d=document.getElementById('frame').contentDocument;return {value:d.getElementById('inner').value,index:d.getElementById('inner').selectedIndex,events:d.defaultView.frameSelectEvents.slice()}})()`);
+  const frameObserved = await waitFor(async () => { const t = await frameTruth(); return t.value === 'frame-b' ? t : null; }, { label: 'iframe option readback' });
+  check('S17', 'iframe 内选中的值写回该 frame 的 <select>，input/change 各一次',
+    frameObserved.index === 1 && JSON.stringify(frameObserved.events) === JSON.stringify([{type:'input',value:'frame-b',index:1},{type:'change',value:'frame-b',index:1}]),
+    'frame-b, input/change once', frameObserved);
+  const mainAfter = (await truth()).values.find(x=>x.id==='space');
+  check('S17a', 'iframe 写回不触碰主文档 select', JSON.stringify(mainAfter) === JSON.stringify(mainSpaceBefore), mainSpaceBefore, mainAfter);
+  observations.selectIframe = frameObserved;
+  await hostEvalJson('scrollTo(0, 0)');
+  await syncScroll('scroll back to top');
   await open('space');
   const target = observations.selectElementResponse.element.select.target;
   await setAddressBar(fixtureUrl + '?next-document');

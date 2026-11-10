@@ -7153,7 +7153,9 @@ export class Runtime {
     if (request.target) {
       const stale = () => new BrowserError('INVALID_ARGUMENT', '下拉目标已变化，请重新打开', { reason: 'stale-target' });
       const tree = await this.send('Page.getFrameTree', {}, signal);
-      if (tree?.frameTree?.frame?.loaderId !== request.target.loaderId) throw stale();
+      // A bound `<select>` may live in a same-process child frame: validate the target document
+      // against the whole frame tree, not just the root frame.
+      if (!frameTreeHasLoaderId(tree && tree.frameTree, request.target.loaderId)) throw stale();
       let objectId;
       try {
         const resolved = await this.send('DOM.resolveNode', { backendNodeId: request.target.backendNodeId }, signal);
@@ -15240,6 +15242,49 @@ function elementAttributes(node) {
   return out;
 }
 
+/**
+ * The frame a pick belongs to, read from the `Page.getFrameTree` reply.
+ *
+ * `main` marks the root frame; a nested frame carries its own `loaderId` (document generation) and
+ * URL so the reply can say that the selector/rect are scoped to that document. An id absent from
+ * the tree answers `null`: the caller fails closed instead of trusting an unverifiable frame.
+ */
+function elementFrameOf(frameTree, frameId) {
+  const wanted = String(frameId || '');
+  if (!wanted || !frameTree || !frameTree.frame) return null;
+  const walk = (node, depth) => {
+    if (!node || !node.frame || depth > 32) return null;
+    if (String(node.frame.id) === wanted) {
+      return {
+        id: String(node.frame.id),
+        loaderId: typeof node.frame.loaderId === 'string' ? node.frame.loaderId : null,
+        url: typeof node.frame.url === 'string' ? node.frame.url : '',
+        main: depth === 0,
+      };
+    }
+    const children = Array.isArray(node.childFrames) ? node.childFrames : [];
+    for (const child of children) {
+      const found = walk(child, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+  return walk(frameTree, 0);
+}
+
+/** Does this frame tree still carry a document whose loader id is `loaderId`? */
+function frameTreeHasLoaderId(frameTree, loaderId) {
+  const wanted = String(loaderId || '');
+  if (!wanted) return false;
+  const walk = (node, depth) => {
+    if (!node || !node.frame || depth > 32) return false;
+    if (String(node.frame.loaderId || '') === wanted) return true;
+    const children = Array.isArray(node.childFrames) ? node.childFrames : [];
+    return children.some((child) => walk(child, depth + 1));
+  };
+  return walk(frameTree, 0);
+}
+
 /** Border-box quad (viewport CSS px) -> document rect; a degenerate/absent quad is `null`. */
 function elementQuadRect(model, scrollX, scrollY) {
   const quad = model && (model.border || model.padding || model.content);
@@ -15356,14 +15401,13 @@ async function pickElementAt(runtime, { x, y, detail }) {
       return { element: null, reason: noNode ? 'no-hit' : 'stale' };
     }
     if (!hit || !Number.isInteger(hit.backendNodeId)) return { element: null, reason: 'no-hit' };
-    // v1 picks inside the main frame only (the same "frame: main" tree T2 snapshots use). A hit in
-    // a child frame fails closed instead of returning a child-frame-relative selector/rect; when
-    // the main frame id is not known yet, a hit that claims a frame is fail-closed as `stale`
-    // (never trust an unverifiable frame, e.g. mid-navigation).
-    if (hit.frameId) {
-      if (!runtime.mainFrameId) return { element: null, reason: 'stale' };
-      if (hit.frameId !== runtime.mainFrameId) return { element: null, reason: 'frame' };
-    }
+    // A hit may land in a same-process child frame: a native `<select>` inside an `<iframe>` still
+    // needs the picker's popover, and `DOM.getBoxModel` already reports ROOT-frame viewport quads,
+    // so the document rect stays comparable with the panel's coordinates. Only what cannot be
+    // verified is refused: an unknown main frame id (mid-navigation) is `stale`, and a hit whose
+    // frame is missing from the frame tree (read below) is `stale` too — never unchecked cross-frame
+    // data. OOPIF/closed targets simply never hit on this session.
+    if (hit.frameId && !runtime.mainFrameId) return { element: null, reason: 'stale' };
     const described = await bounded('DOM.describeNode', { backendNodeId: hit.backendNodeId, depth: 0 });
     // A hit may land on a text (or shadow-root) node: walk up to its element, bounded.
     let node = described && described.node;
@@ -15402,13 +15446,17 @@ async function pickElementAt(runtime, { x, y, detail }) {
     if (!tag || tag === 'html' || tag === 'body') return { element: null, reason: 'no-hit' };
     const box = await bounded('DOM.getBoxModel', { backendNodeId: node.backendNodeId });
     // Loader id = the document generation the hit belongs to (the panel uses it to discard a
-    // response that raced a navigation). Best-effort: an unreadable frame tree omits the field.
-    let loaderId = null;
+    // response that raced a navigation). The frame tree read also proves that a child-frame hit
+    // still belongs to a live frame; `main` separates the root frame from a nested one.
+    let frame = null;
     try {
       const tree = await bounded('Page.getFrameTree', {});
-      const mainFrame = tree && tree.frameTree && tree.frameTree.frame;
-      loaderId = mainFrame && typeof mainFrame.loaderId === 'string' && mainFrame.loaderId ? mainFrame.loaderId : null;
-    } catch { loaderId = null; }
+      frame = elementFrameOf(tree && tree.frameTree, hit.frameId || runtime.mainFrameId);
+    } catch { frame = null; }
+    // An unreadable frame tree keeps the historical best-effort shape for root-frame hits (no
+    // loaderId), but a nested hit without a verifiable frame is refused.
+    if (!frame && hit.frameId && hit.frameId !== runtime.mainFrameId) return { element: null, reason: 'stale' };
+    const loaderId = frame && typeof frame.loaderId === 'string' && frame.loaderId ? frame.loaderId : null;
     const attributes = elementAttributes(node);
     const element = {
       tag,
@@ -15416,6 +15464,9 @@ async function pickElementAt(runtime, { x, y, detail }) {
       classes: attributes.class ? attributes.class.split(/\s+/u).filter(Boolean) : [],
       rect: elementQuadRect(box && box.model, scrollX, scrollY),
       frameId: String(hit.frameId || runtime.mainFrameId || ''),
+      // Nested frames only: the selector/outerHTML above are valid inside that frame's document,
+      // not in the main document, so the caller gets the frame identity instead of guessing.
+      ...(frame && frame.main === false ? { frame: { id: frame.id, url: redactUrl(frame.url), main: false } } : {}),
       // The SAME Page.getLayoutMetrics read that produced the document rect: the panel compares it
       // with its own view to detect a response computed while the page was still scrolling.
       scroll: { x: scrollX, y: scrollY },

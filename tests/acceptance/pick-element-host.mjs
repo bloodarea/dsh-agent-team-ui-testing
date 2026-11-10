@@ -25,12 +25,14 @@
  * (root-scoped selector + shadowHost/closedShadow), H8d unknown-main-frame fail-closed, H12
  * scroll/loaderId consistency + route-level visible-area boundary + navigation, H1b closed page
  * stays cold.
- * NOT_RUN (recorded, never faked): iframe-inner selection (v1 = main frame only), server-rendered
- * documents (no SSR fixture in this repository). `loaderId` is available on this Chromium and is
+ * NOT_RUN (recorded, never faked): server-rendered documents (no SSR fixture in this repository).
+ * Nested same-process frames (an <iframe> inside the page) ARE covered: H8 picks a button and a
+ * <select> inside the frame, checks the ROOT-frame rect, that frame's loaderId, the select
+ * projection/target and one write through it. `loaderId` is available on this Chromium and is
  * asserted against a raw `Page.getFrameTree` read (no NOT_RUN needed).
  *
  * Response reasons: `no-page` (cold/no page), `no-hit` (blank background / no node), `stale`
- * (CDP read failed or the frame cannot be verified), `frame` (v1 selects the main frame only),
+ * (CDP read failed, or a nested hit whose frame is no longer in the frame tree),
  * `out-of-viewport` (the document point is outside the currently visible viewport).
  *
  * Run: node tests/acceptance/pick-element-host.mjs
@@ -1067,8 +1069,8 @@ async function main() {
 
   /* --- H8: casing + cross-frame fail-closed; SSR/iframe-inner are NOT_RUN --------------------- */
 
-  await runProbe('H8', '大小写归一与跨帧 fail-closed（v1 只选主帧）',
-    'div#pick-cased with classes ["Foo","Bar"]; iframe hit -> reason:"frame"', async () => {
+  await runProbe('H8', '大小写归一与嵌套 same-process frame（iframe 内元素/select 可命中）',
+    'div#pick-cased with classes ["Foo","Bar"]; iframe inner button + select picked with root rects', async () => {
       const cased = await pick(100, 540);
       report.observations.h8Cased = cased;
       const truthNow = await pageTruth();
@@ -1080,23 +1082,114 @@ async function main() {
       check('真实 DOM 的 tagName 是大写 DIV（对照）', truthNow.casedTagName === 'DIV',
         truthNow.casedTagName, 'DIV');
 
-      // The same document point over the iframe is a child-frame hit: v1 refuses it.
+      // The same document point over the iframe is a child-frame hit: a nested same-process frame is
+      // picked with ROOT-frame quads, that frame's own loaderId and frame.main=false.
       const rawInside = await rawHit(650, 340);
       report.observations.h8FrameRaw = rawInside;
       check('原始 CDP 在 iframe 内命中的是子 frame 节点',
         typeof rawInside.frameId === 'string' && rawInside.frameId !== state.runtime.mainFrameId,
         { frameId: rawInside.frameId, mainFrameId: state.runtime.mainFrameId, localName: rawInside.localName },
         'frameId != mainFrameId');
+
+      // Truth for the nested frame: root-frame viewport rect = iframe rect + inner rect.
+      const frameTruth = await pageEval(`(() => {
+        const frame = document.getElementById('pick-frame');
+        const fr = frame.getBoundingClientRect();
+        const sx = window.scrollX, sy = window.scrollY;
+        const inner = (id) => {
+          const r = frame.contentDocument.getElementById(id).getBoundingClientRect();
+          return { x: fr.x + r.x + sx, y: fr.y + r.y + sy, width: r.width, height: r.height };
+        };
+        return { scroll: { x: sx, y: sy },
+          frame: { x: fr.x + sx, y: fr.y + sy, width: fr.width, height: fr.height },
+          button: inner('inner-btn'), select: inner('inner-select') };
+      })()`);
+      report.observations.h8FrameTruth = frameTruth;
+      const rawTree = await rawSend('Page.getFrameTree', {});
+      const childFrame = (rawTree?.frameTree?.childFrames || []).find((node) => node?.frame?.id === rawInside.frameId);
+      report.observations.h8FrameTree = childFrame || null;
+
       const inside = await pick(650, 340);
       report.observations.h8Frame = inside;
-      check('跨帧命中 fail-closed：200 element:null reason=frame（不返回子 frame 坐标/selector）',
-        inside.status === 200 && inside.json?.element === null && inside.json?.reason === 'frame',
-        { status: inside.status, json: inside.json }, '200 {element:null,reason:"frame"}');
+      const insideElement = inside.json?.element || null;
+      check('iframe 内按钮命中返回真实元素（不再 reason:frame）',
+        inside.status === 200 && insideElement?.tag === 'button' && insideElement?.id === 'inner-btn',
+        { status: inside.status, tag: insideElement?.tag, id: insideElement?.id }, 'button#inner-btn');
+      check('嵌套 frame 命中的 rect 是顶层视口矩形 + 页面滚动（iframe 偏移已含），并带 frame.main=false',
+        !!insideElement && insideElement.frame?.main === false
+          && insideElement.frameId === rawInside.frameId
+          && Math.abs(insideElement.rect.x - frameTruth.button.x) <= 1
+          && Math.abs(insideElement.rect.y - frameTruth.button.y) <= 1
+          && Math.abs(insideElement.rect.width - frameTruth.button.width) <= 1
+          && Math.abs(insideElement.rect.height - frameTruth.button.height) <= 1,
+        { rect: insideElement?.rect, truth: frameTruth.button, frame: insideElement?.frame },
+        'root-viewport rect, frame.main=false');
+      check('嵌套 frame 命中的 loaderId 取自该 frame 自己的文档',
+        !!childFrame && insideElement?.loaderId === childFrame.frame.loaderId
+          && insideElement.loaderId !== state.runtime.mainFrameId,
+        { loaderId: insideElement?.loaderId, childLoaderId: childFrame?.frame?.loaderId },
+        'child frame loaderId');
+
       const edge = await pick(610, 310);
       report.observations.h8FrameEdge = edge;
-      check('iframe 边缘（子 frame html）同样 reason=frame',
-        edge.status === 200 && edge.json?.element === null && edge.json?.reason === 'frame',
-        { status: edge.status, json: edge.json }, '200 {element:null,reason:"frame"}');
+      check('iframe 边缘（子 frame body）不是元素：200 element:null reason=no-hit',
+        edge.status === 200 && edge.json?.element === null && edge.json?.reason === 'no-hit',
+        { status: edge.status, json: edge.json }, '200 {element:null,reason:"no-hit"}');
+
+      // The nested <select> must be readable and writable through the SAME bound target.
+      const selectPoint = {
+        x: frameTruth.select.x + frameTruth.select.width / 2,
+        y: frameTruth.select.y + frameTruth.select.height / 2,
+      };
+      report.observations.h8FrameSelectPoint = selectPoint;
+      const innerSelect = await pick(selectPoint.x, selectPoint.y);
+      report.observations.h8FrameSelect = innerSelect;
+      const selectElement = innerSelect.json?.element || null;
+      check('iframe 内 <select> 命中带 select 投影与该 frame 的 target',
+        selectElement?.tag === 'select' && selectElement?.id === 'inner-select'
+          && selectElement?.select?.options?.map((option) => option.value).join('|') === 'frame-a|frame-b'
+          && selectElement?.select?.target?.loaderId === childFrame?.frame?.loaderId,
+        { select: selectElement?.select, childLoaderId: childFrame?.frame?.loaderId },
+        'select projection + child loaderId');
+      let nestedWrite = null;
+      try {
+        nestedWrite = await state.runtime.selectValue({
+          value: 'frame-b',
+          optionIndex: 1,
+          selector: null,
+          target: selectElement?.select?.target,
+        });
+      } catch (error) {
+        nestedWrite = { error: String((error && error.message) || error), code: error?.code, details: error?.details };
+      }
+      const nestedTruth = await pageEval(`(() => {
+        const frame = document.getElementById('pick-frame');
+        const select = frame.contentDocument.getElementById('inner-select');
+        return { value: select.value, index: select.selectedIndex,
+          events: frame.contentDocument.defaultView.frameSelectEvents.slice(),
+          mainEvents: window.__pickFrameMainEvents ? window.__pickFrameMainEvents.slice() : [] };
+      })()`);
+      report.observations.h8FrameSelectWrite = { nestedWrite, nestedTruth };
+      check('iframe 内 <select> 写回成功：值生效且 input/change 各一次',
+        nestedWrite?.ok === true && nestedTruth.value === 'frame-b' && nestedTruth.index === 1
+          && JSON.stringify(nestedTruth.events) === JSON.stringify([
+            { type: 'input', value: 'frame-b', index: 1 }, { type: 'change', value: 'frame-b', index: 1 },
+          ]),
+        { write: nestedWrite, truth: nestedTruth }, 'frame-b, input/change once');
+      let staleWrite = null;
+      try {
+        staleWrite = await state.runtime.selectValue({
+          value: 'frame-a', optionIndex: 0, selector: null,
+          target: { backendNodeId: selectElement?.select?.target?.backendNodeId, loaderId: 'DEADBEEF' },
+        });
+      } catch (error) {
+        staleWrite = { error: String((error && error.message) || error), code: error?.code, details: error?.details };
+      }
+      report.observations.h8FrameSelectStale = staleWrite;
+      check('伪造的 frame loaderId 被 stale-target 拒绝且零写入',
+        staleWrite?.code === 'INVALID_ARGUMENT' && staleWrite?.details?.reason === 'stale-target'
+          && (await pageEval(`document.getElementById('pick-frame').contentDocument.getElementById('inner-select').value`)) === 'frame-b',
+        staleWrite, '400 stale-target, value unchanged');
     });
 
   /* --- H8c: shadow-DOM detail (root-scoped selector + shadowHost/closedShadow) ---------------- */
@@ -1283,8 +1376,6 @@ async function main() {
         { frameId: afterElement.frameId, mainFrameId: state.runtime.mainFrameId }, 'equal');
     });
 
-  notRunProbe('H8a', 'iframe 内部元素可选（v1 显式不支持）',
-    'v1 只选主帧（与 T2 snapshot frame:"main" 一致），iframe 内元素不返回 element；跨帧 fail-closed 已由 H8 覆盖 reason:"frame"');
   notRunProbe('H8b', '服务端渲染文档（无 SSR fixture）',
     '仓库内没有服务端渲染 fixture；本切片不虚构该场景');
 

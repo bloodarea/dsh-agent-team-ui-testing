@@ -1415,8 +1415,8 @@ async function main() {
     notRun('G9.3', 'DPR≠1 / non-loopback GUI hostname',
       '插件固定 dsf=1；非 loopback hostname 需要代理/别名，按契约不伪造',
       { dpr: 1 });
-    notRun('G9.4', 'iframe / closed-shadow inner-element selection',
-      'v1 只选主帧（与 T2 frame:"main" 一致）；Host 验收已覆盖跨帧 fail-closed reason:"frame" 与 closed-shadow 命中读取',
+    notRun('G9.4', 'closed-shadow inner-element selection',
+      'closed shadow root 只能通过保存的 root 读取，面板命中链路不暴露该 root；iframe 内元素已由 S16–S17b 与 Host H8 真实覆盖',
       { hostCoverage: 'tests/acceptance/pick-element-host.mjs H8/H8c' });
     notRun('G9.5', 'sending phase prompt (聊天框正在发送，稍后再试)',
       '需要会话处于发送中 phase；隔离实例没有 provider 消息流，无法真实触发，按契约不伪造',

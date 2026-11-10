@@ -220,3 +220,51 @@ test('Host：/element 与投影读取保持纯读（不 ensure / 不进队列 / 
   assert.ok(!route.includes('selected = entry'), '/element 不许把 runtime 设成共享错误投影的目标');
   assert.ok(!route.includes('runtime.run(') && !route.includes('.ensure('), '/element 不许进队列/启动页面');
 });
+
+/* ------------------------------------------------------------------------------------------------
+ * ④ iframe 内的 <select>：命中按 frame 树核验，写回按 frame 树校验文档
+ * ---------------------------------------------------------------------------------------------- */
+
+test('Host：嵌套 frame 命中走 frame 树核验，不再固定拒绝 reason:frame', () => {
+  const start = hostSource.indexOf('async function pickElementAt(');
+  const end = hostSource.indexOf('/** Register the runtime, its HTTP surface, and the agent tools. */');
+  const pick = hostSource.slice(start, end);
+  assert.ok(pick.includes('elementFrameOf('), '/element 必须按 frame 树确定命中帧');
+  assert.ok(!pick.includes("reason: 'frame'"), '不再对子 frame 命中一律 reason:frame');
+  assert.ok(pick.includes('if (hit.frameId && !runtime.mainFrameId)'), '主帧 id 未知仍 fail-closed');
+  assert.ok(pick.includes("if (!frame && hit.frameId && hit.frameId !== runtime.mainFrameId)"),
+    '命中帧不在 frame 树里必须 fail-closed');
+  assert.ok(pick.includes('frame.main === false ? { frame: { id: frame.id, url: redactUrl(frame.url), main: false } }'),
+    '嵌套命中只附加 frame 标识，主帧形状不变');
+  assert.ok(pick.includes("const loaderId = frame && typeof frame.loaderId === 'string'"),
+    'loaderId 必须取自命中帧自己的文档');
+});
+
+test('Host：frame 树辅助函数按 loaderId/帧 id 递归查找且深度有界', () => {
+  const helper = /function elementFrameOf\(frameTree, frameId\) \{[\s\S]*?\n\}/u.exec(hostSource);
+  assert.ok(helper, '缺少 elementFrameOf');
+  assert.ok(helper[0].includes('childFrames'), '必须递归 childFrames');
+  assert.ok(helper[0].includes('depth > 32'), '递归必须有深度上限');
+  const loaderHelper = /function frameTreeHasLoaderId\(frameTree, loaderId\) \{[\s\S]*?\n\}/u.exec(hostSource);
+  assert.ok(loaderHelper, '缺少 frameTreeHasLoaderId');
+  assert.ok(loaderHelper[0].includes('childFrames') && loaderHelper[0].includes('depth > 32'));
+});
+
+test('Host：/select 按整棵 frame 树校验 loaderId（iframe 内下拉可写）', () => {
+  const start = hostSource.indexOf('async selectValue(request, signal) {');
+  assert.ok(start > -1, '找不到 selectValue');
+  const end = hostSource.indexOf('async evaluate(expression, awaitPromise = true, signal) {', start);
+  assert.ok(end > start, '找不到 selectValue 结尾');
+  const body = hostSource.slice(start, end);
+  assert.ok(body.includes('frameTreeHasLoaderId(tree && tree.frameTree, request.target.loaderId)'),
+    '必须用 frame 树校验目标文档，而不是只比主帧 loaderId');
+  assert.ok(!body.includes('tree?.frameTree?.frame?.loaderId !== request.target.loaderId'),
+    '旧的主帧单点比较必须删掉');
+  assert.ok(body.includes("reason: 'stale-target'"), '文档变化仍回 stale-target');
+});
+
+test('客户端：嵌套 frame 命中会把 frame 写进引用载荷与模型文本', () => {
+  assert.ok(clientSource.includes('source.frame && source.frame.main === false'), '载荷必须只在子 frame 上带 frame');
+  assert.ok(clientSource.includes("'frame: ' + payload.frame.url + '（selector 在该 frame 文档内有效）'"),
+    '模型文本必须说明 selector 的 frame 作用域');
+});

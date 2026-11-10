@@ -35,7 +35,10 @@
     #pick-no-pointer     left 900 top 620 120x60, pointer-events:none (H5: ignorePointerEventsNone
                          is false, so the hit test must skip it and answer no-hit for the page body)
     #pick-frame          position:absolute left 600 top 300 220x140, srcdoc iframe with one
-                         button inside (H8: cross-frame hit is refused, never mis-mapped)
+                         100x40 button at (20,20) and one select at (20,70) 120px wide
+                         (H8: a nested same-process frame is picked with ROOT-frame rects,
+                         frame.main=false, that frame's loaderId and its own select projection;
+                         the iframe body/edge stays "no-hit")
     #pick-far            position:absolute left 60 top 2000 80x40 (off-screen for every probe)
 
   Do not restyle this page without updating the expectations in pick-element-host.mjs.
@@ -78,7 +81,7 @@
   <DIV ID="pick-cased" CLASS="Foo Bar">Cased Target</DIV>
   <ul id="pick-list"><li class="pick-item">First Item</li><li class="pick-item">Second Item</li></ul>
   <div id="pick-long" data-note="note:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy">LongText:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</div>
-  <iframe id="pick-frame" title="pick-frame" srcdoc='<body style="margin:0"><button id="inner-btn" type="button" style="position:absolute;left:20px;top:20px;width:100px;height:40px;margin:0;padding:0;border:0">Inner Button</button></body>'></iframe>
+  <iframe id="pick-frame" title="pick-frame" srcdoc='<body style="margin:0"><button id="inner-btn" type="button" style="position:absolute;left:20px;top:20px;width:100px;height:40px;margin:0;padding:0;border:0">Inner Button</button><select id="inner-select" style="position:absolute;left:20px;top:70px;width:120px;margin:0"><option value="frame-a">A</option><option value="frame-b">B</option></select><script>window.frameSelectEvents=[];for(const type of ["input","change"])document.addEventListener(type,function(event){if(event.target.tagName!=="SELECT")return;window.frameSelectEvents.push({type:type,value:event.target.value,index:event.target.selectedIndex});});</script></body>'></iframe>
   <div id="pick-no-pointer"></div>
   <div id="pick-shadow-host"></div>
   <div id="pick-closed-host"></div>
