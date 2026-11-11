@@ -39,7 +39,8 @@ view = { version, mode, x, y, canvasX, canvasY, width, height, scale, source, re
 
 ## 标注
 
-- 工具：圆形、矩形、线段、箭头、画笔、文字、橡皮擦；另有填充/外框、颜色、粗细与清除画布。
+- 工具：圆形、矩形、线段、箭头、画笔、文字、橡皮擦；另有填充/外框、颜色、粗细、**截图**与清除画布。
+- **截图按钮**（标注栏、紧接「粗细」之后）：把**当前页面连同已接受的标注**合成一张 PNG，直接作为附件放进本会话的聊天框（`createDrafts` + `addAttachments`，字节随消息发送，不落盘、不占页面队列之外的东西）。它走 Host 的 `POST /screenshot {includeAnnotations:true}`，与 `browser_screenshot {includeAnnotations:true}` 是**同一条离屏合成路径**，所以像素与证据一致；返回的 `annotations.{revision,shapeCount,composited,source,context}` 决定提示文案。截图前若还有待发布的笔画会先 flush（≤260ms），避免少一笔；聊天框处于发送中（busy）时按钮报「聊天框正忙」并**立即释放**已注册的附件，不留孤儿。
 - 锚定在**画布坐标**中，可画在空白区域；标注模式下页面不接收任何指针或键盘输入。
 - 标注是独立文档，不进入页面 DOM；默认截图、T3 原始源图与 T4 帧源不含面板标注。`browser_screenshot {includeAnnotations:true}` 可叠加当前目标已提交且经 Host 接受的六种形状（`circle/rect/line/arrow/brush/text`），渲染语义与面板一致。
 - Agent 读取：`browser_state.annotations`（或认证 `/state` 的 `ui.annotations`），返回图形列表与 `revision`。用户提到标注、画、圈、框、箭头或笔迹等指代面板标注时，先读该文档，再用 `browser_screenshot {includeAnnotations:true}` 查看像素；手写内容无法可靠辨认时如实说明，不猜字。
@@ -88,4 +89,4 @@ view = { version, mode, x, y, canvasX, canvasY, width, height, scale, source, re
 
 - 实时预览是 1× screencast；宽高变更后的输入屏障只是 best-effort（≤250 ms），画布偏移使用 fail-closed 屏障。
 - 画布是视图层合成，不是页面级无限画布；`fixed`/`sticky` 元素会随整帧平移。
-- 默认截图、T3 原始源图与 T4 帧源不包含面板标注；带标注截图须显式传 `includeAnnotations:true`，并结合 `browser_state.annotations` 核对文档身份与 revision。标注来源 `source.trusted=false`，不能替代页面事实或独立验证。
+- 面板标注栏的「截图」按钮与 `browser_screenshot` 的 `includeAnnotations:true` 是同一份合成结果；默认截图、T3 原始源图与 T4 帧源不包含面板标注，带标注截图须显式传 `includeAnnotations:true`，并结合 `browser_state.annotations` 核对文档身份与 revision。标注来源 `source.trusted=false`，不能替代页面事实或独立验证。

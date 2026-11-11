@@ -16752,6 +16752,11 @@ export function apply(ctx) {
         // `canvas:true` enables the canvas-space seed provenance (O = 0 keeps the raw single-CDP
         // PNG path). Empty/legacy bodies keep the historical raw reply shape byte-for-byte.
         const canvas = body && typeof body === 'object' && body.canvas === true;
+        // `includeAnnotations:true` (annot bar → 截图): the panel asks for the SAME composited
+        // capture the agent's `browser_screenshot{includeAnnotations:true}` produces, so the human
+        // can hand its own page+notes to the chat as one image. It goes through `capture()`, i.e.
+        // the documented canvas-space path, and therefore also carries `capture`.
+        const includeAnnotations = body && typeof body === 'object' && body.includeAnnotations === true;
         // The panel's seed capture is a display request, not a lifecycle action: a closed primary
         // must stay closed (the empty tab state), otherwise every panel mount would resurrect a
         // blank tab. Agent screenshot calls go through the tool runtime, not this GUI route.
@@ -16759,14 +16764,23 @@ export function apply(ctx) {
           sendJson(res, 200, { ok: true, closed: true, image: null, capturedAt: Date.now() });
           return;
         }
-        const shot = await entry.runtime.run(() => entry.runtime.screenshot(canvas ? { canvas: true } : {}));
+        const shot = includeAnnotations
+          ? await entry.runtime.run(() => entry.runtime.capture({ scale: 1, includeAnnotations: true }))
+          : await entry.runtime.run(() => entry.runtime.screenshot(canvas ? { canvas: true } : {}));
         registry.markRecent(entry);
+        const capture = shot.capture || null;
+        const viewport = capture && capture.viewport ? capture.viewport : null;
         sendJson(res, 200, {
           ok: true,
           image: shot.base64,
-          viewport: shot.viewport,
-          capturedAt: shot.capturedAt,
-          ...(canvas ? { view: shot.view, capture: shot.capture } : {}),
+          viewport: viewport || shot.viewport || null,
+          capturedAt: (capture && capture.capturedAt) || shot.capturedAt || Date.now(),
+          ...(includeAnnotations ? {
+            capture,
+            // Same metadata the tool reports: revision/context/source/truncation of the frozen
+            // document, so the panel can say which document the picture shows.
+            annotations: (capture && capture.annotations) || null,
+          } : canvas ? { view: shot.view, capture } : {}),
         });
         return;
       }

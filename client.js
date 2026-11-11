@@ -1404,6 +1404,7 @@ window.__ModuleLoader__.load({
 .utb-annot-color:disabled { opacity: .55; cursor: not-allowed; }
 .utb-annot-width { width: 54px; }
 /* v2：横栏右侧的可见文案按钮「清除画布」（§11.4）与状态栏同步提示（§11.3）。 */
+.utb-annot-shot { width: auto; min-width: 0; height: 28px; padding: 0 10px; font-size: 12px; line-height: 1; white-space: nowrap; border-color: var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
 .utb-annot-clear { width: auto; min-width: 0; height: 28px; padding: 0 10px; margin-left: auto; font-size: 12px; line-height: 1; white-space: nowrap; border-color: var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
 .utb-annot-sync { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-state-warn-primary); }
 .utb-annot-layer { display: block; overflow: hidden; }
@@ -2448,6 +2449,9 @@ window.__ModuleLoader__.load({
       const [annotStaleState, setAnnotStaleState] = React.useState({ stale: false, staleReason: null });
       // A live gesture/erase exists (drives the 清除画布 disabled state without per-move renders).
       const [annotBusy, setAnnotBusy] = React.useState(false);
+      // 标注栏「截图」的状态：按钮进行态 + 就地提示（成功/失败原因都给具体文案）。
+      const [annotShotBusy, setAnnotShotBusy] = React.useState(false);
+      const [annotShotNotice, setAnnotShotNotice] = React.useState('');
       const annotSyncRef = React.useRef({ state: 'idle', timer: 0 });
       // Identity gate: no old shape is rendered or published before the new scope's first trusted
       // state. `epoch` is the scope generation the gate belongs to; `key` is the D key.
@@ -4503,6 +4507,98 @@ window.__ModuleLoader__.load({
       }
 
       /** 清除画布：清已完成 + 草稿/编辑，立即发布空文档，保留模式/工具/样式（§11.4）。 */
+      /**
+       * 标注栏「截图」：把**当前页面 + 已接受的标注**合成一张 PNG，作为附件放进聊天框。
+       *
+       * 语义边界（docs/viewport-control.md）：走 Host 的 `POST /screenshot {includeAnnotations:true}`，
+       * 也就是 Agent 的 `browser_screenshot{includeAnnotations:true}` 同一条离屏合成路径，因此像素与
+       * 证据完全一致，不是面板自己另画一遍 SVG。它沿用面板的 scope 身份；附件通过 Conversation 服务
+       * 注册成 draft attachment（`createDrafts` + `addAttachments`），照片字节随消息发送，不落盘。
+       */
+      function annotShotTarget() {
+        const sid = baseIdentity && baseIdentity.kind === 'session' ? String(baseIdentity.sessionId || '') : '';
+        if (!sid) return { ok: false, reason: '当前面板没有绑定会话，无法加入聊天框附件' };
+        const ctx = pluginContext;
+        if (!ctx || typeof ctx.get !== 'function') return { ok: false, reason: '聊天框服务不可用' };
+        let sessions = null;
+        let conversation = null;
+        try {
+          sessions = ctx.get('sessions');
+          conversation = ctx.get('conversation');
+        } catch {
+          return { ok: false, reason: '聊天框服务不可用' };
+        }
+        if (!conversation || typeof conversation.createDrafts !== 'function'
+          || !conversation.input || typeof conversation.input.for !== 'function'
+          || !sessions || typeof sessions.binding !== 'function') {
+          return { ok: false, reason: '聊天框服务不可用' };
+        }
+        let binding = null;
+        try { binding = sessions.binding(sid); } catch { binding = null; }
+        if (!binding || !binding.ctx) return { ok: false, reason: '会话尚未就绪（未 retain），稍后再试' };
+        let face = null;
+        try { face = conversation.input.for(binding.ctx); } catch { face = null; }
+        if (!face || typeof face.addAttachments !== 'function') return { ok: false, reason: '聊天框服务不可用' };
+        return { ok: true, sid, conversation, face };
+      }
+
+      async function captureAnnotationShot() {
+        if (annotShotBusy) return;
+        setAnnotShotNotice('');
+        const target = annotShotTarget();
+        if (!target.ok) {
+          setAnnotShotNotice('截图失败：' + target.reason);
+          return;
+        }
+        setAnnotShotBusy(true);
+        try {
+          // 先让「已接受」的文档追上最新笔画：截图取的是 Host 侧文档，pending 时不等待就会少一笔。
+          if (annotDirtyRef.current || annotSyncRef.current.state === 'pending') {
+            try { annotFlushPending(); } catch { /* best effort */ }
+            await new Promise((resolve) => { window.setTimeout(resolve, 260); });
+          }
+          const scopeNow = scopeRef.current;
+          const response = await fetch(HOST_BASE + '/screenshot', {
+            method: 'POST',
+            headers: Object.assign({ 'content-type': 'application/json' }, scopeHeaders(scopeNow)),
+            credentials: 'same-origin',
+            body: JSON.stringify({ includeAnnotations: true }),
+          });
+          const payload = await response.json().catch(() => null);
+          if (!response.ok || !payload || payload.ok !== true || !payload.image) {
+            throw new Error((payload && (payload.error || payload.reason)) || ('HTTP ' + response.status));
+          }
+          const binary = atob(payload.image);
+          const bytes = new Uint8Array(binary.length);
+          for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const file = new File([bytes], 'annotation-' + stamp + '.png', { type: 'image/png' });
+          const drafts = target.conversation.createDrafts(target.sid, [file], false);
+          const list = Array.isArray(drafts) ? drafts : [];
+          const ids = list.map((draft) => draft && draft.id).filter(Boolean);
+          if (!ids.length) throw new Error('附件没有被聊天框接受');
+          const added = target.face.addAttachments(ids);
+          if (!added) {
+            // 回车发送中/命令执行中的聊天框会拒绝新附件：立刻释放，避免留下看不见的孤儿附件。
+            for (const draft of list) {
+              try { target.conversation.releaseDraftAttachment(draft.id); } catch { /* best effort */ }
+            }
+            throw new Error('聊天框正忙（发送中），稍后再试');
+          }
+          try { if (typeof target.face.focus === 'function') target.face.focus(); } catch { /* best effort */ }
+          const annotationFacts = payload.annotations || null;
+          const shapeCount = annotationFacts && Number.isFinite(annotationFacts.shapeCount) ? annotationFacts.shapeCount : 0;
+          try { if (typeof target.face.notify === 'function') target.face.notify('info', '已把带标注的截图加入聊天框附件'); } catch { /* best effort */ }
+          setAnnotShotNotice(shapeCount > 0
+            ? '已加入附件（含 ' + shapeCount + ' 个标注图形）'
+            : '已加入附件（当前没有标注图形）');
+        } catch (error) {
+          setAnnotShotNotice('截图失败：' + String((error && error.message) || error));
+        } finally {
+          setAnnotShotBusy(false);
+        }
+      }
+
       function clearAnnotCanvas() {
         if (!annotRef.current.on) return;
         // The pointerdown of the button already cancelled a live edit; this covers keyboard activation.
@@ -7989,6 +8085,24 @@ h('div', { className: 'utb-bar' },
               },
             })),
           // v2 §11.4：横栏右侧（粗细之后）的可见文案按钮；仅模式内可见、无二次确认、空态禁用。
+          // 「粗细」之后：把当前页面连同标注截成一张图，加入聊天框附件。
+          // 禁用条件与「清除画布」同源（没有可视画面 / 正在截图都不派发）。
+          h('button', {
+            type: 'button',
+            className: 'utb-btn utb-annot-shot',
+            'aria-label': '截图（含标注）',
+            title: '把当前页面连同标注一起截图，加入聊天框附件',
+            'data-utb-annot-action': 'capture',
+            'data-utb-annot-shot': annotShotBusy ? 'busy' : (annotReady ? 'ready' : 'unsupported'),
+            disabled: !annotReady || annotShotBusy,
+            onClick: captureAnnotationShot,
+          }, annotShotBusy ? '截图中…' : '截图'),
+          annotShotNotice && h('span', {
+            className: 'utb-annot-sync',
+            role: 'status',
+            'aria-live': 'polite',
+            'data-utb-annot-shot-notice': 'true',
+          }, annotShotNotice),
           h('button', {
             type: 'button',
             className: 'utb-btn utb-annot-clear',

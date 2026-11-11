@@ -91,7 +91,7 @@ DSH Agent / Agent Team
 认证 scoped GUI 使用同一前缀 `/plugins/ui-testing` 的 HTTP 路由（legacy 客户端按既有闸处理）：
 
 - 读：`GET /state`、`GET /frame`、`GET /metrics`；
-- 页面操作（串行队列 + single-owner lease）：`POST /ensure`、`/navigate`、`/reload`、`/history`、`/viewport`、`/input`、`/context-menu`、`/context-action`、`/eval`、`/screenshot`、`/tabs`、`/close`；
+- 页面操作（串行队列 + single-owner lease）：`POST /ensure`、`/navigate`、`/reload`、`/history`、`/viewport`、`/input`、`/context-menu`、`/context-action`、`/eval`、`/screenshot`、`/tabs`、`/close`；其中 `/screenshot` 的 `{includeAnnotations:true}` 复用 Agent 截图的离屏合成器（`capture.annotations` 随响应返回），供标注栏「截图」按钮把页面+标注交给聊天框附件；空 body 与 `{canvas:true}` 的旧回复形状不变；
 - 标注写面：`POST /annotations` 是面板写面（Agent 侧写同一份文档走 `browser_annotation` 工具，不经 HTTP 路由）；
 - 只读元素选取：`POST /element`（文档 CSS px → 命中元素；不 ensure、不进串行队列、不占租约、不写 `lastError`、不记录客户端指标；`GET /element` 固定 405）。语义与限制见 [选元素加入聊天框](element-picker.md)。
 
