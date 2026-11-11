@@ -1,5 +1,7 @@
 # 选元素加入聊天框
 
+`POST /plugins/ui-testing/element` 除 `{x,y,detail}` 外还接受 `{cursorOnly:true}`：只回命中元素的 computed `cursor`（空白背景回 `default`/页面的 `auto`），供预览层把「里面是手型、外面也是手型」做出来；`detail:true` 的命中同时带 `cursor`。它仍是纯读（不 ensure、不进队列、不占租约、不写 `lastError`）。
+
 调试视图的「选元素」模式：在预览里悬浮会框出光标下的页面元素，点击后把该元素的节点信息追加到 DSH 聊天框末尾，并把键盘焦点交回聊天框。对标 Chrome DevTools 的检查元素，但只发送一份文本块，不改页面、不写标注。
 
 ## 前置

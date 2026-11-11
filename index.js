@@ -558,11 +558,55 @@ function normalizeKeyEventType(value) {
 }
 
 /**
+ * Held-key identity for the input state machine (`browser_input`).
+ *
+ * Keyed by physical `code` when present (so `ShiftLeft`/`ShiftRight` stay distinct until the
+ * modifier bit is derived) and falling back to `key` for callers that only pass a character.
+ */
+function inputKeyIdentity(event) {
+  const code = typeof event.code === 'string' ? event.code.trim() : '';
+  const key = typeof event.key === 'string' ? event.key.trim() : '';
+  return (code || key).toLowerCase();
+}
+
+/** Which modifier bit a key stands for, if any (CDP: Alt=1, Ctrl=2, Meta=4, Shift=8). */
+function inputKeyModifier(event) {
+  const code = typeof event.code === 'string' ? event.code.toLowerCase() : '';
+  const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+  if (code.startsWith('shift') || key === 'shift') return 8;
+  if (code.startsWith('control') || key === 'control') return 2;
+  if (code.startsWith('alt') || key === 'alt') return 1;
+  if (code.startsWith('meta') || key === 'meta' || key === 'os') return 4;
+  return 0;
+}
+
+/** True for the event types that *press* a key (everything except keyUp). */
+function inputPressesKey(type) {
+  const normalized = String(type || '').toLowerCase();
+  return normalized === 'keydown' || normalized === 'rawkeydown' || normalized === 'char';
+}
+
+/**
  * Turn one caller-supplied input event into CDP parameters.
  * Validation happens here, before the browser is started, so bad arguments never launch Chromium.
  */
 function prepareInputEvent(event) {
   const modifiers = normalizeModifiers(event.modifiers);
+  // Relative motion (`kind:'mouse'` + deltaX/deltaY) and the modifier-synthesis escape hatch are
+  // Host-side fields, not CDP parameters: validate them here so a bad value never starts Chromium.
+  for (const field of ['deltaX', 'deltaY']) {
+    if (event[field] === undefined) continue;
+    if (typeof event[field] !== 'number' || !Number.isFinite(event[field])) {
+      throw new BrowserError('INVALID_ARGUMENT', `输入事件 ${field} 必须是有限数`, {
+        field, valueType: typeof event[field],
+      });
+    }
+  }
+  if (event.synthesizeModifiers !== undefined && typeof event.synthesizeModifiers !== 'boolean') {
+    throw new BrowserError('INVALID_ARGUMENT', '输入事件 synthesizeModifiers 必须是布尔值', {
+      field: 'synthesizeModifiers', valueType: typeof event.synthesizeModifiers,
+    });
+  }
   if (event.kind === 'mouse') {
     return {
       kind: 'mouse',
@@ -4770,6 +4814,9 @@ export class Runtime {
     this.envAbortReason = null;
     this.lease = undefined;
     this.active = 0;
+    // `browser_input` state (docs/tools.md): the keys this page currently holds down and the
+    // virtual cursor position used by relative mouse moves. Both die with the document.
+    this.inputState = { keys: new Map(), cursor: null };
     // Every queued/running operation (agent OR panel): idle sweep/LRU must never close a page
     // that has work in flight.
     this.inflight = 0;
@@ -7556,6 +7603,34 @@ export class Runtime {
     return { moved: true, direction };
   }
 
+  /** Drop the held-key table and the virtual cursor (document replaced or page closed). */
+  resetInputState() {
+    this.inputState.keys.clear();
+    this.inputState.cursor = null;
+  }
+
+  /** Modifier bits (CDP Alt=1/Ctrl=2/Meta=4/Shift=8) of every key this page holds down. */
+  #heldModifierBits() {
+    let bits = 0;
+    for (const modifier of this.inputState.keys.values()) bits |= modifier;
+    return bits;
+  }
+
+  /**
+   * Dispatch input events through the held-key state machine (docs/tools.md `browser_input`).
+   *
+   * Three things a real keyboard/mouse gives a page for free, and a stream of independent CDP
+   * dispatches does not:
+   *   1. **modifier synthesis** — while Shift is down, every later key/mouse/wheel event carries
+   *      `shiftKey:true`. The page's own `keydown` bookkeeping is not enough: `e.shiftKey` comes
+   *      from the browser, not from the page's listener.
+   *   2. **relative motion** — `deltaX/deltaY` advance a virtual cursor, so pointer-lock style
+   *      "move by delta" callers never have to know the absolute position.
+   *   3. **a release path** — `keyUp` clears the entry, and a replaced document clears everything
+   *      (a stale held key would otherwise keep marking events as Shift-pressed forever).
+   *
+   * @returns {{applied:number, modifiers:number, held:string[], cursor:{x:number,y:number}|null}}
+   */
   async input(events, signal) {
     if (!Array.isArray(events) || events.some((event) => !event || !['mouse', 'wheel', 'key', 'text'].includes(event.kind))) {
       throw new BrowserError('INVALID_ARGUMENT', '输入事件 kind 无效');
@@ -7564,22 +7639,65 @@ export class Runtime {
       throw new BrowserError('INVALID_ARGUMENT', `单批输入事件过多：${events.length} > ${INPUT_EVENT_LIMIT}`, { maxItems: INPUT_EVENT_LIMIT });
     }
     // Normalize/validate the whole batch first: a bad modifiers value must not start Chromium.
-    const prepared = events.map((event) => prepareInputEvent(event));
+    const prepared = events.map((event) => ({ event, prepared: prepareInputEvent(event) }));
     await this.ensure(signal);
-    for (const event of prepared) {
-      if (event.kind === 'mouse' || event.kind === 'wheel') {
-        await this.send('Input.dispatchMouseEvent', event.params, signal);
-      } else if (event.kind === 'key') {
-        await this.send('Input.dispatchKeyEvent', event.params, signal);
-      } else if (event.kind === 'text') {
-        await this.send('Input.insertText', event.params, signal);
+    const viewport = this.viewport;
+    for (const item of prepared) {
+      const { event } = item;
+      const params = item.prepared.params;
+      if (item.prepared.kind === 'key') {
+        const type = String(params.type || '').toLowerCase();
+        const identity = inputKeyIdentity(event);
+        const modifier = inputKeyModifier(event);
+        const synthesize = event.synthesizeModifiers !== false;
+        // A keyUp still reports the modifier it is releasing; a press reports the state *before*
+        // it lands (same order a real OS produces).
+        params.modifiers = (Number(params.modifiers) || 0) | (synthesize ? this.#heldModifierBits() : 0);
+        if (identity) {
+          if (inputPressesKey(type)) this.inputState.keys.set(identity, modifier);
+          else if (type === 'keyup') this.inputState.keys.delete(identity);
+        }
+      } else if (item.prepared.kind === 'mouse' || item.prepared.kind === 'wheel') {
+        if (event.synthesizeModifiers !== false) {
+          params.modifiers = (Number(params.modifiers) || 0) | this.#heldModifierBits();
+        }
+        if (item.prepared.kind === 'mouse') {
+          const hasDelta = Number.isFinite(event.deltaX) || Number.isFinite(event.deltaY);
+          if (hasDelta) {
+            if (!params.type) params.type = 'mouseMoved';
+            const base = this.inputState.cursor
+              || { x: Math.round(viewport.width / 2), y: Math.round(viewport.height / 2) };
+            const next = {
+              x: Math.min(Math.max(0, base.x + (Number.isFinite(event.deltaX) ? event.deltaX : 0)), Math.max(0, viewport.width - 1)),
+              y: Math.min(Math.max(0, base.y + (Number.isFinite(event.deltaY) ? event.deltaY : 0)), Math.max(0, viewport.height - 1)),
+            };
+            params.x = next.x;
+            params.y = next.y;
+            this.inputState.cursor = { ...next };
+            if (params.type === 'mouseMoved' && !Number.isFinite(event.buttons)) params.buttons = 0;
+          } else if (Number.isFinite(params.x) && Number.isFinite(params.y)) {
+            this.inputState.cursor = { x: params.x, y: params.y };
+          }
+        }
+      }
+      if (item.prepared.kind === 'mouse' || item.prepared.kind === 'wheel') {
+        await this.send('Input.dispatchMouseEvent', params, signal);
+      } else if (item.prepared.kind === 'key') {
+        await this.send('Input.dispatchKeyEvent', params, signal);
+      } else if (item.prepared.kind === 'text') {
+        await this.send('Input.insertText', params, signal);
       }
     }
     // A wheel/click/drag can move the page (momentum/smooth scroll/snap): two coalesced settling
     // samples, 50ms and 250ms after the dispatch (docs/viewport-control.md).
     this.refreshViewObservationSoon({ delayMs: 50 });
     this.refreshViewObservationSoon({ delayMs: 250 });
-    return events.length;
+    return {
+      applied: events.length,
+      modifiers: this.#heldModifierBits(),
+      held: [...this.inputState.keys.keys()],
+      cursor: this.inputState.cursor ? { ...this.inputState.cursor } : null,
+    };
   }
 
   /**
@@ -11604,6 +11722,9 @@ export class Runtime {
     // §11.2): rotate the navigation token and drop the stored document with it, so a late publish
     // can only be refused as `annotation-context-stale`.
     this.#annotationRotate('document');
+    // A new document has no keys held and no known cursor: keeping them would synthesize modifiers
+    // from a page that no longer exists (docs/tools.md, browser_input).
+    this.resetInputState();
   }
 
   #t2ReleaseGroup(objectGroup) {
@@ -15741,7 +15862,11 @@ function elementPickRequest(body) {
   if (body.detail !== undefined && body.detail !== null && typeof body.detail !== 'boolean') {
     throw new BrowserError('INVALID_ARGUMENT', 'element detail 必须是布尔值', { field: 'detail', valueType: typeof body.detail });
   }
-  return { x, y, detail: body.detail === true };
+  const cursorOnly = body.cursorOnly === true;
+  // A cursor-only probe answers just the computed `cursor` of the hit: it exists so the panel can
+  // mirror the page's hand/text/grab cursor onto the preview while the pointer moves, without
+  // paying for the box model, frame tree and selector work a full pick needs.
+  return { x, y, detail: body.detail === true, cursorOnly };
 }
 
 /**
@@ -15892,7 +16017,7 @@ async function elementDetailFacts(cdp, backendNodeId) {
  * Read the element at one document point. Never throws and never mutates the runtime: the caller
  * turns the result into `{ok:true, element, reason}`.
  */
-async function pickElementAt(runtime, { x, y, detail }) {
+async function pickElementAt(runtime, { x, y, detail, cursorOnly = false }) {
   if (!runtime || !runtime.running || !runtime.cdp) return { element: null, reason: 'no-page' };
   const cdp = runtime.cdp;
   const bounded = (method, params) => cdp.send(method, params, { timeoutMs: ELEMENT_CDP_TIMEOUT_MS });
@@ -15970,6 +16095,14 @@ async function pickElementAt(runtime, { x, y, detail }) {
       }
     }
     const tag = String(node.localName || '').toLowerCase();
+    if (cursorOnly) {
+      // Empty page background is a legitimate cursor answer (`default`), not a miss: the panel is
+      // asking "what would the real page show here", and a straight arrow is a real answer.
+      const cursor = ['html', 'body'].includes(tag)
+        ? { cursor: 'default', tag: tag || 'html' }
+        : await cursorProjectionAt(bounded, node.backendNodeId);
+      return { element: cursor, cursorOnly: true };
+    }
     // A point on empty page background resolves to <html>/<body>; for a picker that is "nothing".
     if (!tag || tag === 'html' || tag === 'body') return { element: null, reason: 'no-hit' };
     const box = await bounded('DOM.getBoxModel', { backendNodeId: node.backendNodeId });
@@ -16004,7 +16137,12 @@ async function pickElementAt(runtime, { x, y, detail }) {
         title: runtime.title ? String(runtime.title) : '',
       },
     };
-    if (detail) Object.assign(element, await elementDetailFacts(cdp, node.backendNodeId));
+    if (detail) {
+      Object.assign(element, await elementDetailFacts(cdp, node.backendNodeId));
+      // The picker's own preview mirrors the page cursor from the hit it already has.
+      const pointer = await cursorProjectionAt(bounded, node.backendNodeId);
+      if (pointer) element.cursor = pointer.cursor;
+    }
     // A native <select> popup is painted by the browser UI layer, never by the page, so the panel
     // cannot see it in the frame. Only for a select hit (and only when the projection is readable)
     // does the reply gain a `select` field; every other hit keeps the exact historical shape.
@@ -16019,6 +16157,37 @@ async function pickElementAt(runtime, { x, y, detail }) {
   } catch {
     // Any other read failure (CDP timeout/disconnect, detached target, missing box) is stale.
     return { element: null, reason: 'stale' };
+  }
+}
+
+/**
+ * Computed `cursor` of one hit node (POST /element `cursorOnly`, and the detail projection).
+ *
+ * Read-only and failure-tolerant, exactly like `selectProjectionAt`: one `DOM.resolveNode` plus one
+ * `Runtime.callFunctionOn` that only reads, `null` on any failure, so an unreadable node never turns
+ * a successful hover into an error. The value passes through verbatim — the CLIENT decides which
+ * keywords it is willing to apply, because `cursor:url(...)` must never reach a style attribute.
+ */
+async function cursorProjectionAt(bounded, backendNodeId) {
+  let objectId = null;
+  try {
+    const resolved = await bounded('DOM.resolveNode', { backendNodeId });
+    objectId = resolved && resolved.object ? resolved.object.objectId : null;
+    if (!objectId) return null;
+    const answer = await bounded('Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: 'function () { return String(getComputedStyle(this).cursor || "") }',
+      returnByValue: true,
+    });
+    const value = answer && answer.result ? answer.result.value : null;
+    if (typeof value !== 'string' || !value) return null;
+    return { cursor: value.slice(0, 64) };
+  } catch {
+    return null;
+  } finally {
+    if (objectId) {
+      try { await bounded('Runtime.releaseObject', { objectId }); } catch { /* best effort */ }
+    }
   }
 }
 
@@ -17732,7 +17901,10 @@ export function apply(ctx) {
   register({
     name: 'browser_input',
     description: '向内嵌浏览器派发鼠标 / 滚轮 / 键盘事件（T1 原生事件能力）。坐标使用页面 CSS 像素。'
-      + '修饰键用 modifiers（字符串数组 alt/ctrl/meta/shift，或 CDP 位掩码整数 Alt=1/Ctrl=2/Meta=4/Shift=8）。',
+      + '修饰键用 modifiers（字符串数组 alt/ctrl/meta/shift，或 CDP 位掩码整数 Alt=1/Ctrl=2/Meta=4/Shift=8）。'
+      + '带按键状态机：keyDown 记位、keyUp 清位，按住 Shift 后其它事件自动带上 shiftKey（synthesizeModifiers:false 可关）；'
+      + 'mouse 事件给 deltaX/deltaY 时按相对位移移动虚拟光标（无需知道绝对位置）；导航/关闭会清空状态。'
+      + '返回 {ok,applied,modifiers,held,cursor}，held 是当前仍按住的键。',
     parameters: {
       type: 'object',
       properties: {
@@ -17751,8 +17923,18 @@ export function apply(ctx) {
               buttons: { type: 'number', description: '按下的鼠标键位掩码（CDP buttons），移动/拖拽时需带上' },
               pointerType: { type: 'string', enum: ['mouse', 'pen'] },
               clickCount: { type: 'number' },
-              deltaX: { type: 'number' },
-              deltaY: { type: 'number' },
+              deltaX: {
+                type: 'number',
+                description: 'mouse：相对位移 X（虚拟光标 += deltaX；用于 pointer-lock 类"按增量移动"）；wheel：滚动增量',
+              },
+              deltaY: {
+                type: 'number',
+                description: 'mouse：相对位移 Y（同上）；wheel：滚动增量',
+              },
+              synthesizeModifiers: {
+                type: 'boolean',
+                description: '默认 true：把当前按住的修饰键自动合进本事件的 modifiers（页面 e.shiftKey 等）。false 用于刻意复现"按住但没带修饰位"的行为',
+              },
               modifiers: {
                 description: '修饰键：字符串数组 alt/ctrl/meta/shift，或 CDP 位掩码整数（Alt=1,Ctrl=2,Meta=4,Shift=8）。key/mouse/wheel 都支持。',
                 // Host-supported JSON-schema subset only (no minimum/maximum): the 0–15 range
@@ -17780,8 +17962,10 @@ export function apply(ctx) {
     },
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
-      const applied = await exec.runtime.input(args?.events, exec.signal);
-      return { ok: true, applied };
+      // `held`/`modifiers` are the state machine's echo: a model that lost track of a keyDown can
+      // see the leftover keys instead of guessing, and `cursor` is where relative moves now point.
+      const result = await exec.runtime.input(args?.events, exec.signal);
+      return { ok: true, ...result };
     },
   });
 

@@ -517,14 +517,14 @@ async function probeC1({ check, finding }) {
     check('capabilities 覆盖全部 35 个工具（含 10 个 T1 + 7 个 T2 + 6 个 T3 + 7 个 network + 5 个 T4）', toolEntries.length === EXPECTED_TOOLS.length && EXPECTED_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
       expected: { count: EXPECTED_TOOLS.length }, actual: toolEntries.map((item) => `${item.tool}:${item.status}`),
     });
-    // Proves the pre-network surface did not regress independently of the new group: the 24
-    // legacy tools (22 pre-viewport + browser_viewport + browser_tabs) must still be declared, and
-    // the 7 network tools must be declared too.
-    check('旧 24 工具（22 旧 + browser_viewport + browser_tabs）与 7 个 network、5 个 T4 工具都各自完整声明', LEGACY_TOOLS.length === 24 && NETWORK_TOOLS.length === 7
+    // Proves the pre-network surface did not regress independently of the new group: the 25
+    // legacy tools (22 pre-viewport + browser_viewport + browser_tabs + browser_annotation) must
+    // still be declared, and the 7 network tools must be declared too.
+    check('旧 25 工具（22 旧 + browser_viewport + browser_tabs + browser_annotation）与 7 个 network、5 个 T4 工具都各自完整声明', LEGACY_TOOLS.length === 25 && NETWORK_TOOLS.length === 7
       && LEGACY_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name))
       && NETWORK_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name))
       && T4_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
-      expected: { legacy: 24, network: 7, t4: 5 },
+      expected: { legacy: 25, network: 7, t4: 5 },
       actual: { legacyMissing: LEGACY_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name),
         networkMissing: NETWORK_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name),
         t4Missing: T4_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name) },

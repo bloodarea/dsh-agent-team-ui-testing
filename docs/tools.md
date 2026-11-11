@@ -86,7 +86,7 @@
 | `browser_navigate` | `url` | 只接受 HTTP(S)；校验目标、DNS 与最终 URL；**不保证加载完成** |
 | `browser_eval` | `expression` | 主世界执行，返回可序列化值；页面异常以错误对象返回 |
 | `browser_screenshot` | `scale` `region` `includeAnnotations?:boolean=false` `persist` `out` | 显式 scale 0.1–4；省略时跟随共享 `view.scale`；`region` 为 canvas CSS px（`O=0` 时与文档坐标相同）；`includeAnnotations:true` 按相同映射叠加 Host 已接受的六种面板标注，不含未提交草稿/工具栏，证据见 `capture.annotations`；默认截图及 T3/T4 原始源不含面板标注；PNG 经结构/尺寸校验；内联 base64 超过 24 MiB 时 `image=null` 并附 `image_base64_omitted` 警告（附件优先） |
-| `browser_input` | `events[]` | 原始鼠标/滚轮/键盘事件，单批 ≤ 200 条（超出 `INVALID_ARGUMENT`）；`applied` 只是数组长度，不能证明生效 |
+| `browser_input` | `events[]` | 原始鼠标/滚轮/键盘事件，单批 ≤ 200 条（超出 `INVALID_ARGUMENT`）；`applied` 只是数组长度，不能证明生效。**带按键状态机**：`keyDown` 记位、`keyUp` 清位，按住 Shift/Ctrl/Alt/Meta 时后续 key/mouse/wheel 自动带上对应位（页面 `e.shiftKey` 等为真），`synthesizeModifiers:false` 可显式关掉；`mouse` 事件给 `deltaX/deltaY` 时按相对位移移动一个虚拟光标（点积锁定/转视角类调用不需要知道绝对坐标，光标被 clamp 在视口内）；返回 `{ok,applied,modifiers,held,cursor}`，`held` 是当前仍按住的键。导航/关闭会清空状态 |
 | `browser_network` | `limit` | 轻量请求列表（默认 50、上限 300）；**只读**：不取页面队列、不取也不校验单 owner 租约（owner 持租约时仍可读），因此信封里 `sessionId` 是采集会话、agent 会话见 `agentSessionId`；深度分析用网络 P0 七工具 |
 | `browser_computed_style` | `selector` `properties` | 首个匹配元素的计算样式；简写属性（如 `border-color`/`margin`/`font`）经页面 `getComputedStyle` 回退读取，未知属性不返回；不证明视觉结果 |
 | `browser_http_request` | `url` `method` `headers` `body` `timeoutMs` `maxBytes` … | 独立 HTTP(S) 客户端，不启动浏览器、不占页面租约；`ok:true` **不等于 2xx** |

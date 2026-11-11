@@ -2450,6 +2450,9 @@ window.__ModuleLoader__.load({
       // A live gesture/erase exists (drives the 清除画布 disabled state without per-move renders).
       const [annotBusy, setAnnotBusy] = React.useState(false);
       // 标注栏「截图」的状态：按钮进行态 + 就地提示（成功/失败原因都给具体文案）。
+      // 光标形状传递：预览层跟随页面命中元素的 computed cursor（手型/文本/抓取…），
+      // 而不是永远显示箭头。只接受 CSS 关键字白名单，`url(...)` 一律不落到样式上。
+      const [frameCursor, setFrameCursor] = React.useState('auto');
       const [annotShotBusy, setAnnotShotBusy] = React.useState(false);
       const [annotShotNotice, setAnnotShotNotice] = React.useState('');
       const annotSyncRef = React.useRef({ state: 'idle', timer: 0 });
@@ -5883,6 +5886,39 @@ window.__ModuleLoader__.load({
         sendEvents([{ kind: 'mouse', type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 }]);
       }
 
+      /** CSS cursor 关键字白名单：页面只能在这几个值里改变预览光标。 */
+      const PAGE_CURSOR_KEYWORDS = new Set([
+        'auto', 'default', 'pointer', 'text', 'move', 'grab', 'grabbing', 'crosshair', 'wait', 'help',
+        'progress', 'cell', 'copy', 'alias', 'context-menu', 'not-allowed', 'no-drop', 'zoom-in',
+        'zoom-out', 'all-scroll', 'vertical-text', 'col-resize', 'row-resize', 'n-resize', 's-resize',
+        'e-resize', 'w-resize', 'ne-resize', 'nw-resize', 'se-resize', 'sw-resize', 'ew-resize',
+        'ns-resize', 'nesw-resize', 'nwse-resize', 'none',
+      ]);
+      function pageCursorKeyword(raw) {
+        const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+        return PAGE_CURSOR_KEYWORDS.has(value) ? value : 'auto';
+      }
+      /**
+       * 光标形状传递（`POST /element {cursorOnly:true}`）。
+       *
+       * 页面里 `cursor:pointer` 的元素在真实浏览器里是手型，但面板把画面画成 <img>，指针形状来自
+       * 面板自己的 CSS —— 于是"里面是手型、外面是箭头"。这里按节流询问页面命中的 computed cursor
+       * 并写回预览层；迟到的响应按序号丢弃，避免快速移动时旧位置的光标覆盖新位置。
+       */
+      const cursorProbeAtRef = React.useRef(0);
+      const cursorProbeSeqRef = React.useRef(0);
+      function probeFrameCursor(x, y) {
+        const seq = cursorProbeSeqRef.current + 1;
+        cursorProbeSeqRef.current = seq;
+        callHost('element', { x, y, cursorOnly: true }, { scope: scopeRef.current })
+          .then((reply) => {
+            if (seq !== cursorProbeSeqRef.current) return; // 迟到响应不覆盖
+            const element = reply && reply.element ? reply.element : null;
+            setFrameCursor(pageCursorKeyword(element && element.cursor));
+          })
+          .catch(() => { /* 旧宿主没有 cursorOnly：保持当前光标 */ });
+      }
+
       function onFramePointerMove(event) {
         if (annotRef.current.on) return; // annotation mode: zero page input
         // 选元素模式：悬浮只更新节流命中请求，零页面 hover 派发。
@@ -5907,7 +5943,14 @@ window.__ModuleLoader__.load({
         if (!geom) return;
         const point = mapEventPoint(event, geom);
         if (!point.inside) return;
-        if (point.blank) return; // blank never dispatches (a drag into blank keeps its button state)
+        if (point.blank) { setFrameCursor('auto'); return; } // blank never dispatches (a drag into blank keeps its button state)
+        // 光标形状按 120ms 节流询问：比页面 hover 派发（60ms）更省，肉眼仍跟得上。
+        const cursorNow = Date.now();
+        if (cursorNow - cursorProbeAtRef.current >= 120) {
+          cursorProbeAtRef.current = cursorNow;
+          const canvas = canvasPosition();
+          if (canvas && point.q) probeFrameCursor(point.q.x + Number(canvas.x), point.q.y + Number(canvas.y));
+        }
         const now = Date.now();
         if (now - hoverAtRef.current < 60) return;
         hoverAtRef.current = now;
@@ -8361,7 +8404,7 @@ h('div', { className: 'utb-bar' },
                     display: 'block', width: '100%', height: '100%', objectFit: 'contain', objectPosition: '50% 50%',
                     userSelect: 'none', touchAction: 'none',
                     position: 'relative', zIndex: 1,
-                    cursor: pickOn ? 'crosshair' : panMode ? (panDragging ? 'grabbing' : 'grab') : 'auto',
+                    cursor: pickOn ? 'crosshair' : panMode ? (panDragging ? 'grabbing' : 'grab') : frameCursor,
                     transform: frameShift ? `translate(${frameShiftX}px, ${frameShiftY}px)` : 'none',
                     clipPath: seedClip || undefined,
                   },
@@ -8372,6 +8415,7 @@ h('div', { className: 'utb-bar' },
                   onLostPointerCapture: releaseFrameDrag,
                   onPointerLeave: () => {
                     if (pickRef.current.on) pickClearOverlay();
+                    setFrameCursor('auto');
                   },
                   onKeyDown: (event) => {
                     if (annotRef.current.on) return; // annotation mode: zero page input

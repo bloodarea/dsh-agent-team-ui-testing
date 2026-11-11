@@ -185,6 +185,21 @@ export async function inputModifiersProbe({ harness, check, fixture }) {
     expected: { numpad: { location: 3, keyCode: 97 }, shiftLeft: { location: 1, keyCode: 16 } },
     actual: { numpad: numpadRecord.match, shiftLeft: shiftLeftRecord.match },
   });
+  // `browser_input` keeps a held-key table: the Shift pressed above stays down (a real keyboard
+  // would), so every later event would carry `shiftKey:true`. Release it here — a probe that
+  // leaves a modifier pressed is asserting about state it never cleaned up.
+  const releasedHeld = await harness.invoke('browser_input', {
+    events: [
+      { kind: 'key', type: 'keyUp', key: '1', code: 'Numpad1', virtualKeyCode: 97, location: 3, isKeypad: true },
+      { kind: 'key', type: 'keyUp', key: 'Shift', code: 'ShiftLeft', virtualKeyCode: 16, location: 1 },
+    ],
+  });
+  check('松开上面按下的数字键盘键与左 Shift 后 held 归空（按键状态机不残留修饰位）',
+    releasedHeld.ok && releasedHeld.value?.ok === true && Array.isArray(releasedHeld.value?.held)
+      && releasedHeld.value.held.length === 0 && releasedHeld.value.modifiers === 0, {
+      expected: { held: [], modifiers: 0 },
+      actual: { tool: releasedHeld.value },
+    });
 
   // --- Mouse modifiers still produce the old click side effect -------------------------------
   const point = await centerOf(harness, 'inc');
