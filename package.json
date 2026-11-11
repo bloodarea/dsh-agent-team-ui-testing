@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-team-ui-testing",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Frontend GUI debugging and testing for DeepSeekHarness agents: Web/Chromium is implemented with 37 browser_* tools for structured GUI automation, visual comparison, dynamic frame analysis, annotation read/write and network debugging; Windows/Linux/macOS desktop, Android, TUI, HarmonyOS, mini programs, games and 3D (nine environments) are planned.",
   "license": "MIT",
   "type": "module",
@@ -13,7 +13,7 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.png"
   },
-  "files": ["index.js", "client.js", "select-control.js", "context-menu.js", "frame-source.js", "frame-push.js", "browser-safety.js", "capture-p0.js", "annotation-capture.js", "vision-t3.js", "vision-baseline.js", "network-p0.js", "dynamic-t4.js", "cordis.patch.yml", "locale/*.json", "icon.png", "banner.png", "banner_zh.png", "docs/*.md", "core/", "targets/", "integration/", "skills/**"],
+  "files": ["index.js", "client.js", "select-control.js", "context-menu.js", "frame-source.js", "frame-push.js", "browser-safety.js", "capture-p0.js", "annotation-capture.js", "vision-t3.js", "vision-baseline.js", "network-p0.js", "dynamic-t4.js", "cordis.patch.yml", "locale/*.json", "icon.png", "banner.png", "banner_zh.png", "docs/*.md", "docs/images/", "core/", "targets/", "integration/", "skills/**"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": { "platform": "web", "immediately": true, "inject": [] }
