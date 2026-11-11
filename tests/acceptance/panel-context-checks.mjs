@@ -3,6 +3,16 @@ export async function runPanelContextChecks(api) {
   const { fixtureUrl, pageEvaluate, hostEvalJson, measurePreview, hostState, screenPointFor,
     clickAt, centerOf, pressEscape, setAddressBar, waitFor, check, capturePng, observations, state } = api;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  await pageEvaluate(`(() => {
+    window.__contextTrace=[];
+    const record=(type,data)=>window.__contextTrace.push({at:Date.now(),type,...data});
+    const fetch=window.fetch;
+    window.fetch=async(...args)=>{const response=await fetch(...args);if(String(args[0]).includes('/context-menu')){const json=await response.clone().json();record('response',{status:json.status,http:response.status,items:json.menu?.items.map(x=>x.id)});}return response;};
+    document.addEventListener('scroll',e=>record('scroll',{tag:e.target?.tagName,cls:String(e.target?.className||''),root:e.target===document}),true);
+    window.addEventListener('blur',()=>record('blur',{}));
+    new MutationObserver(records=>{for(const r of records){for(const n of r.addedNodes)if(n.matches?.('[data-utb-context-menu]'))record('menu-add',{});for(const n of r.removedNodes)if(n.matches?.('[data-utb-context-menu]'))record('menu-remove',{});}}).observe(document.querySelector('.utb'),{subtree:true,childList:true});
+    return true;
+  })()`);
   await setAddressBar(fixtureUrl);
   await waitFor(async () => (await hostState()).ui?.address === fixtureUrl, { label: 'context fixture navigation' });
   await waitFor(async () => hostEvalJson(`document.title === '右键菜单回归靶机' && !!document.getElementById('ctx-zone')`), { label: 'context fixture document ready' });
@@ -38,7 +48,7 @@ export async function runPanelContextChecks(api) {
     return { rect, point: screenPointFor(preview, { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }, snapshot.ui.view, snapshot.ui.canvas) };
   };
   const zoneRect = (id) => `(()=>{const r=document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();return {x:r.x+scrollX,y:r.y+scrollY,width:r.width,height:r.height}})()`;
-  const hostMenu = () => pageEvaluate(`(()=>{const n=document.querySelector('[role="menu"], [data-context-menu]');return n?{tag:n.tagName,cls:String(n.className||'')}:null})()`);
+  const hostMenu = () => pageEvaluate(`(()=>{const n=document.querySelector('[role="menu"]:not([data-utb-context-menu]), [data-context-menu]');return n?{tag:n.tagName,cls:String(n.className||'')}:null})()`);
 
   await pageEvaluate('window.__ctxSeen = []');
   await hostEvalJson('window.ctxEvents = []; window.ctxChosen = null; document.getElementById("ctx-menu").hidden = true; true');
@@ -88,7 +98,7 @@ export async function runPanelContextChecks(api) {
     'ctxChosen=a, menu hidden', { chosen, hidden: await hostEvalJson('document.getElementById("ctx-menu").hidden') });
   await capturePng('context-menu-chosen.png');
 
-  /* C5：没有菜单处理的区域 —— 右键照样进页面（原生默认菜单由浏览器 UI 绘制，不在帧里）。 */
+  /* C5：页面允许默认菜单时，在面板显示真实可操作的菜单。 */
   await pageEvaluate('window.__ctxSeen = []');
   await hostEvalJson('window.ctxEvents = []');
   const plain = await docPointFor(zoneRect('plain-zone'));
@@ -99,10 +109,84 @@ export async function runPanelContextChecks(api) {
   }, { label: 'page receives default contextmenu' });
   const plainCtx = plainEvents.find((entry) => entry.type === 'contextmenu');
   observations.contextPlainEvents = plainEvents.slice(-4);
-  check('C5', '无处理器区域同样是页面事件（button=2、页面未阻止默认），宿主菜单仍不弹',
+  await waitFor(() => pageEvaluate(`!!document.querySelector('[data-utb-context-menu="default"]')`), { label: 'default panel menu visible' });
+  const fallback = await pageEvaluate(`(()=>{const n=document.querySelector('[data-utb-context-menu]'),r=n.getBoundingClientRect();return {role:n.role,focused:document.activeElement===n,items:Array.from(n.querySelectorAll('[data-utb-context-action]')).map(x=>x.dataset.utbContextAction),rect:{x:r.x,y:r.y,width:r.width,height:r.height}}})()`);
+  observations.contextFallback = fallback;
+  check('C5', '无处理器区域显示面板默认菜单，页面事件可信且宿主菜单被阻断',
     plainCtx.button === 2 && plainCtx.prevented === false && plainCtx.target === 'plain-zone'
+      && fallback.focused && fallback.items.includes('reload') && fallback.items.includes('copy-page')
       && (await hostMenu()) === null && (await pageEvaluate('window.__ctxSeen.length')) === 0,
-    'page default contextmenu, no host menu', { plainCtx, panelSeen: await pageEvaluate('window.__ctxSeen.slice()') });
+    'default menu focused, no host menu', { plainCtx, fallback });
+  await capturePng('context-default-menu.png');
+  const siblingScroll = await pageEvaluate(`(()=>{const node=document.createElement('div');document.body.append(node);node.dispatchEvent(new Event('scroll'));node.remove();return !!document.querySelector('[data-utb-context-menu]')})()`);
+  check('C11', '宿主其他区域滚动不会关闭预览里的菜单', siblingScroll, true, siblingScroll);
+
+  // Real menu action: reload must reset the page ledger, not just hide the menu.
+  const reloadPoint = await centerOf(`document.querySelector('[data-utb-context-action="reload"]')`);
+  await clickAt(reloadPoint.x, reloadPoint.y);
+  await waitFor(() => hostEvalJson('Array.isArray(window.ctxEvents) && window.ctxEvents.length === 0'), { label: 'context reload fresh document' });
+  check('C7', '默认菜单重新加载确实刷新页面并收起菜单',
+    !(await pageEvaluate(`!!document.querySelector('[data-utb-context-menu]')`)), false, false);
+  await waitFor(() => pageEvaluate(`document.querySelector('[data-utb-pick-entry]')?.dataset.utbPickEntry === 'ready'`), { label: 'reloaded context preview ready' });
+
+  // Reload/reopen repeatedly without retries: a transaction must adopt its own document state,
+  // instead of opening against a stale polling snapshot then disappearing when the next poll arrives.
+  for (let round = 0; round < 3; round++) {
+    await rightClickAt((await docPointFor(zoneRect('plain-zone'))).point);
+    await waitFor(() => pageEvaluate(`!!document.querySelector('[data-utb-context-menu]')`), { label: 'menu after reload round ' + round });
+    await sleep(600); // span a /state poll, not a retry of a missing menu
+    const stays = await pageEvaluate(`!!document.querySelector('[data-utb-context-menu]')`);
+    check('C14.' + round, '刷新后菜单跨状态轮询保持可见（第 ' + (round + 1) + ' 次）', stays, true, stays);
+    const point = await centerOf(`document.querySelector('[data-utb-context-action="reload"]')`);
+    await clickAt(point.x, point.y);
+    await waitFor(() => hostEvalJson('ctxEvents.length === 0'), { label: 'reload fresh document round ' + round });
+  }
+
+  // Keyboard navigation and clipboard bridge. Clipboard permission is granted only to this test GUI origin.
+  const guiOrigin = await pageEvaluate('location.origin');
+  await state.chrome.cdp.send('Browser.grantPermissions', { origin: guiOrigin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] });
+  const plainAfterReload = await docPointFor(zoneRect('plain-zone'));
+  await rightClickAt(plainAfterReload.point);
+  await waitFor(() => pageEvaluate(`!!document.querySelector('[data-utb-context-menu]')`), { label: 'menu reopened' });
+  const menuKey = async (key, code) => {
+    await state.chrome.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: code });
+    await state.chrome.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: code });
+  };
+  await menuKey('End', 35);
+  await menuKey('ArrowUp', 38);
+  await menuKey('ArrowDown', 40);
+  const activeAction = await pageEvaluate(`(()=>{const n=document.querySelector('[data-utb-context-menu]');return document.getElementById(n.getAttribute('aria-activedescendant'))?.dataset.utbContextAction})()`);
+  check('C12', '菜单方向键和 End 实际移动当前项，且不穿透目标页', activeAction === 'copy-page', 'copy-page', activeAction);
+  await menuKey('Enter', 13);
+  const copied = await waitFor(() => pageEvaluate(`navigator.clipboard.readText()`), { label: 'context clipboard write' });
+  check('C8', '复制页面地址写入 GUI 剪贴板', copied === fixtureUrl, fixtureUrl, copied);
+
+  await rightClickAt((await docPointFor(zoneRect('plain-zone'))).point);
+  await waitFor(() => pageEvaluate(`!!document.querySelector('[data-utb-context-menu]')`), { label: 'menu before Escape' });
+  await pressEscape();
+  check('C9', 'Escape 关闭默认菜单并恢复预览焦点',
+    await pageEvaluate(`!document.querySelector('[data-utb-context-menu]') && document.activeElement===document.querySelector('.utb-frame')`), true, true);
+
+  // Down outside image after press: Host already released at the original point, no stuck button.
+  await hostEvalJson('window.ctxEvents=[];true');
+  const releasePoint = (await docPointFor(zoneRect('plain-zone'))).point;
+  await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: releasePoint.x, y: releasePoint.y, button: 'right', buttons: 2, clickCount: 1 });
+  await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 2, y: 2, button: 'right', buttons: 0, clickCount: 1 });
+  const released = await waitFor(async () => { const list=await hostEvalJson('ctxEvents.slice()');return list.some(x=>x.type==='mouseup')?list:null; }, { label:'right release despite leaving preview' });
+  check('C10', '右键在画面外抬起仍完整释放，且没有重复页面事务', released.filter(x=>x.type==='mousedown').length===1 && released.filter(x=>x.type==='mouseup').length===1, 'one down / one up', released);
+  await pressEscape();
+
+  await pageEvaluate(`(()=>{window.__contextClipboardWrite=navigator.clipboard.writeText;Object.defineProperty(navigator.clipboard,'writeText',{configurable:true,value:()=>Promise.reject(new Error('test permission denied'))});return true})()`);
+  try {
+    await rightClickAt((await docPointFor(zoneRect('plain-zone'))).point);
+    await waitFor(() => pageEvaluate(`!!document.querySelector('[data-utb-context-menu]')`), { label: 'menu before clipboard refusal' });
+    const point = await centerOf(`document.querySelector('[data-utb-context-action="copy-page"]')`);
+    await clickAt(point.x, point.y);
+    const refusal = await waitFor(() => pageEvaluate(`document.querySelector('.utb')?.textContent.includes('无法访问剪贴板')`), { label: 'clipboard refusal shown' });
+    check('C13', '剪贴板权限失败会反馈，不报告复制成功', refusal, true, refusal);
+  } finally {
+    await pageEvaluate(`(()=>{delete navigator.clipboard.writeText;delete window.__contextClipboardWrite;return true})()`);
+  }
 
   /* C6：宿主菜单的对照 —— 预览外（面板工具栏）右键仍冒泡到 document，说明阻断只在视图内部。 */
   await pageEvaluate('window.__ctxSeen = []');

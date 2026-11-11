@@ -22,6 +22,7 @@ network-p0.js          网络事件与会话、配额、分析、链路、规则
 vision-t3.js           PNG 编解码、裁剪/缩放/预处理/标注、YIQ 差异、识别、映射、产物存储
 vision-baseline.js     受管基线：scope 根、不可变 revision、HEAD CAS、墓碑
 dynamic-t4.js          T4 纯核心：帧存储、事件日志与时钟锚点、七类分析、六向关联、JPEG 解码
+context-menu.js        页面右键事务、最终取消状态观测、默认菜单投影与短期动作令牌
 frame-source.js        最新帧缓存与统计（与传输、UI 解耦）
 frame-push.js          同源 WebSocket 推帧：握手、合并推送、背压丢帧、鉴权
 client.js              全部面板 UI（React，无 JSX）与传输层；DevTools 独立窗口
@@ -90,7 +91,7 @@ DSH Agent / Agent Team
 认证 scoped GUI 使用同一前缀 `/plugins/ui-testing` 的 HTTP 路由（legacy 客户端按既有闸处理）：
 
 - 读：`GET /state`、`GET /frame`、`GET /metrics`；
-- 页面操作（串行队列 + single-owner lease）：`POST /ensure`、`/navigate`、`/reload`、`/history`、`/viewport`、`/input`、`/eval`、`/screenshot`、`/tabs`、`/close`；
+- 页面操作（串行队列 + single-owner lease）：`POST /ensure`、`/navigate`、`/reload`、`/history`、`/viewport`、`/input`、`/context-menu`、`/context-action`、`/eval`、`/screenshot`、`/tabs`、`/close`；
 - 标注唯一写面：`POST /annotations`；
 - 只读元素选取：`POST /element`（文档 CSS px → 命中元素；不 ensure、不进串行队列、不占租约、不写 `lastError`、不记录客户端指标；`GET /element` 固定 405）。语义与限制见 [选元素加入聊天框](element-picker.md)。
 

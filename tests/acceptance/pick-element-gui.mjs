@@ -886,7 +886,8 @@ async function main() {
     observations.servedClient = { rev: served?.rev || '', bytes: served ? Buffer.byteLength(served.text, 'utf8') : 0, hasPickCode: servedHasPick };
     check('G0.3', 'GUI serves this checkout client.js with the element-pick code', servedHasPick, true, observations.servedClient);
 
-    const selectOnly = process.argv.includes('--select-only');
+    const contextOnly = process.argv.includes('--context-only');
+    const selectOnly = process.argv.includes('--select-only') || contextOnly;
     if (!selectOnly) {
     log('\n--- G1 panel + cold runtime ---');
     await openDebugPanelInSidebar();
@@ -1394,6 +1395,7 @@ async function main() {
       await waitFor(() => state.scopeHeaders, { timeoutMs: 15000, label: 'select panel scope' });
     }
 
+    if (!contextOnly) {
     log('\n--- S native select popover ---');
     const { runPanelSelectChecks } = await import('./panel-select-checks.mjs');
     await runPanelSelectChecks({
@@ -1403,10 +1405,11 @@ async function main() {
       capturePng, observations, state,
     });
 
+    }
     log('\n--- C page context menu ---');
     const { runPanelContextChecks } = await import('./panel-context-checks.mjs');
     await runPanelContextChecks({
-      fixtureUrl: new URL('/panel-context.html', state.fixture.url).href,
+      fixtureUrl: process.env.DSH_CONTEXT_GUI_FIXTURE_URL || new URL('/panel-context.html', state.fixture.url).href,
       pageEvaluate, hostEvalJson, measurePreview, hostState, screenPointFor,
       clickAt, centerOf, pressEscape, setAddressBar, waitFor, check, capturePng, observations, state,
     });
@@ -1453,6 +1456,7 @@ async function main() {
       try {
         await capturePng('failure.png');
         observations.failureDom = await pageEvaluate(`({text:document.body.innerText.slice(0,3000),build:document.querySelector('.utb')?.dataset.utbBuild,buttons:Array.from(document.querySelectorAll('button')).slice(0,60).map(b=>({text:b.textContent,label:b.getAttribute('aria-label'),title:b.title}))})`);
+        observations.contextTrace = await pageEvaluate('window.__contextTrace || []');
         observations.selectTraffic = [];
         for (const entry of state.elementTraffic.slice(-4)) {
           let body;

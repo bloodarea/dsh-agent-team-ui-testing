@@ -25,6 +25,7 @@ import {
   classifySelectWrite, normalizeSelectProjection, normalizeSelectWriteRequest,
   selectProbeDeclaration, selectWriteExpression,
 } from './select-control.js';
+import { openPageContextMenu, applyPageContextAction } from './context-menu.js';
 import { createCrossEnvironment } from './integration/cross-environment.js';
 import { createDiagnose } from './integration/diagnose.js';
 import { nowMonoMs } from './core/clock.js';
@@ -16148,6 +16149,22 @@ export function apply(ctx) {
         });
         registry.markRecent(entry);
         sendJson(res, 200, { ok: true, applied });
+        return;
+      }
+      if (action === '/context-menu' || action === '/context-action') {
+        crossEnvironment.assertGuiAllowed(scopeRequest);
+        const { entry } = await select();
+        selected = entry;
+        registry.touch(entry);
+        if (scoped) assertGuiPageWrite(entry.runtime, scopeRequest.mode === 'session' ? scopeRequest.sessionId : null);
+        const result = await entry.runtime.run(async () => {
+          entry.runtime.touchHuman();
+          return action === '/context-menu'
+            ? openPageContextMenu(entry.runtime, body)
+            : applyPageContextAction(entry.runtime, body);
+        });
+        registry.markRecent(entry);
+        sendJson(res, 200, { ok: true, ...result, state: projected(entry.runtime) });
         return;
       }
       if (action === '/select') {

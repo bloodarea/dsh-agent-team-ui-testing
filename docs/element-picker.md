@@ -135,7 +135,7 @@ outerHTML: 截断 <显示>/<原始> 码点（末尾 …，完整文本未取得�
 
 ```bash
 node tests/acceptance/pick-element-host.mjs   # Host：坐标空间/命中/detail/嵌套 frame/只读语义/边界（145 checks）
-node tests/acceptance/pick-element-gui.mjs    # GUI：隔离 DSH + 无头 Chrome 的真实面板操作（选元素/悬停/@ 引用 + `--select-only` 35 checks，含下拉浮层与右键 C1–C6）
+node tests/acceptance/pick-element-gui.mjs    # GUI：隔离 DSH + 无头 Chrome 的真实面板操作（选元素/悬停/@ 引用 + `--select-only` 分支含下拉浮层与右键菜单）
 ```
 
 两个套件都自启资源：Host 套件使用 fake-Cordis harness + 插件自己的无头 Chromium；GUI 套件自建隔离 DSH（临时 `DSH_HOME`、随机端口，绝不用 3080/3081）并另开无头 Chrome 驱动真实面板。报告与截图分别写入 `tests/acceptance/runs/`、`tests/acceptance/evidence/`；`NOT_RUN` 原样保留，不当作通过。

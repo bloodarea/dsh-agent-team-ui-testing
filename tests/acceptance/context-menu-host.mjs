@@ -1,0 +1,67 @@
+#!/usr/bin/env node
+import assert from 'node:assert/strict';
+import { createHarness, waitFor } from './harness.mjs';
+import { startFixtureServer } from '../ui_test_fixture/server.mjs';
+import { openPageContextMenu, applyPageContextAction } from '../../context-menu.js';
+
+const fixture = await startFixtureServer();
+const harness = await createHarness({ name: 'context-menu-host' });
+let checks = 0;
+const check = (condition, label) => { assert.ok(condition, label); console.log('PASS', ++checks, label); };
+const exec = { agent: { id: 'context-agent', session: { header: { cwd: harness.workspaceDir } } } };
+try {
+  const url = new URL('/panel-context.html', fixture.url).href;
+  await harness.invoke('browser_navigate', { url }, exec);
+  const runtime = [...harness.ctx.__internal.plugin.registry.entries.values()].find(entry => entry.runtime.running).runtime;
+  const evaluate = async expression => (await runtime.evaluate(expression)).value;
+  await waitFor(() => evaluate('!!document.getElementById("plain-zone")'));
+  const point = async id => evaluate(`(()=>{const r=document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+  const open = async id => openPageContextMenu(runtime, await point(id));
+  let result = await open('ctx-zone');
+  check(result.status === 'handled' && !result.menu, 'page preventDefault suppresses fallback');
+  check(await evaluate('!document.getElementById("ctx-menu").hidden'), 'custom menu opens');
+  result = await open('plain-zone');
+  check(result.status === 'default' && result.menu.items.some(item => item.id === 'reload'), 'default menu from real trusted event');
+  const events = await evaluate('ctxEvents.slice(-3)');
+  check(events.map(event => event.type).join(',') === 'mousedown,contextmenu,mouseup' && events.every(event => event.trusted && event.button === 2), 'one complete trusted gesture');
+  check(result.menu.items.find(item => item.id === 'copy-page').text === url, 'copy uses actual page URL');
+  const oldToken = result.menu.token;
+  await applyPageContextAction(runtime, { token: oldToken, action: 'reload' });
+  check((await evaluate('ctxEvents.length')) === 0, 'reload really loaded a fresh document');
+  await assert.rejects(applyPageContextAction(runtime, { token: oldToken, action: 'reload' })); checks++;
+  await evaluate(`document.getElementById('plain-zone').addEventListener('contextmenu', e=>{e.preventDefault();e.stopPropagation()}); true`);
+  check((await open('plain-zone')).status === 'handled', 'stopped propagation still observes final cancellation');
+  await runtime.reload();
+  await evaluate(`document.body.insertAdjacentHTML('beforeend','<a id="ctx-link" href="/second.html">Link</a><input id="ctx-password" type="password" value="SECRET"><iframe id="ctx-frame" srcdoc="&lt;div id=inner style=height:100px&gt;Inner&lt;/div&gt;"></iframe>');true`);
+  result = await open('ctx-link');
+  check(result.menu.items.find(item => item.id === 'copy-link')?.text === new URL('/second.html', url).href, 'link address from actual target');
+  await evaluate(`document.getElementById('ctx-password').focus();document.getElementById('ctx-password').select();true`);
+  result = await open('ctx-password');
+  check(!JSON.stringify(result).includes('SECRET') && !result.menu.items.some(item => item.id === 'copy'), 'password selection not exposed');
+  await evaluate(`document.querySelector('#ctx-frame').scrollIntoView();true`);
+  const innerPoint = await evaluate(`(()=>{const f=document.getElementById('ctx-frame'),r=f.getBoundingClientRect(),s=f.contentDocument.getElementById('inner').getBoundingClientRect();return {x:r.x+f.clientLeft+s.x+20,y:r.y+f.clientTop+s.y+20}})()`);
+  result = await openPageContextMenu(runtime, innerPoint);
+  check(result.status === 'default', 'default menu inside same-process iframe');
+  await evaluate(`document.getElementById('ctx-frame').contentWindow.addEventListener('contextmenu',e=>e.preventDefault());true`);
+  check((await openPageContextMenu(runtime, innerPoint)).status === 'handled', 'iframe cancellation observed in its own world');
+  await runtime.reload();
+  await evaluate(`window.addEventListener('contextmenu',e=>e.stopImmediatePropagation(),true);true`);
+  check((await open('plain-zone')).status === 'unknown', 'missing observer is unknown, never default');
+  await runtime.reload();
+  result = await open('plain-zone');
+  await runtime.navigate(new URL('/second.html', url).href);
+  await assert.rejects(applyPageContextAction(runtime, { token: result.menu.token, action: 'reload' }), error => error.details.reason === 'stale-target');
+  checks++; console.log('PASS', checks, 'navigated document rejects old token');
+  result = await openPageContextMenu(runtime, { x: 20, y: 20 });
+  const before = runtime.url;
+  await applyPageContextAction(runtime, { token: result.menu.token, action: 'back' });
+  check(runtime.url === url && runtime.url !== before, 'back menu action navigates actual history');
+  result = await open('plain-zone');
+  await applyPageContextAction(runtime, { token: result.menu.token, action: 'forward' });
+  check(runtime.url === before, 'forward menu action navigates actual history');
+  console.log(`context-menu-host: ${checks}/${checks} PASS`);
+} finally {
+  await harness.closeBrowser();
+  await harness.dispose();
+  await fixture.close();
+}

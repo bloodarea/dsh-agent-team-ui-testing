@@ -1344,6 +1344,7 @@ window.__ModuleLoader__.load({
 .utb-select-pop { overflow-y: auto; overflow-x: hidden; padding: 4px; background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.28); outline: none; }
 .utb-select-pop:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .utb-select-pop-item { display: block; width: 100%; padding: 4px 8px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-primary); border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.utb-context-menu button { background: transparent; font-family: inherit; }
 .utb-select-pop-item:hover { background: var(--dsw-alias-bg-layer-2); }
 .utb-select-pop-item[data-utb-select-item="active"] { background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-2)); color: var(--dsw-alias-brand-primary); }
 .utb-select-pop-item[data-utb-select-item="disabled"] { color: var(--dsw-alias-label-secondary); opacity: .55; cursor: not-allowed; }
@@ -2235,6 +2236,11 @@ window.__ModuleLoader__.load({
       selectPopRef.current = selectPop;
       const selectPopSeqRef = React.useRef(0);
       const selectPopElementRef = React.useRef(null);
+      const [pageContext, setPageContext] = React.useState(null);
+      const pageContextRef = React.useRef(null);
+      pageContextRef.current = pageContext;
+      const pageContextSeqRef = React.useRef(0);
+      const pageContextElementRef = React.useRef(null);
       const inputQueueRef = React.useRef(Promise.resolve());
       const [inputNotice, setInputNotice] = React.useState('');
       const [tabNotice, setTabNotice] = React.useState('');
@@ -2332,8 +2338,7 @@ window.__ModuleLoader__.load({
       const dragRef = React.useRef({ active: false, pointerId: -1, x: 0, y: 0 });
       /** 最近一次 pointerdown 的面板坐标：用来区分"点击"与"拖拽"（只有点击才弹 select 浮层）。 */
       const selectClickRef = React.useRef({ x: 0, y: 0, pointerId: -1, valid: false });
-      // 右键只在按下时记一次，抬起时补 release；没有按下过的右键不派发（避免键盘菜单/脚本右键串味）。
-      const rightClickRef = React.useRef({ x: 0, y: 0, pointerId: -1, valid: false });
+      // Host dispatches a complete right-click in one queued operation, including release.
       // P0-C「拖拽」模式：手势状态与共享 canvasX/canvasY 的节流写入（同一时刻最多一个 set 在途）。
       const panDragRef = React.useRef({
         active: false, pointerId: -1, startClientX: 0, startClientY: 0,
@@ -5699,17 +5704,13 @@ window.__ModuleLoader__.load({
           return;
         }
         if (event.button === 2) {
-          // 右键归页面：宿主的右键菜单已在 onFrameContextMenu 里被阻断，这里只把右键按下转给
-          // 页面，页面自己绘制的菜单才会出现在帧里（原生默认菜单由浏览器 UI 图层画，见文档）。
-          rightClickRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId, valid: false };
           if (!frameInputReady()) return;
           const rightGeom = frameGeometry();
           const rightPoint = rightGeom ? mapEventPoint(event, rightGeom) : null;
           if (!rightPoint || !rightPoint.inside || rightPoint.blank) return;
           event.preventDefault();
           event.currentTarget.focus();
-          rightClickRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId, valid: true };
-          sendEvents([{ kind: 'mouse', type: 'mousePressed', x: rightPoint.x, y: rightPoint.y, button: 'right', buttons: 2, clickCount: 1 }]);
+          openPageContext(event, rightPoint);
           return;
         }
         if (event.button !== 0) return;
@@ -5945,13 +5946,126 @@ window.__ModuleLoader__.load({
         if (selectPopRef.current && !selectPopIsCurrent(selectPopRef.current)) selectPopClose();
       });
 
+      function closePageContext(restoreFocus = false) {
+        pageContextSeqRef.current += 1;
+        pageContextRef.current = null;
+        setPageContext(null);
+        if (restoreFocus && frameImgRef.current) frameImgRef.current.focus({ preventScroll: true });
+      }
+
+      function pageContextCurrent(context) {
+        return context && context.seq === pageContextSeqRef.current && context.epoch === scopeEpochRef.current
+          && context.document === selectPopDocument() && context.canvas === selectPopCanvas()
+          && readyRef.current && !writesPausedRef.current && !annotRef.current.on && !pickRef.current.on;
+      }
+
+      function openPageContext(event, point) {
+        closePageContext();
+        selectPopClose();
+        const box = frameBoxRef.current;
+        if (!box) return;
+        const rect = box.getBoundingClientRect();
+        const context = { seq: pageContextSeqRef.current, epoch: scopeEpochRef.current, scope: scopeRef.current,
+          document: selectPopDocument(), canvas: selectPopCanvas(),
+          anchor: { x: event.clientX - rect.left, y: event.clientY - rect.top },
+          bounds: { width: rect.width, height: rect.height } };
+        const signal = abortRef.current?.signal;
+        const modifiers = (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
+        const pending = inputQueueRef.current.then(async () => {
+          if (!pageContextCurrent(context) || !frameInputReady()) return;
+          const payload = await callHost('context-menu', { x: point.x, y: point.y, modifiers }, { scope: context.scope, signal });
+          if (context.seq !== pageContextSeqRef.current || context.epoch !== scopeEpochRef.current || signal?.aborted) return;
+          // A fresh frame may arrive before /state after reload. Bind to the document observed by
+          // THIS transaction, while acceptRemote's revision gate rejects a late/retired snapshot.
+          const state = payload.state;
+          const responseDocument = state && (annotDKey(annotDOf(state.ui)) + '|' + String(state.ui?.address || state.url || ''));
+          if (!responseDocument || (context.document !== selectPopDocument() && responseDocument !== selectPopDocument())) return;
+          acceptRemote(state);
+          const observed = { ...context, document: responseDocument };
+          if (!pageContextCurrent(observed)) return;
+          setInputNotice('');
+          if (payload.status === 'default' && payload.menu) {
+            setPageContext({ ...observed, ...payload.menu, activeIndex: payload.menu.items.findIndex(item => !item.disabled) });
+          }
+        }).catch(error => { if (pageContextCurrent(context)) noteInputError(error); });
+        inputQueueRef.current = pending;
+      }
+
+      function choosePageContext(item) {
+        const context = pageContextRef.current;
+        if (!pageContextCurrent(context) || !item || item.disabled) return;
+        // Start clipboard access in the real user gesture, before any asynchronous Host request.
+        const copied = item.text ? clipboardWriteText(item.text) : null;
+        closePageContext(true);
+        if (copied) {
+          copied.then(ok => {
+            if (ok || context.epoch !== scopeEpochRef.current || context.document !== selectPopDocument()) return;
+            setInputNotice('无法访问剪贴板，请检查浏览器权限');
+            window.clearTimeout(inputNoticeTimerRef.current);
+            inputNoticeTimerRef.current = window.setTimeout(() => setInputNotice(''), 3200);
+          });
+          return;
+        }
+        const signal = abortRef.current?.signal;
+        const pending = inputQueueRef.current.then(async () => {
+          if (context.epoch !== scopeEpochRef.current || context.document !== selectPopDocument()) return;
+          const payload = await callHost('context-action', { token: context.token, action: item.id }, { scope: context.scope, signal });
+          if (context.epoch === scopeEpochRef.current && !signal?.aborted && payload.state) acceptRemote(payload.state);
+        }).catch(error => { if (context.epoch === scopeEpochRef.current) noteInputError(error); });
+        inputQueueRef.current = pending;
+      }
+
+      function onPageContextKeyDown(event) {
+        const context = pageContextRef.current;
+        if (!context) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === 'Escape' || event.key === 'Tab') { closePageContext(true); return; }
+        if (event.key === 'Enter' || event.key === ' ') { choosePageContext(context.items[context.activeIndex]); return; }
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+        const enabled = context.items.map((item, index) => item.disabled ? -1 : index).filter(index => index >= 0);
+        let index = enabled.indexOf(context.activeIndex);
+        index = event.key === 'Home' ? 0 : event.key === 'End' ? enabled.length - 1
+          : (index + (event.key === 'ArrowUp' ? -1 : 1) + enabled.length) % enabled.length;
+        setPageContext({ ...context, activeIndex: enabled[index] });
+      }
+
+      React.useEffect(() => {
+        const outside = event => {
+          if (pageContextElementRef.current?.contains(event.target)) return;
+          closePageContext();
+        };
+        const scroll = event => {
+          const target = event?.target;
+          const preview = stage.current;
+          // Sibling panes (especially the streaming chat) do not move this menu's anchor.
+          if (event?.type !== 'scroll' || target === document || target === window
+            || (target?.contains && preview && target.contains(preview))
+            || (preview?.contains(target) && !pageContextElementRef.current?.contains(target))) closePageContext();
+        };
+        document.addEventListener('pointerdown', outside, true);
+        window.addEventListener('blur', scroll);
+        window.addEventListener('resize', scroll);
+        // Scroll can move the anchor without a React render (including stage/ancestor scrolling).
+        document.addEventListener('scroll', scroll, true);
+        return () => {
+          document.removeEventListener('pointerdown', outside, true);
+          window.removeEventListener('blur', scroll);
+          window.removeEventListener('resize', scroll);
+          document.removeEventListener('scroll', scroll, true);
+        };
+      }, []);
+      React.useEffect(() => {
+        if (pageContextRef.current && !pageContextCurrent(pageContextRef.current)) closePageContext();
+      });
+
       /**
        * 预览区内部的右键菜单属于页面，不属于宿主。
        *
        * 宿主（DSH Web）把右键菜单挂在容器上（`useContextMenu` 的 trigger props → React
        * `onContextMenu`），预览是它的子树，所以右键会弹宿主的菜单。这里在预览区域内
        * `preventDefault + stopPropagation`：既不弹宿主菜单，也不让事件继续冒泡到宿主容器。
-       * 页面的右键语义由 `onFramePointerDown`/`onFramePointerUp` 的右键派发提供。
+       * 页面右键由 Host 完整事务派发；未被页面取消时显示面板菜单。
        */
       function onFrameContextMenu(event) {
         event.preventDefault();
@@ -5960,18 +6074,7 @@ window.__ModuleLoader__.load({
 
       /** The release is dispatched even when the pointer left the image (no stuck button). */
       function onFramePointerUp(event) {
-        if (event.button === 2) {
-          const right = rightClickRef.current;
-          rightClickRef.current = { x: 0, y: 0, pointerId: -1, valid: false };
-          // 标注/选元素模式内页面零输入（按下也没有派发，这里同样不派发）。
-          if (annotRef.current.on || pickRef.current.on) return;
-          if (!right.valid || right.pointerId !== event.pointerId) return;
-          const rightGeom = frameGeometry();
-          const rightPoint = rightGeom ? mapEventPoint(event, rightGeom) : null;
-          if (!rightPoint || !rightPoint.inside || rightPoint.blank) return;
-          sendEvents([{ kind: 'mouse', type: 'mouseReleased', x: rightPoint.x, y: rightPoint.y, button: 'right', buttons: 0, clickCount: 1 }]);
-          return;
-        }
+        if (event.button === 2) return; // Host already paired press/release, even outside the image.
         if (annotRef.current.on) return; // annotation mode: zero page input
         if (pickRef.current.on) return; // pick mode: action already committed on pointerdown
         const pan = panDragRef.current;
@@ -8214,6 +8317,34 @@ h('div', { className: 'utb-bar' },
                         },
                         onClick: () => selectPopChoose(option),
                       }, option.label || option.value || '（空值）')));
+                })() : null,
+                pageContext ? (() => {
+                  const layout = selectPopLayout(pageContext.anchor, pageContext.items.length, pageContext.bounds);
+                  return h('div', {
+                    className: 'utb-select-pop utb-context-menu',
+                    'data-utb-context-menu': 'default',
+                    role: 'menu', tabIndex: -1, 'aria-label': '页面右键菜单',
+                    'aria-activedescendant': `utb-context-item-${pageContext.seq}-${pageContext.activeIndex}`,
+                    ref: node => {
+                      pageContextElementRef.current = node;
+                      if (node && node.dataset.utbFocused !== '1') {
+                        node.dataset.utbFocused = '1';
+                        node.focus({ preventScroll: true });
+                      }
+                    },
+                    style: { position: 'absolute', left: layout.left, top: layout.top, width: layout.width, maxHeight: layout.maxHeight, zIndex: 7 },
+                    onPointerDown: event => { event.preventDefault(); event.stopPropagation(); },
+                    onKeyDown: onPageContextKeyDown,
+                  }, pageContext.items.map((item, index) => h('button', {
+                    key: item.id, id: `utb-context-item-${pageContext.seq}-${index}`,
+                    className: 'utb-select-pop-item', type: 'button', role: 'menuitem', tabIndex: -1,
+                    disabled: item.disabled === true, 'aria-disabled': item.disabled ? 'true' : 'false',
+                    'data-utb-context-action': item.id,
+                    'data-utb-select-item': item.disabled ? 'disabled' : index === pageContext.activeIndex ? 'active' : 'ready',
+                    style: { border: 0, textAlign: 'left' },
+                    onPointerEnter: () => { if (!item.disabled) setPageContext(current => current ? { ...current, activeIndex: index } : current); },
+                    onClick: () => choosePageContext(item),
+                  }, item.label)));
                 })() : null,
                 // P0-D annotation layer: covers the untranslated painted rect, viewBox = accepted
                 // canvas window. Committed shapes are React nodes; the live draft is one imperative

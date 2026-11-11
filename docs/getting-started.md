@@ -35,7 +35,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 1. 把包安装进要使用的 DSH profile。
 2. 首次安装后**重启 DSH**，让插件 bundle 完成注册。
 3. 从 **更多 → 调试视图** 打开面板，或从右侧边栏的插件卡片进入。
-   面板里的键盘会转发到页面（含 `Ctrl/Cmd/Alt/Shift` 组合、F1–F12、Home/End/PgUp/PgDn/Delete/Insert）。原生弹层（`alert/confirm`、浏览器默认右键菜单）由浏览器 UI 绘制、面板里看不到；预览区内的右键仍会转发给页面——页面自己画的右键菜单能出现在帧里，而 DSH Web 自己的右键菜单不会在预览里弹出；**单选 `<select>` 例外**：点一下就在点击点弹出面板侧浮层（↑↓ / Enter / Esc、点外部关闭），选项来自 Host 的只读 `POST /element`，选中后走 `POST /select` 写回。`multiple`/`size>1`/无选项会在地址栏下方、预览外提示改用键盘，Esc 可关闭提示；同进程 `<iframe>` 内的单选 `<select>` 同样有浮层。自定义下拉沿用页面自己的交互。
+   面板里的键盘会转发到页面（含 `Ctrl/Cmd/Alt/Shift` 组合、F1–F12、Home/End/PgUp/PgDn/Delete/Insert）。原生弹层（如 `alert/confirm`）由浏览器 UI 绘制、面板里看不到。预览区右键优先交给页面：页面自绘菜单正常显示，未取消默认行为时面板显示后退、前进、重新加载与复制相关项，详见[页面右键菜单](panel-context-menu.md)。DSH Web 自己的右键菜单不会在预览里弹出；**单选 `<select>` 例外**：点一下就在点击点弹出面板侧浮层（↑↓ / Enter / Esc、点外部关闭），选项来自 Host 的只读 `POST /element`，选中后走 `POST /select` 写回。`multiple`/`size>1`/无选项会在地址栏下方、预览外提示改用键盘，Esc 可关闭提示；同进程 `<iframe>` 内的单选 `<select>` 同样有浮层。自定义下拉沿用页面自己的交互。
    两个入口共用同一套视图：**右上角的「选择运行环境」组合框决定下方渲染哪个目标环境的视图**，而组合框**只列出设置页里已打开的目标环境**——例如只开了 Web 与 Android，就只出现这两项，没开的连选项都没有。当前只有 Web 视图实现了：选中 Android 这类已启用但没有视图的环境，会显示「视图层暂不支持」占位，并明确写出「执行环境仍然是 Web 视图，这里只切换视图」——**切视图不改执行环境**。把某个环境的开关关掉后，若当时正停在它的视图上，面板会退回宿主当前的执行环境。
 4. 插件开发时改为把本仓库链接或复制进 profile，不必安装 npm 包。
 5. 生效范围：
