@@ -4585,13 +4585,9 @@ window.__ModuleLoader__.load({
             }
             throw new Error('聊天框正忙（发送中），稍后再试');
           }
+          // 成功不弹任何提示：附件本身就出现在聊天框里，那一张缩略图就是结果；
+          // 失败才在按钮旁给具体原因（静默失败才是真问题）。
           try { if (typeof target.face.focus === 'function') target.face.focus(); } catch { /* best effort */ }
-          const annotationFacts = payload.annotations || null;
-          const shapeCount = annotationFacts && Number.isFinite(annotationFacts.shapeCount) ? annotationFacts.shapeCount : 0;
-          try { if (typeof target.face.notify === 'function') target.face.notify('info', '已把带标注的截图加入聊天框附件'); } catch { /* best effort */ }
-          setAnnotShotNotice(shapeCount > 0
-            ? '已加入附件（含 ' + shapeCount + ' 个标注图形）'
-            : '已加入附件（当前没有标注图形）');
         } catch (error) {
           setAnnotShotNotice('截图失败：' + String((error && error.message) || error));
         } finally {
