@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
 
     const ID = 'ui-testing-browser';
     /** 面板构建标识：刷新后用它确认浏览器里跑的是哪一份 client.js（排查「改了没生效」）。 */
-    const CLIENT_BUILD = '2026-11-10T21:00+08:00·keyboard-rawdown+select-pop';
+    const CLIENT_BUILD = '2026-11-11T14:20+08:00·cursor-trailing';
     const KIND = 'debug-view';
     const TITLE = '调试视图';
     /** 可选运行环境；本期只有 Web 视图可用，其余置灰。 */
@@ -5909,17 +5909,67 @@ window.__ModuleLoader__.load({
       const panelHeldKeysRef = React.useRef(new Map());
       const cursorProbeAtRef = React.useRef(0);
       const cursorProbeSeqRef = React.useRef(0);
-      function probeFrameCursor(x, y) {
-        const seq = cursorProbeSeqRef.current + 1;
-        cursorProbeSeqRef.current = seq;
-        callHost('element', { x, y, cursorOnly: true }, { scope: scopeRef.current })
-          .then((reply) => {
-            if (seq !== cursorProbeSeqRef.current) return; // 迟到响应不覆盖
-            const element = reply && reply.element ? reply.element : null;
-            setFrameCursor(pageCursorKeyword(element && element.cursor));
-          })
-          .catch(() => { /* 旧宿主没有 cursorOnly：保持当前光标 */ });
+      const cursorProbeTimerRef = React.useRef(0);
+      const cursorProbePointRef = React.useRef(null);
+      function resetFrameCursor() {
+        cursorProbeSeqRef.current += 1;
+        if (cursorProbeTimerRef.current) window.clearTimeout(cursorProbeTimerRef.current);
+        cursorProbeTimerRef.current = 0;
+        cursorProbePointRef.current = null;
+        cursorProbeAtRef.current = 0;
+        setFrameCursor('auto');
       }
+      function frameCursorAllowed() {
+        return visibleRef.current && readyRef.current && !writesPausedRef.current
+          && !annotRef.current.on && !pickRef.current.on && !panModeRef.current;
+      }
+      function probeFrameCursor() {
+        cursorProbeTimerRef.current = 0;
+        const client = cursorProbePointRef.current;
+        if (!client || !frameCursorAllowed()) { resetFrameCursor(); return; }
+        const geom = frameGeometry();
+        const canvas = canvasPosition();
+        if (!geom || !canvas || !inputGeomReady() || !canvasBarrier().ready) {
+          // A replacement image may have naturalWidth=0 until decoded. Keep the final hover
+          // through that brief gap as well as input-barrier gaps, with a bounded retry.
+          if (Date.now() < client.expiresAt) cursorProbeTimerRef.current = window.setTimeout(probeFrameCursor, 120);
+          else resetFrameCursor();
+          return;
+        }
+        // Re-map the latest pointer at dispatch time; a trailing probe must not reuse old geometry.
+        const point = mapEventPoint(client, geom);
+        if (!point.inside || point.blank) { resetFrameCursor(); return; }
+        const seq = cursorProbeSeqRef.current;
+        const epoch = scopeEpochRef.current;
+        const documentKey = selectPopDocument();
+        const canvasKey = selectPopCanvas();
+        const current = () => seq === cursorProbeSeqRef.current && epoch === scopeEpochRef.current
+          && documentKey === selectPopDocument() && canvasKey === selectPopCanvas() && frameCursorAllowed();
+        cursorProbeAtRef.current = Date.now();
+        callHost('element', { x: point.q.x + canvas.x, y: point.q.y + canvas.y, cursorOnly: true }, {
+          scope: scopeRef.current,
+          signal: abortRef.current ? abortRef.current.signal : undefined,
+        }).then((reply) => {
+          if (!current()) return;
+          const element = reply && reply.element ? reply.element : null;
+          setFrameCursor(pageCursorKeyword(element && element.cursor));
+        }).catch(() => { if (current()) setFrameCursor('auto'); });
+      }
+      function scheduleFrameCursor(event) {
+        // Invalidate the previous position even when this move falls inside the throttle window.
+        cursorProbeSeqRef.current += 1;
+        cursorProbePointRef.current = { clientX: event.clientX, clientY: event.clientY, expiresAt: Date.now() + 1000 };
+        if (cursorProbeTimerRef.current) return;
+        const wait = 120 - (Date.now() - cursorProbeAtRef.current);
+        if (wait <= 0) probeFrameCursor();
+        else cursorProbeTimerRef.current = window.setTimeout(probeFrameCursor, wait);
+      }
+      const cursorDocumentKey = selectPopDocument();
+      const cursorCanvasKey = selectPopCanvas();
+      React.useEffect(() => {
+        resetFrameCursor();
+        return resetFrameCursor;
+      }, [scopeEpoch, cursorDocumentKey, cursorCanvasKey, visible, ready, identity.paused, panMode, annotOn, pickOn]);
 
       function onFramePointerMove(event) {
         if (annotRef.current.on) return; // annotation mode: zero page input
@@ -5937,6 +5987,8 @@ window.__ModuleLoader__.load({
           return;
         }
         if (panMode) return; // 拖拽模式：不向页面派发 hover/拖拽移动
+        // Retain the last hover even if frame sync briefly blocks page input.
+        scheduleFrameCursor(event);
         // Fail closed for page input while O≠0 cannot be proven: no stale-coordinate move/release.
         if (!inputGeomReady() || !canvasBarrier().ready) return;
         const drag = dragRef.current;
@@ -5945,14 +5997,7 @@ window.__ModuleLoader__.load({
         if (!geom) return;
         const point = mapEventPoint(event, geom);
         if (!point.inside) return;
-        if (point.blank) { setFrameCursor('auto'); return; } // blank never dispatches (a drag into blank keeps its button state)
-        // 光标形状按 120ms 节流询问：比页面 hover 派发（60ms）更省，肉眼仍跟得上。
-        const cursorNow = Date.now();
-        if (cursorNow - cursorProbeAtRef.current >= 120) {
-          cursorProbeAtRef.current = cursorNow;
-          const canvas = canvasPosition();
-          if (canvas && point.q) probeFrameCursor(point.q.x + Number(canvas.x), point.q.y + Number(canvas.y));
-        }
+        if (point.blank) { resetFrameCursor(); return; } // blank never dispatches (a drag into blank keeps its button state)
         const now = Date.now();
         if (now - hoverAtRef.current < 60) return;
         hoverAtRef.current = now;
@@ -8457,7 +8502,7 @@ h('div', { className: 'utb-bar' },
                   onLostPointerCapture: releaseFrameDrag,
                   onPointerLeave: () => {
                     if (pickRef.current.on) pickClearOverlay();
-                    setFrameCursor('auto');
+                    resetFrameCursor();
                   },
                   onKeyDown: (event) => {
                     if (annotRef.current.on) return; // annotation mode: zero page input
