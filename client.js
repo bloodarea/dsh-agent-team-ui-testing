@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
 
     const ID = 'ui-testing-browser';
     /** 面板构建标识：刷新后用它确认浏览器里跑的是哪一份 client.js（排查「改了没生效」）。 */
-    const CLIENT_BUILD = '2026-11-11T14:20+08:00·cursor-trailing';
+    const CLIENT_BUILD = '2026-11-11T16:20+08:00·address-history+go';
     const KIND = 'debug-view';
     const TITLE = '调试视图';
     /** 可选运行环境；本期只有 Web 视图可用，其余置灰。 */
@@ -50,6 +50,59 @@ window.__ModuleLoader__.load({
         binding: binding ? String(binding) : '',
         legacy: legacy === true,
       });
+    }
+
+    /**
+     * Address history: a bounded LIFO stack of the last visited page addresses.
+     *
+     * The stack is panel-local (localStorage, shared by the panels of this GUI origin) and keeps
+     * the newest entry at index 0. Only real HTTP(S) addresses are stored: `about:blank`, empty
+     * drafts and app-internal addresses never enter the list. Revisiting a URL moves it back to
+     * the front instead of duplicating it. These are pure helpers so the contract test can run the
+     * real implementations rather than a copy.
+     */
+    const ADDRESS_HISTORY_LIMIT = 7;
+    const ADDRESS_HISTORY_KEY = 'dsh-agent-team-ui-testing:address-history:v1';
+    function addressHistoryNormalize(list, limit = ADDRESS_HISTORY_LIMIT) {
+      const out = [];
+      for (const item of Array.isArray(list) ? list : []) {
+        const value = typeof item === 'string' ? item.trim() : '';
+        if (!/^https?:\/\//i.test(value) || out.includes(value)) continue;
+        out.push(value);
+        if (out.length >= limit) break;
+      }
+      return out;
+    }
+    function addressHistoryPush(list, raw, limit = ADDRESS_HISTORY_LIMIT) {
+      const value = typeof raw === 'string' ? raw.trim() : '';
+      const current = addressHistoryNormalize(list, limit);
+      if (!/^https?:\/\//i.test(value)) return current;
+      return addressHistoryNormalize([value].concat(current), limit);
+    }
+    function addressHistoryLabel(raw) {
+      const value = String(raw || '');
+      try {
+        const parsed = new URL(value);
+        const path = (parsed.pathname || '/') + (parsed.search || '');
+        return String(parsed.host || value) + (path === '/' ? '' : path);
+      } catch { return value; }
+    }
+    /** Local storage accessor: a privacy mode that throws must not break the address bar. */
+    function addressHistoryStorage() {
+      try { return typeof window !== 'undefined' && window.localStorage ? window.localStorage : null; } catch { return null; }
+    }
+    function addressHistoryRead(storage, limit = ADDRESS_HISTORY_LIMIT) {
+      try {
+        if (!storage) return [];
+        return addressHistoryNormalize(JSON.parse(storage.getItem(ADDRESS_HISTORY_KEY) || '[]'), limit);
+      } catch { return []; }
+    }
+    function addressHistoryWrite(storage, list) {
+      try {
+        if (!storage) return false;
+        storage.setItem(ADDRESS_HISTORY_KEY, JSON.stringify(addressHistoryNormalize(list)));
+        return true;
+      } catch { return false; }
     }
 
     /**
@@ -1359,7 +1412,17 @@ window.__ModuleLoader__.load({
 .utb-addr { flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 10px; font: inherit; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; }
 .utb-addr::placeholder { color: var(--dsw-alias-label-secondary); }
 .utb-addr[data-invalid="true"] { border-color: var(--dsw-alias-state-error-primary); outline-color: var(--dsw-alias-state-error-primary); }
-.utb-addr:focus-visible, .utb-btn:focus-visible, .utb-menu-item:focus-visible, .utb-num:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.utb-addr:focus-visible, .utb-btn:focus-visible, .utb-menu-item:focus-visible, .utb-num:focus-visible, .utb-addr-hist:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.utb-addr-wrap { position: relative; display: flex; align-items: center; flex: 1 1 auto; min-width: 0; }
+.utb-addr-wrap .utb-addr { flex: 1 1 auto; padding-right: 30px; }
+.utb-addr-hist { position: absolute; top: 2px; right: 2px; bottom: 2px; display: inline-flex; align-items: center; justify-content: center; width: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
+.utb-addr-hist:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.utb-addr-hist:disabled { opacity: .45; cursor: not-allowed; }
+.utb-addr-hist[data-utb-history-toggle="open"] { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.utb-addr-pop { right: 0; left: auto; min-width: 100%; max-width: 560px; max-height: 264px; overflow: auto; }
+.utb-addr-pop-head { padding: 4px 8px 6px; font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
+.utb-addr-pop-empty { padding: 8px; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.utb-addr-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .utb-more { position: relative; flex: 0 0 auto; }
 .utb-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 208px; padding: 4px; background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.28); }
 .utb-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; font: inherit; text-align: left; color: var(--dsw-alias-label-primary); background: transparent; border: 0; border-radius: 6px; cursor: pointer; }
@@ -1535,6 +1598,16 @@ window.__ModuleLoader__.load({
         h('rect', { x: 3, y: 5, width: 18, height: 14, rx: 2.5 }),
         h('path', { d: 'M3 9.5h18' }),
         h('path', { d: 'M6.3 7.3h.01M8.8 7.3h.01' }));
+    }
+    /** 地址栏历史：时钟箭头（点击展开最近访问）。 */
+    function IconHistory() {
+      return h('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+        h('path', { d: 'M3.5 12a8.5 8.5 0 1 0 2.6-6.1' }), h('path', { d: 'M3.2 4.4v4.2h4.2' }), h('path', { d: 'M12 8.2V12l2.9 1.8' }));
+    }
+    /** 转到：右箭头 + 落点竖线（等同回车跳转地址）。 */
+    function IconGo() {
+      return h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.9, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+        h('path', { d: 'M4.5 12h12' }), h('path', { d: 'm12.2 7.4 4.6 4.6-4.6 4.6' }), h('path', { d: 'M19.6 6.4v11.2' }));
     }
     function IconMore() {
       return h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': true },
@@ -3007,6 +3080,39 @@ window.__ModuleLoader__.load({
         editVersionRef.current += 1;
         setDraft(acceptedAddress());
         setError('');
+      }
+
+      /* ----------------------------------------------------------------------------------------
+       * Address history (panel-local, docs/getting-started.md): the newest 7 visited HTTP(S)
+       * addresses, newest first. Recorded from the *accepted* address, so a redirect or an Agent
+       * navigation is stored as the page that actually loaded, and a failed navigation is not.
+       * -------------------------------------------------------------------------------------- */
+      const [addressHistory, setAddressHistory] = React.useState(() => addressHistoryRead(addressHistoryStorage()));
+      const [historyOpen, setHistoryOpen] = React.useState(false);
+      const historyAddress = acceptedAddress();
+      React.useEffect(() => {
+        if (!/^https?:\/\//i.test(historyAddress)) return;
+        const storage = addressHistoryStorage();
+        const current = addressHistoryRead(storage);
+        const next = addressHistoryPush(current, historyAddress);
+        if (next.length === current.length && next[0] === current[0]) return;
+        addressHistoryWrite(storage, next);
+        setAddressHistory(next);
+      }, [historyAddress]);
+      // The dropdown is a local popover: it never survives a mode switch or a scope change.
+      React.useEffect(() => {
+        if (!historyOpen) return undefined;
+        const close = (event) => { if (!event.target.closest || !event.target.closest('.utb-addr-wrap')) setHistoryOpen(false); };
+        const escape = (event) => { if (event.key === 'Escape') setHistoryOpen(false); };
+        document.addEventListener('mousedown', close);
+        document.addEventListener('keydown', escape);
+        return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', escape); };
+      }, [historyOpen]);
+      React.useEffect(() => { setHistoryOpen(false); }, [scopeEpoch, annotOn]);
+      function chooseHistory(url) {
+        setHistoryOpen(false);
+        if (annotRef.current.on) return; // local navigation is disabled in annotation mode
+        submit(undefined, url);
       }
 
       /* ----------------------------------------------------------------------------------------
@@ -7336,7 +7442,7 @@ window.__ModuleLoader__.load({
         syncDraft();
       }
 
-      function submit(event) {
+      function submit(event, overrideAddress) {
         if (event) event.preventDefault();
         if (annotRef.current.on) return; // annotation mode: local navigation is disabled
         if (pendingRef.current.active) return;
@@ -7347,9 +7453,12 @@ window.__ModuleLoader__.load({
         // A local navigation initiated outside the mode invalidates the drawing immediately and
         // submits a normal empty document under the old identity (§12.1).
         annotNavigationClear();
+        // `overrideAddress` lets the history dropdown navigate a stored URL without waiting for a
+        // React state round-trip through the draft (the go button and Enter pass the draft).
+        const source = typeof overrideAddress === 'string' ? overrideAddress : draft;
         let parsed;
         try {
-          const raw = draft.trim();
+          const raw = source.trim();
           if (!raw) throw new Error('请输入网址。');
           parsed = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(raw) ? raw : 'https://' + raw);
           if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('仅支持 HTTP 和 HTTPS 网址。');
@@ -8025,8 +8134,51 @@ h('div', { className: 'utb-bar' },
           button('后退', h(IconArrow, { dir: 'back' }), () => move('back'), backDisabled),
           button('前进', h(IconArrow, { dir: 'forward' }), () => move('forward'), forwardDisabled),
           button('刷新', h(IconReload, null), reload, reloadDisabled),
-          h('form', { onSubmit: submit, style: { flex: '1 1 auto', minWidth: 0, display: 'flex' } },
-            h('input', { className: 'utb-addr', type: 'text', value: draft, spellCheck: false, 'aria-label': '网址', placeholder: '输入网址，例如 https://example.com', 'aria-invalid': error ? 'true' : undefined, 'data-invalid': error ? 'true' : 'false', title: error || undefined, disabled: annotOn, onChange: changeAddress, onFocus: () => { focusedRef.current = true; dirtyRef.current = false; }, onBlur: blurAddress, onKeyDown: keyAddress })),
+          h('form', { onSubmit: submit, style: { flex: '1 1 auto', minWidth: 0, display: 'flex', position: 'relative' } },
+            h('div', { className: 'utb-addr-wrap' },
+              h('input', { className: 'utb-addr', type: 'text', value: draft, spellCheck: false, 'aria-label': '网址', placeholder: '输入网址，例如 https://example.com', 'aria-invalid': error ? 'true' : undefined, 'data-invalid': error ? 'true' : 'false', title: error || undefined, disabled: annotOn, onChange: changeAddress, onFocus: () => { focusedRef.current = true; dirtyRef.current = false; }, onBlur: blurAddress, onKeyDown: keyAddress }),
+              h('button', {
+                type: 'button',
+                className: 'utb-addr-hist',
+                'aria-label': '最近访问的网址',
+                'aria-haspopup': 'menu',
+                'aria-expanded': historyOpen,
+                title: addressHistory.length
+                  ? '最近访问（最多 7 条，最近的在上面）'
+                  : '还没有访问记录：先在地址栏打开一个网址',
+                'data-utb-history-toggle': historyOpen ? 'open' : 'closed',
+                'data-utb-history-count': String(addressHistory.length),
+                disabled: annotOn,
+                onMouseDown: (event) => event.preventDefault(), // keep the address caret/draft untouched
+                onClick: () => setHistoryOpen((value) => !value),
+              }, h(IconHistory, null)),
+              historyOpen && h('div', {
+                className: 'utb-pop utb-addr-pop',
+                role: 'menu',
+                'aria-label': '最近访问的网址',
+                'data-utb-history-list': 'true',
+                'data-utb-history-size': String(addressHistory.length),
+              },
+                h('div', { className: 'utb-addr-pop-head' }, '最近访问（' + addressHistory.length + '/' + ADDRESS_HISTORY_LIMIT + '）'),
+                addressHistory.length
+                  ? addressHistory.map((url, index) => h('button', {
+                    key: url,
+                    type: 'button',
+                    className: 'utb-menu-item utb-addr-item',
+                    role: 'menuitem',
+                    title: url,
+                    'data-utb-history-item': String(index),
+                    'data-utb-history-url': url,
+                    onClick: () => chooseHistory(url),
+                  }, h('span', { className: 'utb-addr-label' }, addressHistoryLabel(url))))
+                  : h('div', { className: 'utb-addr-pop-empty' }, '还没有访问记录')))),
+          button('转到', h(IconGo, null), () => submit(undefined), annotOn || busy, {
+            'data-utb-go': annotOn || busy ? 'disabled' : 'ready',
+            title: '转到地址栏里的网址（等同回车）',
+            // Keep the address field focused: a blur would cancel the draft (the input would snap
+            // back to the accepted address) before this click could submit what the user typed.
+            onMouseDown: (event) => event.preventDefault(),
+          }),
           tabsSupported && button('标签页', h('span', { className: 'utb-tabs-glyph', 'aria-hidden': true }, '▤'), () => setTabsVisible((value) => !value), false, {
             'aria-pressed': tabsVisible,
             'data-utb-tabs-toggle': tabsVisible ? 'on' : 'off',

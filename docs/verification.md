@@ -18,6 +18,8 @@ node tests/acceptance/annotation-capture.mjs   # includeAnnotations：六形状�
 node tests/acceptance/game-target.mjs        # 人工靶机 tests/manual-target/game-target.html 的自评在真实浏览器里跑到 8/8
 node tests/acceptance/input-state.mjs        # browser_input 状态机：多键按住/修饰键合成、相对鼠标、光标探测
 node --test tests/contracts/panel-cursor.test.mjs # 预览光标：尾沿查询、换帧重试、迟到响应与生命周期失效
+node --test tests/contracts/panel-address-bar.test.mjs # 地址栏历史：栈语义、7 条上限、持久化与接线
+node tests/acceptance/panel-address-gui.mjs  # 真实面板：历史下拉顺序/去重/持久化、Esc 关闭与「转到」按钮
 node tests/acceptance/gui-annot-shot.mjs   # 面板「截图」：/screenshot 的 includeAnnotations 合成、旧回复形状与拒绝
 node tests/acceptance/annotation-agent.mjs     # Agent 标注读写：四类动作、样式映射、前台门禁、限额与 revision CAS
 node tests/acceptance/t2-structured.mjs        # 结构化 GUI
