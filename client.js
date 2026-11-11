@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
 
     const ID = 'ui-testing-browser';
     /** 面板构建标识：刷新后用它确认浏览器里跑的是哪一份 client.js（排查「改了没生效」）。 */
-    const CLIENT_BUILD = '2026-11-11T16:20+08:00·address-history+go';
+    const CLIENT_BUILD = '2026-11-11T18:50+08:00·address-history-per-workspace';
     const KIND = 'debug-view';
     const TITLE = '调试视图';
     /** 可选运行环境；本期只有 Web 视图可用，其余置灰。 */
@@ -62,7 +62,12 @@ window.__ModuleLoader__.load({
      * real implementations rather than a copy.
      */
     const ADDRESS_HISTORY_LIMIT = 7;
-    const ADDRESS_HISTORY_KEY = 'dsh-agent-team-ui-testing:address-history:v1';
+    const ADDRESS_HISTORY_KEY = 'dsh-agent-team-ui-testing:address-history:v2';
+    /** One bucket per workspace scope: two workspaces never read each other's history. */
+    function addressHistoryStorageKey(scopeId) {
+      const clean = typeof scopeId === 'string' ? scopeId.trim().slice(0, 96).replace(/[^A-Za-z0-9_.:-]/gu, '') : '';
+      return ADDRESS_HISTORY_KEY + ':' + (clean || 'unscoped');
+    }
     function addressHistoryNormalize(list, limit = ADDRESS_HISTORY_LIMIT) {
       const out = [];
       for (const item of Array.isArray(list) ? list : []) {
@@ -91,16 +96,17 @@ window.__ModuleLoader__.load({
     function addressHistoryStorage() {
       try { return typeof window !== 'undefined' && window.localStorage ? window.localStorage : null; } catch { return null; }
     }
-    function addressHistoryRead(storage, limit = ADDRESS_HISTORY_LIMIT) {
+    function addressHistoryRead(storage, scopeId, limit = ADDRESS_HISTORY_LIMIT) {
       try {
         if (!storage) return [];
-        return addressHistoryNormalize(JSON.parse(storage.getItem(ADDRESS_HISTORY_KEY) || '[]'), limit);
+        const key = addressHistoryStorageKey(scopeId);
+        return addressHistoryNormalize(JSON.parse(storage.getItem(key) || '[]'), limit);
       } catch { return []; }
     }
-    function addressHistoryWrite(storage, list) {
+    function addressHistoryWrite(storage, scopeId, list) {
       try {
         if (!storage) return false;
-        storage.setItem(ADDRESS_HISTORY_KEY, JSON.stringify(addressHistoryNormalize(list)));
+        storage.setItem(addressHistoryStorageKey(scopeId), JSON.stringify(addressHistoryNormalize(list)));
         return true;
       } catch { return false; }
     }
@@ -3087,18 +3093,26 @@ window.__ModuleLoader__.load({
        * addresses, newest first. Recorded from the *accepted* address, so a redirect or an Agent
        * navigation is stored as the page that actually loaded, and a failed navigation is not.
        * -------------------------------------------------------------------------------------- */
-      const [addressHistory, setAddressHistory] = React.useState(() => addressHistoryRead(addressHistoryStorage()));
+      // History is per workspace: the key carries the runtime's opaque workspace scope id, so a
+      // second workspace never sees (or inherits) another workspace's addresses. An unresolved
+      // scope reads nothing and never writes, instead of falling back to a shared bucket.
+      const historyScopeId = ui && ui.scope && ui.scope.id ? String(ui.scope.id) : '';
+      const [addressHistory, setAddressHistory] = React.useState(() => addressHistoryRead(addressHistoryStorage(), historyScopeId));
       const [historyOpen, setHistoryOpen] = React.useState(false);
       const historyAddress = acceptedAddress();
       React.useEffect(() => {
+        setAddressHistory(addressHistoryRead(addressHistoryStorage(), historyScopeId));
+      }, [historyScopeId]);
+      React.useEffect(() => {
+        if (!historyScopeId) return;
         if (!/^https?:\/\//i.test(historyAddress)) return;
         const storage = addressHistoryStorage();
-        const current = addressHistoryRead(storage);
+        const current = addressHistoryRead(storage, historyScopeId);
         const next = addressHistoryPush(current, historyAddress);
         if (next.length === current.length && next[0] === current[0]) return;
-        addressHistoryWrite(storage, next);
+        addressHistoryWrite(storage, historyScopeId, next);
         setAddressHistory(next);
-      }, [historyAddress]);
+      }, [historyAddress, historyScopeId]);
       // The dropdown is a local popover: it never survives a mode switch or a scope change.
       React.useEffect(() => {
         if (!historyOpen) return undefined;

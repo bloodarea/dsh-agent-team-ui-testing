@@ -36,7 +36,7 @@ function memoryStorage({ throwOnWrite = false } = {}) {
 
 function load(storage) {
   const context = { URL, window: storage === undefined ? undefined : { localStorage: storage } };
-  return new Function('window', 'URL', block + '\nreturn { addressHistoryNormalize, addressHistoryPush, addressHistoryLabel, addressHistoryRead, addressHistoryWrite, ADDRESS_HISTORY_LIMIT, ADDRESS_HISTORY_KEY };')(context.window, URL);
+  return new Function('window', 'URL', block + '\nreturn { addressHistoryNormalize, addressHistoryPush, addressHistoryLabel, addressHistoryStorageKey, addressHistoryRead, addressHistoryWrite, ADDRESS_HISTORY_LIMIT, ADDRESS_HISTORY_KEY };')(context.window, URL);
 }
 
 test('最近访问是栈：新地址进栈顶，最多 7 条', () => {
@@ -70,17 +70,42 @@ test('非 HTTP(S) 地址不进历史：空值、about:blank、应用自身地址
 test('写入/读取往返一致，损坏的 JSON 与不可用存储都退化为空列表', () => {
   const storage = memoryStorage();
   const api = load(storage);
-  assert.equal(api.addressHistoryWrite(storage, ['http://a.test/one', 'http://a.test/two']), true);
-  assert.deepEqual(api.addressHistoryRead(storage), ['http://a.test/one', 'http://a.test/two']);
+  assert.equal(api.addressHistoryWrite(storage, 'ws_alpha', ['http://a.test/one', 'http://a.test/two']), true);
+  assert.deepEqual(api.addressHistoryRead(storage, 'ws_alpha'), ['http://a.test/one', 'http://a.test/two']);
 
-  storage.map.set(api.ADDRESS_HISTORY_KEY, '{not json');
-  assert.deepEqual(api.addressHistoryRead(storage), [], '损坏内容不能让地址栏报错');
+  storage.map.set(api.addressHistoryStorageKey('ws_alpha'), '{not json');
+  assert.deepEqual(api.addressHistoryRead(storage, 'ws_alpha'), [], '损坏内容不能让地址栏报错');
 
-  assert.deepEqual(api.addressHistoryRead(null), [], '没有 localStorage 时为空');
-  assert.equal(api.addressHistoryWrite(null, ['http://a.test/one']), false);
-  const broken = load(memoryStorage({ throwOnWrite: true }));
-  assert.equal(broken.addressHistoryWrite(memoryStorage({ throwOnWrite: true }), ['http://a.test/one']), false,
+  assert.deepEqual(api.addressHistoryRead(null, 'ws_alpha'), [], '没有 localStorage 时为空');
+  assert.equal(api.addressHistoryWrite(null, 'ws_alpha', ['http://a.test/one']), false);
+  assert.equal(api.addressHistoryWrite(memoryStorage({ throwOnWrite: true }), 'ws_alpha', ['http://a.test/one']), false,
     '隐私模式写入失败只返回 false，不抛到 UI');
+});
+
+test('历史按工作区隔离：不同作用域互不可见，失败时也不共享', () => {
+  const storage = memoryStorage();
+  const api = load(storage);
+  api.addressHistoryWrite(storage, 'ws_alpha', ['http://a.test/one']);
+  api.addressHistoryWrite(storage, 'ws_beta', ['http://b.test/two']);
+  assert.deepEqual(api.addressHistoryRead(storage, 'ws_alpha'), ['http://a.test/one'], 'alpha 看不到 beta 的地址');
+  assert.deepEqual(api.addressHistoryRead(storage, 'ws_beta'), ['http://b.test/two'], 'beta 看不到 alpha 的地址');
+  assert.notEqual(api.addressHistoryStorageKey('ws_alpha'), api.addressHistoryStorageKey('ws_beta'));
+  assert.equal(api.addressHistoryStorageKey('ws_alpha'), api.ADDRESS_HISTORY_KEY + ':ws_alpha');
+});
+
+test('未知作用域写进独立桶，绝不落到共用键或别的工作区', () => {
+  const storage = memoryStorage();
+  const api = load(storage);
+  // 旧版本共用的 v1 键必须保持不可见（历史没有跨工作区迁移）。
+  storage.map.set('dsh-agent-team-ui-testing:address-history:v1', JSON.stringify(['http://legacy.test/x']));
+  assert.deepEqual(api.addressHistoryRead(storage, ''), [], '没有作用域时读不到任何历史');
+  assert.deepEqual(api.addressHistoryRead(storage, 'ws_alpha'), [], '旧共用键不会漏进工作区');
+  const unknownKey = api.addressHistoryStorageKey('');
+  assert.equal(unknownKey, api.ADDRESS_HISTORY_KEY + ':unscoped');
+  api.addressHistoryWrite(storage, '', ['http://unknown.test/x']);
+  assert.deepEqual(api.addressHistoryRead(storage, 'ws_alpha'), [], 'unknown 桶不污染工作区');
+  // 键名清洗：只允许安全字符，避免构造出别的键
+  assert.equal(api.addressHistoryStorageKey('ws_a/../../b'), api.ADDRESS_HISTORY_KEY + ':ws_a....b');
 });
 
 test('下拉里显示的是 host + 路径，根路径只显示 host', () => {
@@ -120,7 +145,13 @@ test('「转到」走与回车完全相同的提交路径', () => {
 
 test('历史来自已接受的地址：失败导航不记录，重定向记录最终页', () => {
   assert.ok(/const historyAddress = acceptedAddress\(\);/u.test(clientSource), '记录源必须是已接受地址');
-  assert.ok(/React\.useEffect\(\(\) => \{\n        if \(!\/\^https\?:/.test(clientSource), '记录发生在已接受地址变化的副作用里');
+  assert.ok(/const historyScopeId = ui && ui\.scope && ui\.scope\.id/u.test(clientSource),
+    '历史键必须取宿主给出的工作区作用域 id');
+  assert.ok(/if \(!historyScopeId\) return;/u.test(clientSource), '作用域未解析时不得写历史');
+  assert.ok(/addressHistoryWrite\(storage, historyScopeId, next\);/.test(clientSource),
+    '记录写入当前工作区的键');
+  assert.ok(/\}, \[historyAddress, historyScopeId\]\);/.test(clientSource),
+    '记录发生在「已接受地址 + 作用域」变化的副作用里');
   assert.ok(/if \(!event\.target\.closest \|\| !event\.target\.closest\('\.utb-addr-wrap'\)\) setHistoryOpen\(false\)/u.test(clientSource),
     '点击外部要收起下拉');
   assert.ok(clientSource.indexOf("'data-utb-history-list'") > clientSource.indexOf("className: 'utb-addr-wrap'")

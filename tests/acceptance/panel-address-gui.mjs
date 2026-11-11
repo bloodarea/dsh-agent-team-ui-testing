@@ -45,7 +45,7 @@ const DSH_BIN = process.env.DSH_BIN || 'dsh';
 const CHROME_PROFILE_PREFIX = 'dsh-address-gui-chrome-';
 const DSH_HOME_PREFIX = 'dsh-address-gui-home-';
 const TOTAL_TIMEOUT_MS = Number(process.env.DSH_ADDRESS_GUI_TIMEOUT_MS || 420000) || 420000;
-const HISTORY_KEY = 'dsh-agent-team-ui-testing:address-history:v1';
+const HISTORY_PREFIX = 'dsh-agent-team-ui-testing:address-history:';
 
 const logLines = [];
 function log(line = '') {
@@ -708,15 +708,23 @@ async function main() {
     await sleep(300);
     check('H7.1', '点击下拉外部收起', opened.list !== null && (await readPanel()).list === null, { opened: true, closed: null }, (await readPanel()).list);
 
-    log('\n--- H8 persisted in localStorage ---');
-    const stored = await pageEvaluate(`(() => {
-      const raw = window.localStorage.getItem(${JSON.stringify(HISTORY_KEY)});
-      try { return JSON.parse(raw || 'null'); } catch { return 'unparsable'; }
+    log('\n--- H8 persisted per workspace ---');
+    const storedRows = await pageEvaluate(`(() => {
+      const prefix = ${JSON.stringify(HISTORY_PREFIX)};
+      return Object.keys(window.localStorage)
+        .filter((key) => key.startsWith(prefix))
+        .map((key) => { let value = null; try { value = JSON.parse(window.localStorage.getItem(key) || 'null'); } catch { value = 'unparsable'; } return { key, value }; });
     })()`);
-    check('H8.1', '历史按单一键持久化，内容与面板顺序一致',
-      Array.isArray(stored) && stored[0] === before && stored.length === 3, { key: HISTORY_KEY, top: before, length: 3 },
-      { key: HISTORY_KEY, stored });
-    observations.stored = stored;
+    const scopeId = String((await hostState()).ui?.scope?.id || '');
+    const scopedKey = HISTORY_PREFIX + 'v2:' + scopeId;
+    const scoped = storedRows.find((row) => row.key === scopedKey);
+    check('H8.1', '历史按工作区作用域键持久化，内容与面板顺序一致',
+      Boolean(scoped) && Array.isArray(scoped.value) && scoped.value[0] === before && scoped.value.length === 3,
+      { key: scopedKey, top: before, length: 3 }, { scopeId, rows: storedRows });
+    check('H8.2', '没有跨工作区共用键（v1 共用键与 unscoped 桶都未被写入）',
+      !storedRows.some((row) => row.key === HISTORY_PREFIX + 'v1' || row.key.endsWith(':unscoped')),
+      { sharedKeys: [] }, storedRows.map((row) => row.key));
+    observations.stored = storedRows;
 
     log('\n--- H9 stack caps at 7 ---');
     for (const url of pages) {
