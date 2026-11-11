@@ -5905,6 +5905,8 @@ window.__ModuleLoader__.load({
        * 面板自己的 CSS —— 于是"里面是手型、外面是箭头"。这里按节流询问页面命中的 computed cursor
        * 并写回预览层；迟到的响应按序号丢弃，避免快速移动时旧位置的光标覆盖新位置。
        */
+      // 面板侧"以为还按着"的键（code → 键信息），用于焦点离开时补 keyUp。
+      const panelHeldKeysRef = React.useRef(new Map());
       const cursorProbeAtRef = React.useRef(0);
       const cursorProbeSeqRef = React.useRef(0);
       function probeFrameCursor(x, y) {
@@ -7098,7 +7100,47 @@ window.__ModuleLoader__.load({
           down.text = text;
           down.unmodifiedText = text;
         }
-        return [down, Object.assign({}, base, { type: 'keyUp' })];
+        // 只发按下。旧实现这里顺手补一个 keyUp（"按下即松开"），于是页面永远看不到"按住"：
+        // 游戏里按住 W+A 斜向移动、按住方向键连续走动全部失效（用户实测：WASD 斜向移动没用）。
+        // 真实的 keyup 由 onKeyUp 转发，焦点离开预览时由 releasePanelKeys 兜底松开。
+        return [down];
+      }
+
+      /** 松开：只发 keyUp（与上面的 keyDown 成对，不再凭空补一个）。 */
+      function panelKeyReleaseEvents(event) {
+        const key = String((event && event.key) || '');
+        if (!key || key === 'Dead' || key === 'Unidentified') return [];
+        const modifiers = (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0)
+          | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
+        const virtualKeyCode = Number.isFinite(event.keyCode) && event.keyCode > 0
+          ? event.keyCode
+          : PANEL_KEY_CODES[key];
+        return [{
+          kind: 'key',
+          type: 'keyUp',
+          key,
+          code: event.code || undefined,
+          virtualKeyCode,
+          modifiers,
+          location: Number.isFinite(event.location) ? event.location : undefined,
+        }];
+      }
+
+      /**
+       * 焦点离开预览时把"面板以为还按着"的键松开。
+       *
+       * 少了这一步，用户在预览里按住 W、鼠标点聊天框之后，页面会一直认为 W 还按着（Host 侧现在
+       * 也有按键状态表，会把后续事件继续标成 shift/… 位）。只发 keyUp，不产生任何其它副作用。
+       */
+      function releasePanelKeys() {
+        const held = panelHeldKeysRef.current;
+        if (!held || !held.size) return;
+        const events = [];
+        for (const entry of held) {
+          events.push({ kind: 'key', type: 'keyUp', key: entry.key, code: entry.code, virtualKeyCode: entry.virtualKeyCode });
+        }
+        held.clear();
+        if (events.length) sendEvents(events);
       }
 
       /* ---- 系统剪贴板桥：面板里的 Ctrl+C/X/V 与宿主系统共用剪贴板 -------------------------- */
@@ -8450,8 +8492,31 @@ h('div', { className: 'utb-bar' },
                     const events = panelKeyEvents(event);
                     if (!events.length) return;
                     event.preventDefault();
+                    // 记下"还按着"的键：真实 keyup 由 onKeyUp 转发，焦点离开时由 onBlur 兜底松开。
+                    const identity = event.code || event.key;
+                    if (identity && !event.repeat) {
+                      panelHeldKeysRef.current.set(identity, {
+                        key: String(event.key || ''),
+                        code: event.code || undefined,
+                        virtualKeyCode: Number.isFinite(event.keyCode) && event.keyCode > 0 ? event.keyCode : undefined,
+                      });
+                    }
                     sendEvents(events);
                   },
+                  // 松开：只转发 keyUp。少这一条时页面永远看不到"按住"，按住 W+A 斜向移动这类
+                  // 连续输入全部失效（用户实测）。
+                  onKeyUp: (event) => {
+                    if (annotRef.current.on) return;
+                    if (pickRef.current.on) return;
+                    if (event.isComposing) return;
+                    const identity = event.code || event.key;
+                    if (identity) panelHeldKeysRef.current.delete(identity);
+                    const events = panelKeyReleaseEvents(event);
+                    if (!events.length) return;
+                    event.preventDefault();
+                    sendEvents(events);
+                  },
+                  onBlur: () => { releasePanelKeys(); },
                 }),
                 // 原生 <select> 的面板侧浮层：绝对定位在画面框内、点击点附近。
                 // 浏览器自己的弹层在 UI 图层（帧里看不到），所以选项列表由面板绘制；

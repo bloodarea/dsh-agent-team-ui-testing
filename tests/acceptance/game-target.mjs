@@ -121,6 +121,52 @@ try {
   check('靶机自评 8/8，全部条目变绿（判定不是橡皮图章）', final.passed === 8 && final.errors.length === 0, final,
     { passed: 8, errors: [] });
 
+  /* ------------------------------------------------------- ③ 面板路由：按下与松开必须分开 */
+  // The panel forwards real keyboard events through `POST /input`; a forwarder that turns one
+  // keydown into "keyDown + keyUp" makes every held key unusable (this is exactly the reported
+  // "WASD 斜向移动没用"). Drive that route with the payload shape the panel now sends.
+  await call('browser_eval', { expression: `window.__target && document.getElementById('reset').click(); true` });
+  const scopeHeaders = { 'x-ui-testing-scope-version': '1', 'x-ui-testing-session-id': exec.agent.id };
+  const panelInput = async (events) => {
+    const previous = harness.getConnection();
+    harness.setConnection(owner());
+    try {
+      return await harness.request({
+        method: 'POST', path: '/plugins/ui-testing/input', headers: scopeHeaders, body: { events },
+      });
+    } finally { harness.setConnection(previous); }
+  };
+  const downOnly = await panelInput([
+    { kind: 'key', type: 'keyDown', key: 'w', code: 'KeyW', virtualKeyCode: 87 },
+    { kind: 'key', type: 'keyDown', key: 'a', code: 'KeyA', virtualKeyCode: 65 },
+  ]);
+  await wait(320);
+  const heldReport = await report();
+  check('面板路由只发 keyDown 时页面保持"按住"（斜向开始走）',
+    downOnly.statusCode === 200 && downOnly.json.ok === true && passedIds(heldReport).includes('diag'),
+    { status: downOnly.statusCode, items: passedIds(heldReport) }, ['diag']);
+  const releaseOne = await panelInput([{ kind: 'key', type: 'keyUp', key: 'a', code: 'KeyA', virtualKeyCode: 65 }]);
+  await wait(200);
+  const singleReport = await report();
+  check('面板路由发 keyUp 时只松开那个键（另一轴继续走）',
+    releaseOne.statusCode === 200 && passedIds(singleReport).includes('release-keep'),
+    passedIds(singleReport), ['release-keep']);
+  await panelInput([{ kind: 'key', type: 'keyUp', key: 'w', code: 'KeyW', virtualKeyCode: 87 }]);
+  await wait(200);
+  const stopReport = await report();
+  check('全部 keyUp 后页面速度归零', passedIds(stopReport).includes('stop'), passedIds(stopReport), ['stop']);
+
+  // The client half: one DOM keydown must produce exactly one keyDown, and keyup must be forwarded.
+  const clientSource = await readFile(join(import.meta.dirname, '..', '..', 'client.js'), 'utf8');
+  const keyDownFn = clientSource.slice(clientSource.indexOf('function panelKeyEvents('), clientSource.indexOf('function panelKeyReleaseEvents('));
+  check('client.js：panelKeyEvents 不再凭空补 keyUp（一次按下只发一次 keyDown）',
+    keyDownFn.length > 200 && !keyDownFn.includes("type: 'keyUp'"),
+    { hasKeyUp: keyDownFn.includes("type: 'keyUp'") }, 'no keyUp');
+  check('client.js：预览有 onKeyUp 转发与 onBlur 兜底松开（不会卡住按键）',
+    /onKeyUp: \(event\) =>/.test(clientSource) && /onBlur: \(\) => \{ releasePanelKeys\(\); \}/.test(clientSource)
+      && /function releasePanelKeys\(\)/.test(clientSource),
+    'keyup wiring', 'onKeyUp + onBlur');
+
   const visual = await harness.invoke('browser_screenshot', { out: join('output', 'capture', 'game-target-acceptance.png') }, exec);
   check('留证截图：页面右上角分数与条目状态可见', visual.ok === true || visual.value?.ok === true,
     visual.error || 'saved', 'saved');

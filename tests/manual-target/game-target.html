@@ -74,9 +74,10 @@
       <span>按住 <span id="held">—</span></span>
       <span>速度 <b id="vel">0.00, 0.00</b></span>
       <span>|v| <b id="speed">0.000</b></span>
+      <span>最近 keydown <b id="lastkey">—</b></span>
     </div>
     <div class="checks" id="checks-move"></div>
-    <div class="note">点一下画面让它拿到键盘焦点，然后 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 随便组合按：斜着按应真的斜着走，|v| 应恒为 1.000（不加速）；松开一个键应继续沿另一轴移动；全松开应停。</div>
+    <div class="note"><b>先在这个画面里点一下</b>（面板要把键盘焦点交给它），再 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 随便组合按：斜着按应真的斜着走，|v| 应恒为 1.000（不加速）；松开一个键应继续沿另一轴移动；全松开应停。按住没反应时看上面的「最近 keydown」——是「—」说明按键根本没到页面（焦点问题），有内容说明事件到了、是判定那一步。</div>
   </section>
 
   <section class="card">
@@ -163,9 +164,17 @@
   const player = { x: moveCanvas.width / 2, y: moveCanvas.height / 2, vx: 0, vy: 0 };
   const trail = [];
   const MOVE_SPEED = 190;         // px/s，归一化后使用
+  // 同时认 code（KeyW）和 key（w/W）：有的转发层只带 key，页面不该因此变哑。
   const KEY_VECTORS = {
     KeyW: [0, -1], KeyS: [0, 1], KeyA: [-1, 0], KeyD: [1, 0],
     ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+    w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0],
+  };
+  const keyVectorId = (event) => {
+    const code = event.code || '';
+    if (KEY_VECTORS[code]) return code;
+    const key = String(event.key || '').toLowerCase();
+    return KEY_VECTORS[key] ? key : null;
   };
   let sawTwoAxis = false;
   let sawKnobRelease = false;
@@ -363,18 +372,22 @@
 
   /* ------------------------------------------------------------------ key state */
   const CODE_LABELS = { KeyW: 'W', KeyA: 'A', KeyS: 'S', KeyD: 'D', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→' };
+  const lastKeyNode = document.getElementById('lastkey');
   window.addEventListener('keydown', (event) => {
-    const code = event.code || event.key;
-    if (KEY_VECTORS[code]) {
-      held.add(code);
+    lastKeyNode.textContent = (event.code || '(no code)') + ' / ' + (event.key || '(no key)')
+      + (event.repeat ? ' · repeat' : '');
+    const id = keyVectorId(event);
+    if (id) {
+      held.add(id);
       paintHeld();
       event.preventDefault();
     }
   }, true);
   window.addEventListener('keyup', (event) => {
-    const code = event.code || event.key;
-    if (KEY_VECTORS[code]) { held.delete(code); paintHeld(); }
+    const id = keyVectorId(event);
+    if (id) { held.delete(id); paintHeld(); }
   }, true);
+  // 连续方向键不该被"按下即松开"打断：这里把"收到过 keyup 才算松开"写死在页面自己的记账里。
   window.addEventListener('blur', () => { held.clear(); paintHeld(); });
 
   /* ------------------------------------------------------------------ cursor tiles */
