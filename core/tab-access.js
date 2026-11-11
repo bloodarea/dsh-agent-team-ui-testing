@@ -724,6 +724,14 @@ const OBSERVE_PAGE = requirement(EFFECT.OBSERVE, RESOURCE.PAGE, true);
 const WRITE_PAGE = requirement(EFFECT.WRITE, RESOURCE.PAGE, true);
 /** Page write whose target is created or resolved later (open, capture onto the work selection). */
 const WRITE_PAGE_OPTIONAL = requirement(EFFECT.WRITE, RESOURCE.PAGE, false);
+/**
+ * Write to a Host-owned document that belongs to one page view (the annotation document).
+ *
+ * It is a write, not a read: another Agent session's notes must not be rewritten by a caller who
+ * only has observe rights, so the caller's selection is the *work* selection. It is still not a
+ * page write: nothing is dispatched to CDP, so no target and no page lease are required.
+ */
+const WRITE_HOST_VIEW = requirement(EFFECT.WRITE, RESOURCE.HOST, false, true);
 const MANAGE_PAGE = requirement(EFFECT.MANAGE, RESOURCE.PAGE, true);
 const MANAGE_PAGE_OPTIONAL = requirement(EFFECT.MANAGE, RESOURCE.PAGE, false);
 const OBSERVE_COLLECTOR = requirement(EFFECT.OBSERVE, RESOURCE.COLLECTOR, false);
@@ -816,6 +824,15 @@ const TOOL_EFFECTS = Object.freeze({
   browser_viewport: actionTable('browser_viewport', {
     get: [OBSERVE_HOST_VIEW],
     set: [WRITE_PAGE],
+  }),
+  // P0 annotations (docs/viewport-control.md): reading the document is a cached host read; every
+  // mutating action rewrites the shared document, so it routes through the caller's work selection
+  // and never through the observation-only one.
+  browser_annotation: actionTable('browser_annotation', {
+    read: [OBSERVE_HOST_VIEW],
+    draw: [WRITE_HOST_VIEW],
+    erase: [WRITE_HOST_VIEW],
+    clear: [WRITE_HOST_VIEW],
   }),
 
   // --- Page writes: everything that can move a page or its document ----------------------------

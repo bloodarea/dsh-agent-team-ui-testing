@@ -52,6 +52,28 @@ window.__ModuleLoader__.load({
       });
     }
 
+    /**
+     * Human-foreground claims (P0-D `browser_annotation`, docs/viewport-control.md).
+     *
+     * A mount claims "I am displaying my selected tab and I am visible"; the Host turns that into a
+     * ~1.5s freshness window, which is what lets the Agent draw an annotation a human can actually
+     * see. It is a *display* fact only: no claim means the Agent's `draw` is refused, never that the
+     * page is absent. Several panels may legitimately display at once (main column + side seat), so
+     * this is a set, not a single flag.
+     */
+    const guiForegroundClaims = new Set();
+    let guiForegroundSerial = 0;
+    function newGuiForegroundClaim() {
+      guiForegroundSerial += 1;
+      return 'fg:' + guiForegroundSerial;
+    }
+    /** Visible claims *and* a GUI page that is not backgrounded — otherwise nothing is displayed. */
+    function guiForegroundActive() {
+      if (guiForegroundClaims.size === 0) return false;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+      return true;
+    }
+
     function scopeHeaders(scope) {
       if (!scope) return {};
       const headers = { 'X-UI-Testing-Scope-Version': SCOPE_VERSION };
@@ -66,6 +88,10 @@ window.__ModuleLoader__.load({
       } else {
         headers['X-UI-Testing-Scope'] = 'recent';
       }
+      // "This runtime is my selected tab and I am visible" (docs/viewport-control.md): only sent
+      // while this mount really displays it, so the Host's window expires when the user switches
+      // tabs, closes the panel or backgrounds the GUI.
+      if (guiForegroundActive()) headers['X-UI-Testing-Gui-Foreground'] = '1';
       return headers;
     }
 
@@ -2467,6 +2493,16 @@ window.__ModuleLoader__.load({
       // runtime id returned by the first /state (or /ensure); `binding` is empty until then.
       const seatSessionId = props && typeof props.seatSessionId === 'string' ? props.seatSessionId : '';
       const visible = !props || props.visible !== false;
+      // Human-foreground claim (P0-D `browser_annotation`): recycled by this mount lifetime, added
+      // while the seat is visible and withdrawn on unmount, so the Host's window can expire.
+      const foregroundClaimRef = React.useRef('');
+      if (!foregroundClaimRef.current) foregroundClaimRef.current = newGuiForegroundClaim();
+      React.useEffect(() => {
+        const claim = foregroundClaimRef.current;
+        if (visible) guiForegroundClaims.add(claim);
+        else guiForegroundClaims.delete(claim);
+        return () => guiForegroundClaims.delete(claim);
+      }, [visible]);
       const capture = props && props.capture ? props.capture : { sessionId: '', resolution: 'none' };
       // Internal browser tabs (one Runtime per tab): the Host group list is the only source.
       const panelViews = remote && remote.ui && remote.ui.version === 1 && Array.isArray(remote.ui.views)

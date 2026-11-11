@@ -12,6 +12,7 @@ Source = { kind:"live", scale?:0.1–4, region?:画布CSS Rect（O=0 时与文�
 
 - 不接受任意文件路径、URL、附件 ID 或调用方 base64，也不从附件服务反读图像。
 - `live` 省略 `scale` 时使用本次调用开始时冻结的共享 `view.scale`。
+- T3 原始源图不含面板标注；`browser_screenshot` 的 `includeAnnotations:true` 不传播到 T3。用户指代面板标注时，先读 `browser_state.annotations` 并用带标注截图查看，详见[截图与图片交付](capture-p0.md)。T3 的 `annotations` 仅给输出图片添加后处理标记。
 - `product` 按工作区隔离：每 scope 16 张、合计 128 MiB、单张 32 MiB / 16M 像素；页面导航或关闭后仍可离线分析，但 `act` 的可操作资格失效；不跨重启恢复。
 
 ## 六个工具

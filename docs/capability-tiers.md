@@ -32,10 +32,10 @@ P0 是四项互相独立的能力，不能相互顶替：
 | P0-A | 图片输入流与截图采集 | [capture-p0.md](capture-p0.md) |
 | P0-B | 网络抓包与业务链路 | [network-p0.md](network-p0.md) |
 | P0-C | 共享视口控制 | [viewport-control.md](viewport-control.md) |
-| P0-D | 混合画布与客户端标注 | [viewport-control.md](viewport-control.md) |
+| P0-D | 混合画布与客户端标注（人画、Agent 经 `browser_annotation` 读写同一份文档） | [viewport-control.md](viewport-control.md) |
 | P0-E | 多标签页/每会话选页 | [multi-tab.md](multi-tab.md) |
 
-工具面共 36 个：10 T1 + 1 P0-E（`browser_tabs`）+ 7 T2 + 6 T3 + 7 network + 5 T4。
+工具面共 37 个：10 T1 + 1 P0-E（`browser_tabs`）+ 1 P0-D（`browser_annotation`）+ 7 T2 + 6 T3 + 7 network + 5 T4。
 
 ## 各层已实现范围
 
@@ -44,6 +44,7 @@ P0 是四项互相独立的能力，不能相互顶替：
 - **T3**：纯 JavaScript、零 npm 依赖的图像处理、确定性识别、YIQ 差异、坐标输入、受管基线、回归与六类缺陷用例。
 - **T4**：真实 CDP screencast 与 screenshot-loop 两条帧源、有界帧存储、七类确定性分析、WAAPI 运动控制、六向事件关联。
 - **P0-B**：采集（HTTP/HTTPS 请求响应、WebSocket、SSE、同页 iframe 与 dedicated worker）、时序、分析、业务链路、控制、证据导出与多 Agent 订阅。
+- **P0-D**：混合画布与标注文档——面板画布/标注读写、`browser_screenshot {includeAnnotations:true}` 叠加，以及 Agent 侧 `browser_annotation`（`read`/`draw`/`erase`/`clear`，写同一份文档，带前台标签门禁与 `expectRevision` CAS）。
 
 ## 跨环境适配状态
 
@@ -51,7 +52,7 @@ P0 是四项互相独立的能力，不能相互顶替：
 
 | 环境 | 工程支持 | 说明 |
 | --- | --- | --- |
-| Web / Chromium | supported | 36 个 `browser_*` 工具、T1–T4 与 P0；唯一可执行的真实目标环境 |
+| Web / Chromium | supported | 37 个 `browser_*` 工具、T1–T4 与 P0；唯一可执行的真实目标环境 |
 | Web 运行环境 `chrome` | supported | 默认 provider；可执行文件、覆盖变量、profile、身份校验均已参数化 |
 | Web 运行环境 `edge` | supported（代码）/ 依赖视本机而定 | 与 Chrome 复用同一套 CDP 实现，候选路径、`DSH_UI_TESTING_EDGE`、profile、产品身份校验独立；本机没有 Edge 二进制时依赖轴报 `failed / executable-missing`，真机拉起未实测 |
 | Web 运行环境 `firefox` | unsupported | 配置里可写入开关，但没有驱动；设置页置灰，执行返回 `ADAPTER_UNSUPPORTED` |

@@ -102,7 +102,7 @@ try{
  const selAfter=(await tabs({action:'list'},execA)).value?.selection;
  check('被拒绝的 select 不改变任何一方已有选择',
    JSON.stringify(selAfter)===JSON.stringify(selBefore)&&selAfter?.tabId==='primary',true,{before:selBefore,after:selAfter});
- const toolNames=harness.toolNames();check('E01 tool surface is 36 and browser_tabs is registered',toolNames.length===36&&toolNames.includes('browser_tabs'),{count:36},toolNames.length);
+ const toolNames=harness.toolNames();check('E01 tool surface is 37 and browser_tabs is registered',toolNames.length===37&&toolNames.includes('browser_tabs'),{count:37},toolNames.length);
  const tabDef=harness.toolDefinitions().find((d)=>d.name==='browser_tabs'); check('E01 browser_tabs schema action enum + tabId',Boolean(tabDef&&Array.isArray(tabDef.parameters?.properties?.action?.enum)&&tabDef.parameters.properties.action.enum.includes('select')&&tabDef.parameters.properties.tabId),true,tabDef&&tabDef.parameters);
  const childList=await tabs({action:'list'},execA); const childRow=childList.value?.tabs?.find(t=>t.tabId===childId);
  check('本 root 的行带上长期归属与权限投影（busy/owner 仍是短租约语义）',

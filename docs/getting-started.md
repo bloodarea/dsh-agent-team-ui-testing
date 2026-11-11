@@ -73,7 +73,7 @@ browser_screenshot {out}        # 留一张可复核的 PNG
 - **实时预览**：CDP screencast 帧，WebSocket 推送优先、HTTP 轮询兜底。
 - **尺寸栏**：宽屏 / 横屏 / 平板 / 手机预设，X/Y 画布位置，宽 × 高，显示比例，`拖拽 | 适应窗口 | 默认` 模式。
 - **混合画布**：视口可像画布一样定位，支持负坐标、空白区域、拖拽平移与滚轮缩放。
-- **标注**：圆形、矩形、线段、箭头、画笔、文字、橡皮擦；标注锚定画布坐标，模式内页面不接收输入，Agent 可通过 `browser_state.annotations` 读回。
+- **标注**：圆形、矩形、线段、箭头、画笔、文字六种形状，以及橡皮擦等编辑工具；标注锚定画布坐标，模式内页面不接收输入。用户提到画/圈/框/箭头/笔迹等面板标注时，Agent 先读 `browser_state.annotations`，再用 `browser_screenshot {includeAnnotations:true}` 查看 Host 已接受的文档叠加像素；不含未提交草稿与工具栏。`includeAnnotations` 为 boolean，默认 false；默认截图及 T3/T4 原始源不含面板标注，详见[截图与图片交付](capture-p0.md)。
 - **内部标签页**：真人点击 `target=_blank` / `window.open` 时，面板会在地址栏下方新增内部标签并自动切过去，原页面保留为另一个标签；标签栏由「标注」左侧开关控制显隐，单标签时也显示并可新建；`+` 只在标签栏内，工具栏不常驻。Agent 工具默认操作各自会话的 selectedTab（无选择 primary），可用 `browser_tabs` 查看/选择；GUI 切页不改 Agent 选择。自动弹窗与未授权弹窗仍被阻断。
 - **调试工具**：「更多 → 打开调试工具」为当前页面请求一个独立窗口，加载 Chrome 自带的 DevTools（与 F12 等价）。需要当前工作区的浏览器运行时已启动；只有 GUI 与 DSH 同机、且通过 loopback（127.0.0.1/localhost）访问时可用，远程 GUI 暂不支持。弹窗被浏览器拦截时，面板会显示提示和「在新标签页打开调试工具」链接。
 - **共享状态**：面板与 Agent 使用同一 `expectedRevision`，冲突会明确报告而不是静默覆盖。

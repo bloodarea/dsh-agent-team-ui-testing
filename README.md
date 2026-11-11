@@ -14,12 +14,12 @@ Let AI agents operate, inspect, test and verify real user interfaces — with ev
   <a href="LICENSE"><img src="https://img.shields.io/github/license/bloodarea/dsh-agent-team-ui-testing?style=flat-square" alt="License: MIT"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Node.js >= 22"></a>
   <a href="docs/getting-started.md"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Platforms"></a>
-  <a href="docs/tools.md"><img src="https://img.shields.io/badge/tools-36-brightgreen?style=flat-square" alt="Agent tools"></a>
+  <a href="docs/tools.md"><img src="https://img.shields.io/badge/tools-37-brightgreen?style=flat-square" alt="Agent tools"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-plugin-4B32C3?style=flat-square" alt="DSH plugin"></a>
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="Status"></a>
 </p>
 
-> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 36 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, multi-tab page groups, shared viewport control, a hybrid canvas, an element picker and client-side annotations. Other environments are planned and stay disabled in the runtime picker. **Install:** `dsh plugin --profile web add dsh-agent-team-ui-testing`. Capabilities, limits and verification are documented in [docs/capability-tiers.md](docs/capability-tiers.md) and [docs/verification.md](docs/verification.md).
+> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 37 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, multi-tab page groups, shared viewport control, a hybrid canvas, an element picker and client-side annotations. Other environments are planned and stay disabled in the runtime picker. **Install:** `dsh plugin --profile web add dsh-agent-team-ui-testing`. Capabilities, limits and verification are documented in [docs/capability-tiers.md](docs/capability-tiers.md) and [docs/verification.md](docs/verification.md).
 
 ## What is this?
 
@@ -45,7 +45,7 @@ This project focuses on:
 
 - **Shared browser runtime** — one browser per host and per runtime provider (the system Chrome/Chromium or Edge binary; the plugin does not bundle or install a browser), headless by default with an optional headed mode in the Web view (off-screen hidden window + persistent profile); each DSH workspace gets its own page, URL, viewport, history, network buffer and lease. Cookies and storage are shared by the profile of the active provider.
 - **Runtime providers** — the web target environment defaults to `chrome` and also has a wired `edge` provider: its own executable candidates, its own `DSH_UI_TESTING_EDGE` override, its own profile directory and a post-connect product-identity check, reusing the same CDP stack. **A real Edge launch is not verified**: while Edge stays disabled its dependency axis is `not-probed` (disabled providers are never probed); once enabled on a machine without an Edge binary it reports `failed / executable-missing` on the Edge card, and enabling it opens no page. In the settings page the group header is the target-environment switch and each card is a runtime-provider switch; turning the total switch off greys the per-provider switches out while keeping their saved values.
-- **36 agent tools** across programmatic, structured GUI, static vision, dynamic behavior, network debugging and per-workspace tab management.
+- **37 agent tools** across programmatic, structured GUI, static vision, dynamic behavior, network debugging, per-workspace tab management and annotations.
 - **Multi-tab page group (P0-E)** — page groups are keyed by (workspace, provider, team root): one team root shares a primary page plus up to three child tabs, while a different independent session or root gets its own group it can neither see nor write. Child tabs (max three) are counted per (workspace, provider) across roots; global live pages stay 8. Per-agent work/observation selections, long-lived ownership and Lead acquire/release/transfer control come on top of the short per-tab lease.
 - **Dynamic behavior (T4)** — real CDP screencast plus a screenshot-loop path, a bounded frame store with integrity counters, seven deterministic motion analyses, WAAPI motion control with restore, region-only frame delivery, and six-direction frame↔network event correlation.
 - **Debug panel** — live preview, responsive size controls, shared viewport state, a hybrid canvas, and a client-side annotation layer that agents can read back.
@@ -57,6 +57,7 @@ This project focuses on:
 | Group | Tools | What it covers |
 | --- | --- | --- |
 | **Programmatic** (10) | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_viewport` `browser_state` `browser_capabilities` | Navigation, JavaScript, console/network inspection, independent HTTP requests, computed styles, screenshots, raw mouse/wheel/keyboard input, shared viewport state and capability reporting |
+| **Annotations** (1) | `browser_annotation` | Read/draw/erase/clear the annotation document the human sees in the debug panel: six shape types with colour, stroke width and fill/stroke style, append-only draws, revision CAS and a hard foreground requirement |
 | **Page group** (1) | `browser_tabs` | Primary + up to three child tabs per (workspace, provider, root), per-tab short leases, per-agent work/observation selection, ownership + Lead control (acquire/release/transfer) and tab lifecycle (list/current/select/open/close/wait/acquire/release/transfer) |
 | **Structured GUI** (7) | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | Snapshot → ref targeting, trusted input, forms, node state and waits, with structured evidence and typed errors |
 | **Static vision** (6) | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | Crop/zoom/preprocess/annotate PNGs, deterministic colour/component/edge/template finders, YIQ diff, coordinate input, managed baselines and visual assertions |
@@ -70,7 +71,7 @@ The panel is the human window into the same runtime the agent uses.
 - **Live preview** of the workspace page, driven by a screencast with a polling fallback.
 - **Size bar** — 宽屏 / 横屏 / 平板 / 手机 presets as a segmented control, X/Y canvas position, width × height, display scale, and a `拖拽 | 适应窗口 | 默认` mode selector. Preset clicks reset X/Y and keep the chosen display mode; the selected preset shows a green dot and is mutually exclusive with drag mode.
 - **Hybrid canvas** — the viewport can be positioned like a canvas: a signed origin, negative coordinates and blank areas, a dark checkerboard in the panel (pure white in screenshots), drag-to-pan and screen-anchored wheel zoom.
-- **Annotation mode** — circle, rectangle, line, arrow, brush, text and eraser, plus fill/outline, colour, width and clear-canvas. Drawings are anchored in canvas coordinates, the page receives no input while annotating, and the document is published so agents can read it through `browser_state.annotations`.
+- **Annotation mode** — six shapes (circle/ellipse, rectangle, line, arrow, brush and text), plus eraser, fill/outline, colour, width and clear-canvas controls. Drawings are anchored in canvas coordinates and the page receives no input while annotating. When a user refers to annotations, drawings, circles, boxes, arrows or handwriting, agents read `browser_state.annotations` and call `browser_screenshot {includeAnnotations:true}` to see the overlay. The screenshot renders the Host-accepted, submitted document with the same shape semantics and region/scale mapping as the panel; drafts, toolbars and selection controls are excluded. `includeAnnotations` is a boolean, default `false`; default screenshots and T3/T4 source images omit panel annotations. See [capture and annotation boundaries](docs/capture-p0.md).
 - **Shared state** — agent and panel read the same viewport; updates use `expectedRevision`, and conflicts are reported instead of silently overwriting.
 
 ### Evidence and safety
@@ -163,7 +164,7 @@ flowchart TB
 | **`targets/`** | Environment adapters translate common capability requests into CDP/ADB/etc., normalize results, and honestly report supported/unsupported operations | Bridges node ② to nodes ③–⑤ |
 | **`engines/`** | **Self-developed** executors that need separate builds or deployment, such as a possible Android accessibility Companion APK | Optional implementation of node ④ |
 
-`targets/web` does not mean vendoring Chrome or Playwright. Nor does `engines/android` imply an APK is required: ADB / UI Automator may be sufficient for initial Android automation. **`core/` and `targets/` are now real directories**: `core/` owns the contracts, config, identity/geometry/clock, evidence and six-axis readiness; `targets/web` is the real Web adapter and `targets/fake` is a test-only contract fixture. `engines/` remains the reserved boundary for self-developed executors. The CDP integration and the 36 tool implementations still live in `index.js` (composition root / Web implementation), but admission, config and execution all go through the adapter boundary.
+`targets/web` does not mean vendoring Chrome or Playwright. Nor does `engines/android` imply an APK is required: ADB / UI Automator may be sufficient for initial Android automation. **`core/` and `targets/` are now real directories**: `core/` owns the contracts, config, identity/geometry/clock, evidence and six-axis readiness; `targets/web` is the real Web adapter and `targets/fake` is a test-only contract fixture. `engines/` remains the reserved boundary for self-developed executors. The CDP integration and the 37 tool implementations still live in `index.js` (composition root / Web implementation), but admission, config and execution all go through the adapter boundary.
 
 ### Capability architecture: choose T1 / T2 / T3 / T4 as needed
 
@@ -234,7 +235,7 @@ Mapped to the three perspectives: **execution** carries `browser_*` calls to Chr
 - **Distinguish code ownership from deployment:** `targets/` lives on the controller side, `engines/` holds optional self-developed executors, and real Chrome / Android / Mini Program runtimes live outside the repository.
 - **Load targets on demand:** future target selection should avoid needlessly injecting disabled platforms' tool schemas, skill content, or runtime dependencies into the AI agent's context.
 
-**Implementation boundary:** Web / Chromium currently provides 36 tools and T1–T4/P0-related features, subject to the coverage and limitations in [capability tiers](docs/capability-tiers.md), [architecture](docs/architecture.md), and [verification](docs/verification.md). T4 acceptance is still partial. The cross-environment contracts, host-authoritative config, config-driven tool/Skill isolation and six-axis readiness are implemented and tested for Web plus a test-only fake adapter; real desktop, Android, Mini Program and other platform adapters remain proposed work.
+**Implementation boundary:** Web / Chromium currently provides 37 tools and T1–T4/P0-related features, subject to the coverage and limitations in [capability tiers](docs/capability-tiers.md), [architecture](docs/architecture.md), and [verification](docs/verification.md). T4 acceptance is still partial. The cross-environment contracts, host-authoritative config, config-driven tool/Skill isolation and six-axis readiness are implemented and tested for Web plus a test-only fake adapter; real desktop, Android, Mini Program and other platform adapters remain proposed work.
 
 ## Getting started
 
@@ -289,7 +290,7 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 | --- | --- |
 | [docs/index.md](docs/index.md) | Documentation index |
 | [docs/getting-started.md](docs/getting-started.md) | Requirements, install, debug panel and first calls |
-| [docs/tools.md](docs/tools.md) | All 36 tools, parameters and error classes |
+| [docs/tools.md](docs/tools.md) | All 37 tools, parameters and error classes |
 | [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 selection model, P0 infrastructure and known limits |
 | [docs/viewport-control.md](docs/viewport-control.md) | Shared viewport, hybrid canvas and annotations |
 | [docs/capture-p0.md](docs/capture-p0.md) | Screenshots, image delivery and file lifecycle |

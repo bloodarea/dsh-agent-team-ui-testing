@@ -20,7 +20,7 @@
 
 ## browser_tabs
 
-唯一的 P0-E 管理工具（第 36 个工具）；其他 35 个工具的参数 schema 不变，调用默认走当前会话自己的选择（写用 workSelection，读优先 observationSelection）。
+唯一的 P0-E 管理工具（第 36 个工具，新增的 P0-D `browser_annotation` 是第 37 个）；其他工具的参数 schema 不变，调用默认走当前会话自己的选择（写用 workSelection，读优先 observationSelection）。
 
 ```jsonc
 {

@@ -346,6 +346,7 @@ test('keys: target and selection keys are versioned, scoped and require a real g
  * ---------------------------------------------------------------------------------------------- */
 
 const ALL_TOOLS = [
+  'browser_annotation',
   'browser_capabilities', 'browser_click', 'browser_computed_style', 'browser_dynamic_correlate',
   'browser_dynamic_session', 'browser_eval', 'browser_fill_form', 'browser_http_request',
   'browser_input', 'browser_motion_analyze', 'browser_motion_control', 'browser_motion_observe',
@@ -359,6 +360,9 @@ const ALL_TOOLS = [
 
 /** Every action each action-dispatching tool declares in its real schema. */
 const TOOL_ACTIONS = {
+  // P0-D annotations (docs/viewport-control.md): read observes the cached document, the three
+  // mutating actions are host-side writes that still route through the caller's work selection.
+  browser_annotation: ['read', 'draw', 'erase', 'clear'],
   browser_tabs: ['list', 'current', 'open', 'select', 'close', 'wait', 'acquire', 'release', 'transfer'],
   browser_viewport: ['get', 'set'],
   browser_network_session: ['start', 'stop', 'status', 'reset'],
@@ -390,8 +394,8 @@ function bagFor(tool, action) {
   return { ...(EXTRA_ARGS[tool] ?? {}), ...(action === null ? {} : argsFor(tool, action)) };
 }
 
-test('effect table: all 36 browser_* tools are classified, and each row is well formed', () => {
-  assert.equal(ALL_TOOLS.length, 36);
+test('effect table: all 37 browser_* tools are classified, and each row is well formed', () => {
+  assert.equal(ALL_TOOLS.length, 37);
   for (const tool of ALL_TOOLS) {
     assert.equal(isKnownOperation(tool), true, `${tool} is missing from the effect table`);
     const actions = TOOL_ACTIONS[tool] ?? [null];
@@ -415,7 +419,7 @@ test('effect table: the registered tool set in index.js is fully classified', ()
   // classified by nothing at all. Reading the registration list is the cheapest honest signal.
   const source = readFileSync(new URL('../../index.js', import.meta.url), 'utf8');
   const names = new Set([...source.matchAll(/name: '(browser_[a-z_0-9]+)'/g)].map((match) => match[1]));
-  assert.ok(names.size >= 36, `expected at least 36 registered tools, found ${names.size}`);
+  assert.ok(names.size >= 37, `expected at least 37 registered tools, found ${names.size}`);
   const missing = [...names].filter((name) => !isKnownOperation(name));
   assert.deepEqual(missing, [], `tools without an effect row: ${missing.join(', ')}`);
 });

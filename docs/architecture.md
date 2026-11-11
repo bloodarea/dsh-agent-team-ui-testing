@@ -8,7 +8,7 @@
 package.json           DSH bundle 清单（dsh.bundle.patch + dsh.client，platform: web）
 cordis.patch.yml       注册插件：id = ui-testing-browser
 index.js               Host：BrowserHost、RuntimeRegistry、租约与串行队列、scoped HTTP 路由、
-                       36 个工具注册、共享 view、标注存储、网络采集、T4 会话、
+                       37 个工具注册、共享 view、标注存储、网络采集、T4 会话、
                        固定 loopback 调试端口与 scoped `ui.devtools` 投影；Web 实现与组合根
 integration/           跨环境组合根：权威配置、adapter registry、工具准入、逐次 adapter 调度、
                        `/config` `/config/select` `/readiness` 路由与 Skill provider
@@ -92,7 +92,7 @@ DSH Agent / Agent Team
 
 - 读：`GET /state`、`GET /frame`、`GET /metrics`；
 - 页面操作（串行队列 + single-owner lease）：`POST /ensure`、`/navigate`、`/reload`、`/history`、`/viewport`、`/input`、`/context-menu`、`/context-action`、`/eval`、`/screenshot`、`/tabs`、`/close`；
-- 标注唯一写面：`POST /annotations`；
+- 标注写面：`POST /annotations` 是面板写面（Agent 侧写同一份文档走 `browser_annotation` 工具，不经 HTTP 路由）；
 - 只读元素选取：`POST /element`（文档 CSS px → 命中元素；不 ensure、不进串行队列、不占租约、不写 `lastError`、不记录客户端指标；`GET /element` 固定 405）。语义与限制见 [选元素加入聊天框](element-picker.md)。
 
 只读诊断（`/state`、`/metrics`、`/element` 与离线基线读取）不进页面队列、不占租约。
@@ -117,7 +117,7 @@ DSH Agent / Agent Team
 ## 证据与状态
 
 - **共享 view**：面板与 Agent 读写同一对象，用 `expectedRevision` 做 CAS。
-- **标注**：独立文档，按工作区存放，唯一写面是认证的 `POST /annotations`。
+- **标注**：独立文档，按工作区存放；人类在面板经认证的 `POST /annotations` 写，Agent 经 `browser_annotation` 写**同一份**文档（前台标签心跳门禁 + `expectRevision` CAS）。
 - **视觉产物**：按 scope 隔离、有配额、重启失效。
 - **网络证据**：JSONL 保真、HAR 为 1.2 子集；只写持久根。
 - **帧**：有界存储，带淘汰与空档计数。

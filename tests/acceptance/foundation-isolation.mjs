@@ -284,13 +284,13 @@ async function probeA08(configDir) {
   });
   const bothDeclaration = (await harness.invoke('browser_capabilities', {}, { agent: agent('agent-web', harness.workspaceDir) })).value?.adapter?.declaration;
   const bothRegistered = Array.isArray(bothDeclaration?.registeredTools) ? bothDeclaration.registeredTools : [];
-  // 36 个 Web 工具里已含 `browser_state`/`browser_capabilities` 两个中立诊断，再加 fake 探针 = 37。
-  check('A08 面板为权威：Web + fake 同时启用 → 注册面 = 36 个 Web 工具 + fake 探针 = 37',
-    bothDeclaration?.registeredCount === 37
+  // 37 个 Web 工具里已含 `browser_state`/`browser_capabilities` 两个中立诊断，再加 fake 探针 = 38。
+  check('A08 面板为权威：Web + fake 同时启用 → 注册面 = 37 个 Web 工具 + fake 探针 = 38',
+    bothDeclaration?.registeredCount === 38
       && bothRegistered.includes('browser_fake_probe')
       && bothRegistered.includes('browser_snapshot')
       && bothRegistered.includes('browser_network_events'),
-    { registeredCount: 37, hasProbe: true, hasWeb: true },
+    { registeredCount: 38, hasProbe: true, hasWeb: true },
     { registeredCount: bothDeclaration?.registeredCount, hasProbe: bothRegistered.includes('browser_fake_probe'), hasWeb: bothRegistered.includes('browser_snapshot') });
   const onlyFake = await getJson(harness, '/plugins/ui-testing/config');
   await putJson(harness, '/plugins/ui-testing/config', {

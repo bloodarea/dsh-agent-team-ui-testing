@@ -495,7 +495,7 @@
       "status": "partial",
       "tool": "browser_capabilities",
       "source_lines": "Runtime 能力探测 / browser_capabilities",
-      "constraints": "P0新增capture/limits.capture声明与上次真实截图observed（首次null），不启动/不夺租约；设计上不启动、不占租约；工具面 36 项（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4），含 web.t1.http-request=available、web.t1.viewport=available（get 只读、set 页面操作，其他 owner 持租约时 set 报 BUSY、get 仍可读）、web.t2.*、web.t2.structured-dom、web.t3.* 与 web.network.*；另报 viewport 段（get/set/预设/比例/limits.viewport，observed 只来自真实读回）与 capture.defaultScaleSource='view.scale'；未启动的页面工具可 available（按需启动可能失败）；其他 owner 占用时页面/network/T2/T3 unavailable+BUSY、诊断与 HTTP 仍 available。available 只是设计级状态，行为验证看各套件报告。"
+      "constraints": "P0新增capture/limits.capture声明与上次真实截图observed（首次null），不启动/不夺租约；设计上不启动、不占租约；工具面 37 项（10 T1 + 1 P0-D + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4），含 web.t1.http-request=available、web.t1.viewport=available、web.p0d.annotations=available（get 只读、set 页面操作，其他 owner 持租约时 set 报 BUSY、get 仍可读）、web.t2.*、web.t2.structured-dom、web.t3.* 与 web.network.*；另报 viewport 段（get/set/预设/比例/limits.viewport，observed 只来自真实读回）与 capture.defaultScaleSource='view.scale'；未启动的页面工具可 available（按需启动可能失败）；其他 owner 占用时页面/network/T2/T3 unavailable+BUSY、诊断与 HTTP 仍 available。available 只是设计级状态，行为验证看各套件报告。"
     },
     {
       "id": "web.t1.http-request",
@@ -768,6 +768,13 @@
       "tool": "browser_tabs",
       "source_lines": "RuntimeRegistry selectedTab/browser_tabs",
       "constraints": "P0-E 第 36 个工具，九个动作（list/current/select/open/close/wait/acquire/release/transfer）；list/current/wait 只读，select 只改调用者自己的选择、不 claim 租约；open 新建 about:blank；close 按长期归属/控制权判定（owner 或 controller，本 root Lead 亦可）；acquire/release/transfer 仅本 root Lead，expectedControlRevision（transfer 另需 expectedOwnershipRevision）必填，acquire 先 draining 再等安全边界、超时 BUSY 且撤销 draining、不中断在途操作；页面组按 (workspace, provider, 团队根) 划分：child 最多 3 个按 (workspace, provider) 跨 root 合计，全局 live 8，primary 每个 (workspace, provider, 根) 一个；错误 TAB_NOT_FOUND（跨 root 统一，不泄露存在性）/TAB_FORBIDDEN/TAB_CONTROL_CHANGED/TAB_OWNERSHIP_STALE/TAB_IDENTITY_UNAVAILABLE/TAB_LIMIT/BUSY(仅短暂忙)/WAIT_TIMEOUT/INVALID_ARGUMENT；每会话独立 workSelection 与 observationSelection（work 默认 primary，observation 未设回退 work），GUI active 独立。"
+    },
+    {
+      "id": "web.p0d.annotations",
+      "status": "partial",
+      "tool": "browser_annotation",
+      "source_lines": "docs/viewport-control.md 标注节 + docs/tools.md 标注（P0-D）；index.js browser_annotation + Runtime.agentAnnotation/guiForeground",
+      "constraints": "P0-D 标注读写（第 37 个工具）。每个 Runtime 一份标注文档，与面板认证写面 POST /plugins/ui-testing/annotations 共用同一份（read-modify-write；面板采纳更新的 Host revision 后画出）。action=read 返回 revision/shapes/shapeCount/truncated/truncation/foreground，不需要前台、不启动页面、不进队列、不占租约；draw 追加 1–64 个形状（circle/rect/line/arrow/brush/text，id 可省略由 Host 续分配 a<N>，color #rrggbb 默认 #ff3b30，strokeWidth 1–20 默认 3，style=stroke|fill 仅 circle/rect 且与 fill/stroke 互斥，arrow head 由端点与线宽派生）；erase 按 ids 和/或 point{x,y,radius?=8} 命中（shape 几何到点距离 ≤ max(radius, strokeWidth/2, 6)）；clear 清空。draw/erase/clear 只在目标标签页被人类在调试视图选中且可见时允许（面板在认证请求上带 x-ui-testing-gui-foreground 心跳，1.5s 新鲜窗口），否则 ANNOTATION_NOT_FOREGROUND 零写入；expectRevision 不一致 ANNOTATION_REVISION_CONFLICT 零写入；页面未运行 annotation-runtime-not-running。软限额与面板写面一致（128 图形 / 单笔 512 点 / 文档 8192 点 / 200 字符 / 65536 字节，确定性裁剪并如实报 truncation）。不启动浏览器、不进页面队列、不占租约、不写页面 lastError、不改 DOM/CSS。真实宿主的前台心跳过期与面板采纳待 GUI 侧复验。"
     }
   ],
   "unsupported_tiers": [],

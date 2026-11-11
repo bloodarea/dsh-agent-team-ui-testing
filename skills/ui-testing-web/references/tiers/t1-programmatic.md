@@ -6,7 +6,7 @@ T1 共 10 个工具（含独立 HTTP `browser_http_request` 与共享视口 `bro
 | --- | --- | --- |
 | 导航 | browser_navigate | errorText/最终 URL/目标与 DNS/Document 重定向校验，不保证 load complete |
 | JS | browser_eval | 顶层主世界，可序列化值；页面异常 error 对象含描述/栈/位置 |
-| 截图 | browser_screenshot | P0：显式 scale 0.1–4（省略时跟随共享 view.scale，cold 1）、region文档CSS px、out相对.png；PNG CRC/尺寸/全量均匀统计、JSON mapping、安全落盘与附件metadata证据；保留base64/附件fallback；provider另验，无T3分析 |
+| 截图 | browser_screenshot | P0：显式 scale 0.1–4（省略时跟随共享 view.scale，cold 1）、region画布CSS px、includeAnnotations?:boolean=false、out相对.png；true 按同一 region/scale 叠加 Host 已接受的六形状，不含草稿/工具栏，证据 capture.annotations；默认截图与 T3/T4 原始源不含面板标注；PNG CRC/尺寸/全量均匀统计、JSON mapping、安全落盘与附件metadata证据；保留base64/附件fallback；provider另验，无T3分析 |
 | 共享视口 | browser_viewport | `action:"get"`=只读缓存诊断（不启动/不发 CDP/不占租约，`stale` 明示）；`action:"set"`=页面操作（宽高才发 metrics override，scale-only 不改页面几何）；`x/y` 为文档 CSS 滚动位置实测，宽高 200–4096 整数，scale 0.1–2（也是省略 scale 的截图默认密度），`expectedRevision` → `VIEWPORT_CONFLICT` 零应用 |
 | 输入 | browser_input | applied 是数量，不证明生效；支持 modifiers（数组或 CDP 位掩码）、key 的 virtualKeyCode/autoRepeat 等、mouse 的 buttons/pointerType；无焦点管理工具与高层动作 |
 | 网络（旧工具） | browser_network | 响应与 loadingFailed 元数据、URL 脱敏、有界 300 条；**无头/正文**；其他 owner BUSY。深度采集/控制看下一条 |

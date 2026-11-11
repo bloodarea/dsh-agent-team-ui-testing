@@ -37,6 +37,13 @@ const TAXONOMY = {
   // concurrency failure, not a bad argument and not a page failure. `state` + retryable=true means
   // "read the current view and decide again"; the patch was NOT applied and page lastError is kept.
   VIEWPORT_CONFLICT: ['state', true],
+  // P0 annotations (docs/viewport-control.md): the Agent's annotation write surface has two
+  // refusals of its own. `ANNOTATION_NOT_FOREGROUND` is a *precondition on the target surface*
+  // (nobody has this tab selected in the debug view, so a drawn note would be invisible) and is
+  // not retryable by the caller alone — a human has to select the tab. `ANNOTATION_REVISION_CONFLICT`
+  // is the optimistic-concurrency loser of `expectRevision`, retryable after re-reading.
+  ANNOTATION_NOT_FOREGROUND: ['action', false],
+  ANNOTATION_REVISION_CONFLICT: ['state', true],
   // P0 capture infrastructure (docs/capture-p0.md): the capture pipeline has its own taxonomy so a
   // bad screenshot never masquerades as INTERNAL. Size/format refusals are not retryable (the same
   // page would produce the same bytes); a failed CDP capture and a failed output write are.

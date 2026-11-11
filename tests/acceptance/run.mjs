@@ -351,13 +351,14 @@ async function probe1ToolSurface({ harness, check, finding }) {
   const expectedNames = EXPECTED_TOOLS.map((tool) => tool.name);
   const actualNames = harness.toolNames();
 
-  // 36 = 10 T1 + 1 P0-E browser_tabs (docs/architecture.md + docs/viewport-control.md §7 browser_viewport)
+  // 37 = 10 T1 + 1 P0-E browser_tabs (docs/architecture.md + docs/viewport-control.md §7 browser_viewport)
+  //      + 1 P0-D browser_annotation (docs/viewport-control.md)
   //      + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
   //      + 7 network (docs/network-p0.md §2)
   //      + 5 T4 (docs/t4-dynamic-behavior.md §7 / docs/t4-dynamic-behavior.md §2).
   //      Counted against EXPECTED_TOOLS so a group surface cannot drift silently; the "same
   //      names" assertion below still proves nothing extra.
-  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4）`, actualNames.length === EXPECTED_TOOLS.length, {
+  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（10 T1 + 1 P0-D + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4）`, actualNames.length === EXPECTED_TOOLS.length, {
     expected: { count: EXPECTED_TOOLS.length, names: expectedNames },
     actual: { count: actualNames.length, names: actualNames },
   });
@@ -1747,7 +1748,7 @@ async function main() {
     helpers: harnessModule,
   };
 
-  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 36 个 browser_* 工具（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4），名称/参数 schema 与 docs/architecture.md + docs/viewport-control.md §7 + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 + docs/network-p0.md §2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
+  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 37 个 browser_* 工具（10 T1 + 1 P0-D + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4），名称/参数 schema 与 docs/architecture.md + docs/viewport-control.md §7 + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 + docs/network-p0.md §2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
   await runProbe({
     id: 'P23-network-surface',
     title: 'network P0 工具面（注册/schema/离线诊断/owner/BUSY/旧工具不变）',

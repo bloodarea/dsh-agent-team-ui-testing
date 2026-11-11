@@ -140,6 +140,8 @@ export const ENVIRONMENT_CAPABILITIES = Object.freeze({
     'web.t4',
     'web.network',
     'web.tabs',
+    // P0-D annotations (docs/viewport-control.md): the Agent annotation write surface.
+    'web.p0.annotations',
     'web.p0.capture',
     'web.p0.network',
     'web.p0.display',
@@ -168,6 +170,7 @@ export const CAPABILITY_IDS = Object.freeze({
     T4: 'web.t4',
     NETWORK: 'web.network',
     TABS: 'web.tabs',
+    ANNOTATIONS: 'web.p0.annotations',
     CAPTURE: 'web.p0.capture',
     DISPLAY: 'web.p0.display',
     CANVAS: 'web.p0.canvas',

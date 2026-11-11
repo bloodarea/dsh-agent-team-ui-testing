@@ -54,4 +54,5 @@
 
 ## 不要再用旧说法
 
-- 单张 `browser_screenshot`、T3 的 before/after 两帧、面板 `/metrics` 与 `browser_eval` 读页面状态都**不是** T4 帧序列证据。
+- T4 的 screencast/screenshot-loop 两种帧源均不含面板标注；`browser_screenshot {includeAnnotations:true}` 只生成带 Host 已接受标注文档的静态截图，不影响 T4 采帧。
+- 单张 `browser_screenshot`（含带标注截图）、T3 的 before/after 两帧、面板 `/metrics` 与 `browser_eval` 读页面状态都**不是** T4 帧序列证据。

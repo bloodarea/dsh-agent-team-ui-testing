@@ -120,7 +120,7 @@ test('target adapter manifest is a legal v1 target manifest', () => {
   assert.equal(typeof adapter.dispose, 'function');
 });
 
-test('capability adapter manifest declares 36 operation specs (name/capability/executionClass)', () => {
+test('capability adapter manifest declares 37 operation specs (name/capability/executionClass)', () => {
   const adapter = createWebCapabilityAdapter({ dispatch: () => ({}) });
   const { manifest } = adapter;
   assert.equal(manifest.contractVersion, 1);
@@ -130,7 +130,7 @@ test('capability adapter manifest declares 36 operation specs (name/capability/e
   assert.deepEqual(manifest.capabilities, WEB_CAPABILITIES);
 
   assert.ok(Array.isArray(manifest.operations));
-  assert.equal(manifest.operations.length, 36);
+  assert.equal(manifest.operations.length, 37);
   const knownClasses = new Set(Object.values(WEB_EXECUTION_CLASSES));
   const declaredClasses = new Set();
   for (const operation of manifest.operations) {
@@ -175,7 +175,7 @@ test('p0 provider manifest is a legal v1 p0 manifest', () => {
   ]);
 });
 
-test('operation inventory matches the shipped capability grouping (T1/T2/T3/network/T4)', () => {
+test('operation inventory matches the shipped capability grouping (T1/P0-D/P0-E/T2/T3/network/T4)', () => {
   const counts = {};
   for (const capability of Object.values(WEB_TOOL_OPERATIONS)) {
     counts[capability] = (counts[capability] ?? 0) + 1;
@@ -183,13 +183,14 @@ test('operation inventory matches the shipped capability grouping (T1/T2/T3/netw
   assert.deepEqual(counts, {
     'web.t1': 10,
     'web.tabs': 1,
+    'web.p0.annotations': 1,
     'web.t2': 7,
     'web.t3': 6,
     'web.network': 7,
     'web.t4': 5,
   });
-  assert.equal(WEB_TOOL_OPERATION_NAMES.length, 36);
-  assert.equal(WEB_TOOL_OPERATION_SPECS.length, 36);
+  assert.equal(WEB_TOOL_OPERATION_NAMES.length, 37);
+  assert.equal(WEB_TOOL_OPERATION_SPECS.length, 37);
 });
 
 test('resolveExecutionClass applies the declared action-level refinements', () => {
@@ -198,6 +199,11 @@ test('resolveExecutionClass applies the declared action-level refinements', () =
   assert.equal(resolveExecutionClass('browser_tabs', {}), 'tabs');
   assert.equal(resolveExecutionClass('browser_viewport', { action: 'get' }), 'readOnly');
   assert.equal(resolveExecutionClass('browser_viewport', { action: 'set' }), 'page');
+  // P0-D annotations: `read` is a cached host read, the three mutating actions are host-only.
+  assert.equal(resolveExecutionClass('browser_annotation', { action: 'read' }), 'readOnly');
+  assert.equal(resolveExecutionClass('browser_annotation', { action: 'draw' }), 'hostOnly');
+  assert.equal(resolveExecutionClass('browser_annotation', { action: 'erase' }), 'hostOnly');
+  assert.equal(resolveExecutionClass('browser_annotation', { action: 'clear' }), 'hostOnly');
   assert.equal(resolveExecutionClass('browser_network_session', { action: 'status' }), 'readOnly');
   assert.equal(resolveExecutionClass('browser_network_session', { action: 'start' }), 'hostOnly');
   assert.equal(resolveExecutionClass('browser_dynamic_session', { action: 'status' }), 'hostOnly');
@@ -541,7 +547,7 @@ async function capabilityFixture({
 const TARGET_BOUND_EXECUTION_CLASSES = new Set(['page', 'tabs']);
 
 function assertTargetFreeMatrix(matrix, expectedAvailability) {
-  assert.equal(Object.keys(matrix).length, 36);
+  assert.equal(Object.keys(matrix).length, 37);
   for (const spec of WEB_TOOL_OPERATION_SPECS) {
     const value = matrix[spec.name];
     assert.equal(value.support, 'supported', spec.name);

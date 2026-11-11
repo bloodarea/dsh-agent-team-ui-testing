@@ -32,8 +32,9 @@ import { fileURLToPath } from 'node:url';
 import { apply } from '../../index.js';
 
 /**
- * The tool surface implemented by index.js, 36 tools:
+ * The tool surface implemented by index.js, 37 tools:
  *   10 T1 (docs/architecture.md + docs/viewport-control.md §7 `browser_viewport`)
+ * + 1 P0-D annotations (`browser_annotation`, docs/viewport-control.md)
  * + 1 P0-E multi-tab (`browser_tabs`, docs/internal/p0e-multitab-contract.md §3)
  * + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
  * + 7 network P0 (docs/network-p0.md §2)
@@ -62,6 +63,10 @@ export const EXPECTED_TOOLS = Object.freeze([
   // Shared viewport (docs/viewport-control.md §7): `action` is the only registered required field;
   // "get accepts no other field / set needs at least one view field" is enforced at execution time.
   Object.freeze({ name: 'browser_viewport', required: ['action'] }),
+  // P0-D annotations (docs/viewport-control.md): 36 → 37. `action` is the only registered required
+  // field; "read accepts no other field / draw needs shapes / erase needs ids or point / the
+  // foreground claim" are enforced at execution time.
+  Object.freeze({ name: 'browser_annotation', required: ['action'] }),
   // --- T2 (docs/t2-structured-gui.md §2.2) ------------------------------------------------
   Object.freeze({ name: 'browser_snapshot', required: [] }),
   Object.freeze({ name: 'browser_click', required: [] }),
@@ -130,7 +135,8 @@ export const T4_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => [
 /** Alias kept for suites that name the group by capability id (`web.t4.dynamic-behavior`). */
 export const DYNAMIC_TOOLS = T4_TOOLS;
 
-/** The Web T1 tools (9 original + `browser_viewport`), excluded from every newer group. */
+/** The Web T1 tools (9 original + `browser_viewport` + `browser_annotation`), excluded from every
+ * newer group. `browser_annotation` is P0-D but is registered in the same table section. */
 export const T1_TOOLS = Object.freeze(EXPECTED_TOOLS.filter((tool) => !T2_TOOLS.some((t2) => t2.name === tool.name)
   && !T3_TOOLS.some((t3) => t3.name === tool.name)
   && !NETWORK_TOOLS.some((net) => net.name === tool.name)

@@ -2,7 +2,7 @@
 
 > 权威契约：[`docs/t3-vision.md`](../../../../docs/t3-vision.md)。本文件是已实现能力的操作摘要，字段、边界与验收口径以契约为准。
 
-## 已实现的六个工具（当前工具面 36 = 10 T1 + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4）
+## 已实现的六个工具（当前工具面 37 = 10 T1 + 1 P0-E + 1 P0-D + 7 T2 + 6 T3 + 7 network + 5 T4）
 
 | 工具 | 用途 | 关键边界 |
 | --- | --- | --- |
@@ -35,7 +35,7 @@
 
 ## 与 T1/T2 的关系
 
-`browser_screenshot` 仍是原始 PNG 采集（P0），不隐式产生 productId；要用同一画面做视觉分析，先 `browser_vision_image` 取得 product。T2 负责语义元素与可交互目标；T3 的 `act` 用当前截图里的顶层命中点，不是“知道调用者想要哪个 DOM 对象”，也不是 T2 `NOT_INTERACTABLE` 的 force 逃生口。`escalation:"T3"` 只提示需要视觉分析；`escalation:"T4"` 提示需要连续帧证据（持续运动）。
+`browser_screenshot` 是 PNG 采集（P0），不隐式产生 productId；它的 `includeAnnotations?:boolean=false` 仅控制本次截图叠加 Host 已接受的面板标注，T3 原始源不含面板标注，T3 `annotations` 是独立的图片后处理标记；要用同一画面做视觉分析，先 `browser_vision_image` 取得 product。T2 负责语义元素与可交互目标；T3 的 `act` 用当前截图里的顶层命中点，不是“知道调用者想要哪个 DOM 对象”，也不是 T2 `NOT_INTERACTABLE` 的 force 逃生口。`escalation:"T3"` 只提示需要视觉分析；`escalation:"T4"` 提示需要连续帧证据（持续运动）。
 
 ## 结论边界
 

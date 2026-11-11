@@ -9,6 +9,7 @@ browser_dynamic_session { action:"start", config:{ captureVisual:true, source:"s
 ```
 
 - `source:"screencast"` 复用面板预览的 JPEG 流（不额外起流，不打断预览）；`source:"screenshot-loop"` 用 PNG 精确采样，提供真实采样区间但 `sourceTimestamp:null`。
+- 两种帧源均不含面板标注；`includeAnnotations` 仅用于 `browser_screenshot`，不改变 T4 采帧。用户指代标注时另读 `browser_state.annotations` 并截取 `includeAnnotations:true` 的静态图片，不能把它作为 T4 帧序列证据。
 - `captureVisual:false` + `networkSessionId` 建立**纯网络关联视图**：不启动采集、不采帧。
 - `action` 支持 `start`/`stop`/`status`/`reset`/`extend`。
 - `extend` 只对 `running` 会话生效：单次 ≤ 60000 ms，自 `startedAt` 累计 ≤ 300000 ms；`stopped`/`retained` 返回 `DYNAMIC_SESSION_NOT_ACTIVE`，**不会复活会话**。

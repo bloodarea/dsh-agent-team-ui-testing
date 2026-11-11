@@ -63,7 +63,7 @@ async function loadDshModule(relativePath) {
   return import(pathToFileURL(join(DSH.modules, relativePath)).href);
 }
 
-/** 36 Web operations, imported from the adapter's own inventory (single source of truth). */
+/** 37 Web operations, imported from the adapter's own inventory (single source of truth). */
 async function webOperationNames() {
   const { WEB_TOOL_OPERATION_NAMES } = await import('../../targets/web/adapter.js');
   return [...WEB_TOOL_OPERATION_NAMES].sort();
@@ -196,10 +196,10 @@ test('M5 A08/A09/A11/A15: real ToolsService + SkillRegistry environment isolatio
     };
     const toolNamesFor = async (agent) => (await schemasFor(agent)).map((schema) => schema.name).sort();
 
-    await t.test('A08: default global web — 36 web schemas, no fake schema (both agents)', async () => {
+    await t.test('A08: default global web — 37 web schemas, no fake schema (both agents)', async () => {
       for (const [label, agent] of [['agent-web', agentWeb], ['agent-fake', agentFake]]) {
         const names = await toolNamesFor(agent);
-        assert.equal(names.length, 36, `${label}: expected the 36 Web schemas, got ${names.length}: ${JSON.stringify(names)}`);
+        assert.equal(names.length, 37, `${label}: expected the 37 Web schemas, got ${names.length}: ${JSON.stringify(names)}`);
         assert.deepEqual(names, WEB_TOOLS, describeMissing(`${label} default web schema set`, names, WEB_TOOLS));
         assert.ok(!names.includes('browser_fake_probe'), `${label}: browser_fake_probe leaked into the default web schema list`);
       }
@@ -238,7 +238,7 @@ test('M5 A08/A09/A11/A15: real ToolsService + SkillRegistry environment isolatio
       assert.equal(select.json.revision, 2, `session select must bump revision to 2, got ${select.json.revision}`);
       assert.equal(select.json.resolved.environment, 'fake', `select response resolved environment=${select.json.resolved.environment}`);
 
-      // 3) A08 at the real assembly boundary: B sees only the fake schema; A keeps all 36.
+      // 3) A08 at the real assembly boundary: B sees only the fake schema; A keeps all 37.
       const fakeNames = await toolNamesFor(agentFake);
       // The fake environment offers its own operation plus the environment-neutral diagnostics
       // (browser_state / browser_capabilities): "why is it refused / what is supported here" must
@@ -246,7 +246,7 @@ test('M5 A08/A09/A11/A15: real ToolsService + SkillRegistry environment isolatio
       assert.deepEqual(fakeNames, ['browser_capabilities', 'browser_fake_probe', 'browser_state'],
         `agent-fake schemas after selecting fake: expected the fake probe + neutral diagnostics, got ${JSON.stringify(fakeNames)}`);
       const webNames = await toolNamesFor(agentWeb);
-      assert.equal(webNames.length, 36, `agent-web must keep the 36 Web schemas after B selected fake, got ${webNames.length}`);
+      assert.equal(webNames.length, 37, `agent-web must keep the 37 Web schemas after B selected fake, got ${webNames.length}`);
       assert.deepEqual(webNames, WEB_TOOLS, describeMissing('agent-web schema set after B selected fake', webNames, WEB_TOOLS));
       assert.ok(!webNames.includes('browser_fake_probe'), 'agent-web must not see the fake schema (A11 cross-agent leak)');
 
@@ -352,7 +352,7 @@ test('M5 A08/A09/A11/A15: real ToolsService + SkillRegistry environment isolatio
 
       assert.ok(webSchemaBytes > 0 && fakeSchemaBytes > 0, 'schema serialization must be non-empty');
       assert.ok(fakeSchemaBytes < webSchemaBytes,
-        `fake schema payload (${fakeSchemaBytes}B) should be smaller than the 36-tool web payload (${webSchemaBytes}B)`);
+        `fake schema payload (${fakeSchemaBytes}B) should be smaller than the 37-tool web payload (${webSchemaBytes}B)`);
       const fakeNameSet = new Set(fakeSchemas.map((schema) => schema.name));
       // Environment-neutral diagnostics are intentionally present in every environment; every other
       // Web operation must be absent from the fake *schema set* (name identity, not a substring of

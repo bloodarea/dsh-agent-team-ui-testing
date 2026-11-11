@@ -1,6 +1,6 @@
 ---
 name: ui-testing-web
-description: 调试与测试已授权 Web 页面的默认入口——下列常规表述都算命中：打开/点一下/填一下/滚动这个页面；「这个按钮点了没反应/没跳转/提交报错」；「这个元素为什么不见了/被谁挡住/什么颜色字号/布局错位/文字截断」；「截个图/放大看看/和设计稿或上一版对比/这块颜色对不对」；「这个动画卡不卡/过渡顺不顺/有没有闪烁/拖拽跟手吗」；「接口返回什么/为什么 404 或 500/请求发了几次/慢在哪/有没有重复请求」；「看我框的/我圈的是这里/这个箭头指什么」（面板人工标注，读 browser_state.annotations）；「新开了个标签页/弹窗没出来」；「这个环境能用吗/为什么工具不可用/Edge 还是 Chrome 在跑」。用 browser_* 工具取证：T1 程序化接口（导航/JS/截图/输入/网络元数据/计算样式/独立 HTTP/共享视口）、T2 结构化 GUI（snapshot→ref→动作→等待/节点状态）、T3 静态视觉（PNG 裁剪/给图片画框/确定性识别/像素差异/受管基线）、T4 动态行为（帧序列/七类运动分析/WAAPI/事件关联）、网络 P0（请求/WS/SSE/时间轴/链路/拦截重放/JSONL/HAR/订阅）、多标签；以 browser_capabilities 的实际运行态选路，证据不足记 BLOCKED/INCONCLUSIVE。
+description: 调试与测试已授权 Web 页面的默认入口——下列常规表述都算命中：打开/点一下/填一下/滚动这个页面；「这个按钮点了没反应/没跳转/提交报错」；「这个元素为什么不见了/被谁挡住/什么颜色字号/布局错位/文字截断」；「截个图/放大看看/和设计稿或上一版对比/这块颜色对不对」；「这个动画卡不卡/过渡顺不顺/有没有闪烁/拖拽跟手吗」；「接口返回什么/为什么 404 或 500/请求发了几次/慢在哪/有没有重复请求」；「看我框的/我圈的是这里/这个箭头指什么」（面板人工标注，读 browser_state.annotations 并 browser_screenshot {includeAnnotations:true}）；「新开了个标签页/弹窗没出来」；「这个环境能用吗/为什么工具不可用/Edge 还是 Chrome 在跑」。用 browser_* 工具取证：T1 程序化接口（导航/JS/截图/输入/网络元数据/计算样式/独立 HTTP/共享视口）、T2 结构化 GUI（snapshot→ref→动作→等待/节点状态）、T3 静态视觉（PNG 裁剪/给图片画框/确定性识别/像素差异/受管基线）、T4 动态行为（帧序列/七类运动分析/WAAPI/事件关联）、网络 P0（请求/WS/SSE/时间轴/链路/拦截重放/JSONL/HAR/订阅）、多标签；以 browser_capabilities 的实际运行态选路，证据不足记 BLOCKED/INCONCLUSIVE。
 ---
 
 # UI Testing · Web T1–T4 与网络操作规范
@@ -19,7 +19,8 @@ description: 调试与测试已授权 Web 页面的默认入口——下列常�
 | 截个图、放大看看、和设计稿/上一版对比、这块颜色对不对 | `browser_screenshot` / `vision_image` / `vision_compare` / `vision_baseline` | T3 |
 | 这个动画卡不卡、过渡顺不顺、有没有闪烁、拖拽跟手吗 | `dynamic_session` → `motion_observe/analyze/control` | T4 |
 | 接口返回什么、为什么 404/500、请求发了几次、有没有重复、慢在哪 | `network_session start` → `events`/`detail`/`trace` | 网络 P0 |
-| **看我框的、我圈的是这里、这个箭头指什么** | **先读 `browser_state.annotations`**（人类画在调试视图上的标注），不要问他编号 | 通用标注 |
+| **看我标注/画的、框的、圈的是这里、这个箭头/笔迹是什么** | **先读 `browser_state.annotations`，再 `browser_screenshot {includeAnnotations:true}`** 查看标注像素，不要问他编号 | 通用标注 |
+| **你圈一下 / 标给我看 / 在这儿写个问号**（要你在他眼前的调试视图上画） | 先看 `browser_state.annotations.foreground`，human 选中该标签时用 `browser_annotation {action:"draw"}` | P0-D |
 | 新开了个标签页、弹窗怎么没出来、切到那个标签 | `browser_tabs` list/select/wait | P0-E |
 | 这个环境能用吗、为什么工具不可用、现在跑的是 Chrome 还是 Edge | `browser_capabilities` + 就绪六轴 + `adapter.declaration` | 诊断 |
 | 给我证据、复现一下、留个截图存档 | 证据 envelope + 落盘 PNG（`out`） | 全部 |
@@ -28,9 +29,9 @@ description: 调试与测试已授权 Web 页面的默认入口——下列常�
 
 ## 事实来源与边界
 
-运行时是无头 Chromium + CDP，加上 Host 侧独立 HTTP(S) 客户端；Host 实现入口为 `index.js`，网络纯逻辑在 `network-p0.js`。**工具面 36 个**：T1 10 个（含共享视口 `browser_viewport`）+ P0-E 1 个（`browser_tabs`）+ T2 7 个（`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`）+ T3 6 个（`browser_vision_image`、`browser_vision_find`、`browser_vision_compare`、`browser_vision_act`、`browser_vision_baseline`、`browser_vision_check`）+ 网络 P0 7 个（`browser_network_session`、`browser_network_events`、`browser_network_detail`、`browser_network_trace`、`browser_network_control`、`browser_network_evidence`、`browser_network_subscribe`）+ T4 5 个（`browser_dynamic_session`、`browser_motion_observe`、`browser_motion_analyze`、`browser_motion_control`、`browser_dynamic_correlate`）。共享视口的权威契约是 `docs/viewport-control.md`（§3 数据模型、§4 Host 应用/兼容、§5 面板坐标映射与滚轮、§6 截图比例、§7 工具/schema/错误/limits、§8 验收）；T2 的权威接口契约是本仓库 `docs/t2-structured-gui.md`（§2 工具表、§3 Ref、§4 动作/表单/等待、§5 证据、§6 错误）；T3 的权威契约是 `docs/t3-vision.md`（§2 工具表、§3 坐标/证据/错误、§4 算法、§5 识别、§6 act、§7 缺陷、§8 基线/回归）；网络 P0 的权威契约是 `docs/network-p0.md`（§2 七工具、§4 事件 schema/配额/完整性、§5 分析、§6 链路、§7 控制、§8 证据/安全/隔离、§9 靶机、§10 验收 C1–C52、§13 R1 裁决）。共享视口、T2、T3 与网络 P0 的可用性以运行态为准，不以文档推断。
+运行时是无头 Chromium + CDP，加上 Host 侧独立 HTTP(S) 客户端；Host 实现入口为 `index.js`，网络纯逻辑在 `network-p0.js`。**工具面 37 个**：T1 10 个（含共享视口 `browser_viewport`）+ P0-E 1 个（`browser_tabs`）+ P0-D 1 个（`browser_annotation`）+ T2 7 个（`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_fill_form`、`browser_node_state`、`browser_wait_for`）+ T3 6 个（`browser_vision_image`、`browser_vision_find`、`browser_vision_compare`、`browser_vision_act`、`browser_vision_baseline`、`browser_vision_check`）+ 网络 P0 7 个（`browser_network_session`、`browser_network_events`、`browser_network_detail`、`browser_network_trace`、`browser_network_control`、`browser_network_evidence`、`browser_network_subscribe`）+ T4 5 个（`browser_dynamic_session`、`browser_motion_observe`、`browser_motion_analyze`、`browser_motion_control`、`browser_dynamic_correlate`）。共享视口的权威契约是 `docs/viewport-control.md`（§3 数据模型、§4 Host 应用/兼容、§5 面板坐标映射与滚轮、§6 截图比例、§7 工具/schema/错误/limits、§8 验收）；T2 的权威接口契约是本仓库 `docs/t2-structured-gui.md`（§2 工具表、§3 Ref、§4 动作/表单/等待、§5 证据、§6 错误）；T3 的权威契约是 `docs/t3-vision.md`（§2 工具表、§3 坐标/证据/错误、§4 算法、§5 识别、§6 act、§7 缺陷、§8 基线/回归）；网络 P0 的权威契约是 `docs/network-p0.md`（§2 七工具、§4 事件 schema/配额/完整性、§5 分析、§6 链路、§7 控制、§8 证据/安全/隔离、§9 靶机、§10 验收 C1–C52、§13 R1 裁决）。共享视口、T2、T3 与网络 P0 的可用性以运行态为准，不以文档推断。
 
-- **实现范围**：T1–T4、网络 P0 与 P0-E 共 36 个工具均已注册；T4 的 44 条门槛中 12 条通过、20 条部分通过、12 条未运行，未运行项不得写成通过。
+- **实现范围**：T1–T4、网络 P0、P0-E 与 P0-D 共 37 个工具均已注册；T4 的 44 条门槛中 12 条通过、20 条部分通过、12 条未运行，未运行项不得写成通过。
 - **工程状态与运行态分开**：静态文档、manifest 与台账只记录工程状态，不构成可用性证明；是否可用以注册表与 `browser_capabilities` 为准。
 - **能力报告不能自证**：若 `browser_capabilities` 抛错或字段与注册 schema 不符，按证据不足处理（`BLOCKED`/`INCONCLUSIVE`），不要反向推断某能力可用或不可用。
 - 独立 HTTP 请求由 `browser_http_request` 提供：Host 侧 HTTP(S) 客户端，不启动 Chromium、不依赖页面/页面 Cookie、不受页面租约与串行队列约束；默认不跟随重定向、默认 5s 总超时与 64 KiB 保留上限，每跳重定向都复验目标策略。`browser_eval` 内的页面 `fetch` 仍属页面上下文（受 CORS/Cookie/CSP/导航状态影响），不能替代它。
@@ -63,7 +64,7 @@ description: 调试与测试已授权 Web 页面的默认入口——下列常�
 
 反例词（重复/重放/旧值/未变化/白色/闪烁/错位/409/冲突/0 项/无去重/超时）出现即**触发复核**，不能凭词直接判 FAIL，也不能忽略；契约允许时写进 `counterexamples` 并给来源（合成正反例见 `references/core/verdict-examples.md`）。
 
-## 统一工具接口（36 个）
+## 统一工具接口（37 个）
 
 下面是各工具的业务字段；每次调用还返回并 render `actionId/sessionId/startedAt/finishedAt/target/args`（另有 `scope` 工作区身份），args 为参数摘要。实际返回与注册 schema 优先。
 
@@ -75,12 +76,12 @@ description: 调试与测试已授权 Web 页面的默认入口——下列常�
 | --- | --- | --- |
 | `browser_navigate` | `{url:string}` | `{ok:true,url}`；校验 HTTP(S) 目标/DNS/最终 URL，检查 `Page.navigate.errorText` 与错误页；**不保证加载完成**。失败抛分类错误。 |
 | `browser_eval` | `{expression:string}` | `{ok:true,value,type}`；顶层页面主世界、可序列化值；页面异常返回 `{ok:false,error:{code,category,retryable,message,details}}`，含描述/栈及位置。 |
-| `browser_screenshot` | `{scale?:number,region?:{x,y,width,height},persist?:boolean=false,out?:string}` | 显式 scale 连续 0.1–4；**省略时在调用内解析为当前共享 `view.scale`（cold 为 1）**，显式值只影响本次截图、不改 view/DPR/滚动/视口；region画布CSS px（O=0时同文档）、宽高≥1，两轴期望像素<1 → `INVALID_ARGUMENT(empty-output-dimensions)`；out相对.png。capture.request 带 `scaleSource(explicit\|view)`/`viewRevision`，mapping 带逐轴 `cssPerPixel` 与 `scrollAtCapture`。保留PNG base64/hash/附件兼容并新增capture v1（PNG结构/尺寸/全量均匀统计、JSON mapping、file/delivery/warnings）；默认实例暂存绝对路径、dispose清理；out/persist:true/非空env显式持久相对路径，同路径不覆盖；无附件base64-fallback（内联 base64 上限 24 MiB，超过则 image=null 并加 `image_base64_omitted` 警告；附件优先）；不提供像素差异/VLM/视觉判断。 |
+| `browser_screenshot` | `{scale?:number,region?:{x,y,width,height},includeAnnotations?:boolean=false,persist?:boolean=false,out?:string}` | 显式 scale 连续 0.1–4；**省略时在调用内解析为当前共享 `view.scale`（cold 为 1）**，显式值只影响本次截图、不改 view/DPR/滚动/视口；region画布CSS px（O=0时同文档）、宽高≥1，两轴期望像素<1 → `INVALID_ARGUMENT(empty-output-dimensions)`；out相对.png。capture.request 带 `scaleSource(explicit\|view)`/`viewRevision`，mapping 带逐轴 `cssPerPixel` 与 `scrollAtCapture`。`includeAnnotations` 默认 false；true 按同一 region/scale 叠加 Host 已接受的六种面板形状，不含未提交草稿/工具栏；以 `capture.annotations` 核对文档 revision/context/新鲜度/截断/source.trusted=false。默认截图与 T3/T4 原始源不含面板标注。保留PNG base64/hash/附件兼容并新增capture v1（PNG结构/尺寸/全量均匀统计、JSON mapping、file/delivery/warnings）；默认实例暂存绝对路径、dispose清理；out/persist:true/非空env显式持久相对路径，同路径不覆盖；无附件base64-fallback（内联 base64 上限 24 MiB，超过则 image=null 并加 `image_base64_omitted` 警告；附件优先）；不提供像素差异/VLM/视觉判断。 |
 | `browser_input` | `{events:Event[]}` | `{ok:true,applied}`；单批 ≤ 200 条（超出 `INVALID_ARGUMENT`）；applied 仅事件数组长度，未知 kind 仍可能被跳过，不能证明生效。key/mouse/wheel 支持 `modifiers`（`['ctrl','shift']` 或 CDP 位掩码 Alt=1/Ctrl=2/Meta=4/Shift=8），key 另支持 `virtualKeyCode/autoRepeat/unmodifiedText/commands/location/isKeypad`，mouse 支持 `buttons/pointerType`；非法修饰键名/类型抛 `INVALID_ARGUMENT`。仍无焦点管理工具。 |
 | `browser_network` | `{limit?:number}` | `{entries:[…]}`；默认 50、上限 300，URL 脱敏，记录响应与 `loadingFailed` 失败元数据；无头/正文。**只读**：不启动浏览器、不进页面队列、不取也不校验单 owner 租约（owner 持租约时仍可读）；信封 `sessionId` 是采集会话，agent 会话见 `agentSessionId`。 |
 | `browser_computed_style` | `{selector:string,properties?:string[]}` | `{ok:true,style}`；首个匹配元素；CDP 只回 longhand，请求的简写属性（`border-color`/`margin`/`font` 等）经页面 `getComputedStyle` 回退补读，未知属性不返回；未命中返回分类 error 对象；无伪元素/iframe/Shadow DOM 内部定位，不证明视觉。 |
 | `browser_http_request` | `{url,method?,headers?,body?,timeoutMs?,maxBytes?,followRedirects?,maxRedirects?}` | 独立 HTTP(S)：`{ok:true,method,url,status,statusText,headers,contentType,encoding,body,bodyBytes,bodyTruncated,redirects,timings}`。`ok:true` **不等于 2xx**；`headers` 是小写头名→非空 string[]；`encoding` 为 utf8/base64；默认不跟随重定向、默认 5s/64 KiB（上限 20s/1 MiB/5 跳）；无 cookie jar；失败抛分类错误。 |
-| `browser_viewport` | `{action*:"get"\|"set", mode?:"wide"\|"landscape"\|"tablet"\|"phone", x?, y?, canvasX?, canvasY?, width?, height?, scale?, expectedRevision?}` | **get = 只读缓存诊断**：不接受其他字段，不 ensure/不发 CDP/不进队列/不占租约/不改 recent/error，可读他人租约下的缓存，返回 `{ok,running,view,observed,viewMeta}`，`viewMeta.stale=true` 表示缓存不新鲜（不保证此刻页面没动）。**set = 页面操作**：至少一个 view 字段（mode 与 width/height 互斥；mode 只展开宽高，同时给出的 x/y/scale 仍生效），走预检→串行队列→懒启动+租约；只有宽高变化才发 metrics override，scale-only / x/y-only 不改 CSS 视口、DPR、页面 zoom。`x/y` 是页面顶层滚动位置（文档 CSS px，`Page.getLayoutMetrics` 实测回读；超内容范围会被 clamp，`clamped.x/y` 如实报告；RTL 负 x 如实返回，set 只接受非负）；**`canvasX/canvasY` 是视口左上角在文档画布上的位置**（±10,000,000，可为负/超内容界，负值使内容在视口内右/下移并露纯白 blank）；画布坐标与 x/y 不能同 patch（INVALID_ARGUMENT）；面板 X/Y 绑定画布坐标，拖拽平移写 canvas 坐标；拖拽模式下画面滚轮缩放画布（5%/Shift 10%/Alt 1%、严格锁屏幕光标点、fit 自动取消、Ctrl/Meta 不缩放），非拖拽模式滚轮仍滚页面。`O=C-S` 时截图/T3 走画布合成（`capture.canvas.composite=true`，blank 不存在于 DOM；**面板 blank 显示为深色棋盘格，截图/T3 的 blank 是纯白 #ffffff**）；`O=0` 与旧文档空间字节/像素一致。`width/height` 整数 200–4096；`scale` 0.1–2（10–200%），也是省略 scale 的截图默认密度。返回 `{ok,requested,before,view,observed,viewMeta,applied,settled,clamped,overrideApplied,appliedFields,canvasX,canvasY,offset,content}`；`expectedRevision` 与队列内当前 `view.revision` 不同 → `VIEWPORT_CONFLICT`（patch 零应用，带最新 view），别自动重放旧 patch。 |
+| `browser_viewport` | `{action*:"get"\|"set", mode?:"wide"\|"landscape"\|"tablet"\|"phone", x?, y?, canvasX?, canvasY?, width?, height?, scale?, expectedRevision?}` | **get = 只读缓存诊断**：不接受其他字段，不 ensure/不发 CDP/不进队列/不占租约/不改 recent/error，可读他人租约下的缓存，返回 `{ok,running,view,observed,viewMeta}`，`viewMeta.stale=true` 表示缓存不新鲜（不保证此刻页面没动）。**set = 页面操作**：至少一个 view 字段（mode 与 width/height 互斥；mode 只展开宽高，同时给出的 x/y/scale 仍生效），走预检→串行队列→懒启动+租约；只有宽高变化才发 metrics override，scale-only / x/y-only 不改 CSS 视口、DPR、页面 zoom。`x/y` 是页面顶层滚动位置（文档 CSS px，`Page.getLayoutMetrics` 实测回读；超内容范围会被 clamp，`clamped.x/y` 如实报告；RTL 负 x 如实返回，set 只接受非负）；**`canvasX/canvasY` 是视口左上角在文档画布上的位置**（±10,000,000，可为负/超内容界，负值使内容在视口内右/下移并露纯白 blank）；画布坐标与 x/y 不能同 patch（INVALID_ARGUMENT）；面板 X/Y 绑定画布坐标，拖拽平移写 canvas 坐标；拖拽模式下画面滚轮缩放画布（5%/Shift 10%/Alt 1%、严格锁屏幕光标点、fit 自动取消、Ctrl/Meta 不缩放），非拖拽模式滚轮仍滚页面。`O=C-S` 时截图/T3 走画布合成（`capture.canvas.composite=true`，blank 不存在于 DOM；**面板 blank 显示为深色棋盘格，截图/T3 的 blank 是纯白 #ffffff**）；默认未叠加面板标注时，`O=0` 与旧文档空间字节/像素一致。`width/height` 整数 200–4096；`scale` 0.1–2（10–200%），也是省略 scale 的截图默认密度。返回 `{ok,requested,before,view,observed,viewMeta,applied,settled,clamped,overrideApplied,appliedFields,canvasX,canvasY,offset,content}`；`expectedRevision` 与队列内当前 `view.revision` 不同 → `VIEWPORT_CONFLICT`（patch 零应用，带最新 view），别自动重放旧 patch。 |
 | `browser_state` | `{}` | `mode/activity/url/title/viewport/seq/running/error/errorAt/errorActionId/errorTarget` 与 owner 等诊断信息；额外带安全 `view`（`view={version,mode,x,y,canvasX,canvasY,width,height,scale,source,revision}`）与 `ui.canvas` 投影但不保证新鲜（需要确定更新后事实用 `browser_viewport set` 的读回）；从 `document.title` 刷新标题，不懒启动、不申请租约；成功的页面/网络操作会清空错误四字段，诊断与 HTTP 调用不清。 |
 | `browser_capabilities` | `{}` | 实际运行态 `available/unavailable/unsupported`、原因/限制及 `single-owner-lease`；T2 段应含 7 个工具项与 `web.t2.structured-dom`；T3 段应含 6 个工具项 + 聚合 `web.t3.static-vision` 与 `vision` 块（`version:1`、`algorithmVersion:'t3-v1'`、`tools`、`sourceKinds`、`limits`、`observed:null|{observedAt,lastOperation,lastVerdict}`），T4 段应含 5 个工具项 + 聚合 `web.t4.dynamic-behavior` + 旧 `web.t4.dynamic-vision` 别名与 `dynamic` 块（`version:1`、`tools`、`sources`（screencast jpeg 精确=false / screenshot-loop png 精确=true）、`adapters`、`correlation`、`limits`、`observed:null|{...}`）与 `limits.dynamic`；并报 `viewport` 段与 `limits.viewport`（比例 0.1–2、预设、stale/settle、dsf=1、get 只读 / set 页面操作；画布 v2 另报 `viewport.canvas` 与 `limits.viewport.canvas`，range ±1e7、blankColor #ffffff、compositeProvenance true）、`limits.structuredGui`、`limits.vision` 与P0的 `capture/limits.capture`（`defaultScaleSource:"view.scale"`、`scaleRange:[0.1,4]`）；observed仅来自上次真实调用（截图或视觉），首次null，不含图像/绝对路径/页面文本；不懒启动、不建目录、不生成 product、不申请租约。附件服务缺失应明确降级，不能静态宣称图片可见。 |
 
@@ -128,6 +129,14 @@ browser_viewport { "action": "set", "canvasX": 300, "canvasY": 200 }      // 画
 - **跨会话/跨团队根**：目标一律 not-found 语义（`TAB_NOT_FOUND`，不回显对方 id/URL/标题）。别用"能不能看到"推断"能不能写"；被拒绝的码是 `TAB_FORBIDDEN`（角色/归属）、`TAB_CONTROL_CHANGED`（控制权/版本）或 `TAB_IDENTITY_UNAVAILABLE`（身份无法证明），`BUSY` 只表示短暂忙。
 - 每个 tab 独立队列/ref/网络/帧；不能把 A tab 的证据当作 B tab 的结论。
 - **限制（未实现，别当成承诺）**：只读工具既不占写租约、也不切前台（不调用 `activate()`），但**有头模式**下后台页可能不合成，截图/预览可能是旧帧（此时应报 `OBSERVATION_UNAVAILABLE`，该码尚未在全部观察路径接线）；GUI 面板侧没有 Principal，也没有接管入口；`browser_network*`/T3/T4 证据仍按 workspace/session 归属，未按 root 隔离；DevTools 直连地址仍会投影。
+
+### P0-D（1 个，标注读写）
+
+`browser_annotation` 读写调试视图里的**面板标注文档**（每个 Runtime 一份，与面板认证的 `POST /plugins/ui-testing/annotations` 是同一份；权威契约见 `docs/tools.md`、`docs/viewport-control.md`）。参数：`action` 必填，`read`/`clear` 只接受 `action`；`draw` 给 `shapes`（1–64，**追加**不是替换）；`erase` 给 `ids`（1–64）和/或 `point{x,y,radius?}`（默认半径 8 画布 px）；写动作可选 `expectRevision`（与当前文档 revision 不同则 `ANNOTATION_REVISION_CONFLICT`，零写入）。`read` 与写后返回同一形状：`revision/shapes/shapeCount/truncated/truncation/foreground`。
+- 形状：`type` ∈ `circle|rect|line|arrow|brush|text`（面板的圆形/矩形/线段/箭头/画笔/文字）；`id` 可省略（Host 续分配 `a<N>`）；`color` `#rrggbb`（默认 `#ff3b30`）；`strokeWidth` 1–20（默认 3，即「粗细」）；`style` ∈ `stroke|fill`（「外框/填充」，仅 `circle`/`rect`；`text` 固定 fill、`line|arrow|brush` 固定 stroke；也可给 `fill`/`stroke` 布尔但不可与 `style` 同给）；几何 `rect{x,y,width,height}`、`circle{cx,cy,rx,ry}`、`line|arrow{x1,y1,x2,y2}`（head 由 Host 派生）、`brush{points:[[x,y],…]}`、`text{x,y,text,fontSize?=20}`。
+- **前台硬约束**：`draw`/`erase`/`clear` 只在目标标签页**正被人类在调试视图里选中且可见**时才允许（面板在认证请求上带前台心跳，约 1.5s 新鲜窗口；切走标签、关面板、DSH 标签页后台化都会过期），否则**零写入**并报 `ANNOTATION_NOT_FOREGROUND`；先读 `browser_state.annotations.foreground={active,ageMs,maxAgeMs}`，`read` 不受此限。页面未运行时报 `INVALID_ARGUMENT`（reason `annotation-runtime-not-running`）。
+- **整份替换语义**：人类下一次编辑会整体发布自己的形状列表（其中已含 Agent 形状，因为面板采纳 Host 文档），人类「清除画布」会连 Agent 形状一起清掉——别把标注当持久存储。
+- **限额与边界**：与面板写面同一软限额（128 图形/单笔 512 点/8192 点/200 字符/65536 字节，确定性裁剪并报 `truncated`）；不启动浏览器、不进页面队列、不占租约、不写页面 `lastError`、不改 DOM/CSS，面板下一次 `/state` 轮询即画出；`browser_screenshot {includeAnnotations:true}` 会把两方的形状一起叠加。
 
 ### T2（7 个，结构化 GUI）
 
@@ -476,14 +485,16 @@ browser_http_request {
 
 ## 人类标注（调试视图上的画图）：先读标注，别让用户改口述
 
-用户说「看我框的」「我圈的是这里」「这个箭头指什么」时，**先读标注**——不要让他把位置写成文字、也不要让他给候选编号。人类在调试视图上画图是**跨环境通用的输入通道**（环境中立规则见 `ui-testing-common`），这里只写 Web 侧的入口与坐标细则。
+用户提到「标注」「我画的」「看我框的」「我圈的是这里」「这个箭头指什么」「这些笔迹」等、指代面板标注时，**先读 `browser_state.annotations`，再调用 `browser_screenshot {includeAnnotations:true}` 查看叠加像素**；不要让他把位置写成文字、也不要让他给候选编号。人类在调试视图上画图是**跨环境通用的输入通道**（环境中立规则见 `ui-testing-common`），这里只写 Web 侧的入口与坐标细则。
 
-**术语**：本 Skill 里的「浏览器工具 / 工具面」= 当前 Web 环境**注册并准入**的 `browser_*` 工具（当前 36 个，含 `browser_state`、`browser_capabilities` 两个环境无关诊断）。环境或 provider 被禁用时这些工具根本不注册，调用会拿到 `ADAPTER_DISABLED`——那是"这个环境没启用"，不是工具坏了。
+**术语**：本 Skill 里的「浏览器工具 / 工具面」= 当前 Web 环境**注册并准入**的 `browser_*` 工具（当前 37 个，含 `browser_state`、`browser_capabilities` 两个环境无关诊断）。环境或 provider 被禁用时这些工具根本不注册，调用会拿到 `ADAPTER_DISABLED`——那是"这个环境没启用"，不是工具坏了。
 
-- **入口**：`browser_state()` 顶层 `annotations`（每工作区一份，与已认证 `/state` 的 `ui.annotations` 同源）；`browser_capabilities().annotations` 给读取方式/`space`/`limits`。**没有单独的「标注工具」**：读标注就是读一个已注册工具的字段；**标注不进 `browser_screenshot` 也不进 T3**（`capture.composite:true` 只是画布空白合成，与标注无关）。
+- **入口**：`browser_state()` 顶层 `annotations`（与已认证 `/state` 的 `ui.annotations` 同源，含 `foreground` 前台心跳）；`browser_annotation {action:"read"}` 读同一份文档；`browser_capabilities().annotations` 给读取方式/`space`/`limits`。`browser_screenshot` 的 `includeAnnotations?:boolean=false` 只控制本次截图叠加。默认截图、T3 原始源与 T4 两种帧源不含面板标注；T3 `annotations` 是独立的图片后处理参数。
+- **叠加边界**：`includeAnnotations:true` 仅绘制当前目标已提交且经 Host 接受的 `circle/rect/line/arrow/brush/text`，颜色、粗细与填充/外框遵循面板语义；不含未提交草稿、工具栏或选中控件。图形与页面共用 region/scale 映射，截图连续像素坐标 `u=(d−region.origin)/mapping.cssPerPixel`（逐轴）；用 `capture.annotations` 核对 revision/context、新鲜度、截断与 `source.trusted=false`，不能把旧文档当最新画面。`capture.canvas.composite` 描述画布合成，不能单凭它判断是否叠加标注。
+- **反向：给他画**。用户说「你圈一下 / 标给我看 / 在这儿写个问号」时用 `browser_annotation`：先看 `browser_state.annotations.foreground.active`，为 false 就先请他选中那个标签页并保持面板可见，否则写入会被 `ANNOTATION_NOT_FOREGROUND` 拒绝（画了看不见等于没画）。`draw` 只追加，形状 id 交给 Host 分配；写完用 `browser_screenshot {includeAnnotations:true}` 复核自己画的位置对不对；对方「清除画布」会连你的形状一起清掉。
 - **坐标**：shapes 是画布 CSS px `d`，页面坐标 `p = d − S`（`S` 用**当前** `view.x/y`，不能用发布时的 `annotations.view`）；`scale`/DPR 不参与。
 - **图形**：`rect/line/arrow`（箭头尖为 `(x2,y2)`）、`circle`（PS 包围盒椭圆 `cx/cy/rx/ry`）、`brush`（只有 `points`）、`text`（唯一带原文）。
-- **读不到手写字**：`brush` 只有点集；"用户写的字"只有 `text.text` 才有。要逐字复述就让用户用文字工具。
+- **手写笔迹**：`brush` 结构化数据只有点集，`text.text` 才有文字原文；先查看带标注截图中的实际笔迹，无法可靠辨认时如实说明，不从点集猜字或伪造原文。
 - **指代解析**：端点按 `p=d−S` 换页点 → `document.elementFromPoint` + 可见元素矩形距离排序；手绘尖端常偏 10–20 px，给**候选+距离**而不是单点断言。
 - **语义**：`source.trusted` 恒 false —— 不证明缺陷、不授权自动点击；`stale` 只表示来源面板心跳过期、形状仍可读；导航/刷新清空、同工作区跨页签/跨会话保留（v3）、不同工作区隔离。
 - 完整规则、常见坑与真宿主实测链接见 `references/scenarios/annotations.md`。
@@ -503,7 +514,7 @@ browser_http_request {
 - 平台：`references/platforms/index.md`、`references/platforms/web.md`
 - 契约：`references/contracts/capability.md`、`references/contracts/operation.md`、`references/contracts/evidence.md`
 - **跨层贯通（强烈建议先读）**：`references/scenarios/functional.md`（**五层速查 + 选路决策树 + 八个贯通配方 R1–R8 + 升级/降级回退链 + 跨层证据合成 + 错误码速查 + 12 条反模式**）
-- 场景：`references/scenarios/visual-motion.md`（**T3/T4 调试手册：三条铁律 + 六步管线 + 判读红线 + 成本参考**）、`references/scenarios/annotations.md`（面板标注的读取与指代解析）
+- 场景：`references/scenarios/visual-motion.md`（**T3/T4 调试手册：三条铁律 + 六步管线 + 判读红线 + 成本参考**）、`references/scenarios/annotations.md`（面板标注的读取、指代解析与给人类画标注）
 - 静态清单：`manifests/declared-capabilities.json`（工程状态声明，不是运行态证明）
 
 资源读取需要宿主提供授权文件读取能力；读不到时明确限制，不假设内容或能力。

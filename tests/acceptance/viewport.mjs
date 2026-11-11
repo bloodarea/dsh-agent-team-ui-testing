@@ -1850,24 +1850,31 @@ async function main() {
     });
 
   /* ---------------------------------------------------------------- A1: annotation surface */
-  await runProbe('A1-annotation-surface', '标注 Agent 可见面：工具面不变、capabilities/limits、冷态投影、拒绝与零副作用',
-    '注册表仍与 EXPECTED_TOOLS 一致且无标注工具；capabilities.annotations 声明 readTool/writeSurface/source/trusted/screenshotOverlay/坐标/复位，limits.annotations 八项一致；冷态 state.annotations 为空形状且 stale=not-running；冷态发布 400 annotation-runtime-not-running 零写入；未 scoped 403；未认证 401；读 state/capabilities 不建页面、零 CDP', async () => {
+  await runProbe('A1-annotation-surface', '标注 Agent 可见面：工具面含 browser_annotation、capabilities/limits、冷态投影、拒绝与零副作用',
+    '注册表仍与 EXPECTED_TOOLS 一致且含 browser_annotation；capabilities.annotations 声明 readTool/writeTool/writeSurface/source/trusted/screenshotOverlay/坐标/复位/前台窗口，limits.annotations 十项一致；冷态 state.annotations 为空形状且 stale=not-running；冷态发布 400 annotation-runtime-not-running 零写入；未 scoped 403；未认证 401；读 state/capabilities 不建页面、零 CDP', async () => {
       const names = harness.toolNames();
-      check(`工具面仍 ${EXPECTED_TOOLS.length} 个 browser_* 工具，且没有新增标注工具`,
+      check(`工具面仍 ${EXPECTED_TOOLS.length} 个 browser_* 工具，且含浏览器标注工具 browser_annotation`,
         names.length === EXPECTED_TOOLS.length
-          && !names.some((name) => /annot/u.test(name))
+          && names.includes('browser_annotation')
           && names.includes('browser_state') && names.includes('browser_capabilities'),
-      { count: names.length, annotTools: names.filter((name) => /annot/u.test(name)) }, { count: EXPECTED_TOOLS.length, annotTools: [] });
+      { count: names.length, annotTools: names.filter((name) => /annot/u.test(name)) }, { count: EXPECTED_TOOLS.length, annotTools: ['browser_annotation'] });
 
-      const capabilities = await harness.invoke('browser_capabilities');
+      // The workspace-session exec is required: an anonymous/legacy call has no page of its own and
+      // answers TARGET_NOT_BOUND before it can describe any capability.
+      const capabilities = await harness.invoke('browser_capabilities', {}, execA);
       const annotations = capabilities.value?.annotations || {};
-      check('capabilities.annotations：只读工具=browser_state、写入面=authenticated-scoped-http、source=human-panel、trusted=false、screenshotOverlay=false、带坐标与复位说明',
+      check('capabilities.annotations：读取=browser_state+browser_annotation、面板写入面=authenticated-scoped-http、Agent 写入工具=browser_annotation、source=human-panel、trusted=false、screenshotOverlay=false、带坐标/复位/前台窗口说明',
         capabilities.ok === true
           && annotations.version === 1 && annotations.space === 'canvas-css-px'
           && annotations.readTool === 'browser_state' && annotations.readPath === 'annotations'
+          && JSON.stringify(annotations.readTools) === JSON.stringify(['browser_state', 'browser_annotation'])
           && annotations.writeSurface === 'authenticated-scoped-http'
+          && annotations.writeTool === 'browser_annotation'
+          && JSON.stringify(annotations.writeActions) === JSON.stringify(['draw', 'erase', 'clear'])
+          && annotations.foregroundRequiredForWrite === true
           && annotations.source === 'human-panel' && annotations.trusted === false
-          && annotations.screenshotOverlay === false
+          && typeof annotations.screenshotOverlay === 'boolean'
+          && annotations.screenshotParameter === 'includeAnnotations'
           && typeof annotations.coordinateHint === 'string' && /p=q\+O=d-S/u.test(annotations.coordinateHint)
           && typeof annotations.reset === 'string' && /documentKey/u.test(annotations.reset),
       { annotations }, 'annotations capability segment');
@@ -1875,9 +1882,10 @@ async function main() {
       const expectedLimits = {
         maxShapes: 128, maxPointsPerShape: 512, maxPointsPerDocument: 8192, maxTextCodeUnits: 200,
         maxDocumentBytes: 65536, maxBodyBytes: 262144, maxPanels: 16, staleAfterMs: 30000,
+        maxShapesPerCall: 64, foregroundTtlMs: 1500,
       };
       const limits = capabilities.value?.limits?.annotations || {};
-      check('limits.annotations 与契约软限额逐项一致（128/512/8192/200/64KiB/256KiB/16/30s）',
+      check('limits.annotations 与契约软限额逐项一致（128/512/8192/200/64KiB/256KiB/16/30s/64/1.5s）',
         JSON.stringify(limits) === JSON.stringify(expectedLimits), { limits }, expectedLimits);
 
       const coldState = await readScopedState(ANNOT_HEADERS_UNASSIGNED);

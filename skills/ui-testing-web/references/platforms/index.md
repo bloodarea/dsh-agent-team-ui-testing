@@ -6,7 +6,7 @@
 
 | 平台 | 文档 | 当前状态 |
 |---|---|---|
-| Web / Chromium（无头） | `web.md` | T1–T4、网络 P0 与 P0-E 多标签已实现（36 工具，含 `browser_tabs`）；T4 44 条门槛中 12 通过 / 20 部分 / 12 未运行，provider 图像可见性未验证 |
+| Web / Chromium（无头） | `web.md` | T1–T4、网络 P0、P0-E 多标签与 P0-D 标注已实现（37 工具，含 `browser_tabs`、`browser_annotation`）；T4 44 条门槛中 12 通过 / 20 部分 / 12 未运行，provider 图像可见性未验证 |
 | Windows | 未创建 | 未定义 / 不可用 |
 | Linux | 未创建 | 未定义 / 不可用 |
 | Android | 未创建 | 未定义 / 不可用 |

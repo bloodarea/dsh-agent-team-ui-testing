@@ -14,12 +14,12 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/bloodarea/dsh-agent-team-ui-testing?style=flat-square" alt="License: MIT"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Node.js >= 22"></a>
   <a href="docs/getting-started.md"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Platforms"></a>
-  <a href="docs/tools.md"><img src="https://img.shields.io/badge/tools-36-brightgreen?style=flat-square" alt="Agent tools"></a>
+  <a href="docs/tools.md"><img src="https://img.shields.io/badge/tools-37-brightgreen?style=flat-square" alt="Agent tools"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-plugin-4B32C3?style=flat-square" alt="DSH plugin"></a>
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="Status"></a>
 </p>
 
-> **状态：预发布。** Web / Chromium 通道四个层级均已实现：36 个 Agent 工具 + 调试面板，覆盖程序化检查、结构化 GUI 操作、静态视觉分析、动态帧/时序分析、网络抓包、多标签页页面组、共享视口控制、混合画布、选元素与客户端标注。其他运行环境仍在规划中，运行时选择器保持禁用。**安装：** `dsh plugin --profile web add dsh-agent-team-ui-testing`。能力、限制与验证方式见 [docs/capability-tiers.md](docs/capability-tiers.md) 与 [docs/verification.md](docs/verification.md)。
+> **状态：预发布。** Web / Chromium 通道四个层级均已实现：37 个 Agent 工具 + 调试面板，覆盖程序化检查、结构化 GUI 操作、静态视觉分析、动态帧/时序分析、网络抓包、多标签页页面组、共享视口控制、混合画布、选元素与客户端标注。其他运行环境仍在规划中，运行时选择器保持禁用。**安装：** `dsh plugin --profile web add dsh-agent-team-ui-testing`。能力、限制与验证方式见 [docs/capability-tiers.md](docs/capability-tiers.md) 与 [docs/verification.md](docs/verification.md)。
 
 ## 这是什么项目？
 
@@ -45,7 +45,7 @@
 
 - **共享浏览器运行时**——每台主机、每个运行环境（provider）一个浏览器（使用系统安装的 Chrome/Chromium 或 Edge，插件不自带、也不会自动安装）；默认无头，Web 视图可切有头（离屏隐藏窗口 + 持久 profile）。每个 DSH 工作区拥有独立的页面、URL、视口、历史、网络缓冲与租约；Cookie 和存储由当前 provider 的 profile 共享。
 - **运行环境（provider）**——Web 目标环境下默认 `chrome`，另有已接入的 `edge`：独立可执行文件候选、独立覆盖变量 `DSH_UI_TESTING_EDGE`、独立 profile 与启动后产品身份校验，复用同一套 CDP 实现。**Edge 真机拉起未实测**：Edge 未启用时依赖轴是「未探测」（未启用不探测）；在装有 Edge 二进制的环境之外启用它，卡片上依赖轴会报 `failed / executable-missing`，且不会打开任何页面。设置页里分组头是目标环境总开关、卡片是运行环境分开关，关闭总开关会置灰分开关但保留已保存值。
-- **36 个 Agent 工具**，覆盖程序化调试、结构化 GUI、静态视觉、动态行为、网络调试与按工作区的多标签页管理。
+- **37 个 Agent 工具**，覆盖程序化调试、结构化 GUI、静态视觉、动态行为、网络调试、按工作区的多标签页管理与标注读写。
 - **多标签页页面组（P0-E）**——每个工作区一个 primary 槽位 + 最多 3 个 child 标签，每个标签独立租约；每个执行会话独立保存 selectedTab，popup 接管与页面隔离沿用同一套规则。
 - **动态行为（T4）**——真实 CDP screencast 与 screenshot-loop 两条帧源、带完整性计数的有界帧存储、七类确定性运动分析、WAAPI 运动控制与恢复、只交付指定区域的帧，以及六向「帧↔网络」事件关联。
 - **调试面板**——实时预览、响应式尺寸控制、共享视口状态、混合画布，以及 Agent 可读回的客户端标注层。
@@ -57,6 +57,7 @@
 | 分组 | 工具 | 能力 |
 | --- | --- | --- |
 | **程序化**（10） | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_viewport` `browser_state` `browser_capabilities` | 导航、JavaScript、控制台/网络检查、独立 HTTP 请求、计算样式、截图、原始鼠标/滚轮/键盘输入、共享视口状态与能力发现 |
+| **标注**（1） | `browser_annotation` | 读写人类在调试面板里看到的那份标注文档：六种形状、颜色/粗细/填充-外框样式、`draw` 只追加、`revision` CAS，且要求目标标签页是人类此刻可见的前台标签 |
 | **页面组**（1） | `browser_tabs` | 按 (workspace, provider, 团队根) 分组的 primary + 最多 3 个 child、每标签独立短租约、每会话 work/observation 双选择、长期归属与队长控制权（acquire/release/transfer）与标签生命周期（list/current/select/open/close/wait/acquire/release/transfer） |
 | **结构化 GUI**（7） | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | 快照 → ref 定位、可信输入、表单、节点状态与等待，返回结构化证据和类型化错误 |
 | **静态视觉**（6） | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | PNG 裁剪/缩放/预处理/标注，颜色/组件/边缘/模板确定性识别，YIQ 差异，坐标输入，受管基线与视觉断言 |
@@ -70,7 +71,7 @@
 - **实时预览**：通过 screencast 显示工作区页面，WebSocket 优先、HTTP 轮询兜底。
 - **尺寸栏**：宽屏 / 横屏 / 平板 / 手机 四个预设以分页选择器呈现，另有 X/Y 画布位置、宽 × 高、显示比例和 `拖拽 | 适应窗口 | 默认` 模式选择。点击预设会重置 X/Y，并保持当前显示模式；选中预设显示绿色小球，且与拖拽模式互斥。
 - **混合画布**：视口可以像画布一样定位——带符号的原点、负坐标和空白区域；面板用深色棋盘格表示空白（截图与 T3 中为纯白），支持拖拽平移和以屏幕光标为锚点的滚轮缩放。
-- **标注模式**：圆形、矩形、线段、箭头、画笔、文字、橡皮擦，以及填充/外框、颜色、粗细和清除画布。标注锚定在画布坐标中，模式内页面不接收输入；标注文档会发布给 Agent，可通过 `browser_state.annotations` 读取。
+- **标注模式**：圆形/椭圆、矩形、线段、箭头、画笔、文字六种形状，以及橡皮擦、填充/外框、颜色、粗细和清除画布等控件。标注锚定在画布坐标中，模式内页面不接收输入。用户提到标注、画、圈、框、箭头或笔迹等指代面板标注时，Agent 先读 `browser_state.annotations`，再用 `browser_screenshot {includeAnnotations:true}` 查看叠加像素。截图仅渲染已提交且经 Host 接受的文档，形状语义及 region/scale 映射与面板一致；不含未提交草稿、工具栏和选中控件。`includeAnnotations` 为 boolean，默认 false；默认截图、T3 原始源及 T4 帧源不含面板标注，详见[截图与标注边界](docs/capture-p0.md)。
 - **共享状态**：Agent 与面板读取同一份视口；写入使用 `expectedRevision`，冲突会明确报告，不会静默覆盖。
 
 ### 证据与安全
@@ -163,7 +164,7 @@ flowchart TB
 | **`targets/`** | 各环境 Adapter：把公共能力请求翻译成 CDP/ADB 等调用，再将结果标准化；声明环境支持和不支持的能力 | 连接第②节点与第③～⑤节点，封装环境差异 |
 | **`engines/`** | **仅存放自研**、需要单独构建或部署的执行端，例如未来 Android 无障碍 Companion APK | 在需要时提供第④节点的一种实现；没有也完全正常 |
 
-`targets/web` 不表示把 Chrome/Playwright 的源码复制进仓库，`engines/android` 也不意味着 Android 必须安装 APK：ADB / UI Automator 可先作为现成执行路径。**`core/` 与 `targets/` 已作为实际目录落地**：`core/` 承载契约、配置、身份/几何/时钟、证据与六轴就绪，`targets/web` 是真实 Web 适配器，`targets/fake` 是 test-only 契约夹具；`engines/` 仍是未来自研执行端的预留边界。Web 的 CDP 接入与 36 个工具实现仍集中在 `index.js`（组合根/Web 实现），但工具准入、配置与执行均已通过 adapter 边界。
+`targets/web` 不表示把 Chrome/Playwright 的源码复制进仓库，`engines/android` 也不意味着 Android 必须安装 APK：ADB / UI Automator 可先作为现成执行路径。**`core/` 与 `targets/` 已作为实际目录落地**：`core/` 承载契约、配置、身份/几何/时钟、证据与六轴就绪，`targets/web` 是真实 Web 适配器，`targets/fake` 是 test-only 契约夹具；`engines/` 仍是未来自研执行端的预留边界。Web 的 CDP 接入与 37 个工具实现仍集中在 `index.js`（组合根/Web 实现），但工具准入、配置与执行均已通过 adapter 边界。
 
 ### 能力架构：T1 / T2 / T3 / T4 按需选路
 
@@ -234,7 +235,7 @@ sequenceDiagram
 - **区分源码组织与部署形态**：`targets/` 是宿主侧适配器，`engines/` 是可选自研执行端源码，真实 Chrome / Android / 小程序运行时在仓库之外。
 - **按环境启用工具与 Skill**：未来应避免把未启用目标环境的专用工具 schema、Skill 内容和运行依赖无谓加载进 Agent 上下文。
 
-**实现状态边界：** Web / Chromium 的 36 个工具、T1～T4 及 P0 相关能力已有实现，但验证与覆盖范围仍以 [能力文档](docs/capability-tiers.md)、[架构文档](docs/architecture.md) 和 [验证记录](docs/verification.md) 为准；T4 仍有未完成验收。三类 adapter 契约（`TargetAdapter` / `CapabilityAdapter` / `P0Provider`）、`core/` + `targets/` 分层、Host 权威配置、逐 step 工具准入与按环境 Skill 发现已对 Web 落地，并有 test-only 假适配器契约测试；真实桌面、Android、小程序等平台适配器与 `engines/` 仍属后续演进方向。
+**实现状态边界：** Web / Chromium 的 37 个工具、T1～T4 及 P0 相关能力已有实现，但验证与覆盖范围仍以 [能力文档](docs/capability-tiers.md)、[架构文档](docs/architecture.md) 和 [验证记录](docs/verification.md) 为准；T4 仍有未完成验收。三类 adapter 契约（`TargetAdapter` / `CapabilityAdapter` / `P0Provider`）、`core/` + `targets/` 分层、Host 权威配置、逐 step 工具准入与按环境 Skill 发现已对 Web 落地，并有 test-only 假适配器契约测试；真实桌面、Android、小程序等平台适配器与 `engines/` 仍属后续演进方向。
 
 ## 快速开始
 
@@ -289,7 +290,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 | --- | --- |
 | [docs/index.md](docs/index.md) | 文档索引 |
 | [docs/getting-started.md](docs/getting-started.md) | 安装要求、接入、调试面板与首次调用 |
-| [docs/tools.md](docs/tools.md) | 36 个工具、参数与错误分类 |
+| [docs/tools.md](docs/tools.md) | 37 个工具、参数与错误分类 |
 | [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 选路模型、P0 基础设施与已知限制 |
 | [docs/viewport-control.md](docs/viewport-control.md) | 共享视口、混合画布与标注 |
 | [docs/capture-p0.md](docs/capture-p0.md) | 截图、图片交付与文件生命周期 |

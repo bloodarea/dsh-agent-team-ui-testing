@@ -167,4 +167,4 @@ browser_dynamic_correlate { dynamicSessionId, motionSessionId, networkSessionId,
 
 ## 7. T3 静态侧的边界（本节保留）
 
-`browser_screenshot` 可保留 PNG base64 并经可选附件服务 render image block；缺服务为 base64-fallback 文本，provider 可见性需另验。P0 截图支持显式 `scale` 0.1–4（省略跟随共享 `view.scale`）/ 文档 `region` / PNG 校验；`persist` 默认 false（暂存，dispose 清理），`out`/`persist:true`/非空 env 才持久。`file.pathKind`/`persistence`/`root`/`ephemeral` 必须随证据记录，`observed` 不含绝对路径；**暂存不能当持久引用**。原始图像可见性不等于像素差异/基线阈值/VLM 管线；不能把"截图动作成功"判成视觉 PASS。定量视觉条件缺证据时一律 `BLOCKED`/`INCONCLUSIVE`。
+`browser_screenshot` 可保留 PNG base64 并经可选附件服务 render image block；缺服务为 base64-fallback 文本，provider 可见性需另验。P0 截图支持显式 `scale` 0.1–4（省略跟随共享 `view.scale`）/ 画布 CSS `region` / PNG 校验；`includeAnnotations?:boolean=false` 为 true 时按相同 region/scale 叠加 Host 已接受的六种面板形状，不含未提交草稿/工具栏，证据见 `capture.annotations`。默认截图、T3 原始源及 T4 两种帧源不含面板标注；`persist` 默认 false（暂存，dispose 清理），`out`/`persist:true`/非空 env 才持久。`file.pathKind`/`persistence`/`root`/`ephemeral` 必须随证据记录，`observed` 不含绝对路径；**暂存不能当持久引用**。原始图像可见性不等于像素差异/基线阈值/VLM 管线；不能把"截图动作成功"判成视觉 PASS。定量视觉条件缺证据时一律 `BLOCKED`/`INCONCLUSIVE`。

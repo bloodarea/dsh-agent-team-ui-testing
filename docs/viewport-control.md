@@ -1,6 +1,6 @@
 # 视口、画布与标注
 
-本页描述三件共享同一份状态的能力：**共享视口**（尺寸、滚动、显示比例）、**混合画布**（带符号的原点与空白区域）和**客户端标注**（人画、Agent 读）。
+本页描述三件共享同一份状态的能力：**共享视口**（尺寸、滚动、显示比例）、**混合画布**（带符号的原点与空白区域）和**客户端标注**（人和 Agent 读写同一份文档）。
 
 ## 共享视口
 
@@ -32,7 +32,7 @@ view = { version, mode, x, y, canvasX, canvasY, width, height, scale, source, re
 
 - `canvasX/canvasY` 是视口左上角在文档画布中的坐标，可为负或超出内容边界。
 - 当 `canvasX ≠ x` 时存在偏移 `O = C − S`；偏移区域在面板中显示为深色棋盘格，在截图与 T3 中是**纯白 `#ffffff`**。
-- `O = 0` 时截图与 T3 同旧行为字节/像素一致；`O ≠ 0` 时先截真实页面帧再白底合成，并披露 `capture.canvas.composite=true`（可能重编码）。
+- 未开启标注叠加时，`O = 0` 的截图与 T3 同旧行为字节/像素一致；`O ≠ 0` 时先截真实页面帧再白底合成，并披露 `capture.canvas.composite=true`（可能重编码）。显式开启 `includeAnnotations:true` 时还会绘制已接受的标注文档，不能据此承诺原页面 PNG 字节不变。
 - 面板支持拖拽平移与以屏幕光标为锚点的滚轮缩放；拖拽写画布坐标，页面本身不接收这些输入。
 - `canvasX/canvasY` 与 `x/y` 不能出现在同一个 patch（`INVALID_ARGUMENT`）。
 - 空白区域不存在于 DOM 中；`O ≠ 0` 时坐标输入 fail-closed（宁可短暂「点不动」也不误派发）。
@@ -41,10 +41,18 @@ view = { version, mode, x, y, canvasX, canvasY, width, height, scale, source, re
 
 - 工具：圆形、矩形、线段、箭头、画笔、文字、橡皮擦；另有填充/外框、颜色、粗细与清除画布。
 - 锚定在**画布坐标**中，可画在空白区域；标注模式下页面不接收任何指针或键盘输入。
-- 标注不进入页面 DOM、不进入截图与 T3 分析，是一份独立文档。
-- Agent 读取：`browser_state.annotations`（或认证 `/state` 的 `ui.annotations`），返回图形列表与 `revision`。
+- 标注是独立文档，不进入页面 DOM；默认截图、T3 原始源图与 T4 帧源不含面板标注。`browser_screenshot {includeAnnotations:true}` 可叠加当前目标已提交且经 Host 接受的六种形状（`circle/rect/line/arrow/brush/text`），渲染语义与面板一致。
+- Agent 读取：`browser_state.annotations`（或认证 `/state` 的 `ui.annotations`），返回图形列表与 `revision`。用户提到标注、画、圈、框、箭头或笔迹等指代面板标注时，先读该文档，再用 `browser_screenshot {includeAnnotations:true}` 查看像素；手写内容无法可靠辨认时如实说明，不猜字。
+- **Agent 写入**：`browser_annotation` 读写**同一份**标注文档（每个 Runtime 一份），四类动作 `read` / `draw` / `erase` / `clear`。用途是「你圈一下 / 标给我看 / 我指的这个在这儿」——把结论画到人眼前的调试视图上，或给人类已有的标注补充意图（文字标注写问题、问号等提示）。
+  - `draw` 的 `shapes` **追加**到现有文档（1–64 个/次），不是替换；`erase` 用 `ids` 和/或 `point{x,y,radius?}`（默认半径 8 画布 px，命中规则与面板橡皮擦一致：形状到点的距离 ≤ `max(strokeWidth/2,6)` 与 `radius` 取大者）；`clear` 清空画布。
+  - 形状与面板工具的对应关系：`circle` 圆形、`rect` 矩形、`line` 线段、`arrow` 箭头、`brush` 画笔（铅笔）、`text` 文字。「颜色」→ `color`（`#rrggbb`，默认 `#ff3b30`）；「粗细」→ `strokeWidth`（整数 1–20，默认 3）；「外框/填充」→ `style:"stroke"|"fill"`（也接受 `fill`/`stroke` 布尔，二者不可同时给），只对 `circle`/`rect` 有效，`text` 固定 `fill`、`line`/`arrow`/`brush` 固定 `stroke`。`id` 可省略（Host 从现有最大 id 继续分配 `a<N>`），`arrow` 的 head 与 `text.fontSize`（固定 20）由 Host 决定。
+  - **整份替换语义**：文档按整份替换发布。人类在面板里下一次编辑会整体提交自己的形状列表（其中已包含 Agent 画的形状，因为面板会采纳 Host 文档），人类「清除画布」会连 Agent 的形状一起清掉。写动作可用 `expectRevision` 做乐观并发，不匹配报 `ANNOTATION_REVISION_CONFLICT`（零写入，返回 `currentRevision`）。
+  - **前台硬约束**：`draw`/`erase`/`clear` 只在目标标签页正被人类在调试视图里选中且可见时才允许，否则零写入并报 `ANNOTATION_NOT_FOREGROUND`；依据是面板在认证请求上携带的前台标签心跳（约 1.5s 新鲜窗口），人切走标签、关掉面板或把 DSH 标签页切到后台都会让它过期。先看 `browser_state.annotations.foreground = {active, ageMs, maxAgeMs}` 再决定画不画。`read` 不受此限；页面未运行（未启动）时写标注报 `INVALID_ARGUMENT`（reason `annotation-runtime-not-running`）。
+  - **软限额与裁剪**：与面板写面相同（`maxShapes` 128、单笔画笔 512 点、文档总点数 8192、文字 200 字符、文档 65536 字节），Host 确定性裁剪并如实回 `truncated` / `truncation`。
+  - **不碰页面**：不启动浏览器、不进页面串行队列、不占 single-owner lease、不写页面 `lastError`、不改页面 DOM/CSS；只写 Host 侧文档，面板下一次 `/state` 轮询就会画出来。`includeAnnotations:true` 的截图会把 Agent 画的与人类画的形状一起叠加。
+- 带标注截图与页面共用 `region`/`scale` 映射、裁剪和缩放；不包含未提交草稿、工具栏、选中控件或其它面板 UI，详见[截图与图片交付](capture-p0.md)。
 - 按工作区隔离；导航换文档时清空；跨分页与会话保留。
-- 写面唯一：面板通过认证的 `POST /plugins/ui-testing/annotations` 提交，带 `clientRevision` 幂等与 `409 annotation-context-stale`；Host 侧有软限额（图形数、单笔点数、总点数、文字长度、文档字节数）并做确定性裁剪。
+- **写面有两处，写的是同一份文档**：面板通过认证的 `POST /plugins/ui-testing/annotations` 提交（带 `clientRevision` 幂等与 `409 annotation-context-stale`），Agent 通过 `browser_annotation` 提交；两者共用 Host 侧软限额（图形数、单笔点数、总点数、文字长度、文档字节数）与确定性裁剪。
 
 ## 截图比例
 
@@ -80,4 +88,4 @@ view = { version, mode, x, y, canvasX, canvasY, width, height, scale, source, re
 
 - 实时预览是 1× screencast；宽高变更后的输入屏障只是 best-effort（≤250 ms），画布偏移使用 fail-closed 屏障。
 - 画布是视图层合成，不是页面级无限画布；`fixed`/`sticky` 元素会随整帧平移。
-- 截图与 T3 不包含标注层；标注只通过 `browser_state.annotations` 读取。
+- 默认截图、T3 原始源图与 T4 帧源不包含面板标注；带标注截图须显式传 `includeAnnotations:true`，并结合 `browser_state.annotations` 核对文档身份与 revision。标注来源 `source.trusted=false`，不能替代页面事实或独立验证。

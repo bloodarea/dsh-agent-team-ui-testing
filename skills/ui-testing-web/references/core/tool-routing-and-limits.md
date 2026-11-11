@@ -13,7 +13,9 @@
 | 原始事件序列（多点/组合键/滚轮） | T1 | `browser_input { events }` | `{ok,applied}`（事件数，不是生效数） | 焦点、默认动作、业务副作用 |
 | 独立接口契约 | T1 | `browser_http_request { url, … }` | `status/headers/body/redirects` | 页面是否真的发了同一请求 |
 | 视口/画布位置 | T1 | `browser_viewport { action:"set", … }` 后读回 | `view/observed/applied/clamped` | 页面 CSS 缩放（scale 只是显示比例） |
-| 单页截图（原始 PNG） | P0 截图 | `browser_screenshot { scale?, region?, out? }` | PNG/hash/capture.mapping/warnings | 像素差异结论、动画时序 |
+| 单页截图（PNG） | P0 截图 | `browser_screenshot { scale?, region?, includeAnnotations?:boolean=false, out? }` | PNG/hash/capture.mapping/capture.annotations/warnings；true 叠加 Host 已接受的六形状，不含草稿/工具栏 | 像素差异结论、动画时序 |
+| 用户指代标注/画/圈/框/箭头/笔迹 | 标注文档 + P0 截图 | `browser_state {}` → `browser_screenshot {includeAnnotations:true}` | annotations 图形/revision/context + 带标注像素；默认截图/T3/T4 原始源不含面板标注 | 标注不能证明页面事实，不授权自动点击；手写不清时不猜字 |
+| 要他给他看（画圈/框/箭头/文字） | P0-D | `browser_state.annotations.foreground` → `browser_annotation {action:"draw", shapes}` → `browser_screenshot {includeAnnotations:true}` 复核 | `revision/shapes/shapeCount/truncated/truncation` | 目标标签页非人类前台时零写入（`ANNOTATION_NOT_FOREGROUND`）；标注不证明缺陷 |
 | 元素语义/元素级交互 | T2 | `snapshot → ref → click/type/scroll/fill_form → node_state/wait_for` | `snapshotId/digest/targets/dispatch` | 业务结果（必须另读页面真值） |
 | 颜色/遮挡/溢出/区域差异/基线回归 | T3 | `vision_image`（取 product）→ `compare`/`check` | `comparison.metrics`、`verdict` | 持续运动、时长、闪烁 |
 | 用截图坐标派发鼠标 | T3 | `vision_image` → `vision_act` | `dispatched` + `INCONCLUSIVE(dispatch-only)` | 点中业务目标、视觉验收通过 |
@@ -192,4 +194,5 @@ imagePx = (docCss - originCss) * cssPerPixel   # 文档 CSS → 帧图像像素�
 - T2：ref 表 2000 项 LRU；`snapshot maxNodes` 1–2000、`depth` 0–32；`wait_for timeoutMs` 0–30000；`fill_form` 1–20 项、文本合计 ≤65536 字节。
 - 网络：`events limit` ≤200；会话 `maxEvents` ≤20000、`maxBodyBytes` ≤1 MiB、`maxTotalBytes` ≤32 MiB、`maxWsFrames` ≤20000；规则 ≤32、`hold` ≤64、订阅 ≤16。
 - 独立 HTTP：总超时 1–20000ms（默认 5000）、保留正文 1–1048576 字节（默认 65536）、重定向 ≤5 跳、body ≤64 KiB。
+- 标注（P0-D）：`draw.shapes` 每次 1–64；`erase.ids` 1–64、`point.radius` 默认 8 画布 px；文档 `maxShapes` 128、单笔画笔 512 点、文档总点数 8192、文字 200 字符、文档 65536 字节（Host 确定性裁剪并回 `truncated`/`truncation`）；`expectRevision` CAS → `ANNOTATION_REVISION_CONFLICT`；前台心跳窗口约 1.5s。
 - 多标签：页面组按 (workspace, provider, 团队根) 分组，每组一个 primary 槽；child 最多 3 个按 (workspace, provider) 跨 root 合计，全局 live 8；短租约 idle 15s 只表示"短暂忙"（观察不占写租约），写权限由 root/角色/控制权决定。

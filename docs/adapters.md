@@ -102,7 +102,7 @@ registry.resolve(snapshot) → web facade（environment/adapterId = "web"）
                                            └─ 未实现 / 未知 provider → ADAPTER_UNSUPPORTED
 ```
 
-- **派发靠快照，不靠全局开关。** facade 在 `invoke`/`createSession` 前解析 driver，并把 `provider` / `executionAdapterId` 一并交给平台 dispatch；36 个 `browser_*` 名字只注册一次，切换 provider 不改变工具集合。
+- **派发靠快照，不靠全局开关。** facade 在 `invoke`/`createSession` 前解析 driver，并把 `provider` / `executionAdapterId` 一并交给平台 dispatch；37 个 `browser_*` 名字只注册一次，切换 provider 不改变工具集合。
 - **禁止静默换浏览器。** driver 解析结果只有两种：可执行，或带 `reason` 的阻断。被禁用是 `ADAPTER_DISABLED`（`environment-disabled` / `provider-disabled`），未实现/未知是 `ADAPTER_UNSUPPORTED`（`driver-pending` / `provider-unsupported` / `unknown-provider`），依赖问题属于 `DEPENDENCY_MISSING`（`executable-missing` / `override-invalid` / `identity-unverified` / `identity-mismatch`）。这些 `reason` 都在 `details` 里，不属于对外错误码。
 - **厂商参数化。** 可执行文件候选、覆盖变量（Chrome `DSH_UI_TESTING_CHROME`、Edge `DSH_UI_TESTING_EDGE`）、profile 目录、启动参数都按 provider 注入；Chrome 的覆盖不会被 Edge 继承，反之亦然。一个提供者的覆盖无效时直接报错，不尝试另一个厂商。
 - **产品身份校验。** 传输建立后用 `Browser.getVersion` 的产品串核对厂商（规则表：Chrome 必须含 `Chrome/` 且不含 `Edg/`；Edge 必须含 `Edg/`）。Edge 拿不到产品串按 `identity-unverified` 拒绝；Chrome 保持机会式（拿到就核对，拿不到不阻断）。
@@ -154,7 +154,7 @@ node --test tests/contracts/web-provider-runtime.test.mjs  # driver 门禁、hos
 node --test tests/contracts/web-provider-edge.test.mjs     # Edge 厂商参数化、覆盖变量、产品身份判定
 node tests/acceptance/cross-environment.mjs     # 配置 CAS、六轴、GUI 旁路、不启动浏览器
 node tests/acceptance/foundation-isolation.mjs  # 逐项阻断复核（含 A08 面板为权威、A09 Skill 隔离）
-node tests/acceptance/run.mjs                   # 真实无头 Chromium：36 工具面与 T1～T4 回归
+node tests/acceptance/run.mjs                   # 真实无头 Chromium：37 工具面与 T1～T4 回归
 ```
 
 新增或修改 adapter 后，至少要让契约套件与 `foundation-isolation` 通过；运行方式与套件清单见 [verification.md](verification.md)。

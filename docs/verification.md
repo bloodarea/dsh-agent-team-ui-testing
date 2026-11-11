@@ -14,6 +14,8 @@
 node tests/acceptance/run.mjs                  # 主验收：工具面、能力报告、渲染与 lossless 投影
 node tests/acceptance/viewport.mjs             # 共享视口与画布
 node tests/acceptance/capture-p0.mjs           # 截图采集
+node tests/acceptance/annotation-capture.mjs   # includeAnnotations：六形状、region/scale 映射与标注文档证据
+node tests/acceptance/annotation-agent.mjs     # Agent 标注读写：四类动作、样式映射、前台门禁、限额与 revision CAS
 node tests/acceptance/t2-structured.mjs        # 结构化 GUI
 node tests/acceptance/t3-vision.mjs            # 静态视觉
 node tests/acceptance/t4-dynamic.mjs           # 动态行为 44 条门槛

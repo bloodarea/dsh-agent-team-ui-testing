@@ -51,6 +51,7 @@ export const WEB_CAPABILITIES = Object.freeze([
   'web.t4',
   'web.network',
   'web.tabs',
+  'web.p0.annotations',
   'web.p0.capture',
   'web.p0.network',
   'web.p0.display',
@@ -102,6 +103,7 @@ export const WEB_TOOL_OPERATIONS = Object.freeze({
   browser_capabilities: 'web.t1',
   browser_viewport: 'web.t1',
   browser_tabs: 'web.tabs',
+  browser_annotation: 'web.p0.annotations',
 
   // T2 — structured GUI.
   browser_snapshot: 'web.t2',
@@ -168,6 +170,8 @@ export const WEB_TOOL_OPERATION_SPECS = Object.freeze([
   spec('browser_capabilities', 'web.t1', 'diagnostic', ['diagnostic', 'readOnly']),
   spec('browser_viewport', 'web.t1', 'readOnly', ['readOnly', 'page']),
   spec('browser_tabs', 'web.tabs', 'tabs'),
+  // P0-D annotations: `read` is a cached host read, every write is host-only (no page queue/lease).
+  spec('browser_annotation', 'web.p0.annotations', 'readOnly', ['readOnly', 'hostOnly']),
 
   // T2
   spec('browser_snapshot', 'web.t2', 'page'),
@@ -217,6 +221,7 @@ export function resolveExecutionClass(operation, args = {}) {
   const action = typeof args?.action === 'string' ? args.action : null;
 
   if (operation === 'browser_viewport' && action === 'set') return 'page';
+  if (operation === 'browser_annotation') return action === 'read' ? 'readOnly' : 'hostOnly';
   if (operation === 'browser_network_session') {
     if (action === 'status') return 'readOnly';
     return 'hostOnly';

@@ -56,6 +56,7 @@ import { defaultTabPrincipalResolver, resolvePrincipal } from './integration/tab
 const WEB_HOST_MODULE_SPECS = Object.freeze({
   'frame-source': './frame-source.js',
   'capture-p0': './capture-p0.js',
+  'annotation-capture': './annotation-capture.js',
   'vision-t3': './vision-t3.js',
   'vision-baseline': './vision-baseline.js',
   'network-p0': './network-p0.js',
@@ -970,7 +971,13 @@ function normalizeCaptureRequest(args) {
     }
     persist = input.persist;
   }
-  return { scale, region, out, persist };
+  const includeAnnotations = input.includeAnnotations === undefined ? false : input.includeAnnotations;
+  if (typeof includeAnnotations !== 'boolean') {
+    throw new BrowserError('INVALID_ARGUMENT', 'includeAnnotations 必须是布尔值（true = 叠加面板标注）', {
+      field: 'includeAnnotations', valueType: typeof includeAnnotations,
+    });
+  }
+  return { scale, region, out, persist, includeAnnotations };
 }
 
 /** Pixel budget, judged before any CDP screenshot: Chrome must never be asked for more. */
@@ -1242,13 +1249,19 @@ function sha256Short(value, length = 16) {
  * (docs/viewport-control.md).
  *
  * The Host stores exactly one "last accepted" document per Runtime and exposes it through
- * `Runtime.state()` (→ `browser_state.annotations`) and the authenticated `ui.annotations`. The
- * panel writes it over its *only* write surface, `POST /plugins/ui-testing/annotations`; there is
- * deliberately no 37th tool (the tool surface stays 36).
+ * `Runtime.state()` (→ `browser_state.annotations`) and the authenticated `ui.annotations`. Two
+ * writers share that one document: the human panel over its scoped route
+ * `POST /plugins/ui-testing/annotations`, and the Agent over the 37th tool `browser_annotation`
+ * (read/draw/erase/clear). It stays ONE document on purpose: the panel already hydrates a newer
+ * Host revision, so an Agent note is visible to the human with no second store and no second
+ * conflict model. Agent writes additionally require a *fresh human-foreground claim* for the
+ * target tab (the panel reports "I am displaying my selected tab and I am visible"), otherwise a
+ * drawn note could be invisible to the person it is meant for.
  *
- * Everything below is pure data handling: annotations never touch the page DOM/CSS, never enter a
- * screenshot or a T3 source, never start Chromium, never take the page lease and never write the
- * page `lastError`. Human notes are untrusted hints (`source.trusted:false`).
+ * The document store below is pure data handling: it never touches page DOM/CSS, starts Chromium,
+ * takes the page lease or writes page lastError. browser_screenshot may explicitly rasterize a
+ * frozen document with includeAnnotations:true; raw captures and T3/T4 sources remain unannotated.
+ * Human notes are untrusted hints (`source.trusted:false`).
  *
  * The limits are soft and deterministic (§11.2), and the client applies the same rule so both
  * sides converge on one normalized set: keep the newest 128 shapes, downsample every brush to
@@ -1271,6 +1284,25 @@ const ANNOTATION_LIMITS = Object.freeze({
   strokeWidth: Object.freeze([1, 20]),
   textFontSize: 20,
 });
+/**
+ * Agent write surface (`browser_annotation`, docs/viewport-control.md).
+ *
+ * `foregroundTtlMs` is the freshness window of the panel's "this tab is my selected tab and I am
+ * visible" claim. The panel polls `/state` every 500ms for its selected tab, so a 1.5s window means
+ * "the human is looking at this tab right now" while a tab switch, a closed panel or a backgrounded
+ * DSH tab expires the claim within one or two polls instead of relying on the 15s viewer TTL.
+ */
+const ANNOTATION_FOREGROUND_TTL_MS = 1500;
+const ANNOTATION_AGENT_ACTIONS = Object.freeze(['read', 'draw', 'erase', 'clear']);
+/** One call may add at most this many shapes; the document budget is still 128. */
+const ANNOTATION_AGENT_MAX_SHAPES_PER_CALL = 64;
+const ANNOTATION_AGENT_DEFAULT_COLOR = '#ff3b30';
+const ANNOTATION_AGENT_DEFAULT_STROKE = 3;
+/** Panel eraser: r = max(strokeWidth / 2, 6) canvas CSS px (docs/viewport-control.md §11.4). */
+const ANNOTATION_ERASE_MIN_RADIUS = 6;
+const ANNOTATION_ERASE_DEFAULT_RADIUS = 8;
+/** Text has no measured box on the Host side: hit-test uses an estimate, never a DOM read. */
+const ANNOTATION_TEXT_BOX_CHAR_RATIO = 0.6;
 /** Shape geometry may sit anywhere on the canvas: C's lower bound plus the largest viewport. */
 const ANNOTATION_COORD_MIN = -10000000;
 const ANNOTATION_COORD_MAX = 10004096;
@@ -1317,6 +1349,8 @@ function annotationLimits() {
     maxBodyBytes: ANNOTATION_LIMITS.maxBodyBytes,
     maxPanels: ANNOTATION_LIMITS.maxPanels,
     staleAfterMs: ANNOTATION_LIMITS.staleAfterMs,
+    maxShapesPerCall: ANNOTATION_AGENT_MAX_SHAPES_PER_CALL,
+    foregroundTtlMs: ANNOTATION_FOREGROUND_TTL_MS,
   };
 }
 
@@ -1595,6 +1629,237 @@ function applyAnnotationLimits(shapes, clientTruncation, shortenedText) {
     truncation.droppedShapes += 1;
   }
   return { shapes: list, truncation };
+}
+
+/**
+ * Agent annotation write surface — pure pre-flight, no browser, no CDP, no file
+ * (docs/viewport-control.md).
+ *
+ * `browser_annotation` writes the SAME document the human panel publishes, so both writers have to
+ * agree on one set of shapes and one limit application. Everything below is deterministic data
+ * handling: an invalid call costs nothing, and a shape that would not survive the panel's own
+ * `annotWireShape`/Host validation is refused here instead of being drawn differently later.
+ */
+const ANNOTATION_AGENT_SHAPE_FIELDS = Object.freeze([
+  'type', 'id', 'color', 'strokeWidth', 'style', 'fill', 'stroke',
+  'x', 'y', 'width', 'height', 'cx', 'cy', 'rx', 'ry', 'x1', 'y1', 'x2', 'y2', 'points', 'text', 'fontSize',
+]);
+
+/** Next free `a<N>` id, starting after every id already in the document and in this call. */
+function annotationAgentIdFactory(shapes, specs) {
+  let max = 0;
+  const consider = (id) => {
+    const match = typeof id === 'string' ? /^a([1-9][0-9]{0,15})$/u.exec(id) : null;
+    if (!match) return;
+    const numeric = Number(match[1]);
+    if (Number.isSafeInteger(numeric) && numeric > max) max = numeric;
+  };
+  for (const shape of shapes) consider(shape && shape.id);
+  for (const spec of specs) consider(spec && typeof spec === 'object' && !Array.isArray(spec) ? spec.id : null);
+  return () => { max += 1; return 'a' + max; };
+}
+
+/**
+ * 填充/外框 for one Agent shape. `style` is the panel's single-source mode; explicit
+ * `fill`/`stroke` booleans are accepted for callers that want the raw contract, but mixing both is
+ * refused instead of guessed (a silently ignored style would draw a different shape).
+ */
+function annotationAgentFillStroke(type, spec, field) {
+  const hasStyle = spec.style !== undefined && spec.style !== null;
+  const hasFlags = spec.fill !== undefined || spec.stroke !== undefined;
+  if (hasStyle && hasFlags) throw annotationInvalid(`${field}.style`, 'style-conflicts-fill-stroke');
+  if (hasStyle) {
+    if (spec.style !== 'fill' && spec.style !== 'stroke') throw annotationInvalid(`${field}.style`, 'invalid-enum');
+    // `外框` is the panel's default mode for closed tools (annotStyleFor in client.js).
+    return spec.style === 'fill' ? { fill: true, stroke: false } : { fill: false, stroke: true };
+  }
+  if (hasFlags) {
+    return {
+      fill: spec.fill === undefined ? false : annotationBoolean(spec.fill, `${field}.fill`),
+      stroke: spec.stroke === undefined ? false : annotationBoolean(spec.stroke, `${field}.stroke`),
+    };
+  }
+  // Panel defaults: text is filled text; free strokes/arrows are always outer strokes; circle and
+  // rect follow the panel's default 外框 mode.
+  return type === 'text' ? { fill: true, stroke: false } : { fill: false, stroke: true };
+}
+
+/** One Agent shape spec → the wire shape the panel and the screenshot overlay already understand. */
+function normalizeAgentAnnotationShape(raw, field, allocateId, seenIds) {
+  const spec = annotationObject(raw, field);
+  annotationRejectUnknown(spec, ANNOTATION_AGENT_SHAPE_FIELDS, field);
+  const type = spec.type;
+  if (typeof type !== 'string' || !ANNOTATION_TYPES.includes(type)) throw annotationInvalid(`${field}.type`, 'invalid-enum');
+  const style = annotationAgentFillStroke(type, spec, field);
+  const wire = {
+    id: spec.id === undefined || spec.id === null ? allocateId() : spec.id,
+    type,
+    color: spec.color === undefined || spec.color === null ? ANNOTATION_AGENT_DEFAULT_COLOR : spec.color,
+    strokeWidth: spec.strokeWidth === undefined || spec.strokeWidth === null
+      ? ANNOTATION_AGENT_DEFAULT_STROKE : spec.strokeWidth,
+    fill: style.fill,
+    stroke: style.stroke,
+  };
+  for (const key of ANNOTATION_GEOMETRY_FIELDS[type]) {
+    // The arrow head is derived from the endpoints + stroke width; a supplied head never wins.
+    if (key === 'head') continue;
+    if (key === 'fontSize') {
+      wire.fontSize = spec.fontSize === undefined || spec.fontSize === null
+        ? ANNOTATION_LIMITS.textFontSize : spec.fontSize;
+      continue;
+    }
+    wire[key] = spec[key];
+  }
+  return normalizeAnnotationShape(wire, field, seenIds);
+}
+
+function annotationSegmentDistance(px, py, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSq = dx * dx + dy * dy;
+  if (!(lengthSq > 0)) return Math.hypot(px - ax, py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSq));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function annotationPointInRect(point, rect) {
+  return point.x >= rect.x && point.x <= rect.x + rect.width
+    && point.y >= rect.y && point.y <= rect.y + rect.height;
+}
+
+/** Distance from a point to a rect's outline (inside included): 0 on the border. */
+function annotationRectOutlineDistance(point, rect) {
+  const left = rect.x;
+  const right = rect.x + rect.width;
+  const top = rect.y;
+  const bottom = rect.y + rect.height;
+  if (!annotationPointInRect(point, rect)) {
+    const nx = Math.min(Math.max(point.x, left), right);
+    const ny = Math.min(Math.max(point.y, top), bottom);
+    return Math.hypot(point.x - nx, point.y - ny);
+  }
+  return Math.min(point.x - left, right - point.x, point.y - top, bottom - point.y);
+}
+
+/**
+ * Host-side eraser hit test (the panel uses Path2D/isPointInStroke plus the rendered text bbox; the
+ * Host must not read the page, so the rules below are analytic and stated in the docs):
+ *   rect   — inside when filled, else within `r` of the outline;
+ *   circle — normalized radial distance |k−1| · min(rx,ry) within `r`, inside when filled;
+ *   line   — point/segment distance within `r`;
+ *   arrow  — the shaft only (the head triangle is not modelled);
+ *   brush  — nearest polyline segment within `r`;
+ *   text   — an estimated box (see ANNOTATION_TEXT_BOX_CHAR_RATIO), expanded by `r`.
+ * `r = max(requested radius, strokeWidth / 2, 6)` mirrors `annotEraseRadius` in client.js.
+ */
+function annotationAgentHit(shape, point, radius) {
+  const width = Number(shape.strokeWidth);
+  const limit = Math.max(radius, Number.isFinite(width) ? width / 2 : 0, ANNOTATION_ERASE_MIN_RADIUS);
+  if (shape.type === 'rect') {
+    const rect = { x: shape.x, y: shape.y, width: shape.width, height: shape.height };
+    if (shape.fill === true && annotationPointInRect(point, rect)) return true;
+    if (shape.stroke !== true) return false;
+    return annotationRectOutlineDistance(point, rect) <= limit;
+  }
+  if (shape.type === 'circle') {
+    const rx = shape.rx;
+    const ry = shape.ry;
+    const k = Math.hypot((point.x - shape.cx) / rx, (point.y - shape.cy) / ry);
+    if (shape.fill === true && k <= 1) return true;
+    if (shape.stroke !== true) return false;
+    return Math.abs(k - 1) * Math.min(rx, ry) <= limit;
+  }
+  if (shape.type === 'line' || shape.type === 'arrow') {
+    return annotationSegmentDistance(point.x, point.y, shape.x1, shape.y1, shape.x2, shape.y2) <= limit;
+  }
+  if (shape.type === 'brush') {
+    const points = Array.isArray(shape.points) ? shape.points : [];
+    if (points.length === 1) return Math.hypot(point.x - points[0][0], point.y - points[0][1]) <= limit;
+    for (let index = 1; index < points.length; index += 1) {
+      if (annotationSegmentDistance(point.x, point.y, points[index - 1][0], points[index - 1][1],
+        points[index][0], points[index][1]) <= limit) return true;
+    }
+    return false;
+  }
+  if (shape.type === 'text') {
+    const size = Number(shape.fontSize);
+    const fontSize = Number.isFinite(size) && size > 0 ? size : ANNOTATION_LIMITS.textFontSize;
+    const chars = Math.max(1, String(shape.text || '').length);
+    const rect = {
+      x: shape.x,
+      y: shape.y - fontSize,
+      width: chars * fontSize * ANNOTATION_TEXT_BOX_CHAR_RATIO,
+      height: fontSize * 1.2,
+    };
+    return annotationRectOutlineDistance(point, rect) <= limit || annotationPointInRect(point, rect);
+  }
+  return false;
+}
+
+/**
+ * `browser_annotation` arguments → one validated call. Pure: no runtime, no browser, no file, so an
+ * invalid call is refused before any state is read (and before the foreground claim is consulted).
+ */
+function normalizeAgentAnnotationCall(args) {
+  const input = annotationObject(args, 'browser_annotation');
+  annotationRejectUnknown(input,
+    ['action', 'shapes', 'ids', 'point', 'expectRevision'], 'browser_annotation');
+  const action = input.action;
+  if (typeof action !== 'string' || !ANNOTATION_AGENT_ACTIONS.includes(action)) {
+    throw annotationInvalid('action', 'invalid-enum');
+  }
+  const allowed = {
+    read: [],
+    draw: ['shapes', 'expectRevision'],
+    erase: ['ids', 'point', 'expectRevision'],
+    clear: ['expectRevision'],
+  }[action];
+  for (const key of Object.keys(input)) {
+    if (key === 'action') continue;
+    if (!allowed.includes(key)) throw annotationInvalid(key, 'unknown-field');
+  }
+  let expectRevision = null;
+  if (input.expectRevision !== undefined && input.expectRevision !== null) {
+    expectRevision = annotationNumber(input.expectRevision, 'expectRevision', {
+      min: 0, max: Number.MAX_SAFE_INTEGER, integer: true,
+    });
+  }
+  if (action === 'read') return { action, specs: [], ids: [], point: null, expectRevision };
+  if (action === 'clear') return { action, specs: [], ids: [], point: null, expectRevision };
+  if (action === 'draw') {
+    if (!Array.isArray(input.shapes) || input.shapes.length === 0) throw annotationInvalid('shapes', 'not-an-array');
+    if (input.shapes.length > ANNOTATION_AGENT_MAX_SHAPES_PER_CALL) throw annotationInvalid('shapes', 'too-many');
+    return { action, specs: input.shapes, ids: [], point: null, expectRevision };
+  }
+  // erase: ids and/or a point hit. Both empty would be a no-op reported as success — refuse it.
+  const ids = [];
+  if (input.ids !== undefined && input.ids !== null) {
+    if (!Array.isArray(input.ids)) throw annotationInvalid('ids', 'not-an-array');
+    if (input.ids.length > ANNOTATION_AGENT_MAX_SHAPES_PER_CALL) throw annotationInvalid('ids', 'too-many');
+    for (let index = 0; index < input.ids.length; index += 1) {
+      const id = input.ids[index];
+      if (typeof id !== 'string' || !ANNOTATION_ID_PATTERN.test(id)) throw annotationInvalid(`ids[${index}]`, 'invalid-id');
+      if (ids.includes(id)) throw annotationInvalid(`ids[${index}]`, 'duplicate-id');
+      ids.push(id);
+    }
+  }
+  let point = null;
+  if (input.point !== undefined && input.point !== null) {
+    const raw = annotationObject(input.point, 'point');
+    annotationRejectUnknown(raw, ['x', 'y', 'radius'], 'point');
+    const coord = (value, name) => annotationNumber(value, `point.${name}`, {
+      min: ANNOTATION_COORD_MIN, max: ANNOTATION_COORD_MAX,
+    });
+    point = {
+      x: coord(raw.x, 'x'),
+      y: coord(raw.y, 'y'),
+      radius: raw.radius === undefined || raw.radius === null
+        ? ANNOTATION_ERASE_DEFAULT_RADIUS
+        : annotationNumber(raw.radius, 'point.radius', { min: 1, max: 4096 }),
+    };
+  }
+  if (ids.length === 0 && point === null) throw annotationInvalid('ids', 'erase-target-required');
+  return { action, specs: [], ids, point, expectRevision };
 }
 
 /** Content digest of one panel revision: the same revision must carry the same content. */
@@ -4483,6 +4748,11 @@ export class Runtime {
       updatedAt: null,
       lastRotateReason: null,
       salt: randomUUID().replace(/-/gu, ''),
+      // Human-foreground claim (`browser_annotation`, docs/viewport-control.md): the panel reports
+      // "this runtime is my selected tab and I am visible" on its authenticated requests. It is a
+      // separate clock from `lastSeenAt` (document freshness) and from the 15s viewer TTL.
+      guiForegroundAt: 0,
+      guiForegroundView: null,
     };
     this.activity = '空闲';
     this.agentUntil = 0;
@@ -6725,6 +6995,45 @@ export class Runtime {
     };
   }
 
+  /**
+   * Refresh the human-foreground claim for this runtime (`browser_annotation`).
+   *
+   * Only the authenticated panel sends the report (it does so on `/state`, `/frame` and `/metrics`
+   * for the tab it is actually displaying, and stops as soon as it is hidden or another tab is
+   * selected). The Agent cannot raise its own claim through any tool: this method is reachable only
+   * from the scoped GUI routes.
+   */
+  noteGuiForeground(viewId = null) {
+    this.annot.guiForegroundAt = Date.now();
+    this.annot.guiForegroundView = typeof viewId === 'string' && viewId.length > 0 ? viewId : 'primary';
+  }
+
+  /**
+   * Is this runtime the tab a human is looking at right now?
+   *
+   * `active` is a *freshness* answer, never a stored permission: it goes false on its own within
+   * `ANNOTATION_FOREGROUND_TTL_MS` when the panel stops reporting (tab switched away, panel closed,
+   * DSH tab backgrounded). A dead page is never in the foreground.
+   */
+  guiForeground() {
+    const at = Number(this.annot.guiForegroundAt) || 0;
+    const ageMs = at > 0 ? Math.max(0, Date.now() - at) : null;
+    return {
+      active: this.running && at > 0 && ageMs !== null && ageMs <= ANNOTATION_FOREGROUND_TTL_MS,
+      viewId: this.annot.guiForegroundView || null,
+      ageMs,
+      maxAgeMs: ANNOTATION_FOREGROUND_TTL_MS,
+    };
+  }
+
+  /** The document's shapes for a read-modify-write, or [] when the document is not this one. */
+  annotationCurrentShapes() {
+    this.#annotationPrune();
+    const document = this.annot.document;
+    if (!document || !document.context || document.context.documentKey !== this.annot.documentKey) return [];
+    return document.shapes.map((shape) => JSON.parse(JSON.stringify(shape)));
+  }
+
   /** Rotate the navigation token and drop everything stored under the old one (§11.2). */
   #annotationRotate(reason) {
     const hadDocument = this.annot.document !== null;
@@ -6779,6 +7088,9 @@ export class Runtime {
         : { droppedShapes: 0, droppedPoints: 0, shortenedTextCodeUnits: 0 },
       stale,
       staleReason,
+      // Human-foreground claim (docs/viewport-control.md): `browser_annotation` writes are refused
+      // unless `active` is true. Computed at read time, never stored in the document.
+      foreground: this.guiForeground(),
     };
   }
 
@@ -6812,13 +7124,17 @@ export class Runtime {
       space: ANNOTATION_SPACE,
       revision: this.annot.revision + 1,
       updatedAt,
-      source: {
-        kind: 'human-panel',
-        panelId: request.panelId,
-        surface: request.surface,
-        clientRevision: request.clientRevision,
-        trusted: false,
-      },
+      // A panel publish cites the panel; `browser_annotation` passes its own source so a document
+      // written by the Agent never claims a human drew it (`trusted` stays false either way).
+      source: request.source
+        ? { ...request.source }
+        : {
+          kind: 'human-panel',
+          panelId: request.panelId,
+          surface: request.surface,
+          clientRevision: request.clientRevision,
+          trusted: false,
+        },
       context: this.annotationContext(),
       view: { ...request.view },
       shapes: shapes.map((shape) => JSON.parse(JSON.stringify(shape))),
@@ -6894,6 +7210,132 @@ export class Runtime {
     this.annot.lastSeenAt = updatedAt;
     this.annot.panels.set(request.panelId, { clientRevision: request.clientRevision, digest });
     return ack(true, false, request.clientRevision);
+  }
+
+  /** The annotation document's `view` snapshot for an Agent write (canvas CSS px space). */
+  #annotationAgentView() {
+    const view = this.view;
+    const content = this.contentProjection();
+    return {
+      canvasX: view.canvasX,
+      canvasY: view.canvasY,
+      x: view.x,
+      y: view.y,
+      width: view.width,
+      height: view.height,
+      scale: view.scale,
+      contentWidth: content.width,
+      contentHeight: content.height,
+      viewRevision: view.revision,
+      frameEpoch: this.frames && Number.isFinite(this.frames.epoch) ? this.frames.epoch : null,
+    };
+  }
+
+  /**
+   * `browser_annotation` — the Agent's half of the same document (docs/viewport-control.md).
+   *
+   * Read-modify-write on ONE shape list: a human note is never overwritten by a draw, and an Agent
+   * note survives the human's next edit because the panel hydrates this document before it
+   * publishes its own. Every refusal happens before any state is touched, and nothing here starts a
+   * page, takes the page lease, dispatches CDP or writes page `lastError`.
+   *
+   * @param {{action:string, specs:ReadonlyArray<object>, ids:ReadonlyArray<string>,
+   *   point:{x:number,y:number,radius:number}|null, expectRevision:number|null}} call
+   *   Output of `normalizeAgentAnnotationCall` (already structurally validated).
+   * @param {{sessionId?:string|null}} [options] Caller identity for the document's `source`.
+   */
+  agentAnnotation(call, options = {}) {
+    // `read` answers on a cold runtime too (the document is simply empty / stale=not-running);
+    // only a *write* needs a page, because only a running page has a panel showing it.
+    if (call.action !== 'read' && !this.running) {
+      throw annotationInvalid('runtime', 'annotation-runtime-not-running');
+    }
+    const foreground = this.guiForeground();
+    if (call.action !== 'read' && !foreground.active) {
+      // The whole point of an Agent note is that a human sees it: drawing on a tab nobody displays
+      // would be an invisible write. Zero writes, and the caller is told what has to change.
+      throw new BrowserError(
+        'ANNOTATION_NOT_FOREGROUND',
+        '标注只能画在人类当前选中的标签页上：请在调试视图里选中该标签页并保持可见后重试（本次零写入）',
+        {
+          reason: 'annotation-not-foreground',
+          viewId: foreground.viewId,
+          ageMs: foreground.ageMs,
+          maxAgeMs: foreground.maxAgeMs,
+        },
+      );
+    }
+    const current = this.annotationCurrentShapes();
+    if (call.expectRevision !== null && call.expectRevision !== this.annot.revision) {
+      throw new BrowserError('ANNOTATION_REVISION_CONFLICT', '标注文档 revision 已变化：本次零写入，请先读取最新文档', {
+        reason: 'annotation-revision-conflict',
+        expectedRevision: call.expectRevision,
+        currentRevision: this.annot.revision,
+      });
+    }
+    if (call.action === 'read') {
+      return { ok: true, action: 'read', removed: [], ...this.annotationsDocument() };
+    }
+    let shapes = current;
+    const removed = [];
+    let shortenedText = 0;
+    if (call.action === 'draw') {
+      const allocateId = annotationAgentIdFactory(current, call.specs);
+      const seenIds = new Set(current.map((shape) => shape.id));
+      const added = [];
+      for (let index = 0; index < call.specs.length; index += 1) {
+        const result = normalizeAgentAnnotationShape(call.specs[index], `shapes[${index}]`, allocateId, seenIds);
+        added.push(result.shape);
+        shortenedText += result.shortenedText;
+      }
+      shapes = current.concat(added);
+    } else if (call.action === 'erase') {
+      const ids = new Set(call.ids);
+      shapes = current.filter((shape) => {
+        if (ids.has(shape.id)) { removed.push(shape.id); return false; }
+        if (call.point && annotationAgentHit(shape, call.point, call.point.radius)) { removed.push(shape.id); return false; }
+        return true;
+      });
+    } else {
+      for (const shape of current) removed.push(shape.id);
+      shapes = [];
+    }
+    const limited = applyAnnotationLimits(
+      shapes,
+      { droppedShapes: 0, droppedPoints: 0, shortenedTextCodeUnits: 0 },
+      shortenedText,
+    );
+    const updatedAt = Date.now();
+    const request = {
+      // No panel watermark is consumed: an Agent write must never satisfy a stale panel revision.
+      panelId: null,
+      surface: 'main',
+      clientRevision: 0,
+      view: this.#annotationAgentView(),
+      source: {
+        kind: 'agent-tool',
+        tool: 'browser_annotation',
+        agentSessionId: options.sessionId ? String(options.sessionId) : null,
+        surface: 'main',
+        trusted: false,
+      },
+    };
+    let finalShapes = limited.shapes;
+    let truncation = limited.truncation;
+    let document = this.#annotationBuild(request, finalShapes, truncation, updatedAt);
+    // Same byte budget as a panel publish: drop the oldest whole shapes, never a half shape.
+    while (Buffer.byteLength(JSON.stringify(document), 'utf8') > ANNOTATION_LIMITS.maxDocumentBytes
+      && finalShapes.length > 0) {
+      finalShapes = finalShapes.slice(1);
+      truncation = { ...truncation, droppedShapes: truncation.droppedShapes + 1 };
+      document = this.#annotationBuild(request, finalShapes, truncation, updatedAt);
+    }
+    this.annot.revision += 1;
+    document.revision = this.annot.revision;
+    this.annot.document = document;
+    this.annot.updatedAt = updatedAt;
+    this.annot.lastSeenAt = updatedAt;
+    return { ok: true, action: call.action, removed, ...this.annotationsDocument() };
   }
 
   /** One HTTP-poll response in the historical shape plus frame metadata and epoch. */
@@ -7285,13 +7727,19 @@ export class Runtime {
    * unchanged; only a protocol error, empty data or a capture failure without a more fitting code
    * becomes CAPTURE_FAILED.
    */
-  async capture({ scale = 1, region, scaleSource = 'explicit' } = {}, signal) {
+  async capture({ scale = 1, region, scaleSource = 'explicit', includeAnnotations = false } = {}, signal) {
     const capturedAt = Date.now();
     // The resolved density source travels with the capture so evidence can say whether the caller
     // asked for this scale or the shared view.scale supplied it (docs/viewport-control.md).
     const resolvedScaleSource = scaleSource === 'view' ? 'view' : 'explicit';
     const viewRevisionAtCapture = this.view.revision;
     await this.ensure(signal);
+    // Freeze the accepted panel document once, before sampling page pixels. Mid-capture edits
+    // cannot mix revisions, and a navigation during either stage fails closed.
+    const annotationDocument = includeAnnotations ? this.annotationsDocument() : null;
+    const annotationContext = includeAnnotations ? this.annotationContext() : null;
+    const finish = shot => includeAnnotations
+      ? this.compositeCaptureAnnotations(shot, annotationDocument, annotationContext, signal) : shot;
     const deviceScaleFactor = 1;
     const effectiveScale = scale * deviceScaleFactor;
 
@@ -7435,11 +7883,11 @@ export class Runtime {
           phase: 'captureScreenshot', reason: 'empty-bytes',
         });
       }
-      return {
+      return finish({
         base64: shot.data,
         pngBytes,
         capture: { ...baseCapture, pageCapture: null },
-      };
+      });
     }
 
     // O ≠ 0 must be composited (docs/viewport-control.md + the 2026-11-02 negative-clip spike):
@@ -7518,11 +7966,82 @@ export class Runtime {
         phase: 'encodeComposite', reason: redactText(String(error && error.message ? error.message : error)).slice(0, 200),
       });
     }
-    return {
+    return finish({
       base64: pngBytes.toString('base64'),
       pngBytes,
       capture: { ...baseCapture, pageCapture, composite: true },
+    });
+  }
+
+  /** Opt-in panel overlay. Raw capture/T3/T4 callers keep the original PNG path. */
+  async compositeCaptureAnnotations(shot, document, context, signal) {
+    const assertContext = () => {
+      const current = this.annotationContext();
+      if (current.documentKey !== context.documentKey
+        || current.pageGeneration !== context.pageGeneration
+        || current.documentEpoch !== context.documentEpoch) {
+        throw new BrowserError('CAPTURE_FAILED', '截图期间页面已切换，请重新读取标注并截图', {
+          phase: 'annotationOverlay', reason: 'annotation-context-changed',
+        });
+      }
     };
+    assertContext();
+    if (document.shapes.length && (!document.context
+      || document.context.documentKey !== context.documentKey
+      || document.context.pageGeneration !== context.pageGeneration
+      || document.context.documentEpoch !== context.documentEpoch)) {
+      throw new BrowserError('CAPTURE_FAILED', '标注与截图不属于同一页面文档', {
+        phase: 'annotationOverlay', reason: 'annotation-context-changed',
+      });
+    }
+    const annotations = {
+      enabled: true, composited: false, space: document.space,
+      revision: document.revision, updatedAt: document.updatedAt,
+      source: document.source, context: document.context,
+      shapeCount: document.shapes.length,
+      stale: document.stale, staleReason: document.staleReason,
+      truncated: document.truncated, truncation: document.truncation,
+    };
+    shot.capture.annotations = annotations;
+    if (!document.shapes.length) return shot;
+    const png = inspectPng(shot.pngBytes, { checkCrc: true });
+    if (!png.ok) throw new BrowserError('INVALID_PNG', '叠加前的页面 PNG 校验失败', { phase: 'annotationOverlay' });
+    const expected = expectedPixelSize({
+      width: shot.capture.region.width, height: shot.capture.region.height,
+      scale: shot.capture.effectiveScale, deviceScaleFactor: 1,
+    });
+    const size = checkPixelSize({ width: png.width, height: png.height }, expected);
+    if (!size.ok) throw new BrowserError(size.code, '叠加前的页面 PNG 尺寸不符', size.details);
+    const renderer = webHostNamespace('annotation-capture');
+    try {
+      const tree = await this.send('Page.getFrameTree', {}, signal);
+      const world = await this.send('Page.createIsolatedWorld', {
+        frameId: tree.frameTree.frame.id, worldName: 'dsh-annotation-capture',
+      }, signal);
+      const input = { shapes: document.shapes, region: shot.capture.region, width: png.width, height: png.height };
+      // A detached OffscreenCanvas in an isolated world avoids page prototype overrides and CSP
+      // image restrictions. No DOM insertion, image load, page state or extra browser tab.
+      const rendered = await this.send('Runtime.evaluate', {
+        contextId: world.executionContextId,
+        expression: `(${renderer.renderAnnotationOverlay.toString()})(${JSON.stringify(input)})`,
+        awaitPromise: true, returnByValue: true,
+      }, signal);
+      if (rendered.exceptionDetails || !rendered.result?.value?.base64) {
+        throw new BrowserError('CAPTURE_FAILED', '标注离屏绘制失败', { phase: 'annotationOverlay', reason: 'raster-failed' });
+      }
+      assertContext();
+      const page = decodePng(shot.pngBytes);
+      const overlay = decodePng(Buffer.from(rendered.result.value.base64, 'base64'));
+      if (!page.ok || !overlay.ok) {
+        throw new BrowserError('CAPTURE_FAILED', '标注叠加 PNG 无法解码', { phase: 'annotationOverlay' });
+      }
+      const pixels = renderer.compositeAnnotationPixels(page, overlay);
+      const pngBytes = encodePngRgba(pixels);
+      annotations.composited = true;
+      return { ...shot, pngBytes, base64: pngBytes.toString('base64') };
+    } catch (error) {
+      throw this.#captureError(error, 'annotationOverlay');
+    }
   }
 
   /**
@@ -12697,6 +13216,14 @@ const SCOPE_HEADER_BINDING = 'x-ui-testing-scope-binding';
  */
 const SCOPE_HEADER_TAB = 'x-ui-testing-scope-tab';
 const SCOPE_TAB_PRIMARY = 'primary';
+/**
+ * "This runtime is my selected tab and I am visible" (P0-D `browser_annotation`).
+ *
+ * Only the authenticated panel sends it, and only while it is displaying that tab — a selected
+ * internal tab, its DSH seat visible, and the GUI page itself not hidden. It is a claim, not a
+ * permission: the Host only turns it into a short freshness window, and `read` never needs it.
+ */
+const SCOPE_HEADER_FOREGROUND = 'x-ui-testing-gui-foreground';
 const SCOPE_SPECIAL_VALUES = new Set(['recent', 'unassigned']);
 
 function headerValue(headers, name) {
@@ -15825,6 +16352,12 @@ export function apply(ctx) {
           // selection must never redirect it (docs/multi-tab.md).
           entry = registry.resolveSessionTab(entry, scopeRequest.sessionId).entry;
         }
+        if (entry && scoped && headerValue(req.headers, SCOPE_HEADER_FOREGROUND) === '1') {
+          // Human-foreground claim (docs/viewport-control.md): the panel reports it on the requests
+          // it makes for the tab it is displaying, so switching tabs/closing the panel/backgrounding
+          // the GUI lets the claim expire instead of leaving a stale "somebody is watching" bit.
+          entry.runtime.noteGuiForeground(entry.viewId);
+        }
         return { resolved, entry };
       };
       const assertGuiPageWrite = (runtime, selfSessionId = null) => {
@@ -16776,7 +17309,8 @@ export function apply(ctx) {
     name: 'browser_screenshot',
     description: '截取内嵌浏览器的画面（PNG）：默认 canvas 视口 [C,C+W)×[C,C+H)、默认比例 = 当前共享显示比例 view.scale（冷启动 100%）；可选 scale（连续 0.1–4，可用小数；重新光栅化，不是位图放大）、'
       + 'region（canvas CSS 像素矩形；O=0 时与文档坐标相同，可为负 → blank 纯白）、persist（默认 false：写插件暂存目录，不落工作区）、out（工作区相对 .png，提供即视为持久留存）。'
-      + 'O≠0 时以真实 S 截页面再白底合成（重编码），证据 capture.canvas.composite=true；O=0 保持单次 CDP PNG 不重编码。'
+      + '用户提到标注、画、圈、框、箭头或笔迹等面板标注时，传 includeAnnotations:true，把已提交标注按当前画布坐标叠加到截图（含文字和画笔），返回 capture.annotations 版本与来源；默认 false。'
+      + 'O≠0 时以真实 S 截页面再白底合成（重编码），证据 capture.canvas.composite=true；O=0 且未叠加标注时保持单次 CDP PNG 不重编码。'
       + '只有 out / persist:true / DSH_UI_TESTING_CAPTURE_DIR 三者之一才持久落盘（0600、原子写入、绝不覆盖）；'
       + '暂存文件返回绝对路径并在插件卸载时删除。返回 PNG 结构/尺寸校验/空白识别/落盘/附件对比证据与 warnings；尺寸不符或 PNG 损坏时不交付图片。',
     parameters: {
@@ -16796,6 +17330,10 @@ export function apply(ctx) {
             height: { type: 'number' },
           },
           required: ['x', 'y', 'width', 'height'],
+        },
+        includeAnnotations: {
+          type: 'boolean',
+          description: '默认 false。用户提到标注、画、圈、框、箭头、笔迹等面板标注时设为 true：将当前已提交的圆、矩形、线、箭头、画笔与文字叠加到浏览器截图，按 region/scale 一起裁剪缩放。只含 Host 已接受的标注，不含未提交草稿和面板工具栏；capture.annotations 记录版本、来源、过期与截断状态。标注是人类线索，不是页面事实。',
         },
         persist: {
           type: 'boolean',
@@ -16857,7 +17395,7 @@ export function apply(ctx) {
       // 3) The single capture (no retry, no second encoding).
       // A01: the capture data plane goes through the P0 provider (target binding + evidence),
       // while the screenshot tool keeps owning its public result shape.
-      const shot = await p0(exec, 'A', 'capture', { scale, region: request.region, scaleSource });
+      const shot = await p0(exec, 'A', 'capture', { scale, region: request.region, scaleSource, includeAnnotations: request.includeAnnotations });
       const data = shot.pngBytes;
       const captured = shot.capture;
       const product = await p0(exec, 'A', 'product');
@@ -16877,6 +17415,7 @@ export function apply(ctx) {
         coordinateSpace: captured.composite ? 'canvas-css-px' : 'document-css-px',
         out: request.out,
         persist: request.persist,
+        includeAnnotations: request.includeAnnotations,
       };
       const environment = {
         browser: 'chromium',
@@ -16924,6 +17463,7 @@ export function apply(ctx) {
         composite: captured.composite,
         contentRect: captured.contentRect,
         pageCapture: captured.pageCapture,
+        annotations: captured.annotations || null,
       };
       if (!sizeCheck.ok) {
         // Use the module's own verdict verbatim: CAPTURE_UPSCALED only says "larger than expected"
@@ -18149,6 +18689,125 @@ export function apply(ctx) {
         expectedRevision: request.expectedRevision,
       });
       return { ok: true, ...result, requested: { ...request.requested } };
+    },
+  });
+
+  register({
+    name: 'browser_annotation',
+    // Reading is a cached host read; every mutating action only rewrites the Host-side document.
+    // Neither branch may ensure a page, take the page queue/lease, activate the tab or touch
+    // `lastError`: a drawn note must cost the page nothing (docs/viewport-control.md).
+    readOnly: (args) => Boolean(args) && typeof args === 'object' && args.action === 'read',
+    hostOnly: (args) => Boolean(args) && typeof args === 'object' && args.action !== 'read',
+    // Pure pre-flight outside the queue: a refused call costs zero state and zero CDP.
+    preflight: (args) => { normalizeAgentAnnotationCall(args); },
+    description: 'P0 标注（人类可见）：读写调试视图里同一份标注文档，人类在面板里能立刻看到。'
+      + 'action=read 返回图形列表与 revision（不写、不需要前台）；'
+      + 'draw 追加图形（circle/rect/line/arrow/brush/text，对应面板的圆形/矩形/线段/箭头/画笔/文字）；'
+      + 'erase 按 id 或按点命中删除（对应橡皮擦）；clear 清空画布。'
+      + '每个图形可带 color（#rrggbb，默认 #ff3b30）、strokeWidth（1–20，默认 3）与 style=stroke|fill（对应外框/填充，仅圆形/矩形；'
+      + '也可显式 fill/stroke 布尔值，二者不可同时给）。'
+      + '坐标是画布 CSS px：q=d-C、O=C-S、页面视口 p=q+O=d-S；与 browser_screenshot{includeAnnotations:true} 同一空间。'
+      + 'draw/erase/clear 只在目标标签页正被人类在调试视图选中并可见时才允许，否则 ANNOTATION_NOT_FOREGROUND 零写入；'
+      + 'expectRevision 不一致返回 ANNOTATION_REVISION_CONFLICT。'
+      + '只写 Host 文档：不启动浏览器、不进页面队列、不占租约、不改页面 DOM 与 lastError；软限额与面板写面相同（128 图形/8192 点/65536 字节，Host 确定性裁剪并如实报 truncated）。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        action: {
+          type: 'string',
+          enum: [...ANNOTATION_AGENT_ACTIONS],
+          description: 'read=读当前文档；draw=追加图形；erase=删除图形；clear=清空画布（后三者需要人类前台标签页）',
+        },
+        shapes: {
+          type: 'array',
+          minItems: 1,
+          maxItems: ANNOTATION_AGENT_MAX_SHAPES_PER_CALL,
+          description: 'draw 专用：要追加的图形（1–64 个）。省略 id 时 Host 从现有最大 id 续分配 a<N>；id 一旦重复或格式不符即整批拒绝。',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['type'],
+            properties: {
+              type: {
+                type: 'string',
+                enum: [...ANNOTATION_TYPES],
+                description: 'circle=圆形 / rect=矩形 / line=线段 / arrow=箭头 / brush=画笔（铅笔）/ text=文字（写问题、问号、说明）',
+              },
+              id: { type: 'string', description: '可选，形如 a12（^a[1-9][0-9]{0,15}$）；省略时由 Host 分配' },
+              color: { type: 'string', description: '可选，#rrggbb，默认 #ff3b30（面板默认色）' },
+              strokeWidth: {
+                type: 'integer',
+                description: `可选，粗细 ${ANNOTATION_LIMITS.strokeWidth[0]}–${ANNOTATION_LIMITS.strokeWidth[1]}，默认 ${ANNOTATION_AGENT_DEFAULT_STROKE}；箭头头部按端点+线宽派生`,
+              },
+              style: {
+                type: 'string',
+                enum: ['stroke', 'fill'],
+                description: '可选：stroke=外框（默认）/ fill=填充；只对 circle/rect 有意义（text 固定填充，line/arrow/brush 固定外框）。与 fill/stroke 互斥。',
+              },
+              fill: { type: 'boolean', description: '可选：显式填充位；与 style 互斥' },
+              stroke: { type: 'boolean', description: '可选：显式外框位；与 style 互斥' },
+              x: { type: 'number', description: 'rect/text 的 x（画布 CSS px）' },
+              y: { type: 'number', description: 'rect 的左上 y；text 的基线 y（画布 CSS px）' },
+              width: { type: 'number', description: 'rect 宽（>0）' },
+              height: { type: 'number', description: 'rect 高（>0）' },
+              cx: { type: 'number', description: 'circle 中心 x' },
+              cy: { type: 'number', description: 'circle 中心 y' },
+              rx: { type: 'number', description: 'circle 半径 x（>0）' },
+              ry: { type: 'number', description: 'circle 半径 y（>0）' },
+              x1: { type: 'number', description: 'line/arrow 起点 x' },
+              y1: { type: 'number', description: 'line/arrow 起点 y' },
+              x2: { type: 'number', description: 'line/arrow 终点 x（不得与起点重合）' },
+              y2: { type: 'number', description: 'line/arrow 终点 y' },
+              points: {
+                type: 'array',
+                minItems: 2,
+                description: 'brush 笔迹：按顺序的 [[x,y],...] 画布坐标点（Host 会按单笔 512 点上限下采样并保留首末点）',
+                items: {
+                  type: 'array',
+                  minItems: 2,
+                  maxItems: 2,
+                  items: { type: 'number' },
+                },
+              },
+              text: { type: 'string', description: `text 内容（超过 ${ANNOTATION_LIMITS.maxTextCodeUnits} 字符会截断并在 truncation 里计数）` },
+              fontSize: {
+                type: 'integer',
+                description: `可选，只能等于 ${ANNOTATION_LIMITS.textFontSize}（面板文字固定字号，其它值报 font-size-fixed）`,
+              },
+            },
+          },
+        },
+        ids: {
+          type: 'array',
+          minItems: 1,
+          maxItems: ANNOTATION_AGENT_MAX_SHAPES_PER_CALL,
+          description: 'erase 专用：要删除的图形 id（形如 a12）。与 point 至少给一个；不存在的 id 只是不命中，不报错。',
+          items: { type: 'string' },
+        },
+        point: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['x', 'y'],
+          description: 'erase 专用：橡皮擦命中点（画布 CSS px）。命中规则见文档：形状几何到该点距离 ≤ max(radius, strokeWidth/2, 6)。',
+          properties: {
+            x: { type: 'number', description: '命中点 x（画布 CSS px）' },
+            y: { type: 'number', description: '命中点 y（画布 CSS px）' },
+            radius: { type: 'number', description: `可选半径，默认 ${ANNOTATION_ERASE_DEFAULT_RADIUS}（1–4096）` },
+          },
+        },
+        expectRevision: {
+          type: 'integer',
+          description: '可选 CAS：与当前文档 revision 不同则 ANNOTATION_REVISION_CONFLICT（零写入，返回 currentRevision）',
+        },
+      },
+    },
+    output: { schema: { type: 'object' }, render: (args, value) => text(value) },
+    async execute(args, exec) {
+      const call = normalizeAgentAnnotationCall(args);
+      return exec.runtime.agentAnnotation(call, { sessionId: exec.sessionId });
     },
   });
 
@@ -21453,6 +22112,19 @@ export function apply(ctx) {
             status: busy ? 'unavailable' : 'available',
             ...(busy ? { reason: 'BUSY: browser owned by another session (get 仍可只读诊断)' } : {}),
             constraints: viewportConstraints },
+          // P0-D annotations (docs/viewport-control.md): the document lives on the Host side, so
+          // neither reading nor drawing waits for another session's page lease. `draw/erase/clear`
+          // refuse with ANNOTATION_NOT_FOREGROUND unless a human is displaying that tab.
+          { id: 'web.p0d.annotations', tool: 'browser_annotation', status: 'available',
+            constraints: [
+              'One document per Runtime, shared with the human panel (read-modify-write; the panel hydrates newer Host revisions)',
+              'read never needs the foreground; draw/erase/clear need a fresh human-foreground claim ('
+                + ANNOTATION_FOREGROUND_TTL_MS + 'ms) for the target tab, else ANNOTATION_NOT_FOREGROUND with zero writes',
+              'Host-side only: no page queue, no single-owner lease, no ensure, no page DOM/CSS/lastError change',
+              'Same soft limits as the panel write surface ('
+                + ANNOTATION_LIMITS.maxShapes + ' shapes / ' + ANNOTATION_LIMITS.maxPointsPerDocument
+                + ' points / ' + ANNOTATION_LIMITS.maxDocumentBytes + ' bytes); truncation is deterministic and reported',
+            ] },
           { id: 'web.p0e.tabs', tool: 'browser_tabs', status: 'available',
             constraints: [
               'P0-E page group: primary + up to 3 child tabs per workspace (4 total; global maxPages still 8)',
@@ -21783,19 +22455,28 @@ export function apply(ctx) {
             : null,
         },
         // P0-D annotations (docs/viewport-control.md). Declared, never probed: reading this
-        // starts nothing. This is NOT a tool — the Agent reads the document through
-        // `browser_state.annotations`, and only the authenticated scoped HTTP surface writes it, so
-        // the registered tool surface stays at 30.
+        // starts nothing. Two writers share ONE document: the human panel over the authenticated
+        // scoped route, and the Agent over `browser_annotation` (which additionally needs a fresh
+        // human-foreground claim for the target tab).
         annotations: {
           version: ANNOTATION_VERSION,
           space: ANNOTATION_SPACE,
           readTool: 'browser_state',
           readPath: 'annotations',
+          readTools: ['browser_state', 'browser_annotation'],
           writeSurface: 'authenticated-scoped-http',
           writeRoute: 'POST /plugins/ui-testing/annotations',
+          writeTool: 'browser_annotation',
+          writeActions: ['draw', 'erase', 'clear'],
+          writeModel: 'read-modify-write of one document; the panel hydrates a newer Host revision',
+          foregroundRequiredForWrite: true,
+          foregroundTtlMs: ANNOTATION_FOREGROUND_TTL_MS,
           source: 'human-panel',
           trusted: false,
-          screenshotOverlay: false,
+          screenshotOverlay: true,
+          screenshotTool: 'browser_screenshot',
+          screenshotParameter: 'includeAnnotations',
+          screenshotDefault: false,
           coordinateSpace: 'canvas-css-px',
           // d = a shape's canvas point; q = d − C, O = C − S, page-viewport p = q + O = d − S. The
           // published `view` is the panel's accepted snapshot, not a live truth: read the current S
@@ -21813,6 +22494,9 @@ export function apply(ctx) {
               shapeCount: document.shapes.length,
               stale: document.stale,
               staleReason: document.staleReason,
+              // Whether `browser_annotation` could write right now (a human displays this tab).
+              foreground: document.foreground.active,
+              foregroundAgeMs: document.foreground.ageMs,
             };
           })(),
         },
