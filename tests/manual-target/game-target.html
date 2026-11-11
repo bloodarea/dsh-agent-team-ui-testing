@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>游戏靶机 · WASD 斜向移动 + FPS 视角</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #131a22; --line: #263241; --text: #e6edf3; --dim: #8b98a8;
+    --ok: #3fb950; --bad: #f85149; --todo: #d29922; --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 0 40px; background: var(--bg); color: var(--text);
+    font: 14px/1.55 -apple-system, "Segoe UI", "Noto Sans SC", system-ui, sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 9; display: flex; align-items: center; gap: 14px;
+    padding: 10px 18px; background: #0b0f14ee; border-bottom: 1px solid var(--line); backdrop-filter: blur(6px);
+  }
+  header h1 { font-size: 16px; margin: 0; white-space: nowrap; }
+  .bar { flex: 1; height: 8px; min-width: 80px; border-radius: 4px; background: #1b2530; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #58a6ff, #3fb950); transition: width .2s; }
+  .score { font: 600 15px/1 ui-monospace, monospace; white-space: nowrap; }
+  .score small { color: var(--dim); font-weight: 400; }
+  button {
+    font: inherit; padding: 5px 11px; border-radius: 6px; border: 1px solid var(--line);
+    background: #1b2530; color: var(--text); cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  .wrap { display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 16px; padding: 16px 18px 0; }
+  .card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; }
+  .card h2 { margin: 0; padding: 10px 14px; font-size: 14px; background: #0f151c; border-bottom: 1px solid var(--line); }
+  .card h2 span { color: var(--dim); font-weight: 400; font-size: 12px; }
+  canvas { display: block; width: 100%; height: auto; background: #06090d; }
+  .hud {
+    display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 8px 14px; font: 12px/1.6 ui-monospace, monospace;
+    color: var(--dim); border-top: 1px solid var(--line); min-height: 34px;
+  }
+  .hud b { color: var(--accent); font-weight: 600; }
+  kbd {
+    display: inline-block; min-width: 20px; padding: 0 5px; border-radius: 4px; text-align: center;
+    border: 1px solid var(--line); border-bottom-width: 2px; background: #0b0f14; font: 11px ui-monospace, monospace; color: var(--dim);
+  }
+  kbd.on { background: #1f6feb33; border-color: var(--accent); color: #cae8ff; }
+  .checks { padding: 8px 14px 12px; display: grid; gap: 6px; }
+  .check { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; }
+  .check .dot { flex: none; width: 9px; height: 9px; margin-top: 5px; border-radius: 50%; background: var(--todo); }
+  .check[data-pass="1"] .dot { background: var(--ok); }
+  .check[data-pass="1"] .name { color: #b7f0c2; }
+  .check .name { font-weight: 600; }
+  .check .why { color: var(--dim); }
+  .note { padding: 0 18px; color: var(--dim); font-size: 12px; }
+  .note code { background: #1b2530; padding: 1px 5px; border-radius: 4px; }
+  .tiles { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 18px 4px; }
+  .tile {
+    width: 118px; height: 46px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); border-radius: 8px; background: #0f151c; font: 12px ui-monospace, monospace; color: var(--accent);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>游戏靶机</h1>
+  <div class="bar"><i id="bar"></i></div>
+  <div class="score"><span id="passed">0</span><small>/<span id="total">8</span></small></div>
+  <button id="reset" type="button">重置</button>
+</header>
+
+<div class="wrap">
+  <section class="card">
+    <h2>① WASD 斜向移动 <span>— 多键组合：同时按住的两个方向必须都生效</span></h2>
+    <canvas id="move" width="720" height="360" tabindex="0"></canvas>
+    <div class="hud">
+      <span>按住 <span id="held">—</span></span>
+      <span>速度 <b id="vel">0.00, 0.00</b></span>
+      <span>|v| <b id="speed">0.000</b></span>
+    </div>
+    <div class="checks" id="checks-move"></div>
+    <div class="note">点一下画面让它拿到键盘焦点，然后 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 随便组合按：斜着按应真的斜着走，|v| 应恒为 1.000（不加速）；松开一个键应继续沿另一轴移动；全松开应停。</div>
+  </section>
+
+  <section class="card">
+    <h2>② FPS 视角 <span>— 鼠标相对移动：视角只吃 movement 增量</span></h2>
+    <canvas id="fps" width="720" height="360" tabindex="0"></canvas>
+    <div class="hud">
+      <span><b id="lock-ok">未锁定</b></span>
+      <span>yaw <b id="yaw">0.0°</b></span>
+      <span>pitch <b id="pitch">0.0°</b></span>
+      <span>Σmovement <b id="movsum">0</b></span>
+      <span>命中 <b id="hits">0</b></span>
+    </div>
+    <div class="checks" id="checks-fps"></div>
+    <div class="note">点画面 → 进入指针锁定（鼠标隐藏，<kbd>Esc</kbd> 退出）。转视角看画面跟随，把中央准星对上靶子后点一下射击。若本环境不允许锁定，页面会切到「相对模式」：直接在画面里划动也能转视角。</div>
+  </section>
+</div>
+
+<div class="note" style="margin-top:16px">③ 顺带看一眼光标形状（下面的磁贴用指针划过去，调试视图预览里的指针形状应与名字一致；<code>url(...)</code> 那个应该是普通箭头，不是红叉）：</div>
+<div class="tiles" id="tiles"></div>
+
+<div class="note" style="margin-top:14px">
+  判定全部由本页自己算（它真的收到了那些事件/位移才变绿）。<code>window.__target.report()</code> 可读出逐项 JSON。
+  文件：<code>tests/manual-target/game-target.html</code>；起服务：<code>python3 -m http.server 8130 --bind 127.0.0.1</code>。
+</div>
+
+<script>
+(() => {
+  /* ------------------------------------------------------------------ scoreboard */
+  const CHECKS = [
+    { id: 'diag', group: 'move', name: '斜向真的斜着走', why: '同一帧 x 与 y 速度都非零' },
+    { id: 'diag-norm', group: 'move', name: '斜向不加速', why: '|v| ∈ [0.98, 1.02]（速度归一化）' },
+    { id: 'release-keep', group: 'move', name: '松开一个键仍继续移动', why: '从双键松开一键后仍有非零速度' },
+    { id: 'stop', group: 'move', name: '全部松开即停', why: '松开所有键后速度归零（状态被清）' },
+    { id: 'lock', group: 'fps', name: '指针锁定 / 相对模式就绪', why: 'pointerLock 成功，或降级到相对模式' },
+    { id: 'movement', group: 'fps', name: '视角收到 movement 增量', why: '锁定/相对期间 Σ|movement| > 0' },
+    { id: 'yaw', group: 'fps', name: 'yaw 与 movementX 累计一致', why: '|Δyaw − ΣmovementX×灵敏度| < 0.6°' },
+    { id: 'hit', group: 'fps', name: '命中至少一个靶', why: '准星对上靶子后射击命中' },
+  ];
+  const score = { move: {}, fps: {} };
+  const nodes = new Map();
+  for (const check of CHECKS) {
+    const group = check.group === 'move' ? 'checks-move' : 'checks-fps';
+    const node = document.createElement('div');
+    node.className = 'check';
+    node.dataset.pass = '0';
+    node.innerHTML = '<span class="dot"></span><span><span class="name">' + check.name
+      + '</span> <span class="why">— ' + check.why + '</span></span>';
+    document.getElementById(group).appendChild(node);
+    nodes.set(check.id, node);
+    score[check.group][check.id] = false;
+  }
+  const errors = [];
+  window.addEventListener('error', (event) => errors.push(String(event.message || 'error')));
+
+  function report() {
+    const items = CHECKS.map((check) => ({ id: check.id, name: check.name, pass: score[check.group][check.id] === true }));
+    const passed = items.filter((item) => item.pass).length;
+    return { passed, total: items.length, items, errors: errors.slice(0, 5) };
+  }
+  function paint() {
+    for (const [id, node] of nodes) {
+      const group = CHECKS.find((check) => check.id === id).group;
+      node.dataset.pass = score[group][id] ? '1' : '0';
+    }
+    const current = report();
+    document.getElementById('passed').textContent = String(current.passed);
+    document.getElementById('total').textContent = String(current.total);
+    document.getElementById('bar').style.width = Math.round((current.passed / current.total) * 100) + '%';
+    window.__target = { report };
+  }
+
+  /* ------------------------------------------------------------------ shared: held keys */
+  const held = new Set();
+  const heldNode = document.getElementById('held');
+  const paintHeld = () => {
+    heldNode.innerHTML = held.size
+      ? [...held].map((name) => '<kbd class="on">' + name + '</kbd>').join(' ')
+      : '—';
+  };
+
+  /* ------------------------------------------------------------------ ① WASD diagonal */
+  const moveCanvas = document.getElementById('move');
+  const ctx = moveCanvas.getContext('2d');
+  const player = { x: moveCanvas.width / 2, y: moveCanvas.height / 2, vx: 0, vy: 0 };
+  const trail = [];
+  const MOVE_SPEED = 190;         // px/s，归一化后使用
+  const KEY_VECTORS = {
+    KeyW: [0, -1], KeyS: [0, 1], KeyA: [-1, 0], KeyD: [1, 0],
+    ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+  };
+  let sawTwoAxis = false;
+  let sawKnobRelease = false;
+  let hadDualHold = false;
+  let lastSingleAxisRun = null;
+
+  function moveInputVector() {
+    let x = 0; let y = 0;
+    for (const code of held) {
+      const vector = KEY_VECTORS[code];
+      if (!vector) continue;
+      x += vector[0];
+      y += vector[1];
+    }
+    if (x === 0 && y === 0) return { x: 0, y: 0, magnitude: 0 };
+    const magnitude = Math.hypot(x, y);
+    // 归一化：斜向不加速（这是"多键组合"最容易露馅的地方）。
+    return { x: x / magnitude, y: y / magnitude, magnitude: 1 };
+  }
+
+  let lastFrame = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - lastFrame) / 1000);
+    lastFrame = now;
+    const direction = moveInputVector();
+    const active = direction.magnitude > 0;
+    if (active) {
+      player.x = Math.min(moveCanvas.width - 18, Math.max(18, player.x + direction.x * MOVE_SPEED * dt));
+      player.y = Math.min(moveCanvas.height - 18, Math.max(18, player.y + direction.y * MOVE_SPEED * dt));
+      trail.push({ x: player.x, y: player.y });
+      if (trail.length > 90) trail.shift();
+    }
+    player.vx = direction.x * direction.magnitude;
+    player.vy = direction.y * direction.magnitude;
+
+    const axisX = Math.abs(player.vx) > 0.01;
+    const axisY = Math.abs(player.vy) > 0.01;
+    if (axisX && axisY) { sawTwoAxis = true; hadDualHold = true; }
+    // 从双键松到单键：仍有一轴在动（且不是靠上一帧的惯性，因为我们每帧重算）。
+    const speedNow = Math.hypot(player.vx, player.vy);
+    if (hadDualHold && !axisX && axisY) sawKnobRelease = true;
+    if (hadDualHold && axisX && !axisY) sawKnobRelease = true;
+    score.move.diag = sawTwoAxis;
+    score.move['diag-norm'] = sawTwoAxis && speedNow > 0 && speedNow >= 0.98 && speedNow <= 1.02 ? true : score.move['diag-norm'];
+    score.move['release-keep'] = sawKnobRelease;
+    if (hadDualHold && speedNow === 0) score.move.stop = true;
+
+    document.getElementById('vel').textContent = player.vx.toFixed(2) + ', ' + player.vy.toFixed(2);
+    document.getElementById('speed').textContent = speedNow.toFixed(3);
+    drawMove();
+    requestAnimationFrame(frame);
+  }
+
+  function drawMove() {
+    const w = moveCanvas.width; const h = moveCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+    // 网格
+    ctx.strokeStyle = '#16202b'; ctx.lineWidth = 1;
+    for (let x = 0; x <= w; x += 40) { ctx.beginPath(); ctx.moveTo(x + .5, 0); ctx.lineTo(x + .5, h); ctx.stroke(); }
+    for (let y = 0; y <= h; y += 40) { ctx.beginPath(); ctx.moveTo(0, y + .5); ctx.lineTo(w, y + .5); ctx.stroke(); }
+    // 轨迹
+    ctx.strokeStyle = '#1f6feb55'; ctx.lineWidth = 3;
+    ctx.beginPath();
+    trail.forEach((point, index) => (index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y)));
+    ctx.stroke();
+    // 小人
+    ctx.beginPath(); ctx.arc(player.x, player.y, 12, 0, Math.PI * 2);
+    ctx.fillStyle = '#58a6ff'; ctx.fill();
+    ctx.strokeStyle = '#cae8ff'; ctx.lineWidth = 2; ctx.stroke();
+    if (Math.hypot(player.vx, player.vy) > 0) {
+      ctx.beginPath(); ctx.moveTo(player.x, player.y);
+      ctx.lineTo(player.x + player.vx * 26, player.y + player.vy * 26);
+      ctx.strokeStyle = '#3fb950'; ctx.lineWidth = 3; ctx.stroke();
+    }
+  }
+
+  /* ------------------------------------------------------------------ ② FPS look */
+  const fpsCanvas = document.getElementById('fps');
+  const fpsCtx = fpsCanvas.getContext('2d');
+  const SENS = 0.12;                    // 度 / 像素 movement
+  const view = { yaw: 0, pitch: 0, sumMovement: 0, sumMovementX: 0, yawAtStart: 0, startX: 0, hits: 0, relativeMode: false, locked: false };
+  const targets = [{ yaw: -46, pitch: -2, r: 26 }, { yaw: 0, pitch: 1, r: 20 }, { yaw: 52, pitch: 3, r: 24 }];
+  let movementSeen = false;
+
+  function drawFps() {
+    const w = fpsCanvas.width; const h = fpsCanvas.height;
+    const horizon = h / 2 + view.pitch * 3.2;
+    const sky = fpsCtx.createLinearGradient(0, 0, 0, horizon);
+    sky.addColorStop(0, '#0a1622'); sky.addColorStop(1, '#16304a');
+    fpsCtx.fillStyle = sky; fpsCtx.fillRect(0, 0, w, Math.max(0, horizon));
+    const ground = fpsCtx.createLinearGradient(0, horizon, 0, h);
+    ground.addColorStop(0, '#14202b'); ground.addColorStop(1, '#070b10');
+    fpsCtx.fillStyle = ground; fpsCtx.fillRect(0, Math.max(0, horizon), w, h - Math.max(0, horizon));
+
+    // 世界网格：随 yaw 平移，直接反映"视角在转"
+    const spacing = 90;
+    const offset = ((view.yaw * 4) % spacing + spacing) % spacing;
+    fpsCtx.strokeStyle = '#1d2c3b'; fpsCtx.lineWidth = 1;
+    for (let x = -spacing + offset; x < w + spacing; x += spacing) {
+      fpsCtx.beginPath(); fpsCtx.moveTo(x + .5, 0); fpsCtx.lineTo(x + .5, h); fpsCtx.stroke();
+    }
+    for (let y = horizon; y < h; y += 34) {
+      fpsCtx.beginPath(); fpsCtx.moveTo(0, y + .5); fpsCtx.lineTo(w, y + .5); fpsCtx.stroke();
+    }
+
+    // 靶子：按世界 yaw 投影到屏幕
+    for (const target of targets) {
+      const delta = target.yaw - view.yaw;
+      if (Math.abs(delta) > 70) continue;
+      const screenX = w / 2 + Math.tan((delta * Math.PI) / 180) * (w / 2.4);
+      const screenY = horizon + target.pitch * 3.2;
+      fpsCtx.beginPath(); fpsCtx.arc(screenX, screenY, target.r, 0, Math.PI * 2);
+      fpsCtx.strokeStyle = target.hit ? '#3fb950' : '#f85149'; fpsCtx.lineWidth = 3; fpsCtx.stroke();
+      fpsCtx.beginPath(); fpsCtx.arc(screenX, screenY, target.r * 0.45, 0, Math.PI * 2);
+      fpsCtx.fillStyle = target.hit ? '#3fb95055' : '#f8514933'; fpsCtx.fill();
+      target.screenX = screenX;
+    }
+
+    // 准星
+    fpsCtx.strokeStyle = '#e6edf3'; fpsCtx.lineWidth = 1.5;
+    fpsCtx.beginPath();
+    fpsCtx.moveTo(w / 2 - 12, h / 2); fpsCtx.lineTo(w / 2 - 3, h / 2);
+    fpsCtx.moveTo(w / 2 + 3, h / 2); fpsCtx.lineTo(w / 2 + 12, h / 2);
+    fpsCtx.moveTo(w / 2, h / 2 - 12); fpsCtx.lineTo(w / 2, h / 2 - 3);
+    fpsCtx.moveTo(w / 2, h / 2 + 3); fpsCtx.lineTo(w / 2, h / 2 + 12);
+    fpsCtx.stroke();
+  }
+
+  const lockLabel = document.getElementById('lock-ok');
+  function updateFpsHud() {
+    const locked = document.pointerLockElement === fpsCanvas;
+    view.locked = locked;
+    lockLabel.textContent = locked ? '已锁定（Esc 退出）' : (view.relativeMode ? '相对模式（未锁定）' : '未锁定');
+    document.getElementById('yaw').textContent = view.yaw.toFixed(1) + '°';
+    document.getElementById('pitch').textContent = view.pitch.toFixed(1) + '°';
+    document.getElementById('movsum').textContent = String(Math.round(view.sumMovement));
+    document.getElementById('hits').textContent = String(view.hits);
+  }
+
+  fpsCanvas.addEventListener('click', () => {
+    if (document.pointerLockElement === fpsCanvas) { shoot(); return; }
+    fpsCanvas.focus();
+    try {
+      const request = fpsCanvas.requestPointerLock();
+      if (request && typeof request.catch === 'function') {
+        request.catch(() => { view.relativeMode = true; updateFpsHud(); paint(); });
+      }
+    } catch { view.relativeMode = true; }
+    // 锁定请求异步生效；若 300ms 后仍未锁定，说明这个环境不给手势，降级到相对模式。
+    setTimeout(() => {
+      if (document.pointerLockElement === fpsCanvas) {
+        view.yawAtStart = view.yaw; view.startX = view.sumMovementX; view.relativeMode = false;
+        score.fps.lock = true;
+      } else {
+        view.relativeMode = true;
+        score.fps.lock = true;   // 相对模式同样可验收 movement → yaw，如实标注在 HUD
+        view.yawAtStart = view.yaw; view.startX = view.sumMovementX;
+      }
+      updateFpsHud(); paint();
+    }, 300);
+  });
+
+  window.addEventListener('mousemove', (event) => {
+    const locked = document.pointerLockElement === fpsCanvas;
+    const overCanvas = event.target === fpsCanvas;
+    if (!locked && !(view.relativeMode && overCanvas)) return;
+    const mx = Number(event.movementX) || 0;
+    const my = Number(event.movementY) || 0;
+    if (Math.abs(mx) + Math.abs(my) === 0) return;
+    movementSeen = true;
+    view.sumMovement += Math.abs(mx) + Math.abs(my);
+    view.sumMovementX += mx;
+    view.yaw += mx * SENS;
+    view.pitch = Math.max(-55, Math.min(55, view.pitch - my * SENS * 0.6));
+    score.fps.movement = true;
+    // yaw 与 ΣmovementX 的换算必须成立（灵敏度固定 0.12°/px，容差 0.6°）
+    const expectedYaw = view.yawAtStart + (view.sumMovementX - view.startX) * SENS;
+    if (Math.abs(view.yaw - expectedYaw) < 0.6) score.fps.yaw = true;
+    updateFpsHud(); paint();
+  }, true);
+
+  document.addEventListener('pointerlockchange', () => { updateFpsHud(); paint(); });
+
+  function shoot() {
+    let hit = false;
+    for (const target of targets) {
+      if (typeof target.screenX !== 'number') continue;
+      if (Math.abs(target.screenX - fpsCanvas.width / 2) <= target.r + 10) { target.hit = true; hit = true; }
+    }
+    if (hit) { view.hits += 1; score.fps.hit = true; }
+    updateFpsHud(); paint();
+  }
+  // 未锁定时的相对模式也允许点击射击
+  fpsCanvas.addEventListener('mousedown', () => { if (document.pointerLockElement !== fpsCanvas && view.relativeMode) shoot(); });
+
+  /* ------------------------------------------------------------------ key state */
+  const CODE_LABELS = { KeyW: 'W', KeyA: 'A', KeyS: 'S', KeyD: 'D', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→' };
+  window.addEventListener('keydown', (event) => {
+    const code = event.code || event.key;
+    if (KEY_VECTORS[code]) {
+      held.add(code);
+      paintHeld();
+      event.preventDefault();
+    }
+  }, true);
+  window.addEventListener('keyup', (event) => {
+    const code = event.code || event.key;
+    if (KEY_VECTORS[code]) { held.delete(code); paintHeld(); }
+  }, true);
+  window.addEventListener('blur', () => { held.clear(); paintHeld(); });
+
+  /* ------------------------------------------------------------------ cursor tiles */
+  const tilesNode = document.getElementById('tiles');
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M4 4L20 20M20 4L4 20" stroke="red" stroke-width="3"/></svg>';
+  for (const [label, cursor] of [
+    ['default', 'default'], ['pointer', 'pointer'], ['text', 'text'], ['grab', 'grab'],
+    ['url(...) 应为箭头', 'url("data:image/svg+xml;utf8,' + encodeURIComponent(svg) + '") 12 12, auto'],
+  ]) {
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+    tile.style.cursor = cursor;
+    tile.dataset.cursor = label;
+    tile.textContent = label;
+    tilesNode.appendChild(tile);
+  }
+
+  /* ------------------------------------------------------------------ go */
+  paintHeld();
+  updateFpsHud();
+  paint();
+  requestAnimationFrame(frame);
+  setInterval(drawFps, 33);
+})();
+</script>
+</body>
+</html>

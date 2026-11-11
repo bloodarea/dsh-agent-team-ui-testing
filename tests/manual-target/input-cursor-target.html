@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>输入与光标 · 验收靶机</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #30363d; --text: #e6edf3; --dim: #8b949e;
+    --ok: #3fb950; --bad: #f85149; --todo: #d29922; --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px 24px 48px; background: var(--bg); color: var(--text);
+    font: 14px/1.55 -apple-system, "Segoe UI", "Noto Sans SC", system-ui, sans-serif;
+  }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  h2 { margin: 26px 0 10px; font-size: 15px; color: var(--accent); letter-spacing: .3px; }
+  .lead { color: var(--dim); margin: 0 0 16px; }
+  .score {
+    position: sticky; top: 0; z-index: 9; display: flex; align-items: center; gap: 14px;
+    padding: 12px 16px; margin: 0 -24px 18px; background: #0d1117ee; border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(6px);
+  }
+  .score .big { font-size: 22px; font-weight: 700; }
+  .bar { flex: 1; height: 8px; border-radius: 4px; background: #21262d; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #58a6ff, #3fb950); transition: width .25s; }
+  button {
+    font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line);
+    background: #21262d; color: var(--text); cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+  .item {
+    display: flex; gap: 10px; padding: 10px 12px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--panel); align-items: flex-start;
+  }
+  .item .dot { flex: none; width: 16px; height: 16px; border-radius: 50%; margin-top: 2px; background: var(--todo); }
+  .item[data-pass="1"] { border-color: #238636; }
+  .item[data-pass="1"] .dot { background: var(--ok); }
+  .item .who { font-size: 11px; color: var(--dim); }
+  .item .label { font-weight: 600; }
+  .item .detail { color: var(--dim); font-size: 12px; }
+  .live {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;
+    padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  }
+  .live b { color: var(--accent); font-weight: 600; }
+  kbd {
+    display: inline-block; min-width: 22px; padding: 1px 6px; border-radius: 5px; text-align: center;
+    border: 1px solid var(--line); border-bottom-width: 2px; background: #0d1117; font: 12px ui-monospace, monospace;
+  }
+  kbd.on { background: #1f6feb33; border-color: var(--accent); color: #cae8ff; }
+  .box {
+    position: relative; width: 420px; height: 240px; margin-top: 10px; border-radius: 10px;
+    border: 1px solid var(--line); background: repeating-conic-gradient(#11161d 0% 25%, #0d1117 0% 50%) 0 0 / 24px 24px;
+    overflow: hidden;
+  }
+  .cross {
+    position: absolute; left: 50%; top: 50%; width: 0; height: 0; will-change: transform;
+  }
+  .cross::before, .cross::after {
+    content: ""; position: absolute; background: var(--accent);
+  }
+  .cross::before { left: -11px; top: -.5px; width: 22px; height: 1.5px; }
+  .cross::after { top: -11px; left: -.5px; height: 22px; width: 1.5px; }
+  .cross span {
+    position: absolute; left: -3px; top: -3px; width: 6px; height: 6px; border-radius: 50%; background: #3fb950;
+  }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 8px; }
+  .tiles { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .tile {
+    width: 104px; height: 62px; display: flex; flex-direction: column; justify-content: center;
+    align-items: center; gap: 2px; border: 1px solid var(--line); border-radius: 8px;
+    background: #11161d; font-size: 12px;
+  }
+  .tile b { font: 12px ui-monospace, monospace; color: var(--accent); }
+  code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .num { font: 12px ui-monospace, monospace; color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="score">
+  <div><span class="big" id="score-passed">0</span><span class="num"> / <span id="score-total">0</span></span></div>
+  <div class="bar"><i id="score-bar"></i></div>
+  <div class="num" id="score-note">未开始</div>
+  <button id="reset" type="button">重置计数</button>
+</div>
+
+<h1>输入与光标 · 验收靶机</h1>
+<p class="lead">
+  这个页面的每一项都<b>自己判定</b>：只有它真的收到了对应的事件或计算值，条目才变绿。👤 = 你用手操作；🤖 = Agent 用工具操作。
+  全部变绿即通过；有 JS 报错则「页面无错误」条目会红。
+</p>
+
+<h2>1 · 键盘：多键同按 / 修饰键状态</h2>
+<div class="live">
+  <div>当前按住：<span id="held">（无）</span></div>
+  <div>最近事件修饰位：<span id="flags" class="num">shift - / ctrl - / alt - / meta -</span></div>
+</div>
+<div class="hint">
+  试：先按住 <kbd>Shift</kbd>，再按住 <kbd>A</kbd> <kbd>D</kbd> <kbd>S</kbd> —— 三个键应同时亮；然后全部松开，「按住」回到（无）。
+</div>
+<div class="grid" style="margin-top:10px" data-section="keys"></div>
+
+<h2>2 · 鼠标：移动到增量的相对位移（含指针锁定）</h2>
+<div class="box" id="box"><div class="cross" id="cross"><span></span></div></div>
+<div class="hint">
+  准星只由 <code>movementX/movementY</code> 驱动，不看绝对坐标。累计 <span class="num" id="delta-sum">dx 0 / dy 0</span>。
+  点下面按钮进入指针锁定后，鼠标会被隐藏，准星仍应跟手移动（<kbd>Esc</kbd> 退出）。
+</div>
+<p><button id="lock" type="button">进入指针锁定（需要真实点击）</button> <span class="num" id="lock-state">未锁定</span></p>
+<div class="grid" data-section="mouse"></div>
+
+<h2>3 · 光标形状：页面里是什么，调试视图里就该是什么</h2>
+<div class="hint">
+  下面是 10 个声明了不同 <code>cursor</code> 的磁贴。<b>拿指针逐片划过去</b>：调试视图预览里的指针形状应与磁贴上的名字一致。
+  最后一个故意用 <code>url(...)</code> 画红叉 —— 出于安全白名单，预览里它应显示<b>普通箭头</b>，而不是红叉。
+</div>
+<div class="tiles" id="tiles"></div>
+<div class="grid" data-section="cursor" style="margin-top:10px"></div>
+
+<h2>4 · 判定说明</h2>
+<div class="hint">
+  「键盘/鼠标」两组由页面自己监听 DOM 事件计分，不依赖任何一面之词；「光标」组里
+  <code>computed 自检</code> 由页面读 <code>getComputedStyle</code> 判定，<b>是否镜像到预览由你的眼睛判定</b>。
+  靶机文件：<code>tests/manual-target/input-cursor-target.html</code>，用 <code>python3 -m http.server 8130 --bind 127.0.0.1</code> 在仓库根目录起服务即可复跑。
+</div>
+
+<script>
+(() => {
+  const ITEMS = [
+    { id: 'keys-3', who: '👤', label: '三个键同时按住', detail: '同时按住的键 ≥ 3（页面自己的 keydown 记账）' },
+    { id: 'keys-release', who: '👤', label: '松开后按住集合归零', detail: '达到 3 键之后全部松开，held 回到 0' },
+    { id: 'mod-synth', who: '👤/🤖', label: '修饰键进到按键事件里', detail: '收到 shiftKey=true 的普通按键（非 Shift 自身）' },
+    { id: 'mod-clear', who: '👤/🤖', label: '松开修饰键后不再带位', detail: 'Shift keyup 之后，普通按键的 shiftKey 回到 false' },
+    { id: 'repeat', who: '🤖', label: 'autoRepeat 透传', detail: '收到 e.repeat === true 的按键（Agent 的 autoRepeat）' },
+    { id: 'mouse-mod', who: '👤/🤖', label: '按住修饰键的鼠标按下', detail: 'mousedown.shiftKey === true' },
+    { id: 'movement', who: '👤', label: '页面收到 movement 增量', detail: '|movementX|+|movementY| > 0 的 mousemove' },
+    { id: 'lock', who: '👤', label: '进入指针锁定', detail: 'requestPointerLock 成功（必须真实点击）' },
+    { id: 'lock-move', who: '👤', label: '锁定时准星靠增量移动', detail: '锁定期间收到非零 movement' },
+    { id: 'cursor-table', who: '页面', label: 'computed cursor 自检', detail: '10 个磁贴的 computed cursor 与声明一致' },
+    { id: 'cursor-url', who: '👤', label: 'url(...) 光标不落到预览', detail: '红叉磁贴的 computed 是 url(...)；预览里应是箭头' },
+    { id: 'no-error', who: '页面', label: '页面无 JS 错误', detail: '本页未产生未捕获错误' },
+  ];
+
+  const state = {
+    held: new Set(),
+    maxHeld: 0,
+    seenShiftTrue: false,
+    seenShiftKeyUp: false,
+    seenClearAfterShiftUp: false,
+    seenShiftMousedown: false,
+    seenRepeat: false,
+    seenMovement: false,
+    lockFailed: false,
+  };
+  const errors = [];
+  window.addEventListener('error', (event) => errors.push(String(event.message || 'error')));
+  window.addEventListener('unhandledrejection', (event) => errors.push(String(event.reason || 'rejection')));
+
+  // ---- rendering -------------------------------------------------------------------------
+  const sections = { keys: [], mouse: [], cursor: [] };
+  const byId = new Map();
+  const sectionOf = (id) => id.startsWith('keys') || id.startsWith('mod') || id === 'repeat' ? 'keys'
+    : id.startsWith('mouse') ? 'mouse'
+    : id.startsWith('lock') || id.startsWith('movement') ? 'mouse' : 'cursor';
+  for (const item of ITEMS) {
+    const key = sectionOf(item.id);
+    const node = document.createElement('div');
+    node.className = 'item';
+    node.dataset.pass = '0';
+    node.dataset.item = item.id;
+    node.innerHTML = '<span class="dot"></span><span><span class="label">' + item.label
+      + '</span> <span class="who">' + item.who + '</span><div class="detail">' + item.detail + '</div></span>';
+    sections[key].push(node);
+    byId.set(item.id, node);
+  }
+  for (const [key, nodes] of Object.entries(sections)) {
+    const host = document.querySelector('[data-section="' + key + '"]');
+    for (const node of nodes) host.appendChild(node);
+  }
+
+  const result = (id) => {
+    switch (id) {
+      case 'keys-3': return state.maxHeld >= 3;
+      case 'keys-release': return state.maxHeld >= 3 && state.held.size === 0;
+      case 'mod-synth': return state.seenShiftTrue;
+      case 'mod-clear': return state.seenClearAfterShiftUp;
+      case 'repeat': return state.seenRepeat;
+      case 'mouse-mod': return state.seenShiftMousedown;
+      case 'movement': return state.seenMovement;
+      case 'lock': return document.pointerLockElement === box;
+      case 'lock-move': return lockMoves > 0;
+      case 'cursor-table': return cursorAudit.ok;
+      case 'cursor-url': return cursorAudit.urlIsUrl;
+      case 'no-error': return errors.length === 0;
+      default: return false;
+    }
+  };
+
+  let lockMoves = 0;
+  function render() {
+    let passed = 0;
+    for (const item of ITEMS) {
+      const pass = result(item.id);
+      if (pass) passed += 1;
+      const node = byId.get(item.id);
+      node.dataset.pass = pass ? '1' : '0';
+    }
+    document.getElementById('score-passed').textContent = String(passed);
+    document.getElementById('score-total').textContent = String(ITEMS.length);
+    document.getElementById('score-bar').style.width = Math.round((passed / ITEMS.length) * 100) + '%';
+    document.getElementById('score-note').textContent = passed === ITEMS.length
+      ? '全部通过 ✅' : (passed === 0 ? '未开始' : (ITEMS.length - passed) + ' 项待完成');
+    window.__target.report = () => ({
+      passed, total: ITEMS.length,
+      items: ITEMS.map((item) => ({ id: item.id, label: item.label, who: item.who, pass: result(item.id) })),
+      held: [...state.held], errors: errors.slice(0, 5),
+      cursorAudit,
+    });
+  }
+  window.__target = { report: () => ({ passed: 0, total: ITEMS.length, items: [] }) };
+
+  // ---- live panels ------------------------------------------------------------------------
+  const heldNode = document.getElementById('held');
+  const flagsNode = document.getElementById('flags');
+  const renderHeld = () => {
+    heldNode.innerHTML = state.held.size
+      ? [...state.held].map((code) => '<kbd class="on">' + code + '</kbd>').join(' ')
+      : '（无）';
+  };
+  const renderFlags = (flags) => {
+    flagsNode.textContent = 'shift ' + (flags.shift ? '✔' : '-')
+      + ' / ctrl ' + (flags.ctrl ? '✔' : '-')
+      + ' / alt ' + (flags.alt ? '✔' : '-')
+      + ' / meta ' + (flags.meta ? '✔' : '-');
+  };
+
+  // ---- keyboard ---------------------------------------------------------------------------
+  window.addEventListener('keydown', (event) => {
+    const code = event.code || event.key || 'unknown';
+    state.held.add(code);
+    state.maxHeld = Math.max(state.maxHeld, state.held.size);
+    if (event.shiftKey && String(event.key) !== 'Shift') state.seenShiftTrue = true;
+    if (state.seenShiftKeyUp && !event.shiftKey && String(event.key) !== 'Shift') state.seenClearAfterShiftUp = true;
+    if (event.repeat === true) state.seenRepeat = true;
+    renderHeld();
+    renderFlags(event);
+    render();
+  }, true);
+
+  window.addEventListener('keyup', (event) => {
+    const code = event.code || event.key || 'unknown';
+    state.held.delete(code);
+    if (String(event.key) === 'Shift') state.seenShiftKeyUp = true;
+    renderHeld();
+    renderFlags(event);
+    render();
+  }, true);
+
+  // ---- mouse ------------------------------------------------------------------------------
+  const box = document.getElementById('box');
+  const cross = document.getElementById('cross');
+  let dx = 0; let dy = 0;
+  const deltaNode = document.getElementById('delta-sum');
+  window.addEventListener('mousedown', (event) => {
+    if (event.shiftKey) state.seenShiftMousedown = true;
+    renderFlags(event);
+    render();
+  }, true);
+  window.addEventListener('mousemove', (event) => {
+    const mx = Number(event.movementX) || 0;
+    const my = Number(event.movementY) || 0;
+    if (Math.abs(mx) + Math.abs(my) > 0) state.seenMovement = true;
+    // 准星只吃增量：即使指针在页面别处，也只按 movement 累加并夹在框内。
+    const rect = box.getBoundingClientRect();
+    dx = Math.min(rect.width, Math.max(0, dx + mx));
+    dy = Math.min(rect.height, Math.max(0, dy + my));
+    cross.style.transform = 'translate(' + (dx - rect.width / 2) + 'px,' + (dy - rect.height / 2) + 'px)';
+    deltaNode.textContent = 'dx ' + Math.round(dx) + ' / dy ' + Math.round(dy);
+    if (document.pointerLockElement === box && (Math.abs(mx) + Math.abs(my)) > 0) lockMoves += 1;
+    render();
+  }, true);
+
+  const lockButton = document.getElementById('lock');
+  const lockState = document.getElementById('lock-state');
+  lockButton.addEventListener('click', () => {
+    // 真实用户手势：只有人点这个按钮，pointer lock 才可能成功（Agent 的合成事件不算手势）。
+    if (document.pointerLockElement === box) return;
+    const request = box.requestPointerLock && box.requestPointerLock();
+    if (request && typeof request.catch === 'function') request.catch(() => { state.lockFailed = true; render(); });
+  });
+  document.addEventListener('pointerlockchange', () => {
+    const locked = document.pointerLockElement === box;
+    lockState.textContent = locked ? '已锁定（Esc 退出）' : '未锁定';
+    render();
+  });
+
+  // ---- cursor tiles -----------------------------------------------------------------------
+  const CURSORS = ['default', 'pointer', 'text', 'grab', 'grabbing', 'help', 'col-resize', 'not-allowed', 'zoom-in', 'crosshair'];
+  const tilesNode = document.getElementById('tiles');
+  for (const name of [...CURSORS, 'url']) {
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+    tile.dataset.cursor = name;
+    if (name === 'url') {
+      // 一个内联 data-URI 的红叉光标：用来验证白名单不会把 url() 带进面板样式。
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M4 4L20 20M20 4L4 20" stroke="red" stroke-width="3"/></svg>';
+      tile.style.cursor = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(svg) + '") 12 12, auto';
+      tile.innerHTML = '<b>url(...)</b><span>红叉（预览应为箭头）</span>';
+    } else {
+      tile.style.cursor = name;
+      tile.innerHTML = '<b>' + name + '</b><span>声明值</span>';
+    }
+    tilesNode.appendChild(tile);
+  }
+
+  const cursorAudit = { ok: false, urlIsUrl: false, rows: [] };
+  function auditCursors() {
+    const rows = [];
+    let ok = CURSORS.length > 0;
+    for (const name of CURSORS) {
+      const node = tilesNode.querySelector('[data-cursor="' + name + '"]');
+      const computed = node ? getComputedStyle(node).cursor : null;
+      const match = computed === name;
+      if (!match) ok = false;
+      rows.push({ name, computed, match });
+    }
+    const urlNode = tilesNode.querySelector('[data-cursor="url"]');
+    const urlComputed = urlNode ? getComputedStyle(urlNode).cursor : '';
+    cursorAudit.ok = ok;
+    cursorAudit.urlIsUrl = typeof urlComputed === 'string' && urlComputed.indexOf('url(') === 0;
+    cursorAudit.rows = rows;
+    render();
+  }
+
+  document.getElementById('reset').addEventListener('click', () => {
+    state.maxHeld = 0;
+    state.seenShiftTrue = false;
+    state.seenShiftKeyUp = false;
+    state.seenClearAfterShiftUp = false;
+    state.seenShiftMousedown = false;
+    state.seenRepeat = false;
+    state.seenMovement = false;
+    lockMoves = 0;
+    dx = 0; dy = 0;
+    cross.style.transform = 'none';
+    deltaNode.textContent = 'dx 0 / dy 0';
+    render();
+  });
+
+  auditCursors();
+  setInterval(auditCursors, 1000);
+  render();
+})();
+</script>
+</body>
+</html>
