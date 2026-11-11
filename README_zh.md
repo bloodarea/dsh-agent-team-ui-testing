@@ -256,7 +256,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 
 1. 把包安装进要使用的 DSH profile。
 2. 首次安装后重启 DSH，让插件 bundle 完成注册。
-3. 从 **更多 → 调试视图** 打开调试面板，或从右侧边栏的插件卡片进入。
+3. 从 **更多 → 调试视图** 打开调试面板，或从右侧边栏的插件卡片进入。**第一次用先看[图文教程](docs/tutorial.md)**：从打开面板到让 Agent 完成一次可复核的操作，七步走完。
 4. 只改 `client.js` 时刷新面板即可；改 `index.js`、工具面或内置 Skill 需要重启 DSH。
 
 开发插件时改为把本仓库链接或复制进 profile，不必安装 npm 包。
@@ -289,6 +289,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 | 文件 | 内容 |
 | --- | --- |
 | [docs/index.md](docs/index.md) | 文档索引 |
+| [docs/tutorial.md](docs/tutorial.md) | **新手图文教程**：打开面板、加载页面、观察与操作、选元素、标注与取证 |
 | [docs/getting-started.md](docs/getting-started.md) | 安装要求、接入、调试面板与首次调用 |
 | [docs/tools.md](docs/tools.md) | 37 个工具、参数与错误分类 |
 | [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 选路模型、P0 基础设施与已知限制 |

@@ -256,7 +256,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 
 1. Install the package into the DSH profile being used.
 2. Restart DSH after the first install so the plugin bundle is registered.
-3. Open the debug view from **更多 → 调试视图**, or from the plugin card in the right sidebar.
+3. Open the debug view from **更多 → 调试视图**, or from the plugin card in the right sidebar. **First time here? The [screenshot walkthrough](docs/tutorial.md) takes you from opening the panel to a verified agent action in seven short steps.**
 4. Changes to `client.js` only need a panel refresh; changes to `index.js`, the tool surface or bundled skills need a DSH restart.
 
 For plugin development, link or copy this repository into the profile instead of installing the npm package.
@@ -289,6 +289,7 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 | File | Contents |
 | --- | --- |
 | [docs/index.md](docs/index.md) | Documentation index |
+| [docs/tutorial.md](docs/tutorial.md) | **Beginner walkthrough (with screenshots)**: open the panel, load a page, inspect, click, pick an element, annotate and collect evidence |
 | [docs/getting-started.md](docs/getting-started.md) | Requirements, install, debug panel and first calls |
 | [docs/tools.md](docs/tools.md) | All 37 tools, parameters and error classes |
 | [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 selection model, P0 infrastructure and known limits |
