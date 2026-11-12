@@ -42,7 +42,10 @@
  * Run:  node tests/acceptance/viewport-gui.mjs
  * Env:  DSH_BIN (default `dsh`), DSH_ACCEPTANCE_CHROME / DSH_REAL_BROWSER_CHROME
  *         (default tests/acceptance/chrome-wrapper.sh), DSH_VIEWPORT_GUI_TIMEOUT_MS (default 420000),
- *       DSH_VIEWPORT_GUI_EVIDENCE (override the evidence directory).
+ *       DSH_VIEWPORT_GUI_EVIDENCE (override the evidence directory),
+ *       DSH_VIEWPORT_GUI_ONLY (comma-separated scenario name substrings, e.g. "V16b"),
+ *       DSH_ISOLATED_PROFILE_BUNDLED_MODULES (DSH install's `.../dsh/node_modules`; makes the
+ *         isolated profile resolution hermetic when the user profile's hoisted dsh-tools is older).
  *
  * Exit codes: 0 all checks pass (an environment NOT_RUN may still be recorded); 1 assertion
  *             failure; 2 blocked (the isolated Host does not expose ui.view) or fatal error.
@@ -50,7 +53,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -278,6 +281,11 @@ function notRun(id, label, reason, detail) {
   log(`  [NOT_RUN] ${id} ${label} — ${reason}`);
 }
 async function scenario(name, fn) {
+  const only = (process.env.DSH_VIEWPORT_GUI_ONLY || '').split(',').map((entry) => entry.trim()).filter(Boolean);
+  if (only.length && !only.some((token) => name.includes(token))) {
+    log(`\n--- scenario ${name} (skipped by DSH_VIEWPORT_GUI_ONLY) ---`);
+    return;
+  }
   log(`\n--- scenario ${name} ---`);
   try {
     await fn();
@@ -327,17 +335,38 @@ async function prepareDshHome() {
   const nodeModules = join(DEFAULT_PROFILE, 'node_modules');
   if (!existsSync(nodeModules)) throw new Error(`user profile node_modules missing: ${nodeModules}`);
   await symlink(nodeModules, join(profileDir, 'node_modules'), 'dir');
+  // Optional hermetic overlay (set DSH_ISOLATED_PROFILE_BUNDLED_MODULES to the DSH install's
+  // `.../@deepseek-ai/dsh/node_modules` directory): the web profile resolves some hoisted packages
+  // one level above itself. Copying that parent into the isolated home (and pointing dsh-tools at
+  // the version bundled with the running DSH) keeps resolution hermetic when the user profile's
+  // hoisted copy is older than the installed DSH. With --preserve-symlinks the symlinked web
+  // node_modules stays inside the isolated home, so the copy is actually consulted.
+  const bundledModules = process.env.DSH_ISOLATED_PROFILE_BUNDLED_MODULES || '';
+  const hoisted = join(DEFAULT_PROFILE, '..', 'node_modules');
+  if (bundledModules && existsSync(hoisted) && existsSync(join(bundledModules, '@deepseek-ai', 'dsh-tools'))) {
+    const target = join(home, 'profiles', 'node_modules');
+    // Keep symlinks verbatim: the user's hoisted tree contains pnpm links whose targets are not
+    // materialised until used, and dereferencing them here would fail on the first dangling entry.
+    await cp(hoisted, target, { recursive: true, dereference: false, verbatimSymlinks: true });
+    await rm(join(target, '@deepseek-ai', 'dsh-tools'), { recursive: true, force: true });
+    await cp(join(bundledModules, '@deepseek-ai', 'dsh-tools'), join(target, '@deepseek-ai', 'dsh-tools'), {
+      recursive: true, dereference: true,
+    });
+  }
   return { home, profileDir, copied };
 }
 
 async function startIsolatedDsh() {
   const { home, profileDir, copied } = await prepareDshHome();
   const port = await pickPort();
+  const overlayModules = Boolean(process.env.DSH_ISOLATED_PROFILE_BUNDLED_MODULES);
+  const nodeOptions = `${process.env.NODE_OPTIONS || ''}${overlayModules ? ' --preserve-symlinks' : ''}`.trim();
   const proc = spawn(DSH_BIN, ['web', '--port', String(port), '--no-open'], {
     env: {
       ...process.env,
       DSH_HOME: home,
       DSH_PROFILE: 'web',
+      ...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}),
       DSH_UI_TESTING_CHROME: process.env.DSH_UI_TESTING_CHROME || CHROME_BIN,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -1291,6 +1320,28 @@ async function capturePanel(name) {
     return state.chrome.cdp.send('Page.captureScreenshot', { format: 'png', clip })
       .catch((error) => { log(`  [EVIDENCE] ${name}: capture failed (${String(error.message).slice(0, 140)} clip=${JSON.stringify(clip)})`); return null; });
   })();
+  if (!shot) return null;
+  const buffer = Buffer.from(shot.data, 'base64');
+  const path = join(EVIDENCE_DIR, `${name}.png`);
+  await writeFile(path, buffer, { mode: 0o600 });
+  state.evidence.push({ name, path: path.slice(REPO_ROOT.length + 1), bytes: buffer.length });
+  log(`  [EVIDENCE] ${name}.png (${buffer.length} bytes)`);
+  return path;
+}
+
+/** Crop the bottom status bar (2x) — where the selection count is shown, after the latency. */
+async function captureStatusBar(name) {
+  const rect = await pageEvaluate(panelExpr(`
+    const status = panel.querySelector('.utb-status');
+    return status ? status.getBoundingClientRect().toJSON() : null;
+  `)).catch(() => null);
+  if (!rect || !(rect.width > 10) || !(rect.height > 5)) return null;
+  const clip = {
+    x: Math.max(0, Math.round(rect.left)), y: Math.max(0, Math.round(rect.top)),
+    width: Math.max(1, Math.round(rect.width)), height: Math.max(1, Math.round(rect.height)), scale: 2,
+  };
+  const shot = await state.chrome.cdp.send('Page.captureScreenshot', { format: 'png', clip })
+    .catch(() => null);
   if (!shot) return null;
   const buffer = Buffer.from(shot.data, 'base64');
   const path = join(EVIDENCE_DIR, `${name}.png`);
@@ -4709,14 +4760,14 @@ async function main() {
         { pressed: 'true', height: 41, role: 'group', id: '<controls>', background: 'alias layer' },
         { pressed: opened.pressed, bar: opened.bar });
       const toolLabels = opened.tools.map((tool) => tool.label);
-      // v2 (§11.5) keeps the original six labels/order/single-selection and explicitly extends the
-      // count to seven (橡皮擦 appended last); V16.1 then verifies all seven strictly.
-      check('V15.1d', 'seven tools with exact labels, data-utb-annot-tool and exactly one aria-pressed=true',
-        toolLabels.join('|') === '圆形|矩形|线段|箭头|画笔|文字|橡皮擦'
-          && opened.tools.map((tool) => tool.tool).join('|') === 'circle|rect|line|arrow|brush|text|eraser'
+      // v3 (2026-11-12) prepends the two selection tools; the six drawing labels and 橡皮擦 keep
+      // their relative order. V16.1 then verifies all nine strictly, and V17 drives selection.
+      check('V15.1d', 'nine tools with exact labels, data-utb-annot-tool and exactly one aria-pressed=true',
+        toolLabels.join('|') === '选择|框选|圆形|矩形|线段|箭头|画笔|文字|橡皮擦'
+          && opened.tools.map((tool) => tool.tool).join('|') === 'select|marquee|circle|rect|line|arrow|brush|text|eraser'
           && opened.tools.filter((tool) => tool.pressed === 'true').length === 1
           && opened.tools.find((tool) => tool.pressed === 'true').tool === 'rect',
-        { labels: '圆形|矩形|线段|箭头|画笔|文字|橡皮擦', pressed: 'rect only' },
+        { labels: '选择|框选|圆形|矩形|线段|箭头|画笔|文字|橡皮擦', pressed: 'rect only' },
         { labels: toolLabels, tools: opened.tools.map((tool) => ({ tool: tool.tool, pressed: tool.pressed })) });
       check('V15.1e', 'defaults are 矩形 / #ff3b30 / 3 / 填充 false / 外框 true with the exact segmented control attributes',
         opened.color && opened.color.type === 'color' && opened.color.value === '#ff3b30'
@@ -5634,23 +5685,23 @@ async function main() {
       await closeSizeBar();
       await toggleAnnot(true);
 
-      // ---- V16.1 seven single-select tools ------------------------------------------------
+      // ---- V16.1 nine single-select tools ---------------------------------------------------
       const v16Tools = await annotV2State();
       const v16PressedAtOpen = v16Tools.tools.filter((tool) => tool.pressed === 'true').map((tool) => tool.tool);
       await clickAnnotTool('eraser');
       const v16ToolsAfter = await annotV2State();
       const v16PressedAfter = v16ToolsAfter.tools.filter((tool) => tool.pressed === 'true').map((tool) => tool.tool);
-      check('V16.1', 'seven single-select tools with exact labels/data-utb-annot-tool, 16/1.7/currentColor icons and exactly one aria-pressed=true',
-        v16Tools.tools.length === 7
-          && v16Tools.tools.map((tool) => tool.label).join('|') === '圆形|矩形|线段|箭头|画笔|文字|橡皮擦'
-          && v16Tools.tools.map((tool) => tool.tool).join('|') === 'circle|rect|line|arrow|brush|text|eraser'
+      check('V16.1', 'nine single-select tools with exact labels/data-utb-annot-tool, 16/1.7/currentColor icons and exactly one aria-pressed=true',
+        v16Tools.tools.length === 9
+          && v16Tools.tools.map((tool) => tool.label).join('|') === '选择|框选|圆形|矩形|线段|箭头|画笔|文字|橡皮擦'
+          && v16Tools.tools.map((tool) => tool.tool).join('|') === 'select|marquee|circle|rect|line|arrow|brush|text|eraser'
           && v16Tools.tools.every((tool) => tool.title === tool.label)
           && v16Tools.tools.every((tool) => tool.icon && tool.icon.width === '16' && tool.icon.height === '16'
             && tool.icon.strokeWidth === '1.7' && tool.icon.stroke === 'currentColor')
           && v16Tools.tools.every((tool) => tool.width >= 20 && tool.height >= 20)
           && v16PressedAtOpen.length === 1 && v16PressedAtOpen[0] !== 'eraser'
           && v16PressedAfter.length === 1 && v16PressedAfter[0] === 'eraser',
-        { tools: '圆形|矩形|线段|箭头|画笔|文字|橡皮擦', icons: '16/1.7/currentColor', pressed: 'eraser only after the click' },
+        { tools: '选择|框选|圆形|矩形|线段|箭头|画笔|文字|橡皮擦', icons: '16/1.7/currentColor', pressed: 'eraser only after the click' },
         { tools: v16Tools.tools, pressedAtOpen: v16PressedAtOpen, pressedAfter: v16PressedAfter });
 
       // ---- V16.2 eraser style matrix ------------------------------------------------------
@@ -6271,6 +6322,620 @@ async function main() {
         };
       `)).catch(() => null);
       log(`  [probe] annotation reopen after a page click: pressed=${JSON.stringify(v16ReopenProbe && v16ReopenProbe.pressed)} bar=${Boolean(v16ReopenFacts.annot && v16ReopenFacts.annot.bar)} disabled=${JSON.stringify(v16ReopenProbe && v16ReopenProbe.disabled)} canvas=${JSON.stringify(v16ReopenFacts.canvasOn)}/${JSON.stringify(v16ReopenFacts.canvasReady)} status=${JSON.stringify(v16ReopenShell)}`);
+      await toggleAnnot(false).catch(() => undefined);
+    });
+
+    await scenario('V16b annotation selection tools (P0-D v5)', async () => {
+      // Selection (选择) and marquee (框选) are the two leftmost tools. The visual feedback the user
+      // asked for is asserted as pixels-independent DOM facts: a brand-colour halo per selected
+      // shape, a tinted bounding box, the "已选 N 个" chip and the 删除选中 button. Selection itself
+      // never posts; only moving/deleting does.
+      await toggleAnnot(false).catch(() => undefined);
+      await navigateTarget(`${fixtureBase}/web-t3.html`);
+      await waitForFrame();
+      await ensureHorizontalOverflow();
+      await clickFit(false);
+      await hostViewportSet({ width: 400, height: 300, scale: 1, x: 0, y: 0 });
+      await waitHostView((view) => Number(view.width) === 400 && Number(view.height) === 300
+        && closeTo(view.scale, 1, 0.0011) && near(view.x, 0, 1) && near(view.y, 0, 1));
+      await hostViewportSet({ canvasX: 0, canvasY: 0 });
+      await waitHostView((view) => near(view.canvasX, 0, 1) && near(view.canvasY, 0, 1));
+      await waitPanelMirrorsHost();
+      await waitCanvasState(true, true);
+      await waitFrameStable();
+      await closeSizeBar();
+      // A preceding scenario may leave the mode mid-transition: open the bar deterministically.
+      await waitFor(async () => {
+        const panel = await panelState();
+        const annot = panel.annot;
+        if (!annot) return undefined;
+        if (annot.pressed === 'true' && annot.tools.some((tool) => tool.tool === 'select')) return panel;
+        if (annot.disabled === false) await toggleAnnot(true);
+        return undefined;
+      }, { timeoutMs: 12000, intervalMs: 250, label: 'annotation bar with selection tools open' });
+
+      const selectionFacts = () => pageEvaluate(panelExpr(`
+        const svg = panel.querySelector('.utb-annot-layer');
+        const chip = panel.querySelector('[data-utb-annot-selection-chip]');
+        const perf = panel.querySelector('.utb-perf');
+        const del = panel.querySelector('[data-utb-annot-action="delete-selection"]');
+        const halos = svg ? [...svg.querySelectorAll('[data-utb-annot-halo]')] : [];
+        const boxes = svg ? [...svg.querySelectorAll('[data-utb-annot-select-box]')] : [];
+        const haloShape = halos.length ? halos[0].querySelector('rect, ellipse, line, polyline, polygon, text') : null;
+        const haloStyle = haloShape ? getComputedStyle(haloShape) : null;
+        const boxNode = boxes.length ? boxes[0] : null;
+        const fillStyle = boxNode && boxNode.querySelector('.utb-annot-select-fill')
+          ? getComputedStyle(boxNode.querySelector('.utb-annot-select-fill')) : null;
+        const edgeStyle = boxNode && boxNode.querySelector('.utb-annot-select-edge')
+          ? getComputedStyle(boxNode.querySelector('.utb-annot-select-edge')) : null;
+        const antsStyle = boxNode && boxNode.querySelector('.utb-annot-select-ants')
+          ? getComputedStyle(boxNode.querySelector('.utb-annot-select-ants')) : null;
+        const chipStyle = chip ? getComputedStyle(chip) : null;
+        return {
+          count: svg ? Number(svg.getAttribute('data-utb-annot-selection-count')) : -1,
+          selected: svg ? [...svg.querySelectorAll('g[data-utb-annot-state="committed"]')]
+            .filter((g) => g.getAttribute('data-utb-annot-selected') === 'true')
+            .map((g) => g.getAttribute('data-utb-annot-id')) : [],
+          halos: halos.map((el) => el.getAttribute('data-utb-annot-halo')),
+          boxes: boxes.map((el) => el.getAttribute('data-utb-annot-select-box')),
+          haloStroke: haloStyle ? { stroke: haloStyle.stroke, width: haloStyle.strokeWidth } : null,
+          boxFill: fillStyle ? fillStyle.fill : null,
+          boxStroke: edgeStyle ? { stroke: edgeStyle.stroke, width: edgeStyle.strokeWidth } : null,
+          boxAnts: antsStyle ? { stroke: antsStyle.stroke, dash: antsStyle.strokeDasharray } : null,
+          chip: chip ? { text: (chip.textContent || '').trim(), count: chip.getAttribute('data-utb-annot-selection-chip'),
+            background: chipStyle.backgroundColor, color: chipStyle.color,
+            inStatusBar: Boolean(chip.closest('.utb-status')),
+            afterPerf: Boolean(perf && perf.nextElementSibling === chip) } : null,
+          deleteButton: del ? { text: (del.textContent || '').trim(), count: del.getAttribute('data-utb-annot-selection'), disabled: del.disabled === true } : null,
+        };
+      `));
+
+      const toolFacts = await pageEvaluate(panelExpr(`
+        const tools = [...panel.querySelectorAll('[data-utb-annot-tool]')];
+        const positions = tools.map((el) => ({ tool: el.getAttribute('data-utb-annot-tool'), left: el.getBoundingClientRect().left }));
+        const byId = (id) => tools.find((el) => el.getAttribute('data-utb-annot-tool') === id) || null;
+        const select = byId('select');
+        const marquee = byId('marquee');
+        const circle = byId('circle');
+        const svg = panel.querySelector('.utb-annot-layer');
+        const icon = (el) => { const s = el ? el.querySelector('svg') : null; return s ? { width: s.getAttribute('width'), height: s.getAttribute('height'), strokeWidth: s.getAttribute('stroke-width'), stroke: s.getAttribute('stroke'), dashed: Boolean((s.querySelector('rect') || {}).getAttribute && s.querySelector('rect').getAttribute('stroke-dasharray')) } : null; };
+        return {
+          positions,
+          select: select ? { label: select.getAttribute('aria-label'), title: select.title, pressed: select.getAttribute('aria-pressed'), icon: icon(select) } : null,
+          marquee: marquee ? { label: marquee.getAttribute('aria-label'), title: marquee.title, pressed: marquee.getAttribute('aria-pressed'), icon: icon(marquee) } : null,
+          order: Boolean(select && marquee && circle)
+            && select.getBoundingClientRect().left < marquee.getBoundingClientRect().left
+            && marquee.getBoundingClientRect().right <= circle.getBoundingClientRect().left + 1,
+          svgTool: svg ? svg.getAttribute('data-utb-annot-active-tool') : null,
+          svgCount: svg ? svg.getAttribute('data-utb-annot-selection-count') : null,
+        };
+      `));
+      check('V16b.1', '选择/框选 are the two leftmost tools (28px, 16/1.7/currentColor icons, 框选 dashed), 矩形 stays the default and the layer exposes tool/count',
+        toolFacts.select && toolFacts.marquee
+          && toolFacts.select.label === '选择' && toolFacts.select.title === '选择'
+          && toolFacts.marquee.label === '框选' && toolFacts.marquee.title === '框选'
+          && toolFacts.positions.slice(0, 2).map((entry) => entry.tool).join('|') === 'select|marquee'
+          && toolFacts.order === true
+          && toolFacts.select.pressed === 'false' && toolFacts.marquee.pressed === 'false'
+          && toolFacts.select.icon && toolFacts.select.icon.width === '16' && toolFacts.select.icon.height === '16'
+          && toolFacts.select.icon.strokeWidth === '1.7' && toolFacts.select.icon.stroke === 'currentColor'
+          && toolFacts.marquee.icon && toolFacts.marquee.icon.width === '16' && toolFacts.marquee.icon.height === '16'
+          && toolFacts.marquee.icon.strokeWidth === '1.7' && toolFacts.marquee.icon.stroke === 'currentColor'
+          && toolFacts.marquee.icon.dashed === true && toolFacts.select.icon.dashed === false
+          && toolFacts.svgTool === 'rect' && toolFacts.svgCount === '0',
+        { order: 'select|marquee|circle…', defaultTool: 'rect', icons: '16/1.7/currentColor, 框选 dashed' },
+        { tools: toolFacts.positions.slice(0, 3), select: toolFacts.select, marquee: toolFacts.marquee, svg: { tool: toolFacts.svgTool, count: toolFacts.svgCount } });
+
+      // Two stroke-only rects: a select click must land on the stroke, and dragging starts from it.
+      await clickAnnotTool('rect');
+      await annotPrepareStyle({ fill: false, stroke: true, width: 3, color: '#ff3b30' });
+      await annotDrawStable({ x: 60, y: 60 }, { x: 140, y: 120 }, { steps: 5 });
+      await annotDrawStable({ x: 220, y: 160 }, { x: 300, y: 240 }, { steps: 5 });
+      const twoPanel = await waitAnnotShapeCount(2);
+      const twoShapes = annotShapes(twoPanel);
+      const firstId = twoShapes[0].id;
+      const secondId = twoShapes[1].id;
+      const firstX0 = annotNumAttr(twoShapes[0], 'x');
+      const firstY0 = annotNumAttr(twoShapes[0], 'y');
+
+      await clickAnnotTool('select');
+      const firstEdge = await annotPointGui({ x: 100, y: 60 });
+      await annotPressGui(firstEdge);
+      const one = await selectionFacts();
+      check('V16b.2', 'a select click on a stroke selects exactly that shape and shows the obvious feedback: 8px halo, white + blue marching-ants box with a tint, 已选 1 个 as a bottom status item right after the latency, and 删除选中 button',
+        one.count === 1 && one.selected.join('|') === firstId
+          && one.halos.join('|') === firstId && one.boxes.join('|') === firstId
+          && one.haloStroke && one.haloStroke.width === '8px' && one.haloStroke.stroke !== 'none'
+          && one.boxStroke && one.boxStroke.width === '3px' && one.boxStroke.stroke !== 'none'
+          && one.boxAnts && one.boxAnts.stroke !== 'none' && one.boxAnts.dash !== 'none'
+          && one.boxFill && one.boxFill !== 'none' && one.boxFill !== 'rgba(0, 0, 0, 0)'
+          && one.chip && one.chip.text === '已选 1 个' && one.chip.count === '1'
+          && one.chip.inStatusBar === true && one.chip.afterPerf === true
+          && one.deleteButton && one.deleteButton.text === '删除选中（1）' && one.deleteButton.disabled === false,
+        { selected: firstId, halo: '8px blue', box: 'white + blue marching ants + tint',
+          status: '已选 1 个 in the bottom bar right after the latency', delete: '删除选中（1）' },
+        { one });
+
+      // Shift-click adds the second shape.
+      const secondEdge = await annotPointGui({ x: 220, y: 160 });
+      await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: secondEdge.x, y: secondEdge.y, button: 'none', buttons: 0 });
+      await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: secondEdge.x, y: secondEdge.y, button: 'left', buttons: 1, clickCount: 1, modifiers: 8 });
+      await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: secondEdge.x, y: secondEdge.y, button: 'left', buttons: 0, clickCount: 1, modifiers: 8 });
+      await sleep(260);
+      const both = await selectionFacts();
+      await capturePanel('shot-33-annot-selection-two');
+      await captureStatusBar('shot-34-annot-selection-status');
+      check('V16b.3', 'Shift+click adds the second shape: two halos/boxes and the chip count follow, still zero Host writes from selecting alone',
+        both.count === 2 && both.selected.slice().sort().join('|') === [firstId, secondId].sort().join('|')
+          && both.halos.slice().sort().join('|') === [firstId, secondId].sort().join('|')
+          && both.boxes.length === 2 && both.chip.text === '已选 2 个'
+          && both.deleteButton.text === '删除选中（2）',
+        { selected: 2, halos: 2, boxes: 2, chip: '已选 2 个' },
+        { both });
+
+      // Drag the selection from the INTERIOR of the hollow rect (not its stroke): a selected shape
+      // must move from anywhere inside its selection box, and every selected shape moves together.
+      let moveMap = await annotMappingNow();
+      await ensurePointVisible(annotCanvasToGui(moveMap, { x: 100, y: 90 }));
+      await sleep(120);
+      moveMap = await annotMappingNow();
+      await annotEnsureHit(annotCanvasToGui(moveMap, { x: 100, y: 90 }));
+      const moveFrom = annotCanvasToGui(moveMap, { x: 100, y: 90 });
+      await state.chrome.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: moveFrom.x, y: moveFrom.y, button: 'none', buttons: 0 });
+      await sleep(140);
+      const moveHover = await pageEvaluate(panelExpr(`
+        const svg = panel.querySelector('.utb-annot-layer');
+        return svg ? getComputedStyle(svg).cursor : null;
+      `));
+      await annotDragGui(moveFrom, annotCanvasToGui(moveMap, { x: 120, y: 100 }), { steps: 6 });
+      await sleep(260);
+      const movedPanel = await panelState();
+      const movedShapes = annotShapes(movedPanel);
+      const movedFirst = movedShapes.find((shape) => shape.id === firstId);
+      const movedSecond = movedShapes.find((shape) => shape.id === secondId);
+      const movedHost = await waitHostAnnotations((doc) => Array.isArray(doc.shapes) && doc.shapes.length === 2
+        && doc.shapes.some((shape) => shape.id === firstId && near(Number(shape.x), firstX0 + 20, 1.5)), { timeoutMs: 12000 });
+      const movedFacts = await selectionFacts();
+      check('V16b.4', 'dragging from inside the selected shape\'s box moves every selected shape together in canvas coordinates (+20/+10), with a move cursor, keeps the selection and publishes the moved document',
+        moveHover === 'move'
+          && near(annotNumAttr(movedFirst, 'x'), firstX0 + 20, 1.2) && near(annotNumAttr(movedFirst, 'y'), firstY0 + 10, 1.2)
+          && near(annotNumAttr(movedSecond, 'x'), 240, 1.2) && near(annotNumAttr(movedSecond, 'y'), 170, 1.2)
+          && movedFacts.count === 2
+          && movedHost.shapes.some((shape) => shape.id === secondId && near(Number(shape.x), 240, 1.5)),
+        { hover: 'move', first: '+20/+10', second: '+20/+10', selection: 2, published: true },
+        { hover: moveHover, first: { x: annotNumAttr(movedFirst, 'x'), y: annotNumAttr(movedFirst, 'y') },
+          second: { x: annotNumAttr(movedSecond, 'x'), y: annotNumAttr(movedSecond, 'y') },
+          count: movedFacts.count, host: movedHost.shapes.map((shape) => ({ id: shape.id, x: shape.x, y: shape.y })) });
+
+      // Esc clears the selection first (mode and shapes stay).
+      await pressKey('Escape', 'Escape', 27);
+      await sleep(220);
+      const escaped = await panelState();
+      const escapedFacts = await selectionFacts();
+      check('V16b.5', 'Esc clears the selection/halo/box/chip but keeps the mode and both shapes (a second Esc is what exits the mode)',
+        escaped.annot.pressed === 'true' && annotShapes(escaped).length === 2
+          && escapedFacts.count === 0 && escapedFacts.halos.length === 0 && escapedFacts.boxes.length === 0
+          && escapedFacts.chip === null && escapedFacts.deleteButton === null,
+        { mode: 'on', shapes: 2, selection: 0 },
+        { mode: escaped.annot.pressed, shapes: annotShapes(escaped).length, facts: escapedFacts });
+
+      // Marquee over both shapes selects both; a click-sized marquee clears the selection.
+      await clickAnnotTool('marquee');
+      await annotDrawStable({ x: 40, y: 40 }, { x: 320, y: 260 }, { steps: 6 });
+      await sleep(240);
+      const marqueed = await selectionFacts();
+      // Drag the whole marquee-selected group from the GAP between its members (inside the union
+      // box, outside both shapes): every selected shape must move together.
+      let gapMap = await annotMappingNow();
+      await ensurePointVisible(annotCanvasToGui(gapMap, { x: 200, y: 150 }));
+      await sleep(100);
+      gapMap = await annotMappingNow();
+      const gapGui = annotCanvasToGui(gapMap, { x: 200, y: 150 });
+      await annotDragGui(gapGui, annotCanvasToGui(gapMap, { x: 210, y: 160 }), { steps: 5 });
+      await sleep(260);
+      const groupPanel = await panelState();
+      const groupMovedFacts = await selectionFacts();
+      const groupFirst = annotShapes(groupPanel).find((shape) => shape.id === firstId);
+      const groupSecond = annotShapes(groupPanel).find((shape) => shape.id === secondId);
+      check('V16b.6b', 'a marquee-selected group moves together when dragged from the gap between members (no shape under the press), and the selection stays',
+        groupMovedFacts.count === 2
+          && near(annotNumAttr(groupFirst, 'x'), 90, 1.2) && near(annotNumAttr(groupFirst, 'y'), 80, 1.2)
+          && near(annotNumAttr(groupSecond, 'x'), 250, 1.2) && near(annotNumAttr(groupSecond, 'y'), 180, 1.2),
+        { dragFrom: 'gap inside union box', first: '+10/+10', second: '+10/+10', selected: 2 },
+        { facts: groupMovedFacts, first: { x: annotNumAttr(groupFirst, 'x'), y: annotNumAttr(groupFirst, 'y') },
+          second: { x: annotNumAttr(groupSecond, 'x'), y: annotNumAttr(groupSecond, 'y') } });
+
+      const emptyPoint = await annotPointGui({ x: 380, y: 280 });
+      await annotClickGui(emptyPoint);
+      const deselected = await selectionFacts();
+      check('V16b.6', '框选 selects every intersected shape (two halos + chip 已选 2 个); a click-sized marquee on empty canvas clears the selection',
+        marqueed.count === 2 && marqueed.selected.slice().sort().join('|') === [firstId, secondId].sort().join('|')
+          && marqueed.chip && marqueed.chip.text === '已选 2 个'
+          && deselected.count === 0 && deselected.halos.length === 0 && deselected.chip === null,
+        { marquee: { selected: 2, chip: '已选 2 个' }, clickEmpty: { selected: 0 } },
+        { marqueed, deselected });
+
+      // Marquee a subset, then Delete removes exactly the selected shape.
+      await annotDrawStable({ x: 40, y: 40 }, { x: 190, y: 150 }, { steps: 6 });
+      await sleep(220);
+      const subset = await selectionFacts();
+      await pressKey('Delete', 'Delete', 46);
+      const deletedPanel = await waitFor(async () => {
+        const panel = await panelState();
+        return annotShapes(panel).length === 1 ? panel : undefined;
+      }, { timeoutMs: 8000, intervalMs: 120, label: 'Delete removes the selected shape' });
+      const deletedHost = await waitHostAnnotations((doc) => Array.isArray(doc.shapes) && doc.shapes.length === 1 && doc.shapes[0].id === secondId, { timeoutMs: 12000 });
+      const deletedFacts = await selectionFacts();
+      check('V16b.7', 'Delete removes only the selected shape, publishes the remaining one, and clears the selection feedback',
+        subset.count === 1 && subset.selected.join('|') === firstId
+          && annotShapes(deletedPanel).length === 1 && annotShapes(deletedPanel)[0].id === secondId
+          && deletedHost.shapes.length === 1 && deletedHost.shapes[0].id === secondId
+          && deletedFacts.count === 0 && deletedFacts.halos.length === 0 && deletedFacts.deleteButton === null,
+        { selectedBefore: firstId, remaining: secondId, host: 1, selection: 0 },
+        { subset, remaining: annotShapes(deletedPanel).map((shape) => shape.id), host: deletedHost.shapes.map((shape) => shape.id), deletedFacts });
+
+      // The visible 删除选中 button deletes the last selected shape too.
+      await clickAnnotTool('select');
+      // The remaining shape moved with the group in V16b.4: click its own (moved) top-left stroke.
+      const remainingShape = annotShapes(deletedPanel)[0];
+      const lastEdge = await annotPointGui({ x: annotNumAttr(remainingShape, 'x'), y: annotNumAttr(remainingShape, 'y') });
+      await annotPressGui(lastEdge);
+      const beforeButton = await selectionFacts();
+      const deleteRect = await pageEvaluate(panelExpr(`
+        const b = panel.querySelector('[data-utb-annot-action="delete-selection"]');
+        if (!b) return null;
+        const r = b.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2, disabled: b.disabled === true };
+      `));
+      if (deleteRect && !deleteRect.disabled) await clickAt(deleteRect.x, deleteRect.y);
+      const emptiedPanel = await waitFor(async () => {
+        const panel = await panelState();
+        return annotShapes(panel).length === 0 ? panel : undefined;
+      }, { timeoutMs: 8000, intervalMs: 120, label: 'delete button removes the last shape' });
+      const emptiedHost = await waitHostAnnotations((doc) => Array.isArray(doc.shapes) && doc.shapes.length === 0, { timeoutMs: 12000 });
+      const emptiedFacts = await selectionFacts();
+      check('V16b.8', 'the visible 删除选中（N） button deletes the last selected shape, empties the Host document and removes every feedback element',
+        beforeButton.count === 1 && beforeButton.deleteButton.text === '删除选中（1）'
+          && Boolean(deleteRect) && deleteRect.disabled === false
+          && annotShapes(emptiedPanel).length === 0 && emptiedHost.shapes.length === 0
+          && emptiedFacts.count === 0 && emptiedFacts.halos.length === 0 && emptiedFacts.boxes.length === 0 && emptiedFacts.chip === null,
+        { selectedBefore: 1, remaining: 0, host: 0 },
+        { beforeButton, button: deleteRect, remaining: annotShapes(emptiedPanel).length, facts: emptiedFacts });
+
+      await toggleAnnot(false).catch(() => undefined);
+    });
+
+    await scenario('V16c annotation selection feel (P0-D v5)', async () => {
+      // Standalone fixture: this scenario also runs with DSH_VIEWPORT_GUI_ONLY=V16c.
+      // All tested gestures/shortcuts use trusted CDP input; DOM reads only observe feedback.
+      await toggleAnnot(false).catch(() => undefined);
+      await navigateTarget(`${fixtureBase}/web-t3.html`);
+      await waitForFrame();
+      await ensureHorizontalOverflow();
+      await clickFit(false);
+      await hostViewportSet({ width: 400, height: 300, scale: 1, x: 0, y: 0 });
+      await waitHostView((view) => Number(view.width) === 400 && Number(view.height) === 300
+        && closeTo(view.scale, 1, 0.0011) && near(view.x, 0, 1) && near(view.y, 0, 1));
+      await hostViewportSet({ canvasX: 0, canvasY: 0 });
+      await waitHostView((view) => near(view.canvasX, 0, 1) && near(view.canvasY, 0, 1));
+      await waitPanelMirrorsHost();
+      await waitCanvasState(true, true);
+      await waitFrameStable();
+      await closeSizeBar();
+      await waitFor(async () => {
+        const panel = await panelState();
+        if (panel.annot && panel.annot.pressed === 'true'
+          && panel.annot.tools.some((tool) => tool.tool === 'select')) return panel;
+        if (panel.annot && panel.annot.disabled === false) await toggleAnnot(true);
+        return undefined;
+      }, { timeoutMs: 12000, intervalMs: 250, label: 'V16c annotation bar open' });
+      await annotResetCanvas();
+      await clickAnnotTool('rect');
+      await annotPrepareStyle({ fill: false, stroke: true, width: 3, color: '#ff3b30' });
+      await annotDrawStable({ x: 60, y: 60 }, { x: 140, y: 120 }, { steps: 5 });
+      await annotDrawStable({ x: 220, y: 160 }, { x: 300, y: 240 }, { steps: 5 });
+      const seeded = annotShapes(await waitAnnotShapeCount(2));
+      const [firstId, secondId] = seeded.map((shape) => shape.id);
+      const xy = (shape) => ({ x: annotNumAttr(shape, 'x'), y: annotNumAttr(shape, 'y') });
+      const firstOrigin = xy(seeded[0]);
+      const secondOrigin = xy(seeded[1]);
+      await waitHostAnnotations((doc) => doc.shapes && doc.shapes.length === 2
+        && doc.shapes.some((shape) => shape.id === firstId)
+        && doc.shapes.some((shape) => shape.id === secondId));
+      await waitAnnotSync('synced');
+      await sleep(350);
+      const baseHost = await hostAnnotations();
+      const selectionSince = Date.now();
+      const sameHost = (doc, base) => doc && base && doc.revision === base.revision
+        && JSON.stringify(doc.shapes) === JSON.stringify(base.shapes);
+      const sameIds = (facts, ids) => facts.selected.slice().sort().join('|') === ids.slice().sort().join('|')
+        && facts.count === ids.length;
+      const facts = async () => {
+        // Selection changes are animation-frame coalesced; sample while the button stays held.
+        await sleep(90);
+        return pageEvaluate(panelExpr(`
+          const svg = panel.querySelector('.utb-annot-layer');
+          const committed = svg ? [...svg.querySelectorAll('g[data-utb-annot-state="committed"]')] : [];
+          const group = svg && svg.querySelector('[data-utb-annot-group-box]');
+          const groupRect = group && group.querySelector('rect');
+          const marquee = svg && svg.querySelector('[data-utb-annot-marquee]');
+          const rect = (el) => el ? Object.fromEntries(['x', 'y', 'width', 'height'].map((key) => [key, Number(el.getAttribute(key))])) : null;
+          const edit = panel.querySelector('.utb-annot-text-input');
+          return {
+            tool: svg && svg.getAttribute('data-utb-annot-active-tool'),
+            count: svg ? Number(svg.getAttribute('data-utb-annot-selection-count')) : -1,
+            selected: committed.filter((el) => el.getAttribute('data-utb-annot-selected') === 'true')
+              .map((el) => el.getAttribute('data-utb-annot-id')),
+            shapes: committed.map((el) => ({ id: el.getAttribute('data-utb-annot-id'),
+              x: Number(el.getAttribute('data-utb-annot-x')), y: Number(el.getAttribute('data-utb-annot-y')) })),
+            halos: svg ? svg.querySelectorAll('[data-utb-annot-halo]').length : 0,
+            boxes: svg ? svg.querySelectorAll('[data-utb-annot-select-box]').length : 0,
+            bounds: svg ? [...svg.querySelectorAll('[data-utb-annot-select-box]')].map((el) => rect(el.querySelector('rect'))) : [],
+            group: rect(groupRect), groupCount: svg ? svg.querySelectorAll('[data-utb-annot-group-box]').length : 0,
+            marquee: rect(marquee), marqueeMode: marquee && marquee.getAttribute('data-utb-annot-marquee-mode'),
+            chip: (panel.querySelector('[data-utb-annot-selection-chip]') || {}).textContent || null,
+            focused: Boolean(svg && document.activeElement === svg),
+            edit: edit ? { value: edit.value, start: edit.selectionStart, end: edit.selectionEnd,
+              focused: document.activeElement === edit } : null,
+          };
+        `));
+      };
+      const mouse = (type, point, modifiers = 0) => state.chrome.cdp.send('Input.dispatchMouseEvent', {
+        type, x: point.x, y: point.y, modifiers,
+        button: type === 'mouseMoved' ? 'none' : 'left',
+        buttons: type === 'mouseReleased' ? 0 : 1, clickCount: type === 'mouseMoved' ? 0 : 1,
+      });
+      const key = async (name, code, vk, modifiers = 0, type) => {
+        for (const phase of type ? [type] : ['keyDown', 'keyUp']) {
+          await state.chrome.cdp.send('Input.dispatchKeyEvent', {
+            type: phase, key: name, code, modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk,
+          });
+        }
+      };
+      const click = async (canvas, modifiers = 0) => {
+        const point = await annotPointGui(canvas);
+        await mouse('mousePressed', point, modifiers);
+        await mouse('mouseReleased', point, modifiers);
+        return facts();
+      };
+      const begin = async (canvas, modifiers = 0) => {
+        const point = await annotPointGui(canvas);
+        const map = await annotMappingNow();
+        await mouse('mousePressed', point, modifiers);
+        return { point, map };
+      };
+      const shapeAt = (snapshot, id) => snapshot.shapes.find((shape) => shape.id === id);
+      const at = (snapshot, id, x, y) => {
+        const shape = shapeAt(snapshot, id);
+        return Boolean(shape) && near(shape.x, x, 1.2) && near(shape.y, y, 1.2);
+      };
+      check('V16c.1', 'standalone selection-feel fixture creates its own two stroke-only rectangles',
+        seeded.every((shape) => shape.type === 'rect') && firstId !== secondId
+          && near(firstOrigin.x, 60, 1.2) && near(firstOrigin.y, 60, 1.2)
+          && near(secondOrigin.x, 220, 1.2) && near(secondOrigin.y, 160, 1.2),
+        { rects: [[60, 60, 140, 120], [220, 160, 300, 240]] }, seeded.map((shape) => ({ id: shape.id, ...xy(shape) })));
+
+      await clickAnnotTool('select');
+      let drag = await begin({ x: 30, y: 30 });
+      await mouse('mouseMoved', annotCanvasToGui(drag.map, { x: 320, y: 260 }));
+      const previewBoth = await facts();
+      await mouse('mouseMoved', annotCanvasToGui(drag.map, { x: 170, y: 140 }));
+      const previewFirst = await facts();
+      await mouse('mouseMoved', annotCanvasToGui(drag.map, { x: 31, y: 31 }));
+      const previewEmpty = await facts();
+      check('V16c.2', 'select-tool empty-space drag previews both, then one, then none as the marquee shrinks before release',
+        sameIds(previewBoth, [firstId, secondId]) && previewBoth.halos === 2 && previewBoth.boxes === 2
+          && previewBoth.chip === '已选 2 个' && Boolean(previewBoth.marquee)
+          && sameIds(previewFirst, [firstId]) && sameIds(previewEmpty, []) && Boolean(previewEmpty.marquee),
+        { heldPreviewCounts: [2, 1, 0], feedback: 'halos, per-shape boxes, chip, live marquee' },
+        { previewBoth, previewFirst, previewEmpty });
+      // No move at this final point: pointerup itself must resample the marquee.
+      await mouse('mouseReleased', annotCanvasToGui(drag.map, { x: 170, y: 140 }));
+      const upMarquee = await facts();
+      check('V16c.3', 'marquee pointerup uses its final coordinates and selection alone never changes the Host document',
+        sameIds(upMarquee, [firstId]) && upMarquee.marquee === null
+          && sameHost(await hostAnnotations(), baseHost) && annotationPosts(selectionSince).length === 0,
+        { selected: [firstId], marquee: null, hostWrites: 0 }, { upMarquee, posts: annotationPosts(selectionSince) });
+
+      const shiftExisting = await click({ x: 100, y: 60 }, 8);
+      const shiftRestored = await click({ x: 100, y: 60 }, 8);
+      const shiftAdded = await click({ x: 260, y: 160 }, 8);
+      const ctrlToggled = await click({ x: 260, y: 160 }, 2);
+      const metaToggled = await click({ x: 260, y: 160 }, 4);
+      check('V16c.4', 'Shift/Ctrl/Meta-click toggle membership (Shift marquee uses union, tested separately)',
+        sameIds(shiftExisting, []) && sameIds(shiftRestored, [firstId]) && sameIds(shiftAdded, [firstId, secondId])
+          && sameIds(ctrlToggled, [firstId]) && sameIds(metaToggled, [firstId, secondId]),
+        { counts: [0, 1, 2, 1, 2] }, { shiftExisting, shiftRestored, shiftAdded, ctrlToggled, metaToggled });
+      const group = metaToggled.group;
+      const bounds = metaToggled.bounds.filter(Boolean);
+      const unionBox = bounds.length ? {
+        x: Math.min(...bounds.map((box) => box.x)), y: Math.min(...bounds.map((box) => box.y)),
+        right: Math.max(...bounds.map((box) => box.x + box.width)),
+        bottom: Math.max(...bounds.map((box) => box.y + box.height)),
+      } : null;
+      check('V16c.5', 'multi-selection keeps per-shape feedback and adds exactly one outer group boundary enclosing both rectangles',
+        sameIds(metaToggled, [firstId, secondId]) && metaToggled.groupCount === 1
+          && metaToggled.halos === 2 && metaToggled.boxes === 2 && Boolean(group)
+          && group.x <= firstOrigin.x && group.y <= firstOrigin.y
+          && group.x + group.width >= secondOrigin.x + 80 && group.y + group.height >= secondOrigin.y + 80
+          && Boolean(unionBox) && near(group.x, unionBox.x, 0.01) && near(group.y, unionBox.y, 0.01)
+          && near(group.x + group.width, unionBox.right, 0.01) && near(group.y + group.height, unionBox.bottom, 0.01),
+        { outerGroup: 1, perShapeBoxes: 2, encloses: 'exact union of both per-shape boxes' }, metaToggled);
+
+      // Keep the pointer still while real modifier key events recompute from the gesture's base.
+      drag = await begin({ x: 30, y: 30 }, 8);
+      await mouse('mouseMoved', annotCanvasToGui(drag.map, { x: 170, y: 140 }), 8);
+      const union = await facts();
+      await key('Shift', 'ShiftLeft', 16, 0, 'keyUp');
+      const replaced = await facts();
+      await key('Alt', 'AltLeft', 18, 1, 'keyDown');
+      const subtracted = await facts();
+      await key('Shift', 'ShiftLeft', 16, 9, 'keyDown');
+      const intersected = await facts();
+      check('V16c.6', 'held marquee uses Shift union, Alt subtraction and Shift+Alt intersection; keyboard-only modifier changes update preview from the original base',
+        sameIds(union, [firstId, secondId]) && union.marqueeMode === 'add'
+          && sameIds(replaced, [firstId]) && replaced.marqueeMode === 'replace'
+          && sameIds(subtracted, [secondId]) && subtracted.marqueeMode === 'subtract'
+          && sameIds(intersected, [firstId]) && intersected.marqueeMode === 'intersect',
+        { union: [firstId, secondId], replace: [firstId], subtract: [secondId], intersect: [firstId] },
+        { union, replaced, subtracted, intersected });
+      await key('Escape', 'Escape', 27, 9);
+      await key('Shift', 'ShiftLeft', 16, 1, 'keyUp');
+      await key('Alt', 'AltLeft', 18, 0, 'keyUp');
+      await mouse('mouseReleased', annotCanvasToGui(drag.map, { x: 170, y: 140 }));
+      const cancelled = await facts();
+      await sleep(450);
+      check('V16c.7', 'Esc cancels the live marquee, restores its base selection and leaves mode, shapes and Host revision intact',
+        sameIds(cancelled, [firstId, secondId]) && cancelled.marquee === null
+          && cancelled.shapes.length === 2 && (await panelState()).annot.pressed === 'true'
+          && sameHost(await hostAnnotations(), baseHost) && annotationPosts(selectionSince).length === 0,
+        { selection: [firstId, secondId], hostWrites: 0, mode: 'on' }, { cancelled, posts: annotationPosts(selectionSince) });
+
+      // Establish a single selection independently of the preceding modifier assertions.
+      await click({ x: 380, y: 280 });
+      await click({ x: 100, y: 60 });
+      drag = await begin({ x: 100, y: 90 });
+      await mouse('mouseMoved', { x: drag.point.x + 2, y: drag.point.y });
+      const jitterPreview = await facts();
+      await mouse('mouseReleased', { x: drag.point.x + 2, y: drag.point.y });
+      await sleep(450);
+      const jitterDone = await facts();
+      check('V16c.8', '2 screen-pixel click jitter stays below the movement threshold with unchanged geometry and Host revision',
+        at(jitterPreview, firstId, firstOrigin.x, firstOrigin.y) && at(jitterDone, firstId, firstOrigin.x, firstOrigin.y)
+          && sameIds(jitterDone, [firstId]) && sameHost(await hostAnnotations(), baseHost),
+        { delta: [0, 0], revision: baseHost.revision }, { jitterPreview, jitterDone, host: await hostAnnotations() });
+      drag = await begin({ x: 100, y: 90 });
+      await mouse('mouseMoved', annotCanvasToGui(drag.map, { x: 125, y: 100 }));
+      const movedOut = await facts();
+      await mouse('mouseMoved', drag.point);
+      const returnedPreview = await facts();
+      await mouse('mouseReleased', drag.point);
+      await sleep(450);
+      const returned = await facts();
+      check('V16c.9', 'an activated drag can return to its exact press point and produce zero Host writes',
+        at(movedOut, firstId, firstOrigin.x + 25, firstOrigin.y + 10)
+          && at(returnedPreview, firstId, firstOrigin.x, firstOrigin.y)
+          && at(returned, firstId, firstOrigin.x, firstOrigin.y)
+          && sameHost(await hostAnnotations(), baseHost) && annotationPosts(selectionSince).length === 0,
+        { previewDelta: [25, 10], finalDelta: [0, 0], hostWrites: 0 }, { movedOut, returnedPreview, returned });
+      drag = await begin({ x: 100, y: 90 });
+      await mouse('mouseMoved', annotCanvasToGui(drag.map, { x: 120, y: 100 }));
+      const beforeMoveEsc = await facts();
+      await key('Escape', 'Escape', 27);
+      await mouse('mouseReleased', annotCanvasToGui(drag.map, { x: 120, y: 100 }));
+      await sleep(450);
+      const moveEsc = await facts();
+      check('V16c.10', 'Esc during movement restores the captured geometry and selection without committing the move',
+        at(beforeMoveEsc, firstId, firstOrigin.x + 20, firstOrigin.y + 10)
+          && at(moveEsc, firstId, firstOrigin.x, firstOrigin.y) && sameIds(moveEsc, [firstId])
+          && sameHost(await hostAnnotations(), baseHost) && annotationPosts(selectionSince).length === 0,
+        { finalDelta: [0, 0], selected: [firstId], hostWrites: 0 }, { beforeMoveEsc, moveEsc });
+
+      drag = await begin({ x: 100, y: 90 });
+      // Deliberately omit mouseMoved between press and release.
+      await mouse('mouseReleased', annotCanvasToGui(drag.map, { x: 120, y: 98 }));
+      const upOnly = await facts();
+      const upOnlyHost = await waitHostAnnotations((doc) => doc.shapes.some((shape) => shape.id === firstId
+        && near(Number(shape.x), firstOrigin.x + 20, 1.2) && near(Number(shape.y), firstOrigin.y + 8, 1.2)));
+      check('V16c.11', 'movement samples pointerup even when there was no intervening pointermove and publishes that final location',
+        at(upOnly, firstId, firstOrigin.x + 20, firstOrigin.y + 8)
+          && at(upOnly, secondId, secondOrigin.x, secondOrigin.y) && upOnlyHost.revision > baseHost.revision,
+        { firstDelta: [20, 8], secondDelta: [0, 0], published: true }, { upOnly, revision: upOnlyHost.revision });
+      drag = await begin({ x: 120, y: 98 });
+      await mouse('mouseMoved', annotCanvasToGui(drag.map, { x: 150, y: 110 }), 8);
+      const locked = await facts();
+      await key('Shift', 'ShiftLeft', 16, 0, 'keyUp');
+      const unlocked = await facts();
+      await key('Shift', 'ShiftLeft', 16, 8, 'keyDown');
+      const relocked = await facts();
+      // Final point differs from the last move: sample the new X while keeping Y locked.
+      await mouse('mouseReleased', annotCanvasToGui(drag.map, { x: 160, y: 116 }), 8);
+      await key('Shift', 'ShiftLeft', 16, 0, 'keyUp');
+      const axisDone = await facts();
+      await waitHostAnnotations((doc) => doc.shapes.some((shape) => shape.id === firstId
+        && near(Number(shape.x), firstOrigin.x + 60, 1.2) && near(Number(shape.y), firstOrigin.y + 8, 1.2)));
+      check('V16c.12', 'Shift locks the dominant movement axis, releasing/repressing Shift recomputes without a move, and pointerup supplies the final locked delta',
+        at(locked, firstId, firstOrigin.x + 50, firstOrigin.y + 8)
+          && at(unlocked, firstId, firstOrigin.x + 50, firstOrigin.y + 20)
+          && at(relocked, firstId, firstOrigin.x + 50, firstOrigin.y + 8)
+          && at(axisDone, firstId, firstOrigin.x + 60, firstOrigin.y + 8),
+        { localDeltas: [[30, 0], [30, 12], [30, 0], [40, 0]] }, { locked, unlocked, relocked, axisDone });
+
+      // A pointer gesture gives the canvas real focus before the shortcut probes.
+      await key('m', 'KeyM', 77);
+      const shortcutM = await facts();
+      await key('v', 'KeyV', 86);
+      await key('a', 'KeyA', 65, 2);
+      const shortcutAll = await facts();
+      await key('d', 'KeyD', 68, 2);
+      const shortcutNone = await facts();
+      const beforeNudge = await click({ x: firstOrigin.x + 100, y: firstOrigin.y + 8 });
+      await key('ArrowRight', 'ArrowRight', 39);
+      const rightNudge = await facts();
+      await key('ArrowDown', 'ArrowDown', 40, 8);
+      const nudged = await facts();
+      const nudgeStart = shapeAt(beforeNudge, firstId);
+      const nudgeRight = shapeAt(rightNudge, firstId);
+      const nudgeEnd = shapeAt(nudged, firstId);
+      await waitHostAnnotations((doc) => doc.shapes.some((shape) => shape.id === firstId
+        && near(Number(shape.x), firstOrigin.x + 61, 1.2) && near(Number(shape.y), firstOrigin.y + 18, 1.2)));
+      check('V16c.13', 'canvas-focused M/V switch tools, Ctrl+A/Ctrl+D select/clear, arrows nudge 1 canvas px and Shift+arrow nudges 10',
+        shortcutM.tool === 'marquee' && shortcutM.focused && shortcutAll.tool === 'select'
+          && sameIds(shortcutAll, [firstId, secondId]) && sameIds(shortcutNone, [])
+          && at(nudged, firstId, firstOrigin.x + 61, firstOrigin.y + 18)
+          && Boolean(nudgeStart && nudgeRight && nudgeEnd)
+          && near(nudgeRight.x - nudgeStart.x, 1, 0.01) && near(nudgeRight.y - nudgeStart.y, 0, 0.01)
+          && near(nudgeEnd.x - nudgeRight.x, 0, 0.01) && near(nudgeEnd.y - nudgeRight.y, 10, 0.01)
+          && at(nudged, secondId, secondOrigin.x, secondOrigin.y),
+        { tools: ['marquee', 'select'], counts: [2, 0], nudge: [1, 10] },
+        { shortcutM, shortcutAll, shortcutNone, beforeNudge, rightNudge, nudged });
+
+      const beforeEditor = await hostAnnotations();
+      await clickAnnotTool('text');
+      await annotClickGui(await annotPointGui({ x: 350, y: 270 }));
+      await state.chrome.cdp.send('Input.insertText', { text: 'vm' });
+      await key('v', 'KeyV', 86);
+      await key('m', 'KeyM', 77);
+      await key('a', 'KeyA', 65, 2);
+      const editorAll = await facts();
+      await key('d', 'KeyD', 68, 2);
+      await key('ArrowLeft', 'ArrowLeft', 37);
+      await key('ArrowRight', 'ArrowRight', 39, 8);
+      const editorProtected = await facts();
+      await key('Escape', 'Escape', 27);
+      await sleep(450);
+      const editorCancelled = await facts();
+      check('V16c.14', 'text-editor focus protects V/M, Ctrl+A/Ctrl+D and arrow shortcuts; Ctrl+A selects input text and Esc cancels without changing shapes',
+        editorAll.tool === 'text' && editorAll.edit && editorAll.edit.focused
+          && editorAll.edit.value === 'vm' && editorAll.edit.start === 0 && editorAll.edit.end === 2
+          && editorProtected.tool === 'text' && editorProtected.edit && editorProtected.edit.focused
+          && editorProtected.count === editorAll.count && editorCancelled.edit === null
+          && at(editorCancelled, firstId, firstOrigin.x + 61, firstOrigin.y + 18)
+          && sameHost(await hostAnnotations(), beforeEditor),
+        { tool: 'text', inputSelection: [0, 2], shapeChanges: 0 }, { editorAll, editorProtected, editorCancelled });
+
+      await clickAnnotTool('select');
+      await hostViewportSet({ scale: 0.5 });
+      await waitHostView((view) => closeTo(view.scale, 0.5, 0.0011));
+      await waitPanelMirrorsHost();
+      await waitFrameStable();
+      await click({ x: 380, y: 280 });
+      let halfMap = await annotMappingNow();
+      const edgeCanvas = { x: firstOrigin.x + 101, y: firstOrigin.y + 18 };
+      await ensurePointVisible(annotCanvasToGui(halfMap, edgeCanvas));
+      halfMap = await annotMappingNow();
+      const edge = annotCanvasToGui(halfMap, edgeCanvas);
+      const offEdge = { x: edge.x, y: edge.y - 4 };
+      await annotEnsureHit(offEdge);
+      const beforeHit = await hostAnnotations();
+      await annotPressGui(offEdge);
+      const halfHit = await facts();
+      check('V16c.15', 'at scale 0.5 a stroke-only rectangle is selectable 4 screen px outside its edge (6 screen-px hit tolerance)',
+        closeTo(halfMap.sx, 0.5, 0.02) && closeTo(halfMap.sy, 0.5, 0.02)
+          && sameIds(halfHit, [firstId]) && halfHit.group === null
+          && sameHost(await hostAnnotations(), beforeHit),
+        { scale: 0.5, outsideEdgeScreenPx: 4, selected: [firstId], hostChanges: 0 },
+        { sx: halfMap.sx, sy: halfMap.sy, edge, offEdge, halfHit });
       await toggleAnnot(false).catch(() => undefined);
     });
 

@@ -970,7 +970,18 @@ window.__ModuleLoader__.load({
       if (tool === 'line' || tool === 'arrow' || tool === 'brush') return { fill: false, stroke: true };
       return mode === 'fill' ? { fill: true, stroke: false } : { fill: false, stroke: true };
     }
+    /**
+     * 选择类工具（v3，2026-11-12）：只改面板本地选中态，不产生图形、不写 Host 文档。
+     * `select` 点选/拖动已选图形，`marquee` 用矩形框选多个；两者与绘制/橡皮擦/文字互斥。
+     */
+    const ANNOT_SELECTION_TOOLS = Object.freeze(['select', 'marquee']);
+    function annotIsSelectionTool(tool) {
+      return ANNOT_SELECTION_TOOLS.includes(tool);
+    }
     const ANNOT_TOOLS = Object.freeze([
+      // 选择/框选放在工具栏最左侧（用户 2026-11-12 要求），绘制工具的相对顺序不变。
+      Object.freeze({ id: 'select', label: '选择' }),
+      Object.freeze({ id: 'marquee', label: '框选' }),
       Object.freeze({ id: 'circle', label: '圆形' }),
       Object.freeze({ id: 'rect', label: '矩形' }),
       Object.freeze({ id: 'line', label: '线段' }),
@@ -1475,6 +1486,20 @@ window.__ModuleLoader__.load({
 /* v2：横栏右侧的可见文案按钮「清除画布」（§11.4）与状态栏同步提示（§11.3）。 */
 .utb-annot-shot { width: auto; min-width: 0; height: 28px; padding: 0 10px; font-size: 12px; line-height: 1; white-space: nowrap; border-color: var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
 .utb-annot-clear { width: auto; min-width: 0; height: 28px; padding: 0 10px; margin-left: auto; font-size: 12px; line-height: 1; white-space: nowrap; border-color: var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
+.utb-annot-delete { width: auto; min-width: 0; height: 28px; padding: 0 10px; font-size: 12px; line-height: 1; white-space: nowrap; border-color: var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
+/* 选中态（选择/框选）：品牌色光晕 + 半透明包围框 + 并行胶囊；纯面板 SVG 视觉，不进截图、不改图形数据。 */
+.utb-annot-select-halo { opacity: .4; pointer-events: none; }
+.utb-annot-select-halo * { stroke: #0b6bff !important; fill: none !important; stroke-width: 8 !important; vector-effect: non-scaling-stroke; }
+.utb-annot-select-halo polygon { fill: #0b6bff !important; stroke: #0b6bff !important; }
+.utb-annot-select-halo text { fill: #0b6bff !important; stroke: none !important; }
+.utb-annot-select-group { pointer-events: none; }
+.utb-annot-select-fill { fill: rgba(11, 107, 255, .16); stroke: none; pointer-events: none; }
+.utb-annot-select-edge { fill: none; stroke: #fff; stroke-width: 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+.utb-annot-select-ants { fill: none; stroke: #0b6bff; stroke-width: 1.6; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; pointer-events: none; animation: utb-annot-ants 1s linear infinite; }
+@keyframes utb-annot-ants { to { stroke-dashoffset: -8; } }
+@media (prefers-reduced-motion: reduce) { .utb-annot-select-ants { animation: none; } }
+.utb-annot-selected-status { flex: 0 0 auto; color: var(--dsw-alias-brand-primary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.utb-annot-marquee-box { fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent); stroke: var(--dsw-alias-brand-primary); stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none; }
 .utb-annot-sync { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-state-warn-primary); }
 .utb-annot-layer { display: block; overflow: hidden; }
 .utb-annot-layer:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
@@ -1578,6 +1603,10 @@ window.__ModuleLoader__.load({
     /** 标注子工具的小图标（16×16、currentColor、stroke 1.7）。 */
     function IconAnnotTool({ tool }) {
       const svg = (children) => h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, children);
+      // 选择：鼠标指针箭头（白芯描边，和十字形的绘制工具区分开）。
+      if (tool === 'select') return svg(h('path', { d: 'M6.2 3.8v14.2l3.8-3.5 2.5 5.2 2.6-1.2-2.5-5.2 5-.5Z' }));
+      // 框选：虚线矩形（与实线「矩形」绘制工具同尺寸，靠虚线区分）。
+      if (tool === 'marquee') return svg(h('rect', { x: 4.5, y: 5.5, width: 15, height: 13, rx: 1.2, strokeDasharray: '2.6 2.4' }));
       if (tool === 'circle') return svg(h('circle', { cx: 12, cy: 12, r: 7 }));
       if (tool === 'rect') return svg(h('rect', { x: 4.5, y: 5.5, width: 15, height: 13, rx: 1.2 }));
       if (tool === 'line') return svg(h('path', { d: 'M5.5 18.5 18.5 5.5' }));
@@ -2553,6 +2582,13 @@ window.__ModuleLoader__.load({
       // Mirrors the capability fact for callbacks that must not read render closures.
       const annotChannelRef = React.useRef(false);
       const annotEraseRef = React.useRef({ active: false, pointerId: -1, map: null, last: null, changed: 0 });
+      // 选择/框选（v3）：选中集合只用图形 id 表达；框选与拖动各有一条互斥手势。
+      const annotSelectionRef = React.useRef(new Set());
+      const annotSelectionRafRef = React.useRef(0);
+      const annotMarqueeRef = React.useRef({ active: false, pointerId: -1, map: null, start: null, end: null, node: null });
+      const annotMoveRef = React.useRef({ active: false, pointerId: -1, map: null, start: null, last: null, origin: null, changed: false });
+      /** Hover cursor for the select tool: 'move' over a movable shape/selection box, else 'default'. */
+      const annotHoverRef = React.useRef('default');
       const annotHitCtxRef = React.useRef(null);
       // ---- 选元素发送到聊天框 ----------------------------------------------------------------
       // 同步真值在 pickRef（模式闸），React 状态只镜像渲染；悬浮命中 80ms 节流 + 单飞，
@@ -4000,6 +4036,7 @@ window.__ModuleLoader__.load({
           if (match) maxId = Math.max(maxId, Number(match[1]));
         }
         annotShapesRef.current = imported;
+        annotPruneSelection();
         const safeWatermark = Number.isSafeInteger(previousWatermark) && previousWatermark >= 0 ? previousWatermark : 0;
         const safeMaxId = Number.isSafeInteger(maxId) && maxId >= 0 ? maxId : 0;
         annotNextIdRef.current = Math.max(safeWatermark, safeMaxId);
@@ -4096,7 +4133,10 @@ window.__ModuleLoader__.load({
           if (snapshot.contentSeq === annotContentSeqRef.current) {
             // The final ACK's normalized document (including Host truncation) is the visible truth.
             if (accepted && Array.isArray(accepted.shapes)) {
-              annotApplyImported(accepted.shapes);
+              // An ACK for the previous edit must not replace the geometry under a held pointer.
+              // Reconcile Host normalization/truncation when this move finishes or is cancelled.
+              if (annotMoveRef.current.active) annotMoveRef.current.acceptedShapes = accepted.shapes;
+              else annotApplyImported(accepted.shapes);
               annotDirtyRef.current = false;
             }
             if (revision !== null) annotShownRevisionRef.current = Math.max(annotShownRevisionRef.current, revision);
@@ -4189,6 +4229,8 @@ window.__ModuleLoader__.load({
 
       /** Freeze identity + normalized shapes and enqueue as the newest snapshot (at most 1 waiting). */
       function annotPublishNow() {
+        // An older edit's debounce may fire during a new move. Only publish committed geometry.
+        if (annotMoveRef.current.active) return null;
         const identity = annotIdentityNow();
         if (!identity) return null;
         const normalized = annotNormalize();
@@ -4219,6 +4261,8 @@ window.__ModuleLoader__.load({
        * (capability temporarily unavailable). It is never converted into an empty document.
        */
       function annotRetainDirty(flush) {
+        // Retained content is committed content; a scope/runtime change cancels a held move first.
+        cancelAnnotMove();
         if (!annotDirtyRef.current) return;
         const normalized = annotNormalize();
         const identity = annotIdentityNow({ anyEpoch: true });
@@ -4259,6 +4303,7 @@ window.__ModuleLoader__.load({
         resetAnnotErase();
         setAnnotBusy(false);
         annotShapesRef.current = [];
+        annotSelectionRef.current = new Set();
         annotCandidateRef.current = null;
         setAnnotVersion((value) => value + 1);
         annotDirtyRef.current = false;
@@ -4305,6 +4350,7 @@ window.__ModuleLoader__.load({
         resetAnnotErase();
         setAnnotBusy(false);
         annotShapesRef.current = [];
+        annotSelectionRef.current = new Set();
         annotCandidateRef.current = null;
         setAnnotVersion((value) => value + 1);
         annotDirtyRef.current = false;
@@ -4329,7 +4375,8 @@ window.__ModuleLoader__.load({
       /** Clean + no gesture/edit/in-flight/error → a newer Host revision may replace the view. */
       function annotCanAdopt() {
         if (annotDirtyRef.current) return false;
-        if (annotGestureRef.current.active || annotEditRef.current.active || annotEraseRef.current.active) return false;
+        if (annotGestureRef.current.active || annotEditRef.current.active || annotEraseRef.current.active
+          || annotMoveRef.current.active || annotMarqueeRef.current.active) return false;
         const entry = annotPublisherRef.current;
         if (!entry) return false;
         if (entry.inflight || entry.queued || entry.lastError) return false;
@@ -4515,7 +4562,7 @@ window.__ModuleLoader__.load({
       }
 
       /** Text uses the rendered `getBBox()` in canvas CSS px; unreadable bbox = no hit (no guessing). */
-      function annotHitText(shape, point) {
+      function annotHitText(shape, point, padding = 0) {
         const svg = annotSvgRef.current;
         if (!svg) return false;
         const id = String(shape.id || '').replace(/["\\]/g, '');
@@ -4524,7 +4571,8 @@ window.__ModuleLoader__.load({
         let box = null;
         try { box = node.getBBox(); } catch { box = null; }
         if (!box || !(box.width > 0) || !(box.height > 0)) return false;
-        return point.x >= box.x && point.x <= box.x + box.width && point.y >= box.y && point.y <= box.y + box.height;
+        return point.x >= box.x - padding && point.x <= box.x + box.width + padding
+          && point.y >= box.y - padding && point.y <= box.y + box.height + padding;
       }
 
       function annotHitArrow(shape, point, radius) {
@@ -4534,11 +4582,17 @@ window.__ModuleLoader__.load({
         return annotPointInTriangle(point, geometry.points);
       }
 
-      function annotHitsShape(shape, point) {
-        const radius = annotEraseRadius(shape);
+      function annotHitsShape(shape, point, hitRadius) {
+        const radius = hitRadius === undefined ? annotEraseRadius(shape) : hitRadius;
         if (shape.type === 'rect' || shape.type === 'circle') return annotHitPath(shape, point, radius);
-        if (shape.type === 'text') return annotHitText(shape, point);
-        if (shape.type === 'arrow') return annotHitArrow(shape, point, radius);
+        if (shape.type === 'text') return annotHitText(shape, point, hitRadius === undefined ? 0 : radius);
+        if (shape.type === 'arrow') {
+          if (annotHitArrow(shape, point, radius)) return true;
+          if (hitRadius === undefined) return false;
+          const geometry = annotArrowGeometry({ x: shape.x1, y: shape.y1 }, { x: shape.x2, y: shape.y2 }, shape.strokeWidth);
+          return Boolean(geometry && geometry.points.some((a, index, points) =>
+            annotSegmentDistance(point, a, points[(index + 1) % points.length]) <= radius));
+        }
         if (shape.type === 'line') {
           return annotSegmentDistance(point, { x: shape.x1, y: shape.y1 }, { x: shape.x2, y: shape.y2 }) <= radius;
         }
@@ -4562,6 +4616,413 @@ window.__ModuleLoader__.load({
         annotEraseRef.current = { active: false, pointerId: -1, map: null, last: null, changed: 0 };
       }
 
+      /* ---- 选择 / 框选（v3）----------------------------------------------------------------
+       * 选中集合只属于本面板：不写 Host 文档、不改变 SVG 图形的数据属性之外的任何事实。
+       * 点选用屏幕空间容差命中最上层图形；框选以手势开始时的集合为基准实时预览。
+       * 只有「移动」与「删除」会改图形并走既有的 150ms 合并上报；选中本身零上报。
+       * ------------------------------------------------------------------------------------ */
+
+      function annotSelectionRefresh() {
+        setAnnotVersion((value) => value + 1);
+      }
+
+      /** Coalesce pointer-move re-renders to one per animation frame (move stays smooth). */
+      function annotSelectionScheduleRender() {
+        if (annotSelectionRafRef.current) return;
+        annotSelectionRafRef.current = window.requestAnimationFrame(() => {
+          annotSelectionRafRef.current = 0;
+          annotSelectionRefresh();
+        });
+      }
+
+      function annotSelectionCount() {
+        return annotSelectionRef.current.size;
+      }
+
+      /** Click modifiers toggle; marquee modifiers use union/difference/intersection instead. */
+      function annotSelectionMode(event) {
+        if (event.shiftKey && event.altKey) return 'intersect';
+        if (event.altKey) return 'subtract';
+        if (event.shiftKey) return 'add';
+        if (event.ctrlKey || event.metaKey) return 'toggle';
+        return 'replace';
+      }
+
+      function annotApplySelection(ids, mode, base, scheduled) {
+        const existing = new Set(annotShapesRef.current.map((shape) => shape.id));
+        const hits = new Set(ids.filter((id) => existing.has(id)));
+        const next = mode === 'replace' ? new Set() : new Set([...base].filter((id) => existing.has(id)));
+        if (mode === 'intersect') {
+          for (const id of next) if (!hits.has(id)) next.delete(id);
+        } else {
+          for (const id of hits) {
+            if (mode === 'subtract' || (mode === 'toggle' && next.has(id))) next.delete(id);
+            else next.add(id);
+          }
+        }
+        const previous = annotSelectionRef.current;
+        if (next.size === previous.size && [...next].every((id) => previous.has(id))) return;
+        annotSelectionRef.current = next;
+        if (scheduled) annotSelectionScheduleRender();
+        else annotSelectionRefresh();
+      }
+
+      function annotSetSelection(ids, additive) {
+        annotApplySelection(ids, additive ? 'toggle' : 'replace', annotSelectionRef.current, false);
+      }
+
+      function annotClearSelection() {
+        if (!annotSelectionRef.current.size) return;
+        annotSelectionRef.current = new Set();
+        annotSelectionRefresh();
+      }
+
+      /** Drop ids the current document no longer contains (import/erase/clear). */
+      function annotPruneSelection() {
+        if (!annotSelectionRef.current.size) return;
+        const existing = new Set(annotShapesRef.current.map((shape) => shape.id));
+        let changed = false;
+        for (const id of Array.from(annotSelectionRef.current)) {
+          if (!existing.has(id)) { annotSelectionRef.current.delete(id); changed = true; }
+        }
+        if (changed) annotSelectionRefresh();
+      }
+
+      /** Analytic bbox in canvas CSS px (text uses the rendered getBBox, else a conservative estimate). */
+      function annotShapeBounds(shape) {
+        const move = annotMoveRef.current;
+        const base = move.active && move.bounds && move.bounds.get(shape.id);
+        if (base) return { x: base.x + move.dx, y: base.y + move.dy, w: base.w, h: base.h };
+        const width = Number(shape.strokeWidth);
+        const pad = (Number.isFinite(width) && width > 0 ? width : 1) / 2 + 1;
+        if (shape.type === 'circle') {
+          return { x: shape.cx - shape.rx - pad, y: shape.cy - shape.ry - pad, w: shape.rx * 2 + pad * 2, h: shape.ry * 2 + pad * 2 };
+        }
+        if (shape.type === 'rect') {
+          return { x: shape.x - pad, y: shape.y - pad, w: shape.w + pad * 2, h: shape.h + pad * 2 };
+        }
+        if (shape.type === 'line' || shape.type === 'arrow') {
+          const points = [{ x: shape.x1, y: shape.y1 }, { x: shape.x2, y: shape.y2 }];
+          if (shape.type === 'arrow') {
+            const geometry = annotArrowGeometry(points[0], points[1], shape.strokeWidth);
+            if (geometry) points.push(...geometry.points);
+          }
+          const x = Math.min(...points.map((point) => point.x)) - pad;
+          const y = Math.min(...points.map((point) => point.y)) - pad;
+          return { x, y,
+            w: Math.max(...points.map((point) => point.x)) - x + pad,
+            h: Math.max(...points.map((point) => point.y)) - y + pad };
+        }
+        if (shape.type === 'brush') {
+          const points = shape.points || [];
+          if (!points.length) return null;
+          let x1 = Infinity; let y1 = Infinity; let x2 = -Infinity; let y2 = -Infinity;
+          for (const point of points) {
+            x1 = Math.min(x1, point.x); y1 = Math.min(y1, point.y);
+            x2 = Math.max(x2, point.x); y2 = Math.max(y2, point.y);
+          }
+          return { x: x1 - pad, y: y1 - pad, w: x2 - x1 + pad * 2, h: y2 - y1 + pad * 2 };
+        }
+        if (shape.type === 'text') {
+          const svg = annotSvgRef.current;
+          if (svg) {
+            const id = String(shape.id || '').replace(/["\\]/g, '');
+            const node = svg.querySelector('g[data-utb-annot-id="' + id + '"] text');
+            if (node && typeof node.getBBox === 'function') {
+              try {
+                const box = node.getBBox();
+                if (box.width > 0 && box.height > 0) return {
+                  // During React render the DOM may still contain the previous position.
+                  x: box.x + shape.x - Number(node.getAttribute('x')),
+                  y: box.y + shape.y - Number(node.getAttribute('y')),
+                  w: box.width, h: box.height,
+                };
+              } catch { /* fall through to the estimate */ }
+            }
+          }
+          // Conservative estimate (CJK ≈ 1em, ASCII ≈ 0.5em) so a box selection still catches the text.
+          const text = String(shape.text || '');
+          let estimated = 0;
+          for (const char of text) estimated += /[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]/u.test(char) ? 20 : 10;
+          return { x: shape.x, y: shape.y, w: Math.max(estimated, 20), h: 20 };
+        }
+        return null;
+      }
+
+      function annotRectIntersects(a, b) {
+        return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+      }
+
+      /** Keep thin strokes easy to select at every zoom; eraser tolerance stays unchanged. */
+      function annotTopmostAt(point, map) {
+        const shapes = annotShapesRef.current;
+        const scale = map ? Math.max(0.01, Math.min(map.sx, map.sy)) : 1;
+        for (let index = shapes.length - 1; index >= 0; index -= 1) {
+          const shape = shapes[index];
+          const radius = Math.max(Number(shape.strokeWidth || 1) / 2, 6 / scale);
+          if (annotHitsShape(shape, point, radius)) return shape;
+        }
+        return null;
+      }
+
+      /** Union bounding box of the selected shapes (null when nothing is selected). */
+      function annotSelectionBounds() {
+        if (!annotSelectionRef.current.size) return null;
+        let x1 = Infinity; let y1 = Infinity; let x2 = -Infinity; let y2 = -Infinity;
+        for (const shape of annotShapesRef.current) {
+          if (!annotSelectionRef.current.has(shape.id)) continue;
+          const box = annotShapeBounds(shape);
+          if (!box) continue;
+          x1 = Math.min(x1, box.x); y1 = Math.min(y1, box.y);
+          x2 = Math.max(x2, box.x + box.w); y2 = Math.max(y2, box.y + box.h);
+        }
+        if (!(x2 >= x1) || !(y2 >= y1)) return null;
+        return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+      }
+
+      /**
+       * Inside the selection's union box. This is what makes selected shapes draggable from their
+       * interior (a hollow rect's stroke-only hit test would miss) and lets a marquee-selected
+       * group be dragged from the gap between its members.
+       */
+      function annotSelectionContains(point) {
+        const box = annotSelectionBounds();
+        return Boolean(box && point.x >= box.x && point.x <= box.x + box.w
+          && point.y >= box.y && point.y <= box.y + box.h);
+      }
+
+      /** Translate one shape by a canvas-space delta (all six geometries; no style change). */
+      function annotTranslateShape(shape, dx, dy) {
+        if (!dx && !dy) return shape;
+        if (shape.type === 'circle') return Object.assign({}, shape, { cx: shape.cx + dx, cy: shape.cy + dy });
+        if (shape.type === 'rect') return Object.assign({}, shape, { x: shape.x + dx, y: shape.y + dy });
+        if (shape.type === 'line' || shape.type === 'arrow') {
+          return Object.assign({}, shape, {
+            x1: shape.x1 + dx, y1: shape.y1 + dy, x2: shape.x2 + dx, y2: shape.y2 + dy,
+          });
+        }
+        if (shape.type === 'brush') {
+          return Object.assign({}, shape, { points: (shape.points || []).map((point) => ({ x: point.x + dx, y: point.y + dy })) });
+        }
+        if (shape.type === 'text') return Object.assign({}, shape, { x: shape.x + dx, y: shape.y + dy });
+        return shape;
+      }
+
+      function annotSelectionOrigin() {
+        const ids = annotSelectionRef.current;
+        return annotShapesRef.current
+          .filter((shape) => ids.has(shape.id))
+          .map((shape) => ({ id: shape.id, shape }));
+      }
+
+      function annotStartMove(map, event, point) {
+        const origin = annotSelectionOrigin();
+        if (!origin.length) return false;
+        annotMarqueeRef.current = { active: false, pointerId: -1, map: null, start: null, end: null, node: null };
+        annotMoveRef.current = {
+          active: true, pointerId: event.pointerId, map, start: point, last: point, origin,
+          originals: new Map(origin.map((item) => [item.id, item.shape])),
+          bounds: new Map(origin.map((item) => [item.id, annotShapeBounds(item.shape)])),
+          dragging: false, axis: null, dx: 0, dy: 0, changed: false,
+        };
+        annotMapSigRef.current = annotMapSignature(map);
+        const svg = annotSvgRef.current;
+        try { if (svg) svg.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+        setAnnotBusy(true);
+        return true;
+      }
+
+      function moveAnnotSelection(event) {
+        const move = annotMoveRef.current;
+        if (!move.active) return;
+        const point = annotToCanvasRaw(move.map, event.clientX, event.clientY);
+        move.last = point;
+        let dx = point.x - move.start.x;
+        let dy = point.y - move.start.y;
+        const screen = Math.hypot(dx * move.map.sx, dy * move.map.sy);
+        // Latch once: after a real drag, returning to the press point must restore the original.
+        if (!move.dragging && screen < 4) return;
+        move.dragging = true;
+        if (event.shiftKey) {
+          if (!move.axis) move.axis = Math.abs(dx * move.map.sx) >= Math.abs(dy * move.map.sy) ? 'x' : 'y';
+          if (move.axis === 'x') dy = 0;
+          else dx = 0;
+        } else move.axis = null;
+        if (dx === move.dx && dy === move.dy) return;
+        move.dx = dx;
+        move.dy = dy;
+        move.changed = Boolean(dx || dy);
+        annotShapesRef.current = annotShapesRef.current.map((shape) => {
+          const base = move.originals.get(shape.id);
+          return base ? annotTranslateShape(base, dx, dy) : shape;
+        });
+        annotSetHoverCursor('grabbing');
+        annotSelectionScheduleRender();
+      }
+
+      function finishAnnotMove() {
+        const move = annotMoveRef.current;
+        if (!move.active) return;
+        const svg = annotSvgRef.current;
+        try { if (svg) svg.releasePointerCapture(move.pointerId); } catch { /* ignore */ }
+        const changed = move.changed;
+        annotMoveRef.current = { active: false, pointerId: -1, map: null, start: null, last: null, origin: null, changed: false };
+        if (move.acceptedShapes) {
+          annotApplyImported(move.acceptedShapes);
+          if (changed) annotShapesRef.current = annotShapesRef.current.map((shape) => move.originals.has(shape.id)
+            ? annotTranslateShape(shape, move.dx, move.dy) : shape);
+        }
+        setAnnotBusy(false);
+        if (changed) {
+          annotContentSeqRef.current += 1;
+          annotDirtyRef.current = true;
+          annotPublishSchedule();
+        }
+        if (!move.dragging && move.toggleOnClick) annotSetSelection([move.toggleOnClick], true);
+        annotSetHoverCursor('move');
+        annotSelectionRefresh();
+        annotResumeAfterTransient();
+      }
+
+      /** Roll back a move gesture to the shapes captured at pointerdown; no publish happens. */
+      function cancelAnnotMove() {
+        const move = annotMoveRef.current;
+        if (!move.active) return;
+        const origin = new Map((move.origin || []).map((item) => [item.id, item.shape]));
+        annotShapesRef.current = annotShapesRef.current.map((shape) => origin.get(shape.id) || shape);
+        const svg = annotSvgRef.current;
+        try { if (svg) svg.releasePointerCapture(move.pointerId); } catch { /* ignore */ }
+        annotMoveRef.current = { active: false, pointerId: -1, map: null, start: null, last: null, origin: null, changed: false };
+        if (move.acceptedShapes) annotApplyImported(move.acceptedShapes);
+        if (annotSelectionRafRef.current) {
+          window.cancelAnimationFrame(annotSelectionRafRef.current);
+          annotSelectionRafRef.current = 0;
+        }
+        setAnnotBusy(false);
+        annotSelectionRefresh();
+        annotResumeAfterTransient();
+      }
+
+      function annotMarqueeRect(marquee) {
+        const start = marquee.start || { x: 0, y: 0 };
+        const end = marquee.end || start;
+        return {
+          x: Math.min(start.x, end.x), y: Math.min(start.y, end.y),
+          w: Math.abs(end.x - start.x), h: Math.abs(end.y - start.y),
+        };
+      }
+
+      /** The marquee preview lives in the imperative draft group (no React render per move). */
+      function annotMarqueeNode() {
+        const marquee = annotMarqueeRef.current;
+        if (marquee.node && marquee.node.isConnected) return marquee.node;
+        const draft = annotDraftRef.current;
+        if (!draft) return null;
+        const node = annotDraftNode('rect', { x: 0, y: 0, width: 0, height: 0, fill: 'none' });
+        node.setAttribute('class', 'utb-annot-marquee-box');
+        node.setAttribute('data-utb-annot-marquee', 'true');
+        draft.appendChild(node);
+        marquee.node = node;
+        return node;
+      }
+
+      function renderAnnotMarquee() {
+        const marquee = annotMarqueeRef.current;
+        if (!marquee.active) return;
+        const node = annotMarqueeNode();
+        if (!node) return;
+        const rect = annotMarqueeRect(marquee);
+        node.setAttribute('x', String(rect.x));
+        node.setAttribute('y', String(rect.y));
+        node.setAttribute('width', String(rect.w));
+        node.setAttribute('height', String(rect.h));
+      }
+
+      function startAnnotMarquee(map, event, point) {
+        cancelAnnotMove();
+        resetAnnotMarquee();
+        cancelAnnotDraft();
+        annotMarqueeRef.current = {
+          active: true, pointerId: event.pointerId, map, start: point, end: point,
+          mode: annotSelectionMode(event), base: new Set(annotSelectionRef.current), dragging: false,
+          // Cache bounds once; text getBBox and stroke geometry need not run on every pointermove.
+          boxes: annotShapesRef.current.map((shape) => ({ id: shape.id, box: annotShapeBounds(shape) })),
+          node: null,
+        };
+        annotMapSigRef.current = annotMapSignature(map);
+        const svg = annotSvgRef.current;
+        try { if (svg) svg.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+        setAnnotBusy(true);
+      }
+
+      function moveAnnotMarquee(event) {
+        const marquee = annotMarqueeRef.current;
+        if (!marquee.active) return;
+        marquee.end = annotToCanvasRaw(marquee.map, event.clientX, event.clientY);
+        const rect = annotMarqueeRect(marquee);
+        if (!marquee.dragging && Math.hypot(rect.w * marquee.map.sx, rect.h * marquee.map.sy) < 4) return;
+        marquee.dragging = true;
+        marquee.mode = annotSelectionMode(event);
+        renderAnnotMarquee();
+        const ids = marquee.boxes.filter((item) => item.box && annotRectIntersects(item.box, rect)).map((item) => item.id);
+        annotApplySelection(ids, marquee.mode, marquee.base, true);
+        if (marquee.node) marquee.node.setAttribute('data-utb-annot-marquee-mode', marquee.mode);
+        annotSetHoverCursor('crosshair');
+      }
+
+      function resetAnnotMarquee() {
+        const marquee = annotMarqueeRef.current;
+        const svg = annotSvgRef.current;
+        if (marquee.active && svg && marquee.pointerId >= 0) {
+          try { svg.releasePointerCapture(marquee.pointerId); } catch { /* ignore */ }
+        }
+        if (marquee.node && marquee.node.parentNode) marquee.node.parentNode.removeChild(marquee.node);
+        annotMarqueeRef.current = { active: false, pointerId: -1, map: null, start: null, end: null, node: null };
+      }
+
+      function finishAnnotMarquee() {
+        const marquee = annotMarqueeRef.current;
+        if (!marquee.active) return;
+        // Preview is already the final set. A modified empty click preserves the base selection.
+        if (!marquee.dragging) annotApplySelection([], marquee.mode === 'replace' ? 'replace' : 'add', marquee.base, false);
+        resetAnnotMarquee();
+        clearAnnotDraftNode();
+        setAnnotBusy(false);
+        annotSelectionRefresh();
+        annotResumeAfterTransient();
+      }
+
+      function cancelAnnotMarquee() {
+        const marquee = annotMarqueeRef.current;
+        if (!marquee.active) return;
+        annotSelectionRef.current = new Set(marquee.base);
+        resetAnnotMarquee();
+        clearAnnotDraftNode();
+        setAnnotBusy(false);
+        annotSelectionRefresh();
+        annotResumeAfterTransient();
+      }
+
+      /** Delete every selected shape (one document change, one coalesced publish). */
+      function annotDeleteSelection() {
+        if (!annotRef.current.on) return false;
+        cancelAnnotMove();
+        cancelAnnotMarquee();
+        if (!annotSelectionRef.current.size) return false;
+        const ids = annotSelectionRef.current;
+        const before = annotShapesRef.current.length;
+        annotShapesRef.current = annotShapesRef.current.filter((shape) => !ids.has(shape.id));
+        annotSelectionRef.current = new Set();
+        const removed = before - annotShapesRef.current.length;
+        if (removed > 0) {
+          annotContentSeqRef.current += 1;
+          annotDirtyRef.current = true;
+          annotPublishSchedule();
+        }
+        annotSelectionRefresh();
+        return removed > 0;
+      }
+
       /** One sample point deletes the topmost hit only (no distance re-ranking, no drill-through). */
       function annotEraseAt(point) {
         const shapes = annotShapesRef.current;
@@ -4569,6 +5030,7 @@ window.__ModuleLoader__.load({
           if (annotHitsShape(shapes[index], point)) {
             annotShapesRef.current = shapes.slice(0, index).concat(shapes.slice(index + 1));
             annotEraseRef.current.changed += 1;
+            annotPruneSelection();
             annotContentSeqRef.current += 1;
             annotDirtyRef.current = true;
             setAnnotVersion((value) => value + 1);
@@ -4724,6 +5186,9 @@ window.__ModuleLoader__.load({
         if (annotEditRef.current.active) cancelAnnotText();
         cancelAnnotDraft();
         resetAnnotErase();
+        resetAnnotMarquee();
+        annotMoveRef.current = { active: false, pointerId: -1, map: null, start: null, last: null, origin: null, changed: false };
+        annotSelectionRef.current = new Set();
         annotShapesRef.current = [];
         annotContentSeqRef.current += 1;
         annotDirtyRef.current = true;
@@ -4989,6 +5454,38 @@ window.__ModuleLoader__.load({
           startAnnotErase(map, event, point);
           return;
         }
+        if (annotRef.current.tool === 'select') {
+          cancelAnnotDraft();
+          const hit = annotTopmostAt(point, map);
+          const mode = annotSelectionMode(event);
+          if (!hit) {
+            if (mode === 'replace' && annotSelectionContains(point)) annotStartMove(map, event, point);
+            else startAnnotMarquee(map, event, point); // empty-space drag works with either tool
+            return;
+          }
+          if (mode === 'subtract' || mode === 'intersect') {
+            annotApplySelection([hit.id], mode, annotSelectionRef.current, false);
+            return;
+          }
+          if (mode !== 'replace' && annotSelectionRef.current.has(hit.id)) {
+            // Shift-click toggles on release, but Shift-drag keeps the group and locks its axis.
+            annotStartMove(map, event, point);
+            annotMoveRef.current.toggleOnClick = hit.id;
+            return;
+          }
+          if (!annotSelectionRef.current.has(hit.id)) annotApplySelection([hit.id], mode, annotSelectionRef.current, false);
+          annotStartMove(map, event, point);
+          return;
+        }
+        if (annotRef.current.tool === 'marquee') {
+          if (annotSelectionMode(event) === 'replace' && annotSelectionContains(point)) {
+            cancelAnnotDraft();
+            annotStartMove(map, event, point);
+            return;
+          }
+          startAnnotMarquee(map, event, point);
+          return;
+        }
         cancelAnnotDraft();
         setAnnotBusy(true);
         const style = annotSnapshot();
@@ -5006,11 +5503,51 @@ window.__ModuleLoader__.load({
         try { if (svg) svg.setPointerCapture(event.pointerId); } catch { /* ignore */ }
       }
 
+      function annotSetHoverCursor(mode) {
+        const next = ['move', 'grabbing', 'crosshair'].includes(mode) ? mode : 'default';
+        annotHoverRef.current = next;
+        const svg = annotSvgRef.current;
+        if (svg) svg.style.cursor = next;
+      }
+
+      /** Select/marquee hover: 'move' over a shape or inside the selection box, else the tool base. */
+      function annotUpdateHoverCursor(event) {
+        const base = annotRef.current.tool === 'marquee' ? 'crosshair' : 'default';
+        const map = annotMap();
+        if (!map || !annotInside(map, event.clientX, event.clientY)) {
+          annotSetHoverCursor(base);
+          return;
+        }
+        const point = annotToCanvas(map, event.clientX, event.clientY);
+        const modified = annotSelectionMode(event) !== 'replace';
+        const movable = annotRef.current.tool === 'select'
+          ? !event.altKey && (annotTopmostAt(point, map) || (!modified && annotSelectionContains(point)))
+          : !modified && annotSelectionContains(point);
+        annotSetHoverCursor(movable ? 'move' : base);
+      }
+
       function onAnnotPointerMove(event) {
         if (annotRef.current.on && annotEraseRef.current.active
           && annotEraseRef.current.pointerId === event.pointerId) {
           event.preventDefault();
           moveAnnotErase(event);
+          return;
+        }
+        if (annotMoveRef.current.active && annotMoveRef.current.pointerId === event.pointerId) {
+          if (!annotRef.current.on) return;
+          event.preventDefault();
+          moveAnnotSelection(event);
+          return;
+        }
+        if (annotMarqueeRef.current.active && annotMarqueeRef.current.pointerId === event.pointerId) {
+          if (!annotRef.current.on) return;
+          event.preventDefault();
+          moveAnnotMarquee(event);
+          return;
+        }
+        if (annotRef.current.on && (annotRef.current.tool === 'select' || annotRef.current.tool === 'marquee')
+          && !annotGestureRef.current.active) {
+          annotUpdateHoverCursor(event);
           return;
         }
         const gesture = annotGestureRef.current;
@@ -5040,6 +5577,18 @@ window.__ModuleLoader__.load({
           finishAnnotErase();
           return;
         }
+        if (annotMoveRef.current.active && annotMoveRef.current.pointerId === event.pointerId) {
+          event.preventDefault();
+          moveAnnotSelection(event);
+          finishAnnotMove();
+          return;
+        }
+        if (annotMarqueeRef.current.active && annotMarqueeRef.current.pointerId === event.pointerId) {
+          event.preventDefault();
+          moveAnnotMarquee(event);
+          finishAnnotMarquee();
+          return;
+        }
         const gesture = annotGestureRef.current;
         if (!annotRef.current.on || !gesture.active || gesture.pointerId !== event.pointerId) return;
         event.preventDefault();
@@ -5062,6 +5611,16 @@ window.__ModuleLoader__.load({
           && (event === undefined || event.pointerId === undefined || annotEraseRef.current.pointerId === event.pointerId)) {
           // 擦掉的对象不因 pointercancel/Esc 回滚，结束时照常 flush（§11.4）。
           finishAnnotErase();
+          return;
+        }
+        if (annotMoveRef.current.active
+          && (event === undefined || event.pointerId === undefined || annotMoveRef.current.pointerId === event.pointerId)) {
+          cancelAnnotMove();
+          return;
+        }
+        if (annotMarqueeRef.current.active
+          && (event === undefined || event.pointerId === undefined || annotMarqueeRef.current.pointerId === event.pointerId)) {
+          cancelAnnotMarquee();
           return;
         }
         const gesture = annotGestureRef.current;
@@ -5128,6 +5687,8 @@ window.__ModuleLoader__.load({
       /** Cancel the uncommitted draft/edit only; committed shapes stay (mode exit keeps them). */
       function annotCancelTransient() {
         cancelAnnotDraft();
+        cancelAnnotMove();
+        cancelAnnotMarquee();
         resetAnnotErase();
         setAnnotBusy(false);
         const edit = annotEditRef.current;
@@ -5176,6 +5737,7 @@ window.__ModuleLoader__.load({
         if (!annotRef.current.on) return;
         // Closing the panel exits the mode but keeps every committed annotation visible (contract §5).
         annotCancelTransient();
+        annotSelectionRef.current = new Set();
         setAnnotText(null);
         resetAnnotErase();
         setAnnotBusy(false);
@@ -5472,7 +6034,12 @@ window.__ModuleLoader__.load({
       function chooseAnnotTool(tool) {
         if (!annotRef.current.on || tool === annotRef.current.tool) return;
         cancelAnnotDraft();
+        cancelAnnotMove();
+        cancelAnnotMarquee();
+        annotSetHoverCursor(tool === 'marquee' ? 'crosshair' : 'default');
         if (annotEditRef.current.active) commitAnnotText();
+        // 切回绘制/橡皮擦/文字时清空选择；选择 ↔ 框选之间保留，方便先点选再框选追加。
+        if (!annotIsSelectionTool(tool)) annotClearSelection();
         annotRef.current.tool = tool;
         const style = annotStyleFor(tool, annotRef.current.mode || 'stroke');
         annotRef.current.fill = style.fill;
@@ -5520,9 +6087,10 @@ window.__ModuleLoader__.load({
       }
 
       /** Committed shape → React SVG node. Geometry data lives on the root g; native geometry on
-       * the child element, so data, SVG and screen position can all be checked independently. */
-      function renderAnnotShape(shape) {
-        const common = {
+       * the child element, so data, SVG and screen position can all be checked independently.
+       * `extra` is used by the selection halo (same geometry, accent styling, no committed state). */
+      function renderAnnotShape(shape, extra) {
+        const common = Object.assign({
           key: shape.id,
           'data-utb-annot-id': shape.id,
           'data-utb-annot-type': shape.type,
@@ -5532,7 +6100,7 @@ window.__ModuleLoader__.load({
           'data-utb-annot-fill': shape.fill ? 'true' : 'false',
           'data-utb-annot-stroke': shape.stroke ? 'true' : 'false',
           style: { pointerEvents: 'none' },
-        };
+        }, extra || {});
         if (shape.type === 'circle') {
           return h('g', Object.assign({}, common, {
             'data-utb-annot-cx': String(shape.cx),
@@ -7392,16 +7960,89 @@ window.__ModuleLoader__.load({
         return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', escape); };
       }, [menu]);
 
-      // Annotation mode: Esc order (composition → editor/draft cancel → exit) and the hard
-      // capability/lifecycle gate. Both listeners live only while the mode is on.
+      // Annotation mode: Delete removes the selection; Esc order is
+      // composition → move/marquee cancel → selection clear → editor/draft cancel → exit.
+      // Both listeners live only while the mode is on.
       React.useEffect(() => {
         if (!annotOn) return undefined;
+        const updateModifiers = (event) => {
+          if (!['Shift', 'Alt', 'Control', 'Meta'].includes(event.key)) return;
+          const move = annotMoveRef.current;
+          const marquee = annotMarqueeRef.current;
+          const gesture = move.active ? move : marquee.active ? marquee : null;
+          if (!gesture) return;
+          const point = move.active ? move.last : marquee.end;
+          const map = gesture.map;
+          const input = {
+            clientX: map.painted.left + (point.x - map.cx) * map.sx,
+            clientY: map.painted.top + (point.y - map.cy) * map.sy,
+            shiftKey: event.shiftKey, altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+          };
+          if (move.active) moveAnnotSelection(input);
+          else moveAnnotMarquee(input);
+        };
         const onKeyDown = (event) => {
-          if (event.key !== 'Escape') return;
           if (annotComposingRef.current || event.isComposing) return;
+          updateModifiers(event);
+          const editable = annotEditRef.current.active || pickEditableTarget(event.target)
+            || pickEditableTarget(document.activeElement);
+          const svg = annotSvgRef.current;
+          const canvasFocused = svg && (document.activeElement === svg || svg.contains(document.activeElement));
+          const idle = !annotMoveRef.current.active && !annotMarqueeRef.current.active && !annotGestureRef.current.active;
+          if (!editable && canvasFocused && idle && !event.altKey) {
+            const key = event.key.toLowerCase();
+            const command = event.ctrlKey || event.metaKey;
+            if ((!command && (key === 'v' || key === 'm'))
+              || (command && annotIsSelectionTool(annotRef.current.tool) && (key === 'a' || key === 'd'))) {
+              event.preventDefault();
+              event.stopPropagation();
+              if (command) {
+                if (annotIsSelectionTool(annotRef.current.tool)) {
+                  if (key === 'a') annotSetSelection(annotShapesRef.current.map((shape) => shape.id), false);
+                  else annotClearSelection();
+                }
+              } else chooseAnnotTool(key === 'v' ? 'select' : 'marquee');
+              return;
+            }
+            const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+            const direction = directions[event.key];
+            if (!command && direction && annotIsSelectionTool(annotRef.current.tool) && annotSelectionRef.current.size) {
+              event.preventDefault();
+              event.stopPropagation();
+              const step = event.shiftKey ? 10 : 1;
+              annotShapesRef.current = annotShapesRef.current.map((shape) => annotSelectionRef.current.has(shape.id)
+                ? annotTranslateShape(shape, direction[0] * step, direction[1] * step) : shape);
+              annotContentSeqRef.current += 1;
+              annotDirtyRef.current = true;
+              annotPublishSchedule();
+              annotSelectionScheduleRender();
+              return;
+            }
+          }
+          if (event.key === 'Delete' || event.key === 'Backspace') {
+            // 输入框/可编辑区里的 Backspace 属于编辑，不劫持；没有选中时不消费按键。
+            if (annotEditRef.current.active || pickEditableTarget(event.target)
+              || pickEditableTarget(document.activeElement)) return;
+            if (!annotSelectionRef.current.size) return;
+            event.preventDefault();
+            event.stopPropagation();
+            annotDeleteSelection();
+            return;
+          }
+          if (event.key !== 'Escape') return;
           if (annotEditRef.current.active) {
             event.preventDefault();
             cancelAnnotText();
+            return;
+          }
+          if (annotMoveRef.current.active) {
+            event.preventDefault();
+            cancelAnnotMove();
+            return;
+          }
+          if (annotMarqueeRef.current.active) {
+            event.preventDefault();
+            cancelAnnotMarquee();
             return;
           }
           if (annotEraseRef.current.active) {
@@ -7415,13 +8056,23 @@ window.__ModuleLoader__.load({
             cancelAnnotDraft();
             return;
           }
+          if (annotSelectionRef.current.size) {
+            // 选择不是持久状态：第一下 Esc 只取消选择，再按才退出模式。
+            event.preventDefault();
+            annotClearSelection();
+            return;
+          }
           event.preventDefault();
           exitAnnotMode();
           const button = annotButtonRef.current;
           if (button) { try { button.focus({ preventScroll: true }); } catch { /* ignore */ } }
         };
         document.addEventListener('keydown', onKeyDown, true);
-        return () => document.removeEventListener('keydown', onKeyDown, true);
+        document.addEventListener('keyup', updateModifiers, true);
+        return () => {
+          document.removeEventListener('keydown', onKeyDown, true);
+          document.removeEventListener('keyup', updateModifiers, true);
+        };
       }, [annotOn]);
 
       // A stage scroll changes the painted rect without a React render: an active gesture/edit must
@@ -7431,8 +8082,11 @@ window.__ModuleLoader__.load({
         if (!node || typeof node.addEventListener !== 'function') return undefined;
         const onScroll = () => {
           if (!annotRef.current.on) return;
-          if (annotGestureRef.current.active || annotEditRef.current.active) {
+          if (annotGestureRef.current.active || annotEditRef.current.active
+            || annotMoveRef.current.active || annotMarqueeRef.current.active) {
             cancelAnnotDraft();
+            cancelAnnotMove();
+            cancelAnnotMarquee();
             cancelAnnotText();
           }
         };
@@ -7785,9 +8439,12 @@ window.__ModuleLoader__.load({
         if (!annotOn || !previous || annotMapSignatureNow === previous) return;
         // An external view/geometry change cancels the uncommitted draft/edit; committed shapes stay
         // and are re-mapped by the new viewBox (docs/viewport-control.md).
-        if (annotGestureRef.current.active || annotEditRef.current.active || annotEraseRef.current.active) {
+        if (annotGestureRef.current.active || annotEditRef.current.active || annotEraseRef.current.active
+          || annotMoveRef.current.active || annotMarqueeRef.current.active) {
           cancelAnnotDraft();
           cancelAnnotText();
+          cancelAnnotMove();
+          cancelAnnotMarquee();
           resetAnnotErase();
           setAnnotBusy(false);
         }
@@ -7814,6 +8471,7 @@ window.__ModuleLoader__.load({
         resetAnnotErase();
         setAnnotBusy(false);
         annotShapesRef.current = [];
+        annotSelectionRef.current = new Set();
         annotCandidateRef.current = null;
         setAnnotVersion((value) => value + 1);
         annotDirtyRef.current = false;
@@ -8355,7 +9013,7 @@ h('div', { className: 'utb-bar' },
               className: 'utb-annot-color',
               value: annotColor,
               'aria-label': '颜色',
-              disabled: annotTool === 'eraser',
+              disabled: annotTool === 'eraser' || annotIsSelectionTool(annotTool),
               onChange: (e) => changeAnnotStyle({ color: String(e.target.value || '').toLowerCase() }),
             })),
           h('label', { className: 'utb-annot-check', title: '粗细（1–20 画布 px）' },
@@ -8369,7 +9027,7 @@ h('div', { className: 'utb-bar' },
               value: String(annotWidth),
               'aria-label': '粗细',
               'data-utb-annot-field': 'width',
-              disabled: annotTool === 'text' || annotTool === 'eraser',
+              disabled: annotTool === 'text' || annotTool === 'eraser' || annotIsSelectionTool(annotTool),
               onChange: (e) => {
                 const numeric = Number(e.target.value);
                 if (!Number.isFinite(numeric) || String(e.target.value).trim() === '') return;
@@ -8395,6 +9053,16 @@ h('div', { className: 'utb-bar' },
             'aria-live': 'polite',
             'data-utb-annot-shot-notice': 'true',
           }, annotShotNotice),
+          annotSelectionCount() > 0 && h('button', {
+            type: 'button',
+            className: 'utb-btn utb-annot-delete',
+            'aria-label': '删除选中的标注',
+            title: '删除选中的标注（Delete / Backspace）',
+            'data-utb-annot-action': 'delete-selection',
+            'data-utb-annot-selection': String(annotSelectionCount()),
+            disabled: !annotReady,
+            onClick: () => annotDeleteSelection(),
+          }, '删除选中（' + annotSelectionCount() + '）'),
           h('button', {
             type: 'button',
             className: 'utb-btn utb-annot-clear',
@@ -8822,6 +9490,8 @@ h('div', { className: 'utb-bar' },
                   'data-utb-annot-space': 'canvas-css-px',
                   'data-utb-annot-sync': annotSyncState,
                   'data-utb-annot-revision': String(annotSyncRevision),
+                  'data-utb-annot-active-tool': annotTool,
+                  'data-utb-annot-selection-count': String(annotSelectionCount()),
                   role: 'img',
                   'aria-label': '标注画布',
                   tabIndex: annotOn ? 0 : -1,
@@ -8839,7 +9509,12 @@ h('div', { className: 'utb-bar' },
                     zIndex: 2,
                     display: annotMapNow ? 'block' : 'none',
                     pointerEvents: annotOn ? 'auto' : 'none',
-                    cursor: annotOn ? (annotTool === 'text' ? 'text' : 'crosshair') : 'default',
+                    cursor: annotOn
+                      ? (annotMoveRef.current.active && annotMoveRef.current.dragging ? 'grabbing'
+                        : annotTool === 'select' || annotTool === 'marquee' ? annotHoverRef.current
+                          : annotTool === 'text' ? 'text'
+                            : 'crosshair')
+                      : 'default',
                     touchAction: 'none',
                     userSelect: 'none',
                   },
@@ -8848,9 +9523,46 @@ h('div', { className: 'utb-bar' },
                   onPointerUp: onAnnotPointerUp,
                   onPointerCancel: onAnnotPointerCancel,
                   onLostPointerCapture: onAnnotPointerCancel,
+                  onPointerLeave: () => annotSetHoverCursor('default'),
                 },
-                  annotVisibleShapes.map(renderAnnotShape),
-                  h('g', { key: 'annot-draft', 'data-utb-annot-state': 'draft', ref: annotDraftRef })),
+                  // 选中光晕先画：同一几何用品牌色加粗描边垫在图形下面，图形本体仍保持原色。
+                  annotVisibleShapes.map((shape) => (annotSelectionRef.current.has(shape.id)
+                    ? renderAnnotShape(shape, {
+                      key: 'annot-halo-' + shape.id,
+                      className: 'utb-annot-select-halo',
+                      'data-utb-annot-halo': shape.id,
+                      'data-utb-annot-state': 'halo',
+                      'data-utb-annot-selected': 'true',
+                    })
+                    : null)),
+                  annotVisibleShapes.map((shape) => renderAnnotShape(shape, {
+                    'data-utb-annot-selected': annotSelectionRef.current.has(shape.id) ? 'true' : 'false',
+                  })),
+                  // 选中态：每个选中图形一组「行进蚂蚁」框（白底 + 蓝色虚线 + 蓝色淡填充），
+                  // 保证在浅色/深色页面上都能一眼看出；纯面板视觉，不进 Host 截图、不改图形数据。
+                  annotVisibleShapes.map((shape) => {
+                    if (!annotSelectionRef.current.has(shape.id)) return null;
+                    const box = annotShapeBounds(shape);
+                    if (!box) return null;
+                    const rect = { x: box.x, y: box.y, width: box.w, height: box.h, rx: 2 };
+                    return h('g', {
+                      key: 'annot-select-' + shape.id,
+                      className: 'utb-annot-select-group',
+                      'data-utb-annot-select-box': shape.id,
+                    },
+                      h('rect', Object.assign({}, rect, { className: 'utb-annot-select-fill' })),
+                      h('rect', Object.assign({}, rect, { className: 'utb-annot-select-edge' })),
+                      h('rect', Object.assign({}, rect, { className: 'utb-annot-select-ants' })));
+                  }),
+                  annotSelectionCount() > 1 && (() => {
+                     const box = annotSelectionBounds();
+                     if (!box) return null;
+                     const rect = { x: box.x, y: box.y, width: box.w, height: box.h, rx: 2 };
+                     return h('g', { key: 'annot-group-bounds', className: 'utb-annot-select-group', 'data-utb-annot-group-box': 'true' },
+                       h('rect', Object.assign({}, rect, { className: 'utb-annot-select-edge' })),
+                       h('rect', Object.assign({}, rect, { className: 'utb-annot-select-ants' })));
+                   })(),
+                   h('g', { key: 'annot-draft', 'data-utb-annot-state': 'draft', ref: annotDraftRef })),
                 annotText ? h('input', {
                   key: 'annot-text-input-' + annotText.id,
                   className: 'utb-annot-text-input',
@@ -8913,6 +9625,14 @@ h('div', { className: 'utb-bar' },
             MODE_LABEL[remote.mode === 'agent' ? 'agent' : mode]),
           h('span', { className: 'utb-sep', 'aria-hidden': true }),
           h('span', { className: 'utb-perf', title: `实际显示帧率与端到端显示延迟（测量值）；传输：${transportKind === 'ws' ? 'WebSocket 推送' : 'HTTP 轮询'}` }, `${fps} FPS ${frameMs} ms`),
+          // 选中数量是状态信息：放在底部延迟之后，而不是标注栏里的按钮/胶囊。
+          annotSelectionCount() > 0 && h('span', {
+            className: 'utb-annot-selected-status',
+            role: 'status',
+            'aria-live': 'polite',
+            'data-utb-annot-selection-chip': String(annotSelectionCount()),
+            title: '已选标注：拖动选框内任意位置移动，Delete / Backspace 删除，Esc 取消选择',
+          }, '已选 ' + annotSelectionCount() + ' 个'),
           // v2 §11.3：标注同步状态（title + aria-live='polite'），不弹 modal、不写页面 lastError。
           h('span', {
             className: 'utb-annot-sync',

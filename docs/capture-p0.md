@@ -37,7 +37,7 @@ browser_screenshot { "includeAnnotations": true }
 browser_screenshot { "includeAnnotations": true, "scale": 1.5, "region": { "x": -100, "y": 0, "width": 800, "height": 600 } }
 ```
 
-- 只叠加已提交且已由 Host 接受的标注文档；圆形/椭圆（`circle`）、矩形（`rect`）、线段（`line`）、箭头（`arrow`）、画笔（`brush`）、文字（`text`）的颜色、粗细与填充/外框遵循面板渲染语义。橡皮擦与清除用于编辑文档，不是额外形状。
+- 只叠加已提交且已由 Host 接受的标注文档；圆形/椭圆（`circle`）、矩形（`rect`）、线段（`line`）、箭头（`arrow`）、画笔（`brush`）、文字（`text`）的颜色、粗细与填充/外框遵循面板渲染语义。橡皮擦与清除用于编辑文档，不是额外形状；面板的「选择」「框选」与选中光晕/包围框同属编辑 UI，也不进入叠加结果。
 - 面板标注栏的「截图」按钮通过 `POST /plugins/ui-testing/screenshot {includeAnnotations:true}` 拿同一份合成 PNG 交给聊天框附件（不起新标签、不落盘）；
 - 写这份文档的入口有**两处**：面板认证的 `POST /plugins/ui-testing/annotations`，以及 Agent 工具 `browser_annotation`（`read`/`draw`/`erase`/`clear`，`draw` 追加形状、`clear` 清空）。两者写的是同一份文档，所以 `includeAnnotations:true` 会把人类画的与 Agent 画的形状一起叠加；写动作的前台门禁、`expectRevision` 冲突与软限额见[视口、画布与标注](viewport-control.md)。
 - 页面与标注使用同一 `region`/`scale` 映射和裁剪。画布点 `d` 在截图中的连续像素位置为 `(d − region.origin) / capture.mapping.cssPerPixel`（逐轴计算，通常等于乘以 scale）；线宽、文字与笔迹同步缩放。负坐标和画布空白区域也沿用该映射。

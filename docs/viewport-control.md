@@ -39,7 +39,11 @@ view = { version, mode, x, y, canvasX, canvasY, width, height, scale, source, re
 
 ## 标注
 
-- 工具：圆形、矩形、线段、箭头、画笔、文字、橡皮擦；另有填充/外框、颜色、粗细、**截图**与清除画布。
+- 工具（从左到右）：**选择**、**框选**、圆形、矩形、线段、箭头、画笔、文字、橡皮擦；另有填充/外框、颜色、粗细、**截图**与清除画布。
+- **选择工具**：点击选中指针下最上层的图形；细线命中容差保持约 6 屏幕 CSS px，不随预览缩小而变难点。`Shift` / `Ctrl` / `Command` + 点击切换多选，`Alt` + 点击减选。空白处拖动也能框选。从选中图形的**包围框内任意位置**（含空心矩形内部）拖拽会整体移动，多选时所有选中图形一起移动；框选后也可直接在选框内（含成员之间的空隙）拖动整组。移动达到 4 屏幕 CSS px 才启动；启动后可拖回起点，`Shift` 拖动约束为水平或垂直，松开 `Shift` 恢复自由移动。**抬手时才发布**移动后的文档，`Esc` 取消当前移动。
+- **框选工具**：两种选择工具都可拖出虚线矩形，实时高亮**包围盒与矩形相交**的图形；这是标注对象的包围盒选择。`Shift` 框选追加（已有选中项保持），`Alt` 减选，`Shift+Alt` 取交集，`Ctrl` / `Command` 切换命中项；拖动中可切换组合键，结果始终基于起拖前的集合。`Esc` 恢复框选前的集合。未达到 4 屏幕 CSS px 的空白点击清空选择，带组合键的空白点击保留原选择。
+- **键盘**：标注画布获得焦点时，`V` / `M` 切换选择 / 框选；选择工具下 `Ctrl/Command+A` 全选，`Ctrl/Command+D` 取消选择，方向键移动 1 画布 px，`Shift+方向键` 移动 10 画布 px。`Delete` / `Backspace` 或标注栏「删除选中（N）」删除选中项。输入框中的编辑按键仍属于输入框。无手势时，第一下 `Esc` 清空选择，再按退出标注模式。切回绘制/橡皮擦/文字会清空选择，选择与框选之间切换保留。
+- **选中反馈**：被选图形叠加品牌色加粗光晕、半透明包围框，多选时另有整体边界框；面板**底部状态栏**在延迟（`FPS / ms`）后面显示「已选 N 个」。选中态只属于当前面板：不写 Host 文档、不改图形数据，也不进入 `includeAnnotations` 截图（截图只含已接受的形状）。
 - **截图按钮**（标注栏、紧接「粗细」之后）：把**当前页面连同已接受的标注**合成一张 PNG，直接作为附件放进本会话的聊天框（`createDrafts` + `addAttachments`，字节随消息发送，不落盘、不占页面队列之外的东西）。它走 Host 的 `POST /screenshot {includeAnnotations:true}`，与 `browser_screenshot {includeAnnotations:true}` 是**同一条离屏合成路径**，所以像素与证据一致；成功时不弹任何提示（附件缩略图本身就是结果），只有失败才在按钮旁给出具体原因。截图前若还有待发布的笔画会先 flush（≤260ms），避免少一笔；聊天框处于发送中（busy）时按钮报「聊天框正忙」并**立即释放**已注册的附件，不留孤儿。
 - 锚定在**画布坐标**中，可画在空白区域；标注模式下页面不接收任何指针或键盘输入。
 - 标注是独立文档，不进入页面 DOM；默认截图、T3 原始源图与 T4 帧源不含面板标注。`browser_screenshot {includeAnnotations:true}` 可叠加当前目标已提交且经 Host 接受的六种形状（`circle/rect/line/arrow/brush/text`），渲染语义与面板一致。
@@ -52,7 +56,7 @@ view = { version, mode, x, y, canvasX, canvasY, width, height, scale, source, re
   - **软限额与裁剪**：与面板写面相同（`maxShapes` 128、单笔画笔 512 点、文档总点数 8192、文字 200 字符、文档 65536 字节），Host 确定性裁剪并如实回 `truncated` / `truncation`。
   - **不碰页面**：不启动浏览器、不进页面串行队列、不占 single-owner lease、不写页面 `lastError`、不改页面 DOM/CSS；只写 Host 侧文档，面板下一次 `/state` 轮询就会画出来。`includeAnnotations:true` 的截图会把 Agent 画的与人类画的形状一起叠加。
 - 带标注截图与页面共用 `region`/`scale` 映射、裁剪和缩放；不包含未提交草稿、工具栏、选中控件或其它面板 UI，详见[截图与图片交付](capture-p0.md)。
-- 按工作区隔离；导航换文档时清空；跨分页与会话保留。
+- **按 Runtime 隔离，也就是每个标签页一份**，不是整个工作区一份：面板在 A 标签画的，Agent 默认目标若在 B 标签（`primary` 与 GUI 弹出的 `child` 是两个 Runtime）就读不到——先 `browser_tabs list` 对 `url`、或比对 `read` 返回的 `context.runtimeId` 与目标 tab 的 `runtimeId`，不一致就 `browser_tabs select` 过去。同一标签页内重挂面板、切换会话保留；导航换文档时清空；不同工作区互不可见。
 - **写面有两处，写的是同一份文档**：面板通过认证的 `POST /plugins/ui-testing/annotations` 提交（带 `clientRevision` 幂等与 `409 annotation-context-stale`），Agent 通过 `browser_annotation` 提交；两者共用 Host 侧软限额（图形数、单笔点数、总点数、文字长度、文档字节数）与确定性裁剪。
 
 ## 截图比例
