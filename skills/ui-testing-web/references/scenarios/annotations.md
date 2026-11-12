@@ -8,6 +8,7 @@
 - `browser_capabilities()` 的 `annotations` 段声明读取方式、`space`（恒为 `canvas-css-px`）与 `limits`；**工具面是 37 个已注册的 `browser_*`（当前 Web 环境注册并准入的那些）**。读取结构化标注既可以用 `browser_state` 的一个字段，也可以用 `browser_annotation {action:"read"}`（同一份文档，返回 `revision/shapes/shapeCount/truncated/truncation/foreground`）。
 - `browser_screenshot {includeAnnotations:true}` 叠加当前目标已提交且经 Host 接受的六种形状，渲染与面板的颜色、粗细、填充/外框语义一致；不包含未提交草稿、工具栏、选中控件或其它面板 UI。
 - `includeAnnotations?:boolean=false` 默认关闭。默认截图、T3 原始源与 T4 的 screencast/screenshot-loop 帧源均不含面板标注；默认图里没有线不能说明用户没画。`capture.canvas.composite` 仅说明画布合成，标注叠加看 `capture.annotations`；T3 的 `annotations` 参数是独立的图片后处理标记。
+- 面板的「选择」「框选」是**人类侧编辑工具**：只改本地面板选中态（品牌色光晕、包围框、底部状态栏的「已选 N 个」），拖动移动或删除才改同一份文档；选中态不写文档、不进入 `annotations` 读取结果，也不进带标注截图。不要从标注文档推断「当前选中了哪几个」。
 
 ## 2. 反向：给人类画标注（`browser_annotation`）
 
@@ -74,8 +75,10 @@ annotations = {
 
 ## 8. 生命周期与隔离（v3）
 
-- 文档按 `documentKey` 绑定：**导航/刷新/换文档会清空**；同一工作区内切页签、重挂面板、换会话**保留**（客户端按文档身份水合）。
+- 文档按 `documentKey` 绑定：**导航/刷新/换文档会清空**；重挂面板、切换会话**保留**（客户端按文档身份水合）。
+- **按 Runtime 隔离，也就是每个标签页一份**，不是「整个工作区一份」。面板在 A 标签画的，与 Agent 打 B 标签读到的，是两份不同文档；「切页签仍保留」指的是那几个标签各自持有自己的文档，不是共享一份。
 - **按工作区隔离**：不同工作区各有一份，互不串；读取时用当前会话的 `browser_state` 即可，不要跨工作区拼装。
+- 所以「`shapes:[]` / `revision 0` / `staleReason:"not-running"` / `foreground.active:false`」有两种可能：面板确实没开，**或者面板在看另一个标签页**。先用 §10 的对齐步骤排除后者，再请用户配合，不要把两种情况混成「用户没画」。
 - `stale:true`（`panel-unseen`）表示来源面板心跳过期，**不代表标注不存在或已删除**：形状照常可读，如实说明"可能不是最新"即可；不得伪造心跳或 revision。
 - 显式「清除画布」会让 `shapes` 变空（`revision` 递增），不要把它当成"读取失败"。
 
@@ -97,6 +100,9 @@ annotations = {
 | 按 `scale` 缩放页面输入坐标 | 页面输入按 `p=d−S`；截图像素另按 region 与 `mapping.cssPerPixel` 换算 |
 | 把箭头 `(x1,y1)` 当尖 | 尖端是 `(x2,y2)` |
 | 把 `stale` 当"数据没了" | 只是心跳过期，形状仍可读 |
+| 读到 `shapes:[]` / `revision 0` / `not-running` 就断定「用户没画」或「面板没开」 | 标注文档按 Runtime（每个标签页）一份。先 `browser_tabs list` 对 `url`（面板地址栏）、把 `read` 的 `context.runtimeId` 与目标 tab 的 `runtimeId` 比对；不一致就 `browser_tabs select {tabId}` 过去再读 |
+| `foreground.active:false` 就断定「用户没打开面板」 | 先确认 Agent 目标标签就是面板显示的标签（上一行）；`foreground.viewId` 是该 tabId（runtime 活着时才有值），对得上再谈心跳与 1.5s 窗口 |
+| 换到别的标签就以为标注「丢了」或被清空 | 不同标签是不同文档；切回原标签，形状与 `revision` 都还在。真正清空只有导航/刷新换文档或「清除画布」 |
 
 ## 11. 参考
 

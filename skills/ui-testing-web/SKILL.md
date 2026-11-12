@@ -19,8 +19,8 @@ description: 调试与测试已授权 Web 页面的默认入口——下列常�
 | 截个图、放大看看、和设计稿/上一版对比、这块颜色对不对 | `browser_screenshot` / `vision_image` / `vision_compare` / `vision_baseline` | T3 |
 | 这个动画卡不卡、过渡顺不顺、有没有闪烁、拖拽跟手吗 | `dynamic_session` → `motion_observe/analyze/control` | T4 |
 | 接口返回什么、为什么 404/500、请求发了几次、有没有重复、慢在哪 | `network_session start` → `events`/`detail`/`trace` | 网络 P0 |
-| **看我标注/画的、框的、圈的是这里、这个箭头/笔迹是什么** | **先读 `browser_state.annotations`，再 `browser_screenshot {includeAnnotations:true}`** 查看标注像素，不要问他编号 | 通用标注 |
-| **你圈一下 / 标给我看 / 在这儿写个问号**（要你在他眼前的调试视图上画） | 先看 `browser_state.annotations.foreground`，human 选中该标签时用 `browser_annotation {action:"draw"}` | P0-D |
+| **看我标注/画的、框的、圈的是这里、这个箭头/笔迹是什么** | **先读 `browser_state.annotations`（读到空先 `browser_tabs list` 对齐面板所在标签），再 `browser_screenshot {includeAnnotations:true}`** 查看标注像素，不要问他编号 | 通用标注 |
+| **你圈一下 / 标给我看 / 在这儿写个问号**（要你在他眼前的调试视图上画） | 先 `browser_tabs list` 对齐面板所在标签，再看 `annotations.foreground`；human 选中该标签时用 `browser_annotation {action:"draw"}` | P0-D |
 | 新开了个标签页、弹窗怎么没出来、切到那个标签 | `browser_tabs` list/select/wait | P0-E |
 | 这个环境能用吗、为什么工具不可用、现在跑的是 Chrome 还是 Edge | `browser_capabilities` + 就绪六轴 + `adapter.declaration` | 诊断 |
 | 给我证据、复现一下、留个截图存档 | 证据 envelope + 落盘 PNG（`out`） | 全部 |
@@ -132,10 +132,10 @@ browser_viewport { "action": "set", "canvasX": 300, "canvasY": 200 }      // 画
 
 ### P0-D（1 个，标注读写）
 
-`browser_annotation` 读写调试视图里的**面板标注文档**（每个 Runtime 一份，与面板认证的 `POST /plugins/ui-testing/annotations` 是同一份；权威契约见 `docs/tools.md`、`docs/viewport-control.md`）。参数：`action` 必填，`read`/`clear` 只接受 `action`；`draw` 给 `shapes`（1–64，**追加**不是替换）；`erase` 给 `ids`（1–64）和/或 `point{x,y,radius?}`（默认半径 8 画布 px）；写动作可选 `expectRevision`（与当前文档 revision 不同则 `ANNOTATION_REVISION_CONFLICT`，零写入）。`read` 与写后返回同一形状：`revision/shapes/shapeCount/truncated/truncation/foreground`。
+`browser_annotation` 读写调试视图里的**面板标注文档**（**每个标签页一个 Runtime、各持一份**；面板可能正显示另一个标签页，先 `browser_tabs list` 对齐再读写；与面板认证的 `POST /plugins/ui-testing/annotations` 是同一份；权威契约见 `docs/tools.md`、`docs/viewport-control.md`）。参数：`action` 必填，`read`/`clear` 只接受 `action`；`draw` 给 `shapes`（1–64，**追加**不是替换）；`erase` 给 `ids`（1–64）和/或 `point{x,y,radius?}`（默认半径 8 画布 px）；写动作可选 `expectRevision`（与当前文档 revision 不同则 `ANNOTATION_REVISION_CONFLICT`，零写入）。`read` 与写后返回同一形状：`revision/shapes/shapeCount/truncated/truncation/foreground`。
 - 形状：`type` ∈ `circle|rect|line|arrow|brush|text`（面板的圆形/矩形/线段/箭头/画笔/文字）；`id` 可省略（Host 续分配 `a<N>`）；`color` `#rrggbb`（默认 `#ff3b30`）；`strokeWidth` 1–20（默认 3，即「粗细」）；`style` ∈ `stroke|fill`（「外框/填充」，仅 `circle`/`rect`；`text` 固定 fill、`line|arrow|brush` 固定 stroke；也可给 `fill`/`stroke` 布尔但不可与 `style` 同给）；几何 `rect{x,y,width,height}`、`circle{cx,cy,rx,ry}`、`line|arrow{x1,y1,x2,y2}`（head 由 Host 派生）、`brush{points:[[x,y],…]}`、`text{x,y,text,fontSize?=20}`。
 - **前台硬约束**：`draw`/`erase`/`clear` 只在目标标签页**正被人类在调试视图里选中且可见**时才允许（面板在认证请求上带前台心跳，约 1.5s 新鲜窗口；切走标签、关面板、DSH 标签页后台化都会过期），否则**零写入**并报 `ANNOTATION_NOT_FOREGROUND`；先读 `browser_state.annotations.foreground={active,ageMs,maxAgeMs}`，`read` 不受此限。页面未运行时报 `INVALID_ARGUMENT`（reason `annotation-runtime-not-running`）。
-- **整份替换语义**：人类下一次编辑会整体发布自己的形状列表（其中已含 Agent 形状，因为面板采纳 Host 文档），人类「清除画布」会连 Agent 形状一起清掉——别把标注当持久存储。
+- **整份替换语义**：人类下一次编辑会整体发布自己的形状列表（其中已含 Agent 形状，因为面板采纳 Host 文档），人类「清除画布」会连 Agent 形状一起清掉——别把标注当持久存储。面板的「选择」「框选」只改人类本地选中态（光晕/包围框/「已选 N 个」），移动或删除才写同一份文档；选中态不出现在 `annotations` 里，也不进带标注截图。
 - **限额与边界**：与面板写面同一软限额（128 图形/单笔 512 点/8192 点/200 字符/65536 字节，确定性裁剪并报 `truncated`）；不启动浏览器、不进页面队列、不占租约、不写页面 `lastError`、不改 DOM/CSS，面板下一次 `/state` 轮询即画出；`browser_screenshot {includeAnnotations:true}` 会把两方的形状一起叠加。
 
 ### T2（7 个，结构化 GUI）
@@ -491,7 +491,7 @@ browser_http_request {
 
 - **入口**：`browser_state()` 顶层 `annotations`（与已认证 `/state` 的 `ui.annotations` 同源，含 `foreground` 前台心跳）；`browser_annotation {action:"read"}` 读同一份文档；`browser_capabilities().annotations` 给读取方式/`space`/`limits`。`browser_screenshot` 的 `includeAnnotations?:boolean=false` 只控制本次截图叠加。默认截图、T3 原始源与 T4 两种帧源不含面板标注；T3 `annotations` 是独立的图片后处理参数。
 - **叠加边界**：`includeAnnotations:true` 仅绘制当前目标已提交且经 Host 接受的 `circle/rect/line/arrow/brush/text`，颜色、粗细与填充/外框遵循面板语义；不含未提交草稿、工具栏或选中控件。图形与页面共用 region/scale 映射，截图连续像素坐标 `u=(d−region.origin)/mapping.cssPerPixel`（逐轴）；用 `capture.annotations` 核对 revision/context、新鲜度、截断与 `source.trusted=false`，不能把旧文档当最新画面。`capture.canvas.composite` 描述画布合成，不能单凭它判断是否叠加标注。
-- **反向：给他画**。用户说「你圈一下 / 标给我看 / 在这儿写个问号」时用 `browser_annotation`：先看 `browser_state.annotations.foreground.active`，为 false 就先请他选中那个标签页并保持面板可见，否则写入会被 `ANNOTATION_NOT_FOREGROUND` 拒绝（画了看不见等于没画）。`draw` 只追加，形状 id 交给 Host 分配；写完用 `browser_screenshot {includeAnnotations:true}` 复核自己画的位置对不对；对方「清除画布」会连你的形状一起清掉。
+- **反向：给他画**。用户说「你圈一下 / 标给我看 / 在这儿写个问号」时用 `browser_annotation`：先确认目标标签页就是面板在看的那个（`browser_tabs list` 对 `url`，或比对 `read` 的 `context.runtimeId` 与 tab 的 `runtimeId`），再看 `browser_state.annotations.foreground.active`，为 false 就先请他选中那个标签页并保持面板可见，否则写入会被 `ANNOTATION_NOT_FOREGROUND` 拒绝（画了看不见等于没画）。`draw` 只追加，形状 id 交给 Host 分配；写完用 `browser_screenshot {includeAnnotations:true}` 复核自己画的位置对不对；对方「清除画布」会连你的形状一起清掉。
 - **坐标**：shapes 是画布 CSS px `d`，页面坐标 `p = d − S`（`S` 用**当前** `view.x/y`，不能用发布时的 `annotations.view`）；`scale`/DPR 不参与。
 - **图形**：`rect/line/arrow`（箭头尖为 `(x2,y2)`）、`circle`（PS 包围盒椭圆 `cx/cy/rx/ry`）、`brush`（只有 `points`）、`text`（唯一带原文）。
 - **手写笔迹**：`brush` 结构化数据只有点集，`text.text` 才有文字原文；先查看带标注截图中的实际笔迹，无法可靠辨认时如实说明，不从点集猜字或伪造原文。
