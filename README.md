@@ -271,7 +271,8 @@ See [getting started](docs/getting-started.md#第一次调用) for the first cal
 | File | Contents |
 | --- | --- |
 | [docs/index.md](docs/index.md) | Documentation index |
-| [docs/tutorial.md](docs/tutorial.md) | **Beginner walkthrough (with screenshots)**: open the panel, load a page, inspect, click, pick an element, annotate and collect evidence |
+| [docs/tutorial.md](docs/tutorial.md) | **Beginner walkthrough**: copyable prompts, screenshots, a runnable order-query demo, element picking and annotations |
+| [docs/tutorial-advanced.md](docs/tutorial-advanced.md) | **Developer follow-up**: run the demo, understand tool calls, verify results and choose network/visual/dynamic evidence |
 | [docs/getting-started.md](docs/getting-started.md) | Requirements, install, debug panel and first calls |
 | [docs/tools.md](docs/tools.md) | All 37 tools, parameters and error classes |
 | [docs/capability-tiers.md](docs/capability-tiers.md) | Shared T1–T4 interfaces and implementations by target environment and executor |

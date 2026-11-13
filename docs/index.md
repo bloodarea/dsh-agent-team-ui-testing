@@ -9,7 +9,8 @@
 | 文档 | 内容 |
 | --- | --- |
 | [快速开始（getting-started.md）](getting-started.md) | 安装插件、打开页面、让 Agent 完成第一次操作 |
-| [新手图文教程（tutorial.md）](tutorial.md) | 跟随截图完成加载页面、观察、操作、选元素、标注与取证 |
+| [新手图文教程（tutorial.md）](tutorial.md) | 用可复制的对话和配图完成订单查询、选元素、圈图与保存结果；附本地演示材料 |
+| [开发者进阶（tutorial-advanced.md）](tutorial-advanced.md) | 手动启动演示、理解工具调用与结果验证，进阶检查网络、布局和动态行为 |
 | [浏览器运行配置（browser-runtime.md）](browser-runtime.md) | 浏览器路径、Chrome / Edge、有头模式、profile、目标访问与其他安装方式 |
 | [环境设置（settings.md）](settings.md) | 环境与执行端的启用、选择、配置保存，以及诊断流程与证据判读 |
 

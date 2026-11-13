@@ -271,7 +271,8 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 | 文件 | 内容 |
 | --- | --- |
 | [docs/index.md](docs/index.md) | 文档索引 |
-| [docs/tutorial.md](docs/tutorial.md) | **新手图文教程**：打开面板、加载页面、观察与操作、选元素、标注与取证 |
+| [docs/tutorial.md](docs/tutorial.md) | **新手图文教程**：可复制的对话、截图、可运行的订单查询演示，以及选元素、圈图与结果保存 |
+| [docs/tutorial-advanced.md](docs/tutorial-advanced.md) | **开发者进阶**：启动演示、理解工具调用、验证结果与选择网络／视觉／动态证据 |
 | [docs/getting-started.md](docs/getting-started.md) | 安装要求、接入、调试面板与首次调用 |
 | [docs/tools.md](docs/tools.md) | 37 个工具、参数与错误分类 |
 | [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 通用接口及各目标环境、执行端的实现、协议与调用 |
