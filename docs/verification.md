@@ -108,6 +108,15 @@ node tests/acceptance/verify-3081.mjs      # 隔离宿主 HTTP 集成
 
 `popup-tabs.mjs` 自启私有隔离 DSH，用同时含 `target=_blank`、`rel=noopener`、真实 `window.open` 与自动定时 `window.open` 的本地 fixture：验证单标签时标签栏即显示且开关可收起/展开、`+` 只在栏内（工具栏无常驻 `+`）、真人点击后内部标签栏从 1→2、新标签 active、原 A 标签 URL/history 不变、A/B 切换与 B→C→后退、B active 时真实坐标点击命中 B、开关在标注左侧且隐藏不丢页面、关闭 child 发 binding `/close` 并回 A、非法/无 ticket/超容量阻断并提示、Host Agent `browser_state` 仍 primary。跨 workspace、刷新恢复、Agent lease 竞态等按 `NOT_RUN` 原样报告；Chrome 自动弹窗被 popup blocker 拦截时只证明“不新增标签”，不冒充可见 notice。
 
+## 改动如何生效
+
+| 改动 | 生效方式 |
+| --- | --- |
+| 面板 UI（`client.js`） | 更新客户端产物后刷新当前 DSH GUI |
+| Host 实现、工具 schema、Skill provider 或配置存储 | 重启 DSH 或重挂插件；旧会话中已经注入的 Skill 正文不会自动移除 |
+| 仅文档 | 重新打开或刷新文档预览，无需重启 DSH |
+| 设置页的环境启用配置 | 保存后生效，无需重启；会话准入与后续 Skill 发现按新配置执行 |
+
 ## 本地生成物
 
 以下内容由运行/验收产生或属于本机资料，不纳入版本控制：

@@ -120,7 +120,9 @@ Agent：browser_fill_form { fields: [{ ref: "e2", type: "textbox", value: "A-100
 
 ## 下一步
 
-- [快速开始](getting-started.md)：安装、设置页、环境选择
+- [快速开始（getting-started.md）](getting-started.md)：安装与首次操作
+- [环境设置（settings.md）](settings.md)：环境启用、选择与诊断
+- [调试面板（debug-panel.md）](debug-panel.md)：地址栏、页面输入与 DevTools
 - [工具参考](tools.md)：37 个工具的参数与错误分类
 - [能力分层](capability-tiers.md)：T1–T4 抽象定义、选路、Chrome 实现与证据边界
 - [选元素加入聊天框](element-picker.md)、[视口与标注](viewport-control.md)、[网络调试](network-p0.md)

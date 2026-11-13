@@ -222,7 +222,7 @@ sequenceDiagram
 
 ## 快速开始
 
-**要求：** 已安装 DSH，并有本地 Chrome/Chromium。插件不自带浏览器、也不会在安装时自动下载，运行时启动的是系统里解析到的可执行文件（见 [docs/getting-started.md](docs/getting-started.md)）；有头模式在 POSIX 宿主上还需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，Windows 宿主自带窗口系统、无需该变量。插件自身要求 Node.js 22+（原生 `WebSocket`）；当前 DSH 发行版要求 Node.js 24.9+，实际以更严格的一项为准。
+**要求：** 已安装 DSH，并有本地 Chrome/Chromium。插件不自带浏览器、也不会在安装时自动下载，运行时启动的是系统里解析到的可执行文件（见[浏览器运行配置](docs/browser-runtime.md)）；有头模式在 POSIX 宿主上还需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，Windows 宿主自带窗口系统、无需该变量。插件自身要求 Node.js 22+（原生 `WebSocket`）；当前 DSH 发行版要求 Node.js 24.9+，实际以更严格的一项为准。
 
 插件以 DSH 插件 bundle 的形式提供，npm 包名为 `dsh-agent-team-ui-testing`；除上文的 Node.js 与 DSH 要求外，没有额外的兼容性矩阵。
 
@@ -244,7 +244,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 
 开发插件时改为把本仓库链接或复制进 profile，不必安装 npm 包。
 
-安装要求、接入步骤与面板用法见 [docs/getting-started.md](docs/getting-started.md)。
+安装与首次操作见[快速开始](docs/getting-started.md)。详细说明按需查阅：[浏览器运行配置](docs/browser-runtime.md)、[环境设置](docs/settings.md)、[调试面板](docs/debug-panel.md)。
 
 首次调用见[快速开始](docs/getting-started.md#第一次调用)，按问题选路见[能力分层](docs/capability-tiers.md#22-选路与回退)。
 

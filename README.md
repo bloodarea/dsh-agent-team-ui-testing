@@ -222,7 +222,7 @@ Mapped to the three perspectives: **execution** carries `browser_*` calls to Chr
 
 ## Getting started
 
-**Requirements:** a DSH installation and a local Chrome/Chromium binary for the default `chrome` runtime provider. Edge is supported as a second runtime provider with its own executable candidates and its own `DSH_UI_TESTING_EDGE` override; its driver code is wired to the same CDP stack, but a real Edge launch has not been verified on this machine — enabling Edge without an Edge binary makes its dependency axis report `failed / executable-missing` (a disabled provider stays `not-probed`) and opens no page. The plugin does not bundle or install a browser; it launches the system binary it resolves (see [docs/getting-started.md](docs/getting-started.md)). A headed Web view additionally needs `DISPLAY` or `WAYLAND_DISPLAY` on POSIX hosts; Windows hosts always provide a window system, so headed mode needs no such variable there. The plugin requires Node.js 22+ (native `WebSocket`); the current DSH release itself requires Node.js 24.9+, so a real DSH host follows the stricter version.
+**Requirements:** a DSH installation and a local Chrome/Chromium binary for the default `chrome` runtime provider. Edge is supported as a second runtime provider with its own executable candidates and its own `DSH_UI_TESTING_EDGE` override; its driver code is wired to the same CDP stack, but a real Edge launch has not been verified on this machine — enabling Edge without an Edge binary makes its dependency axis report `failed / executable-missing` (a disabled provider stays `not-probed`) and opens no page. The plugin does not bundle or install a browser; it launches the system binary it resolves (see [browser runtime configuration](docs/browser-runtime.md)). A headed Web view additionally needs `DISPLAY` or `WAYLAND_DISPLAY` on POSIX hosts; Windows hosts always provide a window system, so headed mode needs no such variable there. The plugin requires Node.js 22+ (native `WebSocket`); the current DSH release itself requires Node.js 24.9+, so a real DSH host follows the stricter version.
 
 The plugin ships as a DSH plugin bundle and is published on npm as `dsh-agent-team-ui-testing`. There is no compatibility matrix beyond the Node.js and DSH requirements above.
 
@@ -244,7 +244,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 
 For plugin development, link or copy this repository into the profile instead of installing the npm package.
 
-Requirements, install steps and panel usage are in [docs/getting-started.md](docs/getting-started.md).
+Follow [getting started](docs/getting-started.md) for installation and the first action. Detailed references: [browser runtime](docs/browser-runtime.md), [environment settings](docs/settings.md), and [debug panel](docs/debug-panel.md).
 
 See [getting started](docs/getting-started.md#第一次调用) for the first calls and [capability selection](docs/capability-tiers.md#22-选路与回退) for choosing a path by question.
 

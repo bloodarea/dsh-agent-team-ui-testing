@@ -8,13 +8,16 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [快速开始（getting-started.md）](getting-started.md) | 安装要求、安装与接入、环境设置、打开面板与首次调用 |
+| [快速开始（getting-started.md）](getting-started.md) | 安装插件、打开页面、让 Agent 完成第一次操作 |
 | [新手图文教程（tutorial.md）](tutorial.md) | 跟随截图完成加载页面、观察、操作、选元素、标注与取证 |
+| [浏览器运行配置（browser-runtime.md）](browser-runtime.md) | 浏览器路径、Chrome / Edge、有头模式、profile、目标访问与其他安装方式 |
+| [环境设置（settings.md）](settings.md) | 环境与执行端的启用、选择、配置保存，以及诊断流程与证据判读 |
 
 ## 调试面板与交互
 
 | 文档 | 内容 |
 | --- | --- |
+| [调试面板（debug-panel.md）](debug-panel.md) | 地址栏、最近访问、页面输入、功能入口与 Chrome DevTools |
 | [多标签页（multi-tab.md）](multi-tab.md) | 打开、切换和关闭页面，理解 Agent 选页、团队访问权限与控制权 |
 | [视口、画布与标注（viewport-control.md）](viewport-control.md) | 调整视口、坐标和缩放，使用拖拽、光标跟随、标注选择与框选 |
 | [选元素加入聊天框（element-picker.md）](element-picker.md) | 在画面中选取元素，以 `@` 引用加入聊天框，以及原生下拉浮层的操作与限制 |
