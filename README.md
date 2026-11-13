@@ -54,15 +54,7 @@ This project focuses on:
 
 ### Agent tools
 
-| Group | Tools | What it covers |
-| --- | --- | --- |
-| **Programmatic** (10) | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_viewport` `browser_state` `browser_capabilities` | Navigation, JavaScript, console/network inspection, independent HTTP requests, computed styles, screenshots, raw mouse/wheel/keyboard input, shared viewport state and capability reporting |
-| **Annotations** (1) | `browser_annotation` | Read/draw/erase/clear the annotation document the human sees in the debug panel: six shape types with colour, stroke width and fill/stroke style, append-only draws, revision CAS and a hard foreground requirement |
-| **Page group** (1) | `browser_tabs` | Primary + up to three child tabs per (workspace, provider, root), per-tab short leases, per-agent work/observation selection, ownership + Lead control (acquire/release/transfer) and tab lifecycle (list/current/select/open/close/wait/acquire/release/transfer) |
-| **Structured GUI** (7) | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | Snapshot → ref targeting, trusted input, forms, node state and waits, with structured evidence and typed errors |
-| **Static vision** (6) | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | Crop/zoom/preprocess/annotate PNGs, deterministic colour/component/edge/template finders, YIQ diff, coordinate input, managed baselines and visual assertions |
-| **Dynamic** (5) | `browser_dynamic_session` `browser_motion_observe` `browser_motion_analyze` `browser_motion_control` `browser_dynamic_correlate` | Bounded frame capture with integrity counters, region-only frame delivery, seven motion/transition analyses, WAAPI pause/seek/rate/restore, and six-direction frame↔network correlation |
-| **Network** (7) | `browser_network_session` `browser_network_events` `browser_network_detail` `browser_network_trace` `browser_network_control` `browser_network_evidence` `browser_network_subscribe` | Capture, timeline, analysis, business-step traces, interception/throttling/replay/mock, JSONL/HAR evidence and per-agent subscriptions |
+See the [tool reference](docs/tools.md) for the 37 tools, parameters and errors. Tier definitions, selection, evidence requirements and Chrome integration are maintained in [capability tiers](docs/capability-tiers.md).
 
 ### Debug panel
 
@@ -166,18 +158,9 @@ flowchart TB
 
 `targets/web` does not mean vendoring Chrome or Playwright. Nor does `engines/android` imply an APK is required: ADB / UI Automator may be sufficient for initial Android automation. **`core/` and `targets/` are now real directories**: `core/` owns the contracts, config, identity/geometry/clock, evidence and six-axis readiness; `targets/web` is the real Web adapter and `targets/fake` is a test-only contract fixture. `engines/` remains the reserved boundary for self-developed executors. The CDP integration and the 37 tool implementations still live in `index.js` (composition root / Web implementation), but admission, config and execution all go through the adapter boundary.
 
-### Capability architecture: choose T1 / T2 / T3 / T4 as needed
+### Capability architecture
 
-Tiers classify **testing methods and the evidence they can supply**. They are **selection and fallback levels**, not a mandatory T1→T2→T3→T4 pipeline. Prefer the least expensive reliable method; escalate or combine methods only when the evidence is insufficient.
-
-| Tier | Question | Implemented Web example | Representative agent tools |
-| --- | --- | --- | --- |
-| **T1 · Programmatic** | Is the API, program state, or runtime behavior correct? | CDP/HTTP/JavaScript, console, computed styles, page state | `browser_eval`, `browser_http_request`, `browser_network` |
-| **T2 · Structured GUI** | Which element is present, and can it be operated correctly? | DOM/accessibility snapshots, `ref` targeting, forms, trusted input | `browser_snapshot`, `browser_click`, `browser_fill_form` |
-| **T3 · Static vision** | Does one frame show a layout, color, or pixel-level defect? | PNG preprocessing, color/template matching, managed baselines and diffs | `browser_vision_find`, `browser_vision_compare`, `browser_vision_check` |
-| **T4 · Dynamic vision** | Are transitions, animations, drags, and time-dependent behavior correct? | CDP screencast / screenshot loop, frame timing, deterministic motion analysis, frame↔network correlation | `browser_dynamic_session`, `browser_motion_analyze`, `browser_dynamic_correlate` |
-
-**A successful T1 call is not a UI pass; a dispatched click is not proof of a successful login.** Select the observations relevant to the acceptance criteria. Current T3/T4 algorithms are deterministic and do not embed VLM/OCR; the AI agent can reason over the returned evidence. Adapters must report what their runtimes actually support, not invent UI trees or network telemetry to fill all four tiers.
+T1–T4 classify observations and operations by the question being tested. Operations are declared and executed through CapabilityAdapter. Abstract interface responsibilities, selection, evidence rules and the Web / Chrome implementation are maintained in [capability tiers](docs/capability-tiers.md); object contracts are in [adapters](docs/adapters.md).
 
 ### Infrastructure architecture: P0 is the shared foundation
 
@@ -263,13 +246,12 @@ For plugin development, link or copy this repository into the profile instead of
 
 Requirements, install steps and panel usage are in [docs/getting-started.md](docs/getting-started.md).
 
-A typical agent flow is: navigate to the target, inspect state with `browser_state`/`browser_eval`, perform structured actions with the T2 tools, capture screenshots or run T3 checks, inspect network traffic with the network tools, escalate to the dynamic tools (`browser_dynamic_session` → `browser_motion_observe` → `browser_motion_analyze`/`browser_dynamic_correlate`) when the question is about motion, timing or a frame sequence, and use the shared viewport/canvas/annotation state when the task involves layout, framing or visual feedback.
+See [getting started](docs/getting-started.md#第一次调用) for the first calls and [capability selection](docs/capability-tiers.md#22-选路与回退) for choosing a path by question.
 
 ## Current limits
 
 - **Web target only.** Web/Chromium is the only implemented target environment and runs on Linux, macOS and Windows hosts. Desktop applications, Android, Mini Program, TUI, HarmonyOS, games and 3D are planned targets and stay disabled in the runtime picker.
-- **Vision is deterministic, not semantic.** T3 judges single PNGs and T4 judges frame sequences with deterministic algorithms: no VLM/OCR, no semantic naming, so "what does this text mean" and "looks right to a human" stay out of scope.
-- **T4 verification is partial.** Of the 44 dynamic-behavior criteria, 12 pass, 20 are partial, 0 fail and 12 were not run — the suite exits non-zero only because required checks were not run, not because they failed. Close/dispose restore, WebGPU rendering, media seeking/stalling, header-verified identity, 16 ms flicker coverage and long-lived connections remain unverified.
+- **Visual and dynamic conclusions are bounded.** Deterministic algorithms, temporal resolution, control and correlation limits, and unverified scenarios are documented in [capability tiers](docs/capability-tiers.md#web-chrome). Interpret results with their actual evidence and unrun checks.
 - **Shared browser profile.** Cookies and storage are shared by the Chromium profile; only page, URL, viewport, history, network buffer and leases are isolated per workspace.
 - **Screenshots are not redacted.** Review their content before sharing.
 - **Attachments are not provider visibility.** A returned image attachment does not prove the model received it at full resolution.
@@ -279,7 +261,7 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 
 ## Roadmap
 
-- Harden the Web channel and close the remaining dynamic-behavior criteria (12 not run, 20 partial).
+- Harden the Web channel and complete dynamic-behavior validation against real scenarios.
 - Gradually extract a common capability contract and `core/targets/engines` module boundaries while preserving existing Web tools; build the cross-environment test core (typed sessions, observations, assertions, reports).
 - Validate desktop (Windows/Linux/macOS), Android, Mini Program, TUI, HarmonyOS, game and 3D adapters by demand and platform feasibility.
 - Add multi-agent scheduling, human takeover and release hardening.
@@ -292,15 +274,12 @@ A typical agent flow is: navigate to the target, inspect state with `browser_sta
 | [docs/tutorial.md](docs/tutorial.md) | **Beginner walkthrough (with screenshots)**: open the panel, load a page, inspect, click, pick an element, annotate and collect evidence |
 | [docs/getting-started.md](docs/getting-started.md) | Requirements, install, debug panel and first calls |
 | [docs/tools.md](docs/tools.md) | All 37 tools, parameters and error classes |
-| [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 selection model, P0 infrastructure and known limits |
+| [docs/capability-tiers.md](docs/capability-tiers.md) | Shared T1–T4 interfaces and implementations by target environment and executor |
 | [docs/viewport-control.md](docs/viewport-control.md) | Shared viewport, hybrid canvas and annotations |
 | [docs/capture-p0.md](docs/capture-p0.md) | Screenshots, image delivery and file lifecycle |
 | [docs/multi-tab.md](docs/multi-tab.md) | Per-workspace tab group, per-tab leases and agent tab selection |
 | [docs/element-picker.md](docs/element-picker.md) | Panel element picking and `@` element reference chips |
 | [docs/network-p0.md](docs/network-p0.md) | Network capture, tracing, control and evidence |
-| [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | Snapshot/ref, trusted input and form filling |
-| [docs/t3-vision.md](docs/t3-vision.md) | Static vision algorithms, baselines and verdicts |
-| [docs/t4-dynamic-behavior.md](docs/t4-dynamic-behavior.md) | Frame capture, motion analysis, control and correlation |
 | [docs/architecture.md](docs/architecture.md) | Runtime, module responsibilities and extension points |
 | [docs/verification.md](docs/verification.md) | Reproducible tests, result interpretation and contributing |
 

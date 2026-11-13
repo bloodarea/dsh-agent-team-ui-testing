@@ -122,5 +122,5 @@ Agent：browser_fill_form { fields: [{ ref: "e2", type: "textbox", value: "A-100
 
 - [快速开始](getting-started.md)：安装、设置页、环境选择
 - [工具参考](tools.md)：37 个工具的参数与错误分类
-- [能力分层与限制](capability-tiers.md)：什么时候该用 T1 / T2 / T3 / T4
+- [能力分层](capability-tiers.md)：T1–T4 抽象定义、选路、Chrome 实现与证据边界
 - [选元素加入聊天框](element-picker.md)、[视口与标注](viewport-control.md)、[网络调试](network-p0.md)

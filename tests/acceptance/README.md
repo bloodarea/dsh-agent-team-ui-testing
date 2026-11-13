@@ -7,8 +7,8 @@
 ```bash
 node tests/acceptance/run.mjs              # T1 主验收（P1–P23，含 36 工具注册面/能力/证据/宿主契约与 network 工具面）
 node tests/acceptance/capture-p0.mjs       # P0 截图基础设施验收（C1–C14，真实Chromium/像素真值/默认暂存+显式持久）
-node tests/acceptance/t2-structured.mjs    # T2 结构化验收（docs/t2-structured-gui.md §9 的 38 条，C1–C38）
-node tests/acceptance/t3-vision.mjs        # T3 静态视觉验收（docs/t3-vision.md §9 的 56 条，C1–C56）
+node tests/acceptance/t2-structured.mjs    # T2 结构化验收 C1–C38；能力契约见 docs/capability-tiers.md#web-chrome-t2
+node tests/acceptance/t3-vision.mjs        # T3 静态视觉验收 C1–C56；能力契约见 docs/capability-tiers.md#web-chrome-t3
 node tests/acceptance/network-p0.mjs       # 网络 P0 验收（docs/network-p0.md §10 的 52 条，C1–C52）
 node tests/acceptance/network-chain.mjs    # 电商 5 页业务链路端到端（task-7，S1–S12）
 node tests/acceptance/devtools.mjs         # DevTools 独立窗口 Host 级（投影/真实连接/共存/端口重试，H1–H8）
@@ -28,7 +28,7 @@ DSH_3081_HOME=/tmp/dsh-utb-home node tests/acceptance/gui-workspace-3081.mjs
 DSH_3081_HOME=/tmp/dsh-utb-home node tests/acceptance/address-history-3081.mjs
 ```
 
-两套验收各自生成 `tests/acceptance/runs/<ISO时间>-<pid>/`，包含报告、日志、PNG 和脱敏网络记录。`t2-structured.mjs` 的报告是 `run-report.json`（每个 probe 带 `criteria` 号，可直接对上 §9 的编号），日志是同目录 `run.log`。已有 `evidence/` 是历史证据，默认不覆盖。退出码（两套一致）：0 表示所有必需项通过，1 表示断言失败，2 表示套件无法运行。`t2-structured.mjs` 支持 `DSH_T2_ONLY="C9,C13"` 只跑指定 probe（调试用，报告仍标出被跳过的 probe），总超时默认 900 秒，可用 `DSH_T2_TIMEOUT_MS` 覆盖。`runtime-faults.test.mjs` 使用 Node 原生测试器，失败退出非零。
+两套验收各自生成 `tests/acceptance/runs/<ISO时间>-<pid>/`，包含报告、日志、PNG 和脱敏网络记录。`t2-structured.mjs` 的报告是 `run-report.json`（每个 probe 带 `criteria` 号，可直接对上 Chrome T2 验收条目的编号），日志是同目录 `run.log`。已有 `evidence/` 是历史证据，默认不覆盖。退出码（两套一致）：0 表示所有必需项通过，1 表示断言失败，2 表示套件无法运行。`t2-structured.mjs` 支持 `DSH_T2_ONLY="C9,C13"` 只跑指定 probe（调试用，报告仍标出被跳过的 probe），总超时默认 900 秒，可用 `DSH_T2_TIMEOUT_MS` 覆盖。`runtime-faults.test.mjs` 使用 Node 原生测试器，失败退出非零。
 
 Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DSH_UI_TESTING_CHROME=/path/to/chrome` 可覆盖。默认探活失败后仅使用本目录 `chrome-wrapper.sh` 增加测试环境 flag，并在报告中保留失败原因。主验收总超时默认 240 秒（`DSH_ACCEPTANCE_TIMEOUT_MS`），T2 套件默认 900 秒（`DSH_T2_TIMEOUT_MS`）。两套套件都只清理本次运行自己创建的 Chromium 进程、临时 profile 与 fixture（按 `/proc/<pid>/stat` 父 PID 精确归属），不触碰用户 3080/3081 实例；T2 套件收到 SIGINT/SIGTERM 时会写 partial 报告（标 `interrupted`）并清理后以 exit 2 退出。Skill registry 检查使用已安装 DSH 的真实 Cordis/SkillRegistry，可用 `DSH_ROOT` 覆盖路径；宿主包缺失时会明确 SKIP。
 
@@ -39,7 +39,7 @@ Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DS
 | [harness.mjs](harness.mjs) | 加载真实 `apply(ctx)`，捕获注册工具、HTTP/WS 路由；透传 `exec.agent.id`/`exec.signal`，收集错误分类与 render content；模拟 optional attachments 与 `agent/disposed` 事件。 |
 | [run.mjs](run.mjs) | P1–P13 主浏览器与帧管线回归，并集成 M0–M2、P20、P21、P22 与 P23 探针；P1/P14/P16/P21/P23 断言 36 工具面（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 5 T4 + 7 network）。 |
 | [capture-p0.mjs](capture-p0.mjs) | **P0 截图基础设施验收**：C1–C14覆盖默认暂存/显式持久与生命周期，以及默认/scale/region/小数 scale/文档坐标+滚动/帧管线/空白识别/安全写入/参数与结构化错误/附件对比/能力探测/清理与可重复性/`captureBeyondViewport` 布局稳定性；断言全部是 PNG 像素真值（`capture-p0.js` 独立解码）与文件事实。 |
-| [t2-structured.mjs](t2-structured.mjs) | **Web T2 验收套件**：按 `docs/t2-structured-gui.md` §9 的 38 条编号条件组织 C1–C38（snapshot/ref/selector/click/type/scroll/fill_form/node_state/wait_for/证据/错误/lease/隔离），真值为 `window.__t2` 的真实 DOM 事件与靶机 DOM。 |
+| [t2-structured.mjs](t2-structured.mjs) | **Web T2 验收套件**：依据 [能力分层与接口 · Chrome T2](../../docs/capability-tiers.md#web-chrome-t2) 验证 C1–C38（snapshot/ref/selector/click/type/scroll/fill_form/node_state/wait_for/证据/错误/lease/隔离），真值为 `window.__t2` 的真实 DOM 事件与靶机 DOM。 |
 | [workspace-isolation.test.mjs](workspace-isolation.test.mjs) | 按 DSH 工作区 page 隔离：同 apply 一 Chromium 多 target、scope 身份链、URL/viewport/history/network 独立、同工作区 BUSY/跨工作区并发、close/abort/CDP 断线、scoped WS/frame/metrics、recent binding、owner-only、8 page/idle/viewer TTL、popup/Document 阻断。 |
 | [devtools.mjs](devtools.mjs) | **DevTools 独立窗口 Host 级验收**：cold/running `ui.devtools` 投影、scoped-only 与 legacy 隔离、固定 loopback 端口 + 精确 allow-origin、stderr/`/json/version` 身份核对、真实前端连接（shadow DOM MARKER）、screencast/T2 共存、bind/身份不符有界重试与清理。 |
 | [devtools-gui.mjs](devtools-gui.mjs) | **DevTools 独立窗口 GUI 验收**：自启私有隔离 DSH（随机端口/临时 DSH_HOME，不用 3080/3081）+ 无头 Chrome；冷态禁用、真实点击后 popup URL/opener/referrer/MARKER、预览共存、`window.open=null` fallback、标注模式禁用；2 条 NOT_RUN 原样报告。 |
@@ -64,7 +64,7 @@ Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DS
 
 | ID | 必需行为 |
 | --- | --- |
-| P1 | 恰好 36 工具（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 5 T4 + 7 network）、required 与 `docs/architecture.md` + `docs/t2-structured-gui.md` §2.2 + `docs/t3-vision.md` §2.1 + `docs/network-p0.md` §2 一致、schema、HTTP 路由、owner 诊断、未启动时 capability 可用。 |
+| P1 | 恰好 36 工具（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 5 T4 + 7 network）、required 与 `docs/architecture.md` + [能力分层与接口 · Chrome T2](../../docs/capability-tiers.md#web-chrome-t2) + [Chrome T3](../../docs/capability-tiers.md#web-chrome-t3) + `docs/network-p0.md` §2 一致、schema、HTTP 路由、owner 诊断、未启动时 capability 可用。 |
 | P2 | loopback 导航成功；state URL/title 与页面一致；SPA 改标题可读；file 拒绝、不可达 `NAV_FAILED`、失败恢复。 |
 | P3 | 按值 JS/Promise/undefined；页面异常返回 `EVAL_ERROR` 对象及消息、stack、details。 |
 | P4 | CSS 精确值、全集；缺失元素返回 `TARGET_NOT_FOUND` 操作失败。 |
@@ -86,15 +86,15 @@ Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DS
 | P22 | 独立 `browser_http_request`：默认 GET/5s/64KiB、`ok:true≠2xx`、headers 小写→string[]、默认不跟随/显式跟随每跳复验、方法规则、超时/取消、阻断目标与重定向阻断零派发（`http.request` spy）、非法参数零副作用、正文截断/字节/base64/压缩、无 cookie jar、脱敏、证据 target 为初始 URL、真实 lossless、未启动/关闭态、卸载 ABORTED。 |
 | P23 | network P0 工具面（`docs/network-p0.md` §1.2.4/§2/§8.5/§8.8）：7 个 `browser_network_*` 注册与 required/schema 一致；无会话时 `session status`（`session:null`+limits）、`events`（空+`sessionId:null`）、`detail`/`subscribe`（NET_* 码）、`evidence index/integrity`、`trace query/window`、`control intercept-list` 全部可诊断且**不启动 Chromium**（无新 profile）；`control` 对其他 owner BUSY、只读查询不占租约；旧 `browser_network` 仍只回 `{ok,entries:[元数据]}` 白名单字段。 |
 
-## T2 结构化验收探针（`t2-structured.mjs`，对应 `docs/t2-structured-gui.md` §9）
+## T2 结构化验收探针（`t2-structured.mjs`，对应 [能力分层与接口 · Chrome T2](../../docs/capability-tiers.md#web-chrome-t2)）
 
-2026-11-01 优化轮（契约 §3.1.1 冗余文本压缩、§4.3「不自动滚入视口 + hint + 两帧稳定性」、§9.4/§9.25/§9.26）的用例已并入 C4/C6/C25/C26；靶机新节点见 `tests/ui_test_fixture/README.md` §T2.10。
+2026-11-01 优化轮（契约中的冗余文本压缩、「不自动滚入视口 + hint + 两帧稳定性」、C4/C25/C26 验收条目）的用例已并入 C4/C6/C25/C26；靶机新节点见 `tests/ui_test_fixture/README.md` §T2.10。
 
-每个 probe 的 `id`/`criteria` 直接对应 §9 的编号条件；报告里 38 条逐条可读。真值来自靶机 `window.__t2`（真实 DOM 事件的 `isTrusted`/修饰键）、DOM 读回与 `tests/ui_test_fixture/README.md` §T2 的契约值，不信工具自报的 "applied"。
+每个 probe 的 `id`/`criteria` 直接对应 Chrome T2 验收条目的编号条件；报告里 38 条逐条可读。真值来自靶机 `window.__t2`（真实 DOM 事件的 `isTrusted`/修饰键）、DOM 读回与 `tests/ui_test_fixture/README.md` §T2 的契约值，不信工具自报的 "applied"。
 
-| ID | §9 | 覆盖 |
+| ID | 条目 | 覆盖 |
 | --- | --- | --- |
-| C1-registration | 1 | 36 工具注册面、§2.2 required、未知字段/目标冲突 INVALID_ARGUMENT、纯参数失败不启动 Chromium |
+| C1-registration | 1 | 36 工具注册面、工具参数 required、未知字段/目标冲突 INVALID_ARGUMENT、纯参数失败不启动 Chromium |
 | C2-cold-capabilities | 2 | 仅 state/capabilities 即可读事实、七项 `web.t2.*`+`structured-dom` available、T3/T4 unsupported、description 含 T1/T2、`limits.structuredGui` |
 | C3-workspace-isolation | 3 | 两个 workspace 的 page/ref/lease 独立：A 的 ref 在 B 为 REF_STALE 且不影响 A |
 | C4-semantic-snapshot | 4 | 标题/40 项列表/表格/同名 Save（3 个：2 个内容命名 + 1 个 aria-label owner）/顺序、refs 与树一一对应、display:none 与 aria-hidden 排除；**冗余文本压缩正负例**（嵌套同 role/同名冗余行不再输出、aria-label owner 与子文本都保留、分片文本 `Alpha Beta Gamma` 顺序与空格、同名 sibling 各留一份、长名 256 vs 子文本 475 保留更完整子表示、generic 文本区只留一份、相邻捕获 tree/digest 相同） |
@@ -238,7 +238,7 @@ C6的 `/frame` HTTP响应是application/json，image字段为base64 JPEG，以JP
 
 ## 实测范围
 
-Host 截图的 attachment image block 和 base64 fallback 都有断言；真实 provider 是否把图片交给视觉模型仍需宿主会话验证。工作区隔离测试不宣称 Cookie/localStorage/cache 隔离（同 profile 共享）；T2 套件不宣称覆盖 provider 视觉、T3 视觉判定、T4 动画/拖拽时序、跨帧/closed shadow 内部动作，§9.38 的真实宿主证据记为 NOT_RUN；测试也不宣称覆盖 provider 视觉效果、所有子资源网络沙箱、DNS rebinding、宿主/操作系统级按键语义（如 macOS 专有快捷键、IME 组字）或冻结面板视觉；P20 只断言 Chromium 渲染器实际产生的 DOM 事件与焦点变化。目标策略的 DNS 检查使用真实解析，Chromium Document 重定向使用真实本地 HTTP server；最终目标校验另以 fake CDP 注入验证。宿主侧 `snapshotToolValue` → `snapshotJsonValue` 的值快照由 P21 用真实校验器覆盖；但 fake Cordis ctx 仍不等同完整宿主会话（`tools/result` 物化、provider 呈现、会话持久化不在本套件内）。
+Host 截图的 attachment image block 和 base64 fallback 都有断言；真实 provider 是否把图片交给视觉模型仍需宿主会话验证。工作区隔离测试不宣称 Cookie/localStorage/cache 隔离（同 profile 共享）；T2 套件不宣称覆盖 provider 视觉、T3 视觉判定、T4 动画/拖拽时序、跨帧/closed shadow 内部动作，C38 的真实宿主证据记为 NOT_RUN；测试也不宣称覆盖 provider 视觉效果、所有子资源网络沙箱、DNS rebinding、宿主/操作系统级按键语义（如 macOS 专有快捷键、IME 组字）或冻结面板视觉；P20 只断言 Chromium 渲染器实际产生的 DOM 事件与焦点变化。目标策略的 DNS 检查使用真实解析，Chromium Document 重定向使用真实本地 HTTP server；最终目标校验另以 fake CDP 注入验证。宿主侧 `snapshotToolValue` → `snapshotJsonValue` 的值快照由 P21 用真实校验器覆盖；但 fake Cordis ctx 仍不等同完整宿主会话（`tools/result` 物化、provider 呈现、会话持久化不在本套件内）。
 
 - `p0e-multitab.mjs`：P0-E Host 验收（A/B selectedTab、per-tab BUSY、browser_tabs、4 tab、T2 ref、跨 workspace）。
 - `p0e-multitab-gui.mjs`：P0-E GUI 验收（Agent A/B、左下状态只跟 active、BUSY 本地提示、单标签栏可见、`+` 只在栏内、隐藏栏无外部 `+`）。

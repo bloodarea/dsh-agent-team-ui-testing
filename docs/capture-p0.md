@@ -1,6 +1,6 @@
 # 截图与图片交付
 
-`browser_screenshot` 是 P0 采集基础设施的入口：截一张经过校验的 PNG，并给出可复核的映射与像素统计。它**不做**视觉判断——那属于 [静态视觉](t3-vision.md)。
+`browser_screenshot` 是 P0 采集基础设施的入口：截一张经过校验的 PNG，并给出可复核的映射与像素统计。它**不做**视觉判断——那属于 [静态视觉](capability-tiers.md#web-chrome-t3)。
 
 ## 参数
 
@@ -83,7 +83,7 @@ browser_screenshot { "includeAnnotations": true, "scale": 1.5, "region": { "x": 
 
 ## 边界
 
-- 截图成功**不等于**视觉验收通过；需要结论请用 T3 的 `verdict`。
+- 采集与视觉断言的分工见[能力分层](capability-tiers.md#web-chrome-t3)；本工具返回图像与采集证据。
 - 截图内容不脱敏；分享前请自行检查。
 - 返回图片附件不等于 provider 一定以原始分辨率收到图像。
 - 画布合成或标注叠加可能重编码，不承诺 PNG 字节稳定；需要保留原页面直接截图路径时保持 `O = 0` 且 `includeAnnotations:false`。

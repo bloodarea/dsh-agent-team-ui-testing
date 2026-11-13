@@ -114,7 +114,7 @@
   "platform": "web",
   "tier": "T1+T2+T3+T4",
   "runtime_authority": "Agent 当前工具注册表决定可调用名字；browser_capabilities 根据实际运行态返回 available/unavailable/unsupported；browser_state 只诊断运行态。静态 tier/台账/本 manifest 都不构成可用性证明。",
-  "source": "接口与限额来自 docs/t2-structured-gui.md §2/§3/§4/§5/§6（维护者的权威契约）；T1 事实来自 index.js 注册表与 Runtime 实现；不使用漂移行号",
+  "source": "接口与限额来自 docs/capability-tiers.md#web-chrome-t2（维护者的权威契约）；T1 事实来自 index.js 注册表与 Runtime 实现；不使用漂移行号",
   "evidence": "工程状态快照，不是运行时可用性声明；可用性以注册表与 browser_capabilities 为准。验收命令与判读见 docs/verification.md。",
   "observations": [],
   "runtime_contract": {
@@ -345,7 +345,7 @@
       "set": "lazyStart=true, lease=true（含 scale-only）"
     },
     "structuredGui": {
-      "source": "docs/t2-structured-gui.md §5.3；运行态由 browser_capabilities 的 limits.structuredGui 报告（实测字段一致）",
+      "source": "docs/capability-tiers.md#web-chrome-t2；运行态由 browser_capabilities 的 limits.structuredGui 报告（实测字段一致）",
       "protocolVersion": 1,
       "targetFrame": "main",
       "defaultMaxNodes": 500,
@@ -402,7 +402,7 @@
         }
       },
       "scroll": {
-        "contract": "docs/t2-structured-gui.md §4.3（ 裁决）",
+        "contract": "docs/capability-tiers.md#web-chrome-t2（ 裁决）",
         "autoScrollIntoView": false,
         "preDispatchGates": [
           "visible",
@@ -508,56 +508,56 @@
       "id": "web.t2.snapshot",
       "status": "verified",
       "tool": "browser_snapshot",
-      "source_lines": "docs/t2-structured-gui.md §2.2/§3；Runtime.snapshot",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t2；Runtime.snapshot",
       "constraints": "AX 语义树文本 + refs。参数 scope?:{ref|selector 恰一}、maxNodes 1–2000（默认 500）、depth 0–32（默认 12）、boxes 默认 false。返回 snapshotId(s1,s2,…)/digest/tree/refs/nodeCount/truncated/truncationReasons/coverage{frame:'main',shadow:'ax-backed',complete}。ref 只给主文档中可 resolve 为 connected Element 的非 ignored 语义节点；iframe 是边界叶子、不输出内部 ref；不推导 CSS/role-name locator。采集中文档代次变化抛 REF_STALE，不发布混合快照。压缩在 emit/计数/字节预算前完成，跨构建 digest 变化不算回归；同 fixture 默认参数 nodeCount 421→275、tree 14432→9254 字节。 报告"
     },
     {
       "id": "web.t2.click",
       "status": "verified",
       "tool": "browser_click",
-      "source_lines": "docs/t2-structured-gui.md §2.2/§4.1；Runtime.click",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t2；Runtime.click",
       "constraints": "目标 ref 或 selector（恰一，均为 string）。button left/right/middle（默认 left）、clickCount 1–2、modifiers ≤4 不重复。before 读数先于滚动/聚焦；必要时 scrollIntoView(center) 并用两帧证明稳定（bbox 差值 ≤1px），命中校验（DOM.getNodeForLocation / open shadow 递归 elementFromPoint）必须命中目标或 composed descendant；随后 CDP mouseMoved/mousePressed/mouseReleased。hidden/disabled/inert/零面积/无交集/持续运动/overlay/pointer-events:none 一律零派发 NOT_INTERACTABLE，hidden/covered 带 details.escalation='T3'。无 force/JS click 参数。 报告"
     },
     {
       "id": "web.t2.type",
       "status": "verified",
       "tool": "browser_type",
-      "source_lines": "docs/t2-structured-gui.md §2.2/§4.1；Runtime.typeText",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t2；Runtime.typeText",
       "constraints": "只支持原生 input[type=text|search|email|url|tel|password] 与 textarea；text ≤65536 字节（允许空串=清空），单行 input 含 CR/LF 抛 INVALID_ARGUMENT；replace 默认 true（Ctrl+A+Backspace 再 Input.insertText），false 追加到末尾；submit 在值验证后派发 Enter（virtualKeyCode 13），submitted=true 只表示 Enter 已派发，不代表业务提交成功。可信点击后用深层 activeElement 校验焦点；焦点被拦截/beforeinput 取消/值被恢复 → NOT_INTERACTABLE（focus-mismatch/value-mismatch）。contenteditable/number/date/file/hidden 抛 UNSUPPORTED。普通 insertText 不产生逐字符 keydown，不承诺 IME/composition。结果不回显输入文本（insertedCharacters 按 code point）。 报告"
     },
     {
       "id": "web.t2.scroll",
       "status": "verified",
       "tool": "browser_scroll",
-      "source_lines": "docs/t2-structured-gui.md §2.2/§4.3；Runtime.scroll",
-      "constraints": "目标 ref/selector 至多一个（省略=document.scrollingElement）；direction∈{up,down,left,right} 与 to∈{top,bottom} 恰一，to 禁止 amount；amount 默认 400（1–10000 CSS px）。direction 走 CDP mouseWheel（eventSource=cdp-input），两帧后最多观察 1000ms 至稳定；to 走 scrollTo({behavior:'instant'})（eventSource=dom-scroll）。返回 requested/scrollBefore/scrollAfter/moved；到边界 moved:false 仍成功；不可滚/被覆盖 NOT_INTERACTABLE；参数冲突 INVALID_ARGUMENT。 优化（契约 §4.3 裁决）：**不自动滚入视口**（`click`/`type` 的准备滚动语义不适用），`direction` 与 `to` 都在派发前校验 visible/stable(两帧 bbox ≤1px)/viewport 交集/中心命中，不满足即零派发 `NOT_INTERACTABLE`（reason=outside-viewport|unstable）并附**不含 selector 原文**的固定 `details.hint`；失败前后页面与元素 scroll 读数进 evidence，便于核对零副作用。 报告"
+      "source_lines": "docs/capability-tiers.md#web-chrome-t2；Runtime.scroll",
+      "constraints": "目标 ref/selector 至多一个（省略=document.scrollingElement）；direction∈{up,down,left,right} 与 to∈{top,bottom} 恰一，to 禁止 amount；amount 默认 400（1–10000 CSS px）。direction 走 CDP mouseWheel（eventSource=cdp-input），两帧后最多观察 1000ms 至稳定；to 走 scrollTo({behavior:'instant'})（eventSource=dom-scroll）。返回 requested/scrollBefore/scrollAfter/moved；到边界 moved:false 仍成功；不可滚/被覆盖 NOT_INTERACTABLE；参数冲突 INVALID_ARGUMENT。 优化（契约 docs/capability-tiers.md#web-chrome-t2 裁决）：**不自动滚入视口**（`click`/`type` 的准备滚动语义不适用），`direction` 与 `to` 都在派发前校验 visible/stable(两帧 bbox ≤1px)/viewport 交集/中心命中，不满足即零派发 `NOT_INTERACTABLE`（reason=outside-viewport|unstable）并附**不含 selector 原文**的固定 `details.hint`；失败前后页面与元素 scroll 读数进 evidence，便于核对零副作用。 报告"
     },
     {
       "id": "web.t2.fill_form",
       "status": "verified",
       "tool": "browser_fill_form",
-      "source_lines": "docs/t2-structured-gui.md §2.2/§4.2；Runtime.fillForm",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t2；Runtime.fillForm",
       "constraints": "fields 1–20 项，每项 {ref|selector 恰一, type, value}；type ∈ textbox/checkbox/radio/combobox/slider；整批文本合计 ≤65536 字节。整批预检（参数/全部目标身份/控件类型/选项与范围/基础 actionability/重复 backend 目标）通过才按序执行；失败立即停止、不回滚，details 带 applied/failedIndex/fields，可部分生效。checkbox 已满足不点击、radio 只接受 true；combobox 用原生 select 的 option.value 精确匹配（单选 string、多选 1–20 不重复 string[]），不打开原生 popup；slider 用原生 input[type=range] setter（值在 min/max 内且符合 step，step=any 不支持）。combobox/slider 为 DOM 控件写入（eventSource=dom-control，不声称 isTrusted）；textbox/checkbox/radio 为可信 CDP 输入（cdp-input）。自定义 ARIA combobox/slider 不接受。 报告"
     },
     {
       "id": "web.t2.node_state",
       "status": "verified",
       "tool": "browser_node_state",
-      "source_lines": "docs/t2-structured-gui.md §2.2/§5.1；Runtime.nodeState",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t2；Runtime.nodeState",
       "constraints": "目标 ref/selector 恰一；返回现场读取的 NodeState（connected/role/name/tagName/inputType/visible/enabled/editable/readOnly/checked/selected/expanded/required/invalid/focused/bbox/inViewport/hitTarget/scroll，可编辑值脱敏）。hidden/disabled/readonly/covered 本身不导致读状态失败；不适用布尔属性为 null 而非 false；不发布新 snapshot/ref。 报告"
     },
     {
       "id": "web.t2.wait_for",
       "status": "verified",
       "tool": "browser_wait_for",
-      "source_lines": "docs/t2-structured-gui.md §2.2/§4.4；Runtime.waitFor",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t2；Runtime.waitFor",
       "constraints": "条件恰属一类：仅 text / 仅 textGone / (ref|selector 至多一 + state 至少一 key)，混用抛 INVALID_ARGUMENT；state={visible,enabled,checked,valueEquals} 多 key 为 AND，valueEquals 精确等于；text/textGone 针对主文档 body.innerText（不穿 iframe/shadow，不支持 regex/任意 JS）。timeoutMs 默认 5000（0=只采一次，上限 30000；工具外层预算须留清理余量）、pollMs 默认 100（50–1000）。selector 0 命中时 {visible:false} 可满足，其余 state 不因缺失满足；>1 立即 TARGET_NOT_UNIQUE；ref 失效立即 REF_STALE（不能当“移除成功”）；到期限抛 WAIT_TIMEOUT（details 含 elapsedMs/polls/condition，retryable=true，不关闭 page）。matched 只需单次满足样本，不承诺持续满足；不发布新 snapshot/ref。 报告"
     },
     {
       "id": "web.t2.structured-dom",
       "status": "verified",
       "tool": null,
-      "source_lines": "docs/t2-structured-gui.md §5.3；browser_capabilities 聚合项 web.t2.structured-dom",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t2；browser_capabilities 聚合项 web.t2.structured-dom",
       "constraints": "聚合能力：snapshot → ref → 动作 → before/after 证据，其他 owner 持租约时与其他 T2 项一起 unavailable+BUSY。未验证/仅 advisory：closed-shadow 不产生 ref 这一细分只有一条 advisory 检查；真实宿主行为需单独证据。禁止据此声称跨帧或视觉能力。"
     },
     {
@@ -578,7 +578,7 @@
       "id": "web.t3.image",
       "status": "verified",
       "tool": "browser_vision_image",
-      "source_lines": "docs/t3-vision.md §2.2；index.js 工具注册 browser_vision_image",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t3；index.js 工具注册 browser_vision_image",
       "constraints": "source(默认live)/region(PixelRect)/resize(factor 1–4,nearest|bilinear)/preprocess(≤8)/annotations(≤64)/recognize/output。处理顺序固定：source→crop→resize→preprocess→统计+识别→标注→编码/校验/交付；分析与识别在标注前，regions 相对未标注图。无变换复用原 productId/原始 PNG；有变换 derived，标注另存未标注 derived 供 recognition 引用。返回 product/image/bytes/sha256/attachment*/file/analysis/recognition/evidence；无断言 verdict=INCONCLUSIVE(no-assertion)。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
@@ -590,7 +590,7 @@
       "id": "web.t3.find",
       "status": "verified",
       "tool": "browser_vision_find",
-      "source_lines": "docs/t3-vision.md §2.3；index.js 工具注册 browser_vision_find",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t3；index.js 工具注册 browser_vision_find",
       "constraints": "query 必填：method=color/components/edges/template + minArea/maxResults；template 只接受 product/baseline 源且不大于搜索 ROI。region 先裁 ROI，FindResult 坐标始终相对完整源图（ROI 原点已回加），documentCss 由 mapping 映射；无匹配为成功空列表（不是 TARGET_NOT_FOUND）；candidates 非 DOM 身份、semanticName 恒 null；默认不生成图片/文件/product（live 源仍生成可引用源 product）。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
@@ -602,7 +602,7 @@
       "id": "web.t3.compare",
       "status": "verified",
       "tool": "browser_vision_compare",
-      "source_lines": "docs/t3-vision.md §2.4/§4；index.js 工具注册 browser_vision_compare",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t3；index.js 工具注册 browser_vision_compare",
       "constraints": "before/after 必须显式、两图必须同像素尺寸（否则 VISION_SIZE_MISMATCH）；region 为共同 PixelRect。YIQ 固定算法 yiq-v1（严格 >、白底合成、AA 3×3 排除、mask 并集不进分母）；masks 缺省继承 before 基线元数据、显式 [] 清空；options/thresholds 逐字段覆盖并返回 resolved*；全屏蔽抛 VISION_EMPTY_COMPARISON。输出完整尺寸 annotated diff PNG（红差异/黄AA/灰mask/蓝bbox）+ P0 落盘规则；similarity=1-D/C 不是语义相似度。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
@@ -614,7 +614,7 @@
       "id": "web.t3.act",
       "status": "verified",
       "tool": "browser_vision_act",
-      "source_lines": "docs/t3-vision.md §6；index.js 工具注册 browser_vision_act",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t3；index.js 工具注册 browser_vision_act",
       "constraints": "productId/action(move|click|drag)/point 必填；drag 必须 to，move 禁止 button/clickCount/steps/durationMs，drag 禁止 clickCount，button 只对 click/drag。六步：现场 layout/scroll/visualViewport 复验（逐轴 ≤0.01、scale=1）→ 同矩形重采样解码 RGBA hash 比对 → 视口校验（不自动滚动）→ DOM.getNodeForLocation + connected/disabled/inert + 两帧 rAF 命中稳定 → CDP Input 真实派发（finally 释放按键）→ 单次 after product。失败零派发：VISION_STALE_IMAGE/VISION_HIT_MISMATCH/NOT_INTERACTABLE(outside-viewport)/UNSUPPORTED(跨frame)。verdict 固定 INCONCLUSIVE(dispatch-only)。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
@@ -626,7 +626,7 @@
       "id": "web.t3.baseline",
       "status": "verified",
       "tool": "browser_vision_baseline",
-      "source_lines": "docs/t3-vision.md §2.6/§8；index.js 工具注册 browser_vision_baseline",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t3；index.js 工具注册 browser_vision_baseline",
       "constraints": "action=list|get|create|update|delete + 条件必填/禁止字段互斥。root 用 P0 规则（DSH_UI_TESTING_CAPTURE_DIR 优先，否则可信 exec cwd），scopeHash 隔离，目录 0700/文件 0600；仅 create/update mkdir，list/get/delete 只读。不可变 revision + HEAD CAS（link no-clobber），delete 为墓碑不删 PNG，create 名字不可复用。source 禁止指向正在创建/更新的同名 HEAD。离线 list/get/delete 不启动 Chromium。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
@@ -638,8 +638,8 @@
       "id": "web.t3.check",
       "status": "verified",
       "tool": "browser_vision_check",
-      "source_lines": "docs/t3-vision.md §2.7/§7/§8.3；index.js 工具注册 browser_vision_check",
-      "constraints": "cases 1–20，每 case assertions 1–32、facts 0–64，整批先纯参数校验；单 case 解析 source 一次、case 结束释放 pin。regression 与基线比较（mapping 兼容必需、尺寸不等 BLOCKED、不发布文件、返回 diffProductId）；layout/occlusion/overflow/truncation/color/missing 按 §7.2 像素信号+外部事实融合，required 缺事实/来源不匹配为 INCONCLUSIVE/BLOCKED，advisory 最多 WARN。summary/verdict/exitCode 合成（FAIL→1，无 FAIL 但 BLOCKED/INCONCLUSIVE→2，PASS/WARN→0），不调用 process.exit；不导航、不建基线、不读 DOM。",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t3；index.js 工具注册 browser_vision_check",
+      "constraints": "cases 1–20，每 case assertions 1–32、facts 0–64，整批先纯参数校验；单 case 解析 source 一次、case 结束释放 pin。regression 与基线比较（mapping 兼容必需、尺寸不等 BLOCKED、不发布文件、返回 diffProductId）；layout/occlusion/overflow/truncation/color/missing 按 docs/capability-tiers.md#web-chrome-t3 像素信号+外部事实融合，required 缺事实/来源不匹配为 INCONCLUSIVE/BLOCKED，advisory 最多 WARN。summary/verdict/exitCode 合成（FAIL→1，无 FAIL 但 BLOCKED/INCONCLUSIVE→2，PASS/WARN→0），不调用 process.exit；不导航、不建基线、不读 DOM。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
         "report": "",
@@ -650,7 +650,7 @@
       "id": "web.t3.static-vision",
       "status": "verified",
       "tool": null,
-      "source_lines": "docs/t3-vision.md §10/§11；browser_capabilities 聚合项 web.t3.static-vision",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t3；browser_capabilities 聚合项 web.t3.static-vision",
       "constraints": "聚合能力：image/find/compare/act/baseline/check 六工具 + 22 项能力映射（截图分析/裁剪放大/标注/预处理/识别/定位/坐标交互/前后对比/像素差异/区域高亮/相似度/动态屏蔽/基线/回归/布局/遮挡/溢出/截断/颜色/缺失/缺陷判断/裁剪识别）。其他 owner 持租约时与其他 T3 项一起 unavailable+BUSY。真实宿主与 provider 行为需单独证据。6 个 web.t3.* 与聚合按 BUSY 状态报告。未验证：真实宿主重载、provider 图像可见性、3 条 N/A、本地 TOCTOU / 网络文件系统 CAS。",
       "evidence": {
         "suite": "tests/acceptance/t3-vision.mjs",
@@ -717,42 +717,42 @@
       "id": "web.t4.dynamic-session",
       "status": "implemented-not-verified",
       "tool": "browser_dynamic_session",
-      "source_lines": "docs/t4-dynamic-behavior.md §7.2；docs/t4-dynamic-behavior.md §2.1；index.js 工具注册 browser_dynamic_session",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t4；index.js 工具注册 browser_dynamic_session",
       "constraints": "action=start|stop|status|reset；config.captureVisual=true 需 source（screencast 共享预览 JPEG，screenshot-loop PNG 精确、sampleIntervalMs 50–1000）；captureVisual=false + 必需 networkSessionId 建纯网络关联视图（不 ensure、不采帧、不启动 P0）。encoding 按 source 派生，显式不匹配 → DYNAMIC_SOURCE_UNAVAILABLE(encoding-conflict) 零 start/stop。同 scope 1 活动会话；start 立即返回、duration 由内部有界任务计时。"
     },
     {
       "id": "web.t4.motion-observe",
       "status": "implemented-not-verified",
       "tool": "browser_motion_observe",
-      "source_lines": "docs/t4-dynamic-behavior.md §7.2；docs/t4-dynamic-behavior.md §2.2",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t4",
       "constraints": "只读帧/事件查询：cursor 与 sinceSeq 互斥、frameIds 与 window/cursor/sinceSeq 互斥、includeImages≤3、fresh 仅当前活动视觉会话并做一次真实采样（返回采样 begin/end）。不 ensure、不续租、不生成 T3 product、不落盘。"
     },
     {
       "id": "web.t4.motion-analyze",
       "status": "implemented-not-verified",
       "tool": "browser_motion_analyze",
-      "source_lines": "docs/t4-dynamic-behavior.md §3.4/§7.2；docs/t4-dynamic-behavior.md §2.4",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t4",
       "constraints": "七类确定性断言（frame-diff/region-change/flicker/freeze/jank/trajectory/transition），assertions 1–20、id 唯一、thresholds 白名单与默认值；离线不采新帧；证据不足 INCONCLUSIVE/BLOCKED 不抛错。"
     },
     {
       "id": "web.t4.motion-control",
       "status": "implemented-not-verified",
       "tool": "browser_motion_control",
-      "source_lines": "docs/t4-dynamic-behavior.md §3.5/§7.2；docs/t4-dynamic-behavior.md §2.3",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t4",
       "constraints": "pause/resume/seek/rate/restore；非 restore 必给 adapterId+targetIds(≤20)，逐目标 before/after 回读，applied/failedIndex/restoreStatus/sideEffects；restoreToken 绑定会话；documentEpoch/目标变化 → DYNAMIC_CONTROL_CONFLICT 不覆盖外部状态；stop/cancel/dispose 尽力恢复。"
     },
     {
       "id": "web.t4.correlate",
       "status": "implemented-not-verified",
       "tool": "browser_dynamic_correlate",
-      "source_lines": "docs/t4-dynamic-behavior.md §5/§7.2；docs/t4-dynamic-behavior.md §2.5/§7",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t4",
       "constraints": "六向关联，explicit/redirect/initiator=confirmed-causal、observed=关联推断、temporal 默认过滤（includeTemporal=false）；highWater 快照 + cursor；无共同 ID 不判因果、不跨 scope/documentEpoch 合并；输出 pairs/unresolved/suppressedTemporal/integrity，无断言恒 INCONCLUSIVE(no-assertion)。"
     },
     {
       "id": "web.t4.dynamic-behavior",
       "status": "implemented-not-verified",
       "tool": null,
-      "source_lines": "docs/t4-dynamic-behavior.md；docs/t4-dynamic-behavior.md §8",
+      "source_lines": "docs/capability-tiers.md#web-chrome-t4",
       "constraints": "T4 聚合项（不是工具，不计入工具面）：5 个工具已注册"
     },
     {
@@ -854,7 +854,7 @@
     "resolvedFix": "Host expandViewPatch 曾丢弃 mode 同传的 x/y/scale"
   },
   "t3_vision": {
-    "contract": "docs/t3-vision.md",
+    "contract": "docs/capability-tiers.md#web-chrome-t3",
     "status": "verified",
     "algorithmVersion": "t3-v1",
     "tools": [
@@ -890,7 +890,7 @@
       "implementation_mode": "C42/C50 契约标 U 类（纯单测），实际由 delta 在 t3-vision.mjs 中以 B 类（真实 Chromium + 真实 Host 路径）覆盖，属更强证据；报告已注明实现模式"
     },
     "not_implemented": [
-      "无 VLM/OCR/语义命名；不跨 frame 坐标输入；不跨重启恢复 product；T4 帧序列/时序/关联已实现，见 web.t4.* 与 docs/t4-dynamic-behavior.md"
+      "无 VLM/OCR/语义命名；不跨 frame 坐标输入；不跨重启恢复 product；T4 帧序列/时序/关联已实现，见 web.t4.* 与 docs/capability-tiers.md#web-chrome-t4"
     ],
     "unverified": [
       "真实宿主重载：需在隔离 DSH 实例加载终版 index.js，并在真实 Agent 会话运行 T3 工具（本进程套件不能代替）",

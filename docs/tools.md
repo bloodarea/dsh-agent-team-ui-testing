@@ -2,7 +2,7 @@
 
 插件向 Agent 注册 **37 个** `browser_*` 工具。工具名即调用名，返回值统一以 `{ok:true,…}` 表示工具执行完成，失败抛类型化 `BrowserError`。
 
-> `ok:true` 只说明工具完成了动作，**不等于**验收通过。视觉结论看 `verdict`，网络结论看 `integrity`，动态结论看 `analysis.verdict`。
+> 能力分层、支持/可用/执行/通过的区别，以及证据判读统一见[能力分层文档](capability-tiers.md#2-共同约束与选路)。`integrity` 报告采集完整性，业务结论仍需具体断言。
 
 工具声明与执行由 Host 配置驱动：默认只暴露当前环境的专用 schema（Web 默认 37 个）；未启用/非当前环境的工具不会出现在模型请求中，旧调用与 GUI 旁路在执行时仍会被拒绝（`ADAPTER_DISABLED`，未注册的工具报 `unknown tool`）。`browser_state` 与 `browser_capabilities` 是**环境中立诊断**：任何环境（含被禁用）都保留，用于回答"支持什么/为什么被拒"，它们不启动目标；被禁用环境的六轴报告为 `support=supported` + `enabled=false`，不再退化成"未注册"或 `INTERNAL`。成功/失败 envelope 额外携带 `configRevision`、`environment`、`adapterId`，用于核对本次执行使用的配置版本；`browser_capabilities.adapter` 报告 adapter 契约版本、能力矩阵、P0 family 状态、六轴就绪，以及 `declaration`：`registeredTools`（当前注册面＝模型请求能看到的插件 schema）、`admittedTools`（逐 Agent 准入集合）、`isolated`（两者是否一致）。
 
@@ -92,40 +92,17 @@
 | `browser_http_request` | `url` `method` `headers` `body` `timeoutMs` `maxBytes` … | 独立 HTTP(S) 客户端，不启动浏览器、不占页面租约；`ok:true` **不等于 2xx** |
 | `browser_viewport` | `action:"get"\|"set"` `mode` `x` `y` `canvasX` `canvasY` `width` `height` `scale` `expectedRevision` | `get` 是只读缓存诊断；`set` 是页面操作，走队列与租约 |
 | `browser_state` | — | URL、标题、视口、错误、标注等诊断信息；不保证新鲜 |
-| `browser_capabilities` | — | 真实运行态三态、各段 limits 与 observed；不启动浏览器；`dynamic.assertions` 给机器可读七类断言规格，`dynamic.sampling` 说明 requested/measured，顶层 `limitations` 声明低采样不得证明无异常 |
+| `browser_capabilities` | — | 能力声明、状态投影、limits 与最近 observed；不启动浏览器；报告结构及其能证明的范围见[能力发现](capability-tiers.md#web-chrome-discovery) |
 
 详见[视口、画布与标注](viewport-control.md)、[截图与图片交付](capture-p0.md)。
 
 ## 结构化 GUI（T2）
 
-`browser_snapshot` 把无障碍树投影成 `refs`，后续动作优先用 `ref`，也可用唯一 `selector`。
-
-| 工具 | 关键约束 |
-| --- | --- |
-| `browser_snapshot` | `scope`/`maxNodes`(≤2000)/`depth`(≤32)/`boxes`；返回 `snapshotId`、`digest`、`refs`、`truncated` |
-| `browser_click` | `ref`/`selector` 恰一；滚动进视口、两帧稳定、命中校验后派发 CDP 真实鼠标事件 |
-| `browser_type` | 仅原生文本输入与 textarea；`replace` 默认替换，`submit` 默认不提交；不回显输入 |
-| `browser_scroll` | `direction` 与 `to` 恰一；目标须在视口内且稳定，否则零派发 |
-| `browser_fill_form` | 1–20 个字段；`combobox`/`slider` 走原生 setter（`eventSource:"dom-control"`） |
-| `browser_node_state` | 读取可见/启用/勾选/bbox 等；可编辑 `value` 恒脱敏 |
-| `browser_wait_for` | 文本/消失/节点状态三类条件互斥；超时抛 `WAIT_TIMEOUT`，页面不关闭 |
-
-详见[结构化 GUI](t2-structured-gui.md)。
+结构化发现、ref 协议、七个工具的参数、动作门禁、证据和错误统一见[Chrome T2 实现](capability-tiers.md#web-chrome-t2)。
 
 ## 静态视觉（T3）
 
-源图只接受 `live`（当前截图）、`product`（本 scope 的视觉产物）或 `baseline`（受管基线），**不接受任意文件路径或调用方 base64**。
-
-| 工具 | 用途 |
-| --- | --- |
-| `browser_vision_image` | 裁剪、缩放、预处理、统计、识别、标注并交付 PNG |
-| `browser_vision_find` | 颜色/连通域/边缘/模板确定性定位；无匹配是成功空列表 |
-| `browser_vision_compare` | 两图 YIQ 差异，输出标注差异图；两图必须同尺寸；几何映射不兼容时返回 `BLOCKED`/`mapping-incompatible`（显式 `bitmapOnly:true` 才降级为纯位图比较） |
-| `browser_vision_act` | 按截图坐标派发真实输入；六步校验不过则零派发 |
-| `browser_vision_baseline` | 受管基线：不可变 revision、HEAD CAS、墓碑删除 |
-| `browser_vision_check` | 回归与六类缺陷用例；整批先校验再执行 |
-
-详见[静态视觉](t3-vision.md)。
+Source、图像处理、定位、比较、动作、基线与断言的完整说明见[Chrome T3 实现](capability-tiers.md#web-chrome-t3)，包括[工具表](capability-tiers.md#web-chrome-t3-tools)与[源图协议](capability-tiers.md#web-chrome-t3-source)。
 
 ## 动态行为（T4）
 
@@ -133,11 +110,11 @@
 | --- | --- |
 | `browser_dynamic_session` | `start`/`stop`/`status`/`reset`/`extend`；帧源 `screencast` 或 `screenshot-loop`；`session.sampling` 给出机制/节奏/requested/measured/计数器/limitations |
 | `browser_motion_observe` | 只读帧与事件查询；`includeImages` ≤3；`region`（image-px，仅与 `includeImages` 同用，注册 schema 可发现）只交付指定矩形；顶层与 `evidence.dynamic.sampling` 附实测采样块 |
-| `browser_motion_analyze` | 七类断言：帧差/区域变化/闪烁/冻结/卡顿/轨迹/过渡；时间断言的 `metrics.sampling` 给出实测间隔，低采样只加 limitation 不改 verdict（flicker 阴性除外：低采样或无时间基准 → `INCONCLUSIVE(insufficient-temporal-resolution)`） |
+| `browser_motion_analyze` | `motionSessionId` + 1–20 条断言；`window`/`frameIds` 恰一；返回 results/summary/verdict/exitCode 与 integrity |
 | `browser_motion_control` | WAAPI `pause`/`resume`/`seek`/`rate`/`restore`，逐目标回读 |
 | `browser_dynamic_correlate` | 六向「帧 ↔ 网络」关联，区分因果与时间邻近 |
 
-`browser_capabilities.dynamic.assertions` 直接投影纯核心的 `MOTION_ASSERTION_SCHEMA`（七类 allowed/required/枚举/默认阈值），`dynamic.sampling` 与顶层 `limitations` 共同声明：**实际 fps 以 measured 为准，低采样不得证明「无异常/未发生」**（详见[动态行为](t4-dynamic-behavior.md)）。
+完整会话、采样字段、帧查询、分析、控制与关联说明见[Chrome T4 实现](capability-tiers.md#web-chrome-t4)。
 
 ## 网络（P0-B）
 

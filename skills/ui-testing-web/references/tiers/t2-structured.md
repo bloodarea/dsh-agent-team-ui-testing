@@ -1,6 +1,6 @@
 # T2 · 结构化 GUI
 
-**实现状态：已实现（7 个工具）。** 权威契约是 `docs/t2-structured-gui.md`；能力 id 为 `web.t2.snapshot/click/type/scroll/fill_form/node_state/wait_for`，聚合项 `web.t2.structured-dom`。运行态以 `browser_capabilities` 与真实调用结果为准，本文与 manifest 都不是可用性证明。
+**实现状态：已实现（7 个工具）。** 权威契约是 [能力分层与接口 · Chrome T2](../../../../docs/capability-tiers.md#web-chrome-t2)；能力 id 为 `web.t2.snapshot/click/type/scroll/fill_form/node_state/wait_for`，聚合项 `web.t2.structured-dom`。运行态以 `browser_capabilities` 与真实调用结果为准，本文与 manifest 都不是可用性证明。
 
 ## 能力（已实现）
 
@@ -26,15 +26,15 @@
 - **零依赖**：只用现有 CDP 与 Node 内建库，不引入 Playwright/Puppeteer；不改面板视觉。
 `declared-capabilities.json` tier 为 `T1+T2+T3+T4`，`unsupported_tiers` 为空。
 
-## 压缩与滚动行为（契约 §3.1/§4.3）
+## 压缩与滚动行为
 
-**快照压缩（§3.1 第 1 条）**：内容命名 owner（heading/button/link，且 name 确实来自其 contents）的纯文本重复链只保留一份；`aria-label`/`aria-labelledby`/外部 `label` 命名的 owner 不吞子文本；`StaticText → InlineTextBox` 单链只留一份，多片 InlineTextBox 不逐片全局去重；换行/空格不做有损 normalize。压缩在 emit / `nodeCount` / 字节预算**之前**完成，被合并的表示不计入 truncation。同名 sibling、不同 role 父子、`listitem`/`tablecell`/`iframe`/`image`/`canvas`、任何 frame/shadow 边界一律保留。
+**快照压缩**：内容命名 owner（heading/button/link，且 name 确实来自其 contents）的纯文本重复链只保留一份；`aria-label`/`aria-labelledby`/外部 `label` 命名的 owner 不吞子文本；`StaticText → InlineTextBox` 单链只留一份，多片 InlineTextBox 不逐片全局去重；换行/空格不做有损 normalize。压缩在 emit / `nodeCount` / 字节预算**之前**完成，被合并的表示不计入 truncation。同名 sibling、不同 role 父子、`listitem`/`tablecell`/`iframe`/`image`/`canvas`、任何 frame/shadow 边界一律保留。
 
 内联片段分隔符投影为单行 `- text " "`；不可交互的非语义 `generic` 包装不分配 ref（含 `contenteditable` generic → 用显式 selector 查状态；`role=textbox` 的自定义控件不受影响）。
 
 **实测（同 `/web-t2.html`、默认参数）**：`nodeCount` 421→275（−34.7%）、tree UTF-8 14432→9254（−35.9%）、`- text` 行 232→91；两次连续捕获 `tree/digest` 一致。`nodeCount`/`digest` 是构建相关读数，跨构建变化不算回归。
 
-**滚动硬门禁（§4.3）**：`direction` 与 `to` 都**不自动滚入视口**；派发前校验 visible / 两帧稳定（bbox 四项差 ≤1 CSS px）/ 视口交集 / 中心命中 / 轴有滚动范围，不满足零派发 `NOT_INTERACTABLE`（`outside-viewport`|`unstable`）+ 固定无 selector 的 `details.hint`；失败前后页面与元素 scroll 读数进 evidence。恢复：先无目标滚文档 → `browser_node_state` 确认 `inViewport` → 带目标重试；持续运动属 T4，不换点、不 force。
+**滚动硬门禁**：`direction` 与 `to` 都**不自动滚入视口**；派发前校验 visible / 两帧稳定（bbox 四项差 ≤1 CSS px）/ 视口交集 / 中心命中 / 轴有滚动范围，不满足零派发 `NOT_INTERACTABLE`（`outside-viewport`|`unstable`）+ 固定无 selector 的 `details.hint`；失败前后页面与元素 scroll 读数进 evidence。恢复：先无目标滚文档 → `browser_node_state` 确认 `inViewport` → 带目标重试；持续运动属 T4，不换点、不 force。
 
 ## 仍然存在的限制
 
@@ -56,6 +56,6 @@
 覆盖注册面、冷启动能力、工作区隔离、快照、ref 生命周期（含 LRU 与跨快照保留）、唯一 selector、可信动作、表单、滚动、等待、错误码、证据、租约、取消。
 2. 能力状态声明见 `manifests/declared-capabilities.json`。
 
-4. ✅ `browser_capabilities` 按 §5.3 报 `limits.structuredGui`（C2 required 检查通过）。
+4. ✅ `browser_capabilities` 按 [Chrome T2 契约](../../../../docs/capability-tiers.md#web-chrome-t2) 报 `limits.structuredGui`（C2 required 检查通过）。
 
 因此 7 个 T2 工具与聚合项记 `verified`；真实宿主会话已补齐，**仅剩 provider 图像可见性（T1 遗留）与仅 advisory 覆盖的 closed-shadow「不产生 ref」细分未验证**。不要把 verified 外推到跨帧、视觉（T3/T4）或 provider 图像可见性。

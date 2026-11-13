@@ -1,6 +1,6 @@
 # T3 · 静态视觉
 
-> 权威契约：[`docs/t3-vision.md`](../../../../docs/t3-vision.md)。本文件是已实现能力的操作摘要，字段、边界与验收口径以契约为准。
+> 权威契约：[能力分层与接口 · Chrome T3](../../../../docs/capability-tiers.md#web-chrome-t3)。本文件是已实现能力的操作摘要，字段、边界与验收口径以契约为准。
 
 ## 已实现的六个工具（当前工具面 37 = 10 T1 + 1 P0-E + 1 P0-D + 7 T2 + 6 T3 + 7 network + 5 T4）
 
@@ -25,7 +25,7 @@
 
 `image-px`（PNG 实际像素，T3 region/mask/annotation/find/act 默认）→ `document-css-px`（live source.region、外部 facts、基线 mapping）→ `viewport-css-px`（CDP Input，document 减现场 scroll）。`act.point` 是连续图像坐标：像素中心请传 `i+0.5`，不自动取整、不加 0.5。
 
-## 新增错误（§3.3，分类固定）
+## 新增错误（分类固定）
 
 `VISION_SOURCE_NOT_FOUND` / `VISION_FORMAT_UNSUPPORTED` / `VISION_SIZE_MISMATCH` / `VISION_EMPTY_COMPARISON` / `VISION_BASELINE_NOT_FOUND`（vision）；`VISION_LIMIT_EXCEEDED`（resource）；`VISION_TIMEOUT`（timeout/retryable）；`VISION_STALE_IMAGE` / `VISION_HIT_MISMATCH`（action）；`VISION_BASELINE_ROOT_UNAVAILABLE` / `VISION_BASELINE_EXISTS` / `VISION_BASELINE_READ_FAILED` / `VISION_BASELINE_WRITE_FAILED`（output）；`VISION_BASELINE_NAME_INVALID`（input）；`VISION_BASELINE_CONFLICT`（concurrency）。原有 `ABORTED/CDP_TIMEOUT/CDP_DISCONNECTED/BUSY/scope/INVALID_ARGUMENT/INVALID_PNG/CAPTURE_*/OUTPUT_*` 分类不变。
 

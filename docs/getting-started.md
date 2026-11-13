@@ -58,13 +58,7 @@ browser_snapshot                # 拿 ref，再 click / type / fill_form
 browser_screenshot {out}        # 留一张可复核的 PNG
 ```
 
-典型的完整流程：
-
-1. **确认环境**：`browser_capabilities` 与 `browser_state`，不要用文档或 manifest 代替运行态。
-2. **操作**：T2 结构化工具（`browser_snapshot` → `browser_click`/`browser_type`/`browser_fill_form`）。
-3. **取证**：`browser_screenshot` 或 T3（`browser_vision_image`/`compare`/`check`）。
-4. **看网络**：`browser_network_session start` → 触发真实流量 → `browser_network_events`/`detail`。
-5. **看动态**：需要动画、过渡、拖拽、时序时升级到 T4（`browser_dynamic_session` → `browser_motion_observe` → `browser_motion_analyze`）。
+先用 `browser_capabilities` 与 `browser_state` 核对目标和当前限制，再取得快照、操作并独立读取反馈。其他问题按[能力分层的选路表](capability-tiers.md#22-选路与回退)选择方法；表单、静态图像和动态会话的完整说明见该文档的[Chrome 实现](capability-tiers.md#web-chrome)，深度请求调查见[网络指南](network-p0.md)。
 
 ## 调试面板
 

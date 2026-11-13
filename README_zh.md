@@ -54,15 +54,7 @@
 
 ### Agent 工具
 
-| 分组 | 工具 | 能力 |
-| --- | --- | --- |
-| **程序化**（10） | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_viewport` `browser_state` `browser_capabilities` | 导航、JavaScript、控制台/网络检查、独立 HTTP 请求、计算样式、截图、原始鼠标/滚轮/键盘输入、共享视口状态与能力发现 |
-| **标注**（1） | `browser_annotation` | 读写人类在调试面板里看到的那份标注文档：六种形状、颜色/粗细/填充-外框样式、`draw` 只追加、`revision` CAS，且要求目标标签页是人类此刻可见的前台标签 |
-| **页面组**（1） | `browser_tabs` | 按 (workspace, provider, 团队根) 分组的 primary + 最多 3 个 child、每标签独立短租约、每会话 work/observation 双选择、长期归属与队长控制权（acquire/release/transfer）与标签生命周期（list/current/select/open/close/wait/acquire/release/transfer） |
-| **结构化 GUI**（7） | `browser_snapshot` `browser_click` `browser_type` `browser_scroll` `browser_fill_form` `browser_node_state` `browser_wait_for` | 快照 → ref 定位、可信输入、表单、节点状态与等待，返回结构化证据和类型化错误 |
-| **静态视觉**（6） | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` | PNG 裁剪/缩放/预处理/标注，颜色/组件/边缘/模板确定性识别，YIQ 差异，坐标输入，受管基线与视觉断言 |
-| **动态行为**（5） | `browser_dynamic_session` `browser_motion_observe` `browser_motion_analyze` `browser_motion_control` `browser_dynamic_correlate` | 带完整性计数的有界帧采集、只交付指定区域的帧、七类运动/过渡分析、WAAPI 暂停/跳转/变速/恢复，以及六向「帧↔网络」关联 |
-| **网络**（7） | `browser_network_session` `browser_network_events` `browser_network_detail` `browser_network_trace` `browser_network_control` `browser_network_evidence` `browser_network_subscribe` | 采集、时间线、分析、业务步骤链路、拦截/限速/重放/Mock、JSONL/HAR 证据与多 Agent 订阅 |
+37 个工具的分组、参数与错误见[工具参考](docs/tools.md)；T1–T4 的定义、选路、证据要求与 Chrome 接入统一见[能力分层](docs/capability-tiers.md)。
 
 ### 调试面板
 
@@ -166,18 +158,9 @@ flowchart TB
 
 `targets/web` 不表示把 Chrome/Playwright 的源码复制进仓库，`engines/android` 也不意味着 Android 必须安装 APK：ADB / UI Automator 可先作为现成执行路径。**`core/` 与 `targets/` 已作为实际目录落地**：`core/` 承载契约、配置、身份/几何/时钟、证据与六轴就绪，`targets/web` 是真实 Web 适配器，`targets/fake` 是 test-only 契约夹具；`engines/` 仍是未来自研执行端的预留边界。Web 的 CDP 接入与 37 个工具实现仍集中在 `index.js`（组合根/Web 实现），但工具准入、配置与执行均已通过 adapter 边界。
 
-### 能力架构：T1 / T2 / T3 / T4 按需选路
+### 能力架构
 
-能力分级描述的是**调试方法及其证据类型**，不是必须从 T1 顺序跑到 T4 的流水线。优先选择成本低、信息充分的方式；只有当前证据无法回答问题时才升级或组合。
-
-| 层级 | 要解决的问题 | 已实现的 Web 例子 | 典型 Agent 工具 |
-| --- | --- | --- | --- |
-| **T1 · 程序化** | 程序、接口、运行状态是否符合预期？ | CDP/HTTP/JavaScript、控制台、计算样式和页面状态 | `browser_eval`、`browser_http_request`、`browser_network` |
-| **T2 · 结构化 GUI** | 页面上「哪个元素」能否被正确操作？ | DOM/无障碍快照、`ref` 定位、表单与可信输入 | `browser_snapshot`、`browser_click`、`browser_fill_form` |
-| **T3 · 静态视觉** | 单张画面是否存在颜色、布局或像素差异？ | PNG 预处理、模板/颜色识别、受管基线与差异断言 | `browser_vision_find`、`browser_vision_compare`、`browser_vision_check` |
-| **T4 · 动态视觉** | 动画、过渡、拖拽等随时间变化的行为是否正确？ | CDP screencast / screenshot-loop、帧时序、确定性运动分析、帧↔网络关联 | `browser_dynamic_session`、`browser_motion_analyze`、`browser_dynamic_correlate` |
-
-**T1 成功不代表 UI 通过；点击命令已派发也不代表登录成功。** 应根据验收问题检查相应的界面、状态或网络证据。T3/T4 的底层分析目前为确定性算法，没有内置 VLM/OCR；Agent 可对返回证据做进一步语义判断。各目标环境只需如实声明可实现的能力，不能为了凑齐四级而伪造 UI 树或网络数据。
+T1–T4 按问题所需的观察和操作分类，通过 CapabilityAdapter 声明和执行。四层的抽象接口职责、选路规则、证据判读与 Web / Chrome 实现集中在[能力分层文档](docs/capability-tiers.md)，具体对象接口见[适配器文档](docs/adapters.md)。
 
 ### 基础设施架构：P0 是跨能力的公共底座
 
@@ -263,13 +246,12 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 
 安装要求、接入步骤与面板用法见 [docs/getting-started.md](docs/getting-started.md)。
 
-典型的 Agent 流程是：导航到目标页面，用 `browser_state`/`browser_eval` 检查状态，用 T2 工具执行结构化操作，截图或运行 T3 检查，用网络工具分析请求；当问题涉及运动、时序或一段帧序列时升级到动态工具（`browser_dynamic_session` → `browser_motion_observe` → `browser_motion_analyze`/`browser_dynamic_correlate`）；涉及布局、取景或视觉反馈时使用共享视口/画布/标注状态。
+首次调用见[快速开始](docs/getting-started.md#第一次调用)，按问题选路见[能力分层](docs/capability-tiers.md#22-选路与回退)。
 
 ## 当前限制
 
 - **仅 Web 目标环境。** Web / Chromium 是唯一实现的目标环境，可运行在 Linux、macOS 与 Windows 宿主上。桌面应用、Android、Mini Program（小程序）、TUI、HarmonyOS、游戏和 3D 是规划中的目标环境，运行时选择器保持禁用。
-- **视觉是确定性的，不是语义的。** T3 判断单张 PNG，T4 判断帧序列，两者都用确定性算法：没有 VLM/OCR、没有语义命名，所以「这段文字是什么意思」「人看着对不对」不在范围内。
-- **T4 验收是部分的。** 动态行为 44 条门槛中 12 条通过、20 条部分通过、0 条失败、12 条未运行——套件非零退出只表示有必需项未运行，不代表失败。close/dispose 恢复、WebGPU 渲染、媒体 seek/stall、header-verified 身份、16ms 闪白覆盖与长连接稳定性仍未验证。
+- **视觉与动态结论有范围限制。** 确定性算法、采样分辨率、控制与关联的边界，以及未验证场景统一见[能力分层文档](docs/capability-tiers.md#web-chrome)；结果按实际证据与未运行项判读。
 - **共享浏览器 profile。** Cookie 和存储由 Chromium profile 共享；只有页面、URL、视口、历史、网络缓冲和租约按工作区隔离。
 - **截图不脱敏。** 分享前请检查截图内容。
 - **附件不等于 provider 可见。** 返回图片附件不代表模型一定以原始分辨率收到了它。
@@ -279,7 +261,7 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 
 ## Roadmap
 
-- 加固 Web 通道，收口剩余的动态行为门槛（12 条未运行、20 条部分通过）。
+- 加固 Web 通道，补齐动态行为的真实场景验证。
 - 在保持现有 Web 工具兼容的前提下，逐步提取统一能力契约和 `core/targets/engines` 模块边界，建设跨环境测试核心（类型化会话、观察、断言与报告）。
 - 按需求和平台可行性验证桌面（Windows/Linux/macOS）、Android、Mini Program（小程序）、TUI、HarmonyOS、游戏和 3D 适配器。
 - 增加多 Agent 调度、人类接管与发布加固。
@@ -292,15 +274,12 @@ dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 | [docs/tutorial.md](docs/tutorial.md) | **新手图文教程**：打开面板、加载页面、观察与操作、选元素、标注与取证 |
 | [docs/getting-started.md](docs/getting-started.md) | 安装要求、接入、调试面板与首次调用 |
 | [docs/tools.md](docs/tools.md) | 37 个工具、参数与错误分类 |
-| [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 选路模型、P0 基础设施与已知限制 |
+| [docs/capability-tiers.md](docs/capability-tiers.md) | T1–T4 通用接口及各目标环境、执行端的实现、协议与调用 |
 | [docs/viewport-control.md](docs/viewport-control.md) | 共享视口、混合画布与标注 |
 | [docs/capture-p0.md](docs/capture-p0.md) | 截图、图片交付与文件生命周期 |
 | [docs/multi-tab.md](docs/multi-tab.md) | 每工作区标签组、每标签租约与 Agent selectedTab |
 | [docs/element-picker.md](docs/element-picker.md) | 面板选元素与 `@` 元素引用 chip |
 | [docs/network-p0.md](docs/network-p0.md) | 网络采集、链路、控制与证据 |
-| [docs/t2-structured-gui.md](docs/t2-structured-gui.md) | snapshot/ref、可信输入与表单 |
-| [docs/t3-vision.md](docs/t3-vision.md) | 静态视觉算法、基线与结论规则 |
-| [docs/t4-dynamic-behavior.md](docs/t4-dynamic-behavior.md) | 帧采集、运动分析、控制与关联 |
 | [docs/architecture.md](docs/architecture.md) | 运行时、模块职责与扩展点 |
 | [docs/verification.md](docs/verification.md) | 可复现测试、结果判读与贡献方式 |
 
