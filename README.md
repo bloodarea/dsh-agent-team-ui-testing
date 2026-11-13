@@ -1,308 +1,146 @@
 # dsh-agent-team-ui-testing
 
-<img src="banner.png" alt="dsh-agent-team-ui-testing — multi-platform GUI automation testing for DeepSeekHarness" width="100%">
-
-**AI-native frontend GUI testing for DeepSeekHarness.**
-
-Let AI agents operate, inspect, test and verify real user interfaces — with evidence humans can review.
-
 **English** | [简体中文](README_zh.md)
+
+**AI-native infrastructure for UI debugging and automated testing across ten target environments.**
+
+Give a single Agent or an Agent Team in [DeepSeekHarness (DSH)](https://github.com/deepseek-ai/deepseek-harness) a common way to connect to targets, invoke capabilities, collaborate with humans and collect evidence. Agents operate real interfaces, observe results and produce findings humans can review.
+
+**Learn more: [Complete documentation and help (docs/index.md)](docs/index.md)**
+
+[Getting started (getting-started.md)](docs/getting-started.md) · [Beginner walkthrough (tutorial.md)](docs/tutorial.md) · [Developer follow-up (tutorial-advanced.md)](docs/tutorial-advanced.md) · [Architecture (architecture.md)](docs/architecture.md)
+
+<img src="banner.png" alt="dsh-agent-team-ui-testing — UI debugging and automated testing across ten target environments" width="100%">
 
 <p>
   <a href="https://www.npmjs.com/package/dsh-agent-team-ui-testing"><img src="https://img.shields.io/npm/v/dsh-agent-team-ui-testing?style=flat-square&amp;logo=npm&amp;logoColor=white" alt="npm version"></a>
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/stargazers"><img src="https://img.shields.io/github/stars/bloodarea/dsh-agent-team-ui-testing?style=flat-square&amp;logo=github" alt="GitHub stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/bloodarea/dsh-agent-team-ui-testing?style=flat-square" alt="License: MIT"></a>
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Node.js >= 22"></a>
-  <a href="docs/getting-started.md"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Platforms"></a>
-  <a href="docs/tools.md"><img src="https://img.shields.io/badge/tools-37-brightgreen?style=flat-square" alt="Agent tools"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Plugin requires Node.js >= 22"></a>
+  <a href="docs/browser-runtime.md"><img src="https://img.shields.io/badge/Web%20host-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Host systems for the Web adapter"></a>
+  <a href="docs/tools.md"><img src="https://img.shields.io/badge/Web%20tools-37-brightgreen?style=flat-square" alt="37 tools in the current Web adapter"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-plugin-4B32C3?style=flat-square" alt="DSH plugin"></a>
-  <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="Status"></a>
+  <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="Pre-release"></a>
 </p>
 
-> **Status: pre-release.** The Web/Chromium channel is implemented across all four tiers: 37 agent tools plus a debug panel for programmatic inspection, structured GUI actions, static visual analysis, dynamic frame/timing analysis, network capture, multi-tab page groups, shared viewport control, a hybrid canvas, an element picker and client-side annotations. Other environments are planned and stay disabled in the runtime picker. **Install:** `dsh plugin --profile web add dsh-agent-team-ui-testing`. Capabilities, limits and verification are documented in [docs/capability-tiers.md](docs/capability-tiers.md) and [docs/verification.md](docs/verification.md).
+> **Current progress: pre-release. The shared cross-environment foundation is implemented; Web / Chromium is the first real target integration.** Real adapters for the remaining nine target environments are pending. Available features and verification boundaries are documented in [capability tiers (capability-tiers.md)](docs/capability-tiers.md) and [verification (verification.md)](docs/verification.md).
 
-## What is this?
+## Vision and target environments
 
-**dsh-agent-team-ui-testing** is a UI testing infrastructure plugin for [DeepSeekHarness (DSH)](https://github.com/deepseek-ai/deepseek-harness). It lets an AI agent — or a coordinated Agent Team — drive a real application, inspect what the application exposes, verify expected behavior, collect reviewable evidence and report actionable failures.
+The project brings Web, desktop, mobile, terminal, mini program, game and 3D applications into a common debugging and testing system. The upper layer describes targets, operations, observations and evidence; each adapter supplies the real capabilities of its platform.
 
-The runtime is built around a shared Chromium instance with one isolated page per DSH workspace, a typed tool surface, and a human-facing debug panel. The same session can be inspected programmatically, operated through structured DOM/accessibility data, captured as screenshots, or analyzed visually.
-
-The project grows out of the earlier `dsh-agent-team-browser` idea. The shared browser workspace remains the first adapter of a broader, capability-aware UI testing runtime.
-
-## Why build it?
-
-Coding agents can produce UI code without being able to answer: **“Does the finished application actually work and look right?”** A 200 response, a running process or a single screenshot is not proof of a working user journey.
-
-This project focuses on:
-
-- **Real UI feedback** — exercise user journeys on rendered interfaces, not only source code.
-- **Structured-first automation** — prefer APIs, DOM and accessibility data; use vision when structure is insufficient.
-- **Evidence-based results** — record what ran, what was observed, what passed, what failed and what remains unverified.
-- **Human control** — authorized access, scoped sessions and a panel humans can watch or take over.
-- **Low disruption** — prefer background browser operations over hijacking the desktop foreground.
-
-## What works today
-
-- **Shared browser runtime** — one browser per host and per runtime provider (the system Chrome/Chromium or Edge binary; the plugin does not bundle or install a browser), headless by default with an optional headed mode in the Web view (off-screen hidden window + persistent profile); each DSH workspace gets its own page, URL, viewport, history, network buffer and lease. Cookies and storage are shared by the profile of the active provider.
-- **Runtime providers** — the web target environment defaults to `chrome` and also has a wired `edge` provider: its own executable candidates, its own `DSH_UI_TESTING_EDGE` override, its own profile directory and a post-connect product-identity check, reusing the same CDP stack. **A real Edge launch is not verified**: while Edge stays disabled its dependency axis is `not-probed` (disabled providers are never probed); once enabled on a machine without an Edge binary it reports `failed / executable-missing` on the Edge card, and enabling it opens no page. In the settings page the group header is the target-environment switch and each card is a runtime-provider switch; turning the total switch off greys the per-provider switches out while keeping their saved values.
-- **37 agent tools** across programmatic, structured GUI, static vision, dynamic behavior, network debugging, per-workspace tab management and annotations.
-- **Multi-tab page group (P0-E)** — page groups are keyed by (workspace, provider, team root): one team root shares a primary page plus up to three child tabs, while a different independent session or root gets its own group it can neither see nor write. Child tabs (max three) are counted per (workspace, provider) across roots; global live pages stay 8. Per-agent work/observation selections, long-lived ownership and Lead acquire/release/transfer control come on top of the short per-tab lease.
-- **Dynamic behavior (T4)** — real CDP screencast plus a screenshot-loop path, a bounded frame store with integrity counters, seven deterministic motion analyses, WAAPI motion control with restore, region-only frame delivery, and six-direction frame↔network event correlation.
-- **Debug panel** — live preview, responsive size controls, shared viewport state, a hybrid canvas, and a client-side annotation layer that agents can read back.
-- **Element picker** — select an element in the panel preview to append its node description to the chat as an `@` reference chip; the model receives the full text block and the page is not modified.
-- **Evidence and safety** — typed errors, structured action evidence, validated PNG capture, managed visual baselines, network evidence and optimistic concurrency for shared state.
-
-### Agent tools
-
-See the [tool reference](docs/tools.md) for the 37 tools, parameters and errors. Tier definitions, selection, evidence requirements and Chrome integration are maintained in [capability tiers](docs/capability-tiers.md).
-
-### Debug panel
-
-The panel is the human window into the same runtime the agent uses.
-
-- **Live preview** of the workspace page, driven by a screencast with a polling fallback.
-- **Size bar** — 宽屏 / 横屏 / 平板 / 手机 presets as a segmented control, X/Y canvas position, width × height, display scale, and a `拖拽 | 适应窗口 | 默认` mode selector. Preset clicks reset X/Y and keep the chosen display mode; the selected preset shows a green dot and is mutually exclusive with drag mode.
-- **Hybrid canvas** — the viewport can be positioned like a canvas: a signed origin, negative coordinates and blank areas, a dark checkerboard in the panel (pure white in screenshots), drag-to-pan and screen-anchored wheel zoom.
-- **Annotation mode** — six shapes (circle/ellipse, rectangle, line, arrow, brush and text), plus eraser, select/marquee tools (click, live marquee with Shift to add / Alt to subtract, drag with Shift axis lock, arrow-key nudging and Delete to remove, with a blue halo and marching-ants box; see [selection controls](docs/viewport-control.md#标注)) and fill/outline, colour, width and clear-canvas controls. Drawings are anchored in canvas coordinates and the page receives no input while annotating. When a user refers to annotations, drawings, circles, boxes, arrows or handwriting, agents read `browser_state.annotations` and call `browser_screenshot {includeAnnotations:true}` to see the overlay. The screenshot renders the Host-accepted, submitted document with the same shape semantics and region/scale mapping as the panel; drafts, toolbars and selection controls are excluded. `includeAnnotations` is a boolean, default `false`; default screenshots and T3/T4 source images omit panel annotations. See [capture and annotation boundaries](docs/capture-p0.md).
-- **Shared state** — agent and panel read the same viewport; updates use `expectedRevision`, and conflicts are reported instead of silently overwriting.
-
-### Evidence and safety
-
-- Every structured action can return evidence: target identity, before/after state, dispatch facts, network deltas and typed errors.
-- Screenshots are validated PNGs with explicit scale and canvas-space regions; capture can be staged or persisted under a controlled root.
-- Visual baselines are immutable revisions with compare-and-swap HEAD updates and tombstones.
-- Network evidence supports JSONL (lossless) and HAR 1.2 export with default redaction and explicit truncation counters.
-- Frame evidence keeps the original `sourceTimestamp`, separate encoded and RGBA hashes, and dropped/evicted/gap counters; motion analyses are deterministic and report budget exhaustion or timeout as `BLOCKED` instead of pretending to pass.
-- Runtime access is scoped to a DSH workspace; mutating page work is serialized through a lease and a serial queue.
-- Navigation is restricted to approved targets (loopback by default; private ranges blocked unless explicitly enabled), with DNS, redirect and popup checks.
-
-## Architecture design philosophy
-
-> **In one sentence:** the AI agent decides *what to test and how to judge it*; the plugin *connects, controls, observes, and preserves evidence*; and the target runtime *actually runs the application*. **Web / Chromium is the implemented target today.** The three adapter contracts (`TargetAdapter` / `CapabilityAdapter` / `P0Provider`), the `core/` + `targets/` split, host-authoritative config, per-step tool admission and environment-aware Skill discovery are implemented for Web; the `engines/` boundary and other platform adapters remain planned.
-
-### Three perspectives on the same test
-
-```mermaid
-mindmap
-  root((UI automation testing))
-    Execution architecture
-      Five-node control chain
-      Commands and observations
-      Shared human debug view
-    Capability architecture
-      T1 Programmatic
-      T2 Structured GUI
-      T3 Static vision
-      T4 Dynamic vision
-    Infrastructure architecture
-      P0-A Image capture
-      P0-B Network evidence
-      P0-C Viewport control
-      P0-D Canvas and annotations
-      P0-E Page groups and targets
-```
-
-| Perspective | Question it answers | Implemented Web example |
+| Target environment | Intended scope | Current real adapter |
 | --- | --- | --- |
-| **Execution architecture** | Who requests an action, who executes it, and how does the result return? | DSH Agent → plugin → CDP → Chromium → page, with results flowing back |
-| **Capability architecture** | Which method provides sufficient evidence for the question? | T1 programmatic, T2 structured GUI, T3 single-frame vision, T4 temporal/frame vision |
-| **Infrastructure architecture** | How are capture, network data, viewports, evidence, and shared state managed reliably? | P0-A–P0-E plus workspace sessions, leases, safety, and evidence mechanisms |
+| Web | Browser pages and Web applications | Chrome / Chromium integrated, with 37 `browser_*` tools |
+| Linux | Native desktop, Electron, Tauri and similar applications | Pending |
+| Windows | Native desktop, .NET, WinUI, Electron, Tauri and similar applications | Pending |
+| macOS | Native desktop, Electron, Tauri and similar applications | Pending |
+| Android | Native applications, WebView, Flutter, React Native and similar containers | Pending |
+| TUI | Interactive terminal applications | Pending |
+| HarmonyOS | HarmonyOS applications and containers | Pending |
+| Mini programs | Platform-specific mini program containers | Pending |
+| Games | Unity, Unreal, Godot, Cocos and similar runtimes | Pending |
+| 3D | Three-dimensional applications and editing tools | Pending |
 
-These are **three views of one system**, not three separate applications or sequential network layers. A single `browser_click` travels through the execution chain, exercises a T2 capability, and relies on shared infrastructure to retain reviewable information.
+Linux, Windows and macOS here are native desktop testing targets. The current Web adapter already runs on all three host systems. Web also has a wired Edge driver, but a real Edge launch remains unverified; Firefox is not supported. See [browser runtime configuration (browser-runtime.md)](docs/browser-runtime.md).
 
-### The five-node debug chain: from agent to running application
+## Implemented cross-environment foundation
+
+The project has evolved from the earlier `dsh-agent-team-browser` into a plugin organized around target environments, capabilities and shared infrastructure. Common contracts, configuration, dispatch and data models have been separated from the Web implementation:
+
+| Implemented part | Responsibility and boundary |
+| --- | --- |
+| Three adapter contracts | `TargetAdapter` owns target sessions and lifecycle, `CapabilityAdapter` declares and executes capabilities, and `P0Provider` supplies shared data services |
+| Environment-neutral core | `core/` contains identity, geometry, clocks, evidence, errors, adapter registration and configuration models, without browser implementation dependencies |
+| Host configuration and dispatch | `integration/` resolves global, workspace and session configuration, selects adapters through the registry and checks configuration revisions and execution admission |
+| Config-driven tools and Skills | Registration determines tool declaration scope; execution checks the current session's environment and capabilities; environment-specific Skills are discovered by environment |
+| P0-A–E common models | Images and frames, networking, display spaces, canvas and annotations, targets and leases have shared models; acquisition and control remain environment-specific |
+| Six-axis readiness | Engineering support, user enablement, dependencies, connection, target binding and capability readiness are reported separately |
+| Independent algorithms and contract fixtures | Image, network and dynamic analysis retain independently testable logic modules; `targets/fake` verifies common contracts and is not a real platform adapter |
+
+Web CDP integration, page queues and tool handling still have implementations in the Host entry point. `engines/` remains a reserved boundary for optional self-developed executors. Every new target still needs platform adaptation, execution wiring and real acceptance testing.
+
+### How the foundation connects to targets
 
 ```mermaid
 flowchart TB
-    A["① AI Agent<br/>DeepSeek / Agent Team"]
-    C["② Debug Controller<br/>Unified plugin-side control"]
-    P["③ Communication Interface<br/>CDP / ADB / RPC / IPC"]
-    B["④ Debug Backend<br/>Built-in, third-party, or self-developed"]
-    R["⑤ Target Runtime<br/>Actual browser / application / device"]
-    A <-->|"Tasks, observations, verdicts"| C
-    C <-->|"Commands, events, evidence"| P
-    P <-->|"Protocol messages"| B
-    B <-->|"Operations and state"| R
+    A["DSH Agent / Agent Team"] --> I["integration · Configuration, registration and admission"]
+    I --> C["core · Common contracts, models and evidence"]
+    I --> W["Web adapter · Integrated"]
+    I -.-> N["Other nine target environments · Pending"]
+    W --> R["Chrome / Chromium"]
+    F["fake · Contract tests only"] -.-> I
 ```
 
-1. **AI Agent** interprets the goal, selects T1–T4 methods, and evaluates whether evidence satisfies acceptance criteria. It may be DeepSeek in DSH or a coordinated Agent Team.
-2. **Debug Controller** is the plugin's unified entry point for tools, authorization, workspace and target selection, sessions, concurrency, state, and evidence.
-3. **Communication Interface** transports commands and events using CDP, ADB, RPC, IPC, or other platform-specific mechanisms. **The upper-level capability contract is standardized; the wire protocol need not be.**
-4. **Debug Backend** executes commands and observes the runtime. It may be Chromium's built-in DevTools backend, an existing OS automation facility, or a future self-developed companion program.
-5. **Target Runtime** actually hosts the application under test: Chromium, Android, desktop OS, game runtime, etc. It normally exists outside the plugin.
+The agent interprets the goal, chooses methods and judges results. The plugin connects, executes, observes and preserves evidence. The target runtime runs the application. Environments can use different protocols while sharing capability and evidence semantics. See the [execution chain (architecture.md)](docs/architecture.md#调试执行链路) for communication, backend and runtime responsibilities, and [adapter interfaces (adapters.md)](docs/adapters.md) for the full object contracts.
 
-These are **logical responsibilities, not five mandatory processes**. Commands flow down; observations, frames, logs, and errors flow up. The human **debug panel is a side-channel view and control surface** for the same managed session, rather than a second independent copy of the tested page.
+### Common capability categories
 
-### Cross-environment reuse: `core`, `targets`, and `engines`
+| Capability tier | Question it answers |
+| --- | --- |
+| T1 · State and interface debugging | What is the current state, and where is an interface or runtime step failing? |
+| T2 · Structure and interaction debugging | Which object should be operated, is it interactable, and what changed afterward? |
+| T3 · Output and presentation debugging | Do layout, colour, shape or image differences match expectations? |
+| T4 · Process and behaviour debugging | How does state change over time, and do transitions, motion and workflows meet requirements? |
 
-The five-node chain describes runtime responsibilities. These three module boundaries describe code ownership and reuse; they do **not** correspond one-to-one with the five nodes.
+Choose and combine T1–T4 by question. They do not require every environment to expose DOM, JavaScript or browser tabs. P0 provides shared data across tiers; the three adapter contracts define integration responsibilities. Definitions, routing and current implementations are in [capability tiers (capability-tiers.md)](docs/capability-tiers.md).
 
-```mermaid
-flowchart TB
-    AI["DSH Agent / Agent Team"] --> CORE["core · Unified controller<br/>Sessions, tools, permissions, evidence"]
-    CORE --> CONTRACT["Target Capability Contract<br/>Requests / results / errors / discovery"]
-    CONTRACT --> WEB["targets/web · Web Adapter"]
-    CONTRACT --> AND["targets/android · Android Adapter (planned)"]
-    CONTRACT --> MINI["targets/mini-program · Mini Program Adapter (planned)"]
-    WEB --> CDP["CDP"] --> CHROME["Chromium built-in Debug Backend"] --> PAGE["Web Runtime"]
-    AND --> ADB["ADB / RPC"] --> AUTOMATE["UI Automator / optional custom APK"] --> PHONE["Android Runtime"]
-    MINI --> API["Platform automation API"] --> MP["Platform debug backend"] --> MINIAPP["Mini Program Runtime"]
-    ENGINES["engines · Self-developed executors, if needed"] -. "Builds / supplies optional APK" .-> AUTOMATE
-```
+## Web capabilities available today
 
-| Proposed module boundary | Responsibility | Relationship to the five nodes |
-| --- | --- | --- |
-| **`core/`** | Unified tools, session/lease control, capability selection, shared P0 processing, evidence, errors, permissions, debug-view state | Primarily node ② |
-| **`targets/`** | Environment adapters translate common capability requests into CDP/ADB/etc., normalize results, and honestly report supported/unsupported operations | Bridges node ② to nodes ③–⑤ |
-| **`engines/`** | **Self-developed** executors that need separate builds or deployment, such as a possible Android accessibility Companion APK | Optional implementation of node ④ |
+- **37 agent tools:** state inspection, structured interaction, static vision, dynamic behaviour, networking, tabs and annotations. Parameters are in the [tool reference (tools.md)](docs/tools.md).
+- **A shared human/agent debug panel:** live preview, size controls, canvas pan and zoom, element references in chat and shared annotations. See the [debug panel (debug-panel.md)](docs/debug-panel.md).
+- **Team page collaboration:** page groups are scoped by workspace, provider and team root, with per-agent work/observation selections, ownership, and Lead acquire/release/transfer controls. See [multi-tab access (multi-tab.md)](docs/multi-tab.md).
+- **Capture and visual evidence:** validated PNGs, explicit regions and scale, annotation overlays, pixel comparison and managed baselines. See [capture (capture-p0.md)](docs/capture-p0.md) and [Chrome T3 (capability-tiers.md)](docs/capability-tiers.md#web-chrome-t3).
+- **Network and dynamic debugging:** requests, WebSocket, SSE, tracing and evidence export; bounded frame capture, seven motion analyses, WAAPI control and restore, and visual/network event correlation. See [network debugging (network-p0.md)](docs/network-p0.md) and [Chrome T4 (capability-tiers.md)](docs/capability-tiers.md#web-chrome-t4).
 
-`targets/web` does not mean vendoring Chrome or Playwright. Nor does `engines/android` imply an APK is required: ADB / UI Automator may be sufficient for initial Android automation. **`core/` and `targets/` are now real directories**: `core/` owns the contracts, config, identity/geometry/clock, evidence and six-axis readiness; `targets/web` is the real Web adapter and `targets/fake` is a test-only contract fixture. `engines/` remains the reserved boundary for self-developed executors. The CDP integration and the 37 tool implementations still live in `index.js` (composition root / Web implementation), but admission, config and execution all go through the adapter boundary.
-
-### Capability architecture
-
-T1–T4 classify observations and operations by the question being tested. Operations are declared and executed through CapabilityAdapter. Abstract interface responsibilities, selection, evidence rules and the Web / Chrome implementation are maintained in [capability tiers](docs/capability-tiers.md); object contracts are in [adapters](docs/adapters.md).
-
-### Infrastructure architecture: P0 is the shared foundation
-
-P0 supports multiple tiers. T3 and T4 both depend on image capture; T1 and T4 can consume network events. **P0-A–P0-E are the names of today's Web facilities; cross-platform reuse requires separating portable data models from browser-specific semantics.**
-
-| Infrastructure | Implemented Web form | Portable boundary / important caveat |
-| --- | --- | --- |
-| **P0-A · Image capture** | CDP screenshots, validated PNGs, canvas-space regions, dimensions, evidence storage | Common capture/Frame model and coordinate mapping; acquisition remains adapter-specific |
-| **P0-B · Network evidence** | CDP events, timelines/traces, JSONL/HAR, throttling and mocks | Common event/evidence model; other devices/processes may expose less traffic |
-| **P0-C · Viewport control** | Shared viewport dimensions and display scale, revisions/conflicts, input-coordinate constraints | Common display-space/coordinate mapping; physical screens cannot always be freely resized |
-| **P0-D · Hybrid canvas and annotations** | Preview canvas, pan/zoom, anchored annotations readable by agents | Shared human/agent observations; capture-to-input coordinate mapping must remain accurate |
-| **P0-E · Page group management** | Workspace primary + up to three child tabs, leases, `selectedTab` | Generalize target/window/session selection; other platforms may have no browser tabs |
-
-Workspace authorization, serialized mutations, evidence validation, typed errors, state revisions, and human reviewability are further cross-cutting concerns shared by the execution and capability layers.
-
-### Walk through an implemented Web testing path
-
-Example request: “Check that the login form can be operated, observe feedback after submission, and retain evidence.” This is an **illustrative call path**, not a claim that a real login test has passed.
-
-```mermaid
-sequenceDiagram
-    actor Human as Human
-    participant AI as DSH / DeepSeek
-    participant Core as Plugin tools and controller
-    participant CDP as CDP / Chromium Backend
-    participant Web as Web page
-    participant Panel as Debug panel
-    Human->>AI: Test login UI
-    AI->>Core: browser_navigate
-    Core->>CDP: Navigate
-    CDP->>Web: Load page
-    AI->>Core: browser_snapshot (T2)
-    Core->>CDP: Inspect DOM / accessibility
-    CDP-->>Core: Snapshot and element refs
-    Core-->>AI: Targetable elements
-    AI->>Core: browser_click / browser_fill_form (T2)
-    Core->>CDP: Dispatch input
-    CDP->>Web: Trigger interaction
-    Web-->>CDP: State, network, frame events
-    CDP-->>Core: Observations and capture
-    Core-->>AI: Structured action evidence
-    AI->>Core: browser_vision_check (T3, if needed)
-    Core-->>AI: Visual verdict and evidence
-    Core-->>Panel: Same-session frames and state
-    AI-->>Human: Findings, evidence, unknowns
-```
-
-Mapped to the three perspectives: **execution** carries `browser_*` calls to Chromium and observations back; **capabilities** select T2 here and optionally T1 network checks, T3 single-frame vision, or T4 temporal analysis; **infrastructure** preserves captures, network evidence, and shared state so the human can inspect the same session. In the real implementation, `browser_http_request` uses an independent HTTP path—not every T1 operation goes through CDP. Panel preview is delivered via screencast and WebSocket, with HTTP polling as a fallback.
-
-### What stays invariant for the next target?
-
-- **Stable upper-level semantics:** agents request operations, observations, captures, events, and evidence through a common vocabulary; Web-only features remain target-specific extensions.
-- **Adapters translate, never pretend:** Android may use ADB / UI Automator or an optional companion APK; Mini Program may use a platform's developer tools and automation interfaces. Unsupported capabilities must be reported explicitly.
-- **Reuse analysis, vary acquisition:** T3 pixel comparison, T4 frame analysis, and P0 evidence models are candidates for reuse; CDP capture and Android screen capture use different backends.
-- **Distinguish code ownership from deployment:** `targets/` lives on the controller side, `engines/` holds optional self-developed executors, and real Chrome / Android / Mini Program runtimes live outside the repository.
-- **Load targets on demand:** future target selection should avoid needlessly injecting disabled platforms' tool schemas, skill content, or runtime dependencies into the AI agent's context.
-
-**Implementation boundary:** Web / Chromium currently provides 37 tools and T1–T4/P0-related features, subject to the coverage and limitations in [capability tiers](docs/capability-tiers.md), [architecture](docs/architecture.md), and [verification](docs/verification.md). T4 acceptance is still partial. The cross-environment contracts, host-authoritative config, config-driven tool/Skill isolation and six-axis readiness are implemented and tested for Web plus a test-only fake adapter; real desktop, Android, Mini Program and other platform adapters remain proposed work.
+The current Web implementation defaults to headless and also offers a headed mode. Browser dependencies, providers and profile behaviour are covered in [browser runtime configuration (browser-runtime.md)](docs/browser-runtime.md); enablement and diagnostics are in [environment settings (settings.md)](docs/settings.md).
 
 ## Getting started
 
-**Requirements:** a DSH installation and a local Chrome/Chromium binary for the default `chrome` runtime provider. Edge is supported as a second runtime provider with its own executable candidates and its own `DSH_UI_TESTING_EDGE` override; its driver code is wired to the same CDP stack, but a real Edge launch has not been verified on this machine — enabling Edge without an Edge binary makes its dependency axis report `failed / executable-missing` (a disabled provider stays `not-probed`) and opens no page. The plugin does not bundle or install a browser; it launches the system binary it resolves (see [browser runtime configuration](docs/browser-runtime.md)). A headed Web view additionally needs `DISPLAY` or `WAYLAND_DISPLAY` on POSIX hosts; Windows hosts always provide a window system, so headed mode needs no such variable there. The plugin requires Node.js 22+ (native `WebSocket`); the current DSH release itself requires Node.js 24.9+, so a real DSH host follows the stricter version.
-
-The plugin ships as a DSH plugin bundle and is published on npm as `dsh-agent-team-ui-testing`. There is no compatibility matrix beyond the Node.js and DSH requirements above.
+The current Web adapter needs DSH, Node.js 24.9+ and a local Chrome / Chromium binary. The plugin itself requires Node.js 22+; a DSH host follows the stricter requirement.
 
 ```sh
-# npm form (recommended): follows semver, so dsh-market can prompt for updates
 dsh plugin --profile web add dsh-agent-team-ui-testing
-
-# floating GitHub form: also receives updates, but only when package.json version is bumped
-dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing
-
-# pinned tag: reproduces exactly one release and never receives update prompts
-dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
 ```
 
-1. Install the package into the DSH profile being used.
-2. Restart DSH after the first install so the plugin bundle is registered.
-3. Open the debug view from **更多 → 调试视图**, or from the plugin card in the right sidebar. **First time here? The [screenshot walkthrough](docs/tutorial.md) takes you from opening the panel to a verified agent action in seven short steps.**
-4. Changes to `client.js` only need a panel refresh; changes to `index.js`, the tool surface or bundled skills need a DSH restart.
+Install into the profile you use, then restart DSH. For the first exercise, open the debug view from the current session's right sidebar and keep the chat visible.
 
-For plugin development, link or copy this repository into the profile instead of installing the npm package.
+- **New users:** follow the [beginner walkthrough (tutorial.md)](docs/tutorial.md) to query an order, pick elements, annotate and save results through conversation. A runnable local demo is included.
+- **Developers:** read the [developer follow-up (tutorial-advanced.md)](docs/tutorial-advanced.md) for tool calls, result verification and network, visual and dynamic debugging.
+- **All help topics:** open the [documentation index (docs/index.md)](docs/index.md) and browse installation, panel operations, capabilities, diagnostics and architecture.
 
-Follow [getting started](docs/getting-started.md) for installation and the first action. Detailed references: [browser runtime](docs/browser-runtime.md), [environment settings](docs/settings.md), and [debug panel](docs/debug-panel.md).
+Other installation sources and version pinning are documented in [browser runtime configuration (browser-runtime.md)](docs/browser-runtime.md#其他安装方式).
 
-See [getting started](docs/getting-started.md#第一次调用) for the first calls and [capability selection](docs/capability-tiers.md#22-选路与回退) for choosing a path by question.
+## Usage and verification boundaries
 
-## Current limits
+- **Support and availability are separate:** the shared foundation exists; real adapters and local dependencies determine which targets can execute. A capability declaration, an enabled setting and a passing test are different conclusions.
+- **Visual and temporal conclusions have limits:** current T3/T4 use deterministic algorithms with no built-in VLM/OCR. Insufficient sampling and untested scenarios must remain explicit. See [capabilities and limits (capability-tiers.md)](docs/capability-tiers.md#web-chrome).
+- **Page isolation does not isolate login state:** Web page state is managed per Runtime; cookies and storage are shared within a browser profile. Review captures before sharing and do not assume all sensitive content has been removed.
+- **Evidence needs independent verification:** dispatched input, a successful interface call or a delivered image attachment does not by itself prove business success, a visual assertion or full-resolution image visibility to the model. See [verification and reports (verification.md)](docs/verification.md).
 
-- **Web target only.** Web/Chromium is the only implemented target environment and runs on Linux, macOS and Windows hosts. Desktop applications, Android, Mini Program, TUI, HarmonyOS, games and 3D are planned targets and stay disabled in the runtime picker.
-- **Visual and dynamic conclusions are bounded.** Deterministic algorithms, temporal resolution, control and correlation limits, and unverified scenarios are documented in [capability tiers](docs/capability-tiers.md#web-chrome). Interpret results with their actual evidence and unrun checks.
-- **Shared browser profile.** Cookies and storage are shared by the Chromium profile; only page, URL, viewport, history, network buffer and leases are isolated per workspace.
-- **Screenshots are not redacted.** Review their content before sharing.
-- **Attachments are not provider visibility.** A returned image attachment does not prove the model received it at full resolution.
-- **Network capture is partial at the edges.** Same-page iframe and dedicated workers are covered; OOPIF is partial; shared and service workers are not collected; HAR is a 1.2 subset; body/header redaction is not a general secret detector.
-- **Viewport display is a 1× screencast.** A display scale above 100% magnifies the bitmap rather than adding pixel density; request an explicit screenshot scale when resolution matters. Resize input barriers are best-effort, while canvas offsets use a fail-closed barrier.
-- **Shared state is optimistic.** `browser_viewport get` is a cache diagnostic; `stale` means “not recently observed”, and a lost `expectedRevision` race returns `VIEWPORT_CONFLICT` instead of replaying the patch.
+## Next directions
 
-## Roadmap
+- Integrate real adapters for the other nine target environments, including their executors, observations and real acceptance tests.
+- Continue separating Web-specific implementation from the Host entry point using the existing common contracts; expand `engines/` when a self-developed executor is needed.
+- Harden Web execution and extend dynamic, real-browser and long-running validation.
+- Build on existing team ownership and control mechanisms to improve multi-agent collaboration, human takeover and release quality.
 
-- Harden the Web channel and complete dynamic-behavior validation against real scenarios.
-- Gradually extract a common capability contract and `core/targets/engines` module boundaries while preserving existing Web tools; build the cross-environment test core (typed sessions, observations, assertions, reports).
-- Validate desktop (Windows/Linux/macOS), Android, Mini Program, TUI, HarmonyOS, game and 3D adapters by demand and platform feasibility.
-- Add multi-agent scheduling, human takeover and release hardening.
-
-## Documentation
-
-| File | Contents |
-| --- | --- |
-| [docs/index.md](docs/index.md) | Documentation index |
-| [docs/tutorial.md](docs/tutorial.md) | **Beginner walkthrough**: copyable prompts, screenshots, a runnable order-query demo, element picking and annotations |
-| [docs/tutorial-advanced.md](docs/tutorial-advanced.md) | **Developer follow-up**: run the demo, understand tool calls, verify results and choose network/visual/dynamic evidence |
-| [docs/getting-started.md](docs/getting-started.md) | Requirements, install, debug panel and first calls |
-| [docs/tools.md](docs/tools.md) | All 37 tools, parameters and error classes |
-| [docs/capability-tiers.md](docs/capability-tiers.md) | Shared T1–T4 interfaces and implementations by target environment and executor |
-| [docs/viewport-control.md](docs/viewport-control.md) | Shared viewport, hybrid canvas and annotations |
-| [docs/capture-p0.md](docs/capture-p0.md) | Screenshots, image delivery and file lifecycle |
-| [docs/multi-tab.md](docs/multi-tab.md) | Per-workspace tab group, per-tab leases and agent tab selection |
-| [docs/element-picker.md](docs/element-picker.md) | Panel element picking and `@` element reference chips |
-| [docs/network-p0.md](docs/network-p0.md) | Network capture, tracing, control and evidence |
-| [docs/architecture.md](docs/architecture.md) | Runtime, module responsibilities and extension points |
-| [docs/verification.md](docs/verification.md) | Reproducible tests, result interpretation and contributing |
-
-
-## Relationship to other projects
+## Related projects
 
 | Project | Role |
 | --- | --- |
-| [`dsh-agent-team-presets`](https://github.com/bloodarea/dsh-agent-team-presets) | Reusable team and role configurations, model routes and tool policies |
-| **`dsh-agent-team-ui-testing`** | UI testing targets, sessions, automation, evidence and governed human/agent control |
+| [`dsh-agent-team-presets`](https://github.com/bloodarea/dsh-agent-team-presets) | Reusable team/role configurations, model routes and tool policies |
+| **`dsh-agent-team-ui-testing`** | UI target integration, capability execution, evidence and human/agent collaboration |
 
-They are complementary but do not require each other; the runtime supports a single DSH agent without the presets plugin.
+The projects are complementary. A single DSH Agent can use this plugin independently.
 
 ## Contributing
 
-Reproducible DSH integration findings, platform feasibility tests, accessibility/DOM fallback cases, security threat models and concrete UI acceptance scenarios are the most useful contributions.
-
-When filing an issue, include the DSH version/commit, platform and runtime versions, reproduction steps, expected and observed results, and sanitized evidence. Never upload credentials, personal device data or unredacted authenticated traffic.
+Contributions to common contracts, real target adapters, reproducible UI scenarios and evidence boundaries are welcome. When reporting an issue, include DSH and target runtime versions, reproduction steps, expected and actual results, and sanitized evidence. Read [verification and contributing (verification.md)](docs/verification.md) before making development changes.
 
 ## License
 
-Released under the [MIT License](LICENSE). Copyright (c) 2026 bloodarea. Third-party code incorporated later must retain its applicable notices.
+Released under the [MIT License](LICENSE). Copyright (c) 2026 bloodarea. Incorporated third-party code must retain applicable notices.
 
 ---
 
