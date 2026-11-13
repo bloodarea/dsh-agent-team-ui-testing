@@ -1,5 +1,7 @@
 # dsh-agent-team-ui-testing
 
+<img src="banner.png" alt="dsh-agent-team-ui-testing — UI debugging and automated testing across ten target environments" width="100%">
+
 **English** | [简体中文](README_zh.md)
 
 **AI-native infrastructure for UI debugging and automated testing across ten target environments.**
@@ -9,8 +11,6 @@ Give a single Agent or an Agent Team in [DeepSeekHarness (DSH)](https://github.c
 **Learn more: [Complete documentation and help (docs/index.md)](docs/index.md)**
 
 [Getting started (getting-started.md)](docs/getting-started.md) · [Beginner walkthrough (tutorial.md)](docs/tutorial.md) · [Developer follow-up (tutorial-advanced.md)](docs/tutorial-advanced.md) · [Architecture (architecture.md)](docs/architecture.md)
-
-<img src="banner.png" alt="dsh-agent-team-ui-testing — UI debugging and automated testing across ten target environments" width="100%">
 
 <p>
   <a href="https://www.npmjs.com/package/dsh-agent-team-ui-testing"><img src="https://img.shields.io/npm/v/dsh-agent-team-ui-testing?style=flat-square&amp;logo=npm&amp;logoColor=white" alt="npm version"></a>

@@ -1,5 +1,7 @@
 # dsh-agent-team-ui-testing
 
+<img src="banner_zh.png" alt="dsh-agent-team-ui-testing — 面向十个目标环境的 UI 调试与自动化测试" width="100%">
+
 [English](README.md) | **简体中文**
 
 **面向十个目标环境的 AI 原生 UI 调试与自动化测试基础设施。**
@@ -9,8 +11,6 @@
 **进一步了解：[完整文档与帮助（docs/index.md）](docs/index.md)**
 
 [快速开始（getting-started.md）](docs/getting-started.md) · [新手图文教程（tutorial.md）](docs/tutorial.md) · [开发者进阶（tutorial-advanced.md）](docs/tutorial-advanced.md) · [架构（architecture.md）](docs/architecture.md)
-
-<img src="banner_zh.png" alt="dsh-agent-team-ui-testing — 面向十个目标环境的 UI 调试与自动化测试" width="100%">
 
 <p>
   <a href="https://www.npmjs.com/package/dsh-agent-team-ui-testing"><img src="https://img.shields.io/npm/v/dsh-agent-team-ui-testing?style=flat-square&amp;logo=npm&amp;logoColor=white" alt="npm version"></a>
