@@ -15,7 +15,7 @@
 
 启用与可执行分别判断。尚无适配器的环境可以保存启用状态，但不能设为当前执行环境；卡片上的「未支持」「未接入」保留其含义。Firefox 当前不可启用；Edge 的真实启动验证范围见[浏览器执行端说明（browser-runtime.md）](browser-runtime.md#chromeedge-与-firefox)。
 
-调试面板的环境选择器只列出已启用环境。没有视图实现的环境只切换本地展示，不改变 Host 的执行环境；对已有视图的环境，面板通过 `POST /plugins/ui-testing/config/select` 提交当前会话选择，成功后才更新显示，冲突或失败保留原选择并提示。
+调试面板的环境选择器只列出已启用环境。没有视图实现的环境只切换本地视图选择，不提交 Host 的执行环境选择；公共尺寸和截图处理器仍复用当前 Host，具体边界见[公共空白画布（debug-panel.md）](debug-panel.md#32-其他目标环境与公共空白画布)。对已有视图的环境，面板通过 `POST /plugins/ui-testing/config/select` 提交当前会话选择，成功后才更新显示，冲突或失败保留原选择并提示。
 
 Web 的当前 provider 按以下优先级解析：**会话 → 父会话 → 工作区 → 全局 → 默认 Chrome**。当前 provider 被禁用时保留选择并阻断执行，不静默改用另一浏览器。有效值可从 Host 状态中的 `resolved.provider` 读取；面板预览不按 provider 分栏。
 
