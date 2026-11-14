@@ -22,3 +22,4 @@ export * from './p0.js';
 // machine. Integration code imports it from this barrel; the module itself imports nothing but
 // `contracts.js`/`errors.js`, so authorisation stays testable without a browser or a Host.
 export * from './tab-access.js';
+export * from './target-tabs.js';

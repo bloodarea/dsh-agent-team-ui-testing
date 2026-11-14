@@ -45,9 +45,17 @@ test('视图注册表按环境查表，只有 web 有实现', () => {
     'Web 视图应当是一个可注册的函数，而不是写死在树里');
 });
 
-test('正文由注册表分发，缺席时渲染占位而不是空白', () => {
-  assert.ok(clientSource.includes('...(envViewSupported ? ENV_VIEWS[env]() : [noEnvView()])'),
-    '正文没有走注册表分发');
+test('正文由注册表分发，缺席时渲染公共空白画布与工具栏', () => {
+  // 旧断言仍要求 noEnvView，占位已在既有公共画布修改中由 shellNoViewRows 替代。
+  assert.ok(clientSource.includes('const envViewRows = envViewSupported ? ENV_VIEWS[env]() : shellNoViewRows();'),
+    '正文没有按注册表区分环境视图与公共空白画布');
+  const fallback = /function shellNoViewRows\(\) \{([\s\S]*?)\n      \}/u.exec(clientSource);
+  assert.ok(fallback, '缺少公共无视图回退');
+  for (const name of ['shellBarPublic', 'shellAnnotBar', 'shellSizeBar', 'shellBlankStage']) {
+    assert.ok(fallback[1].includes(name + '()'), '公共回退缺少 ' + name);
+  }
+  assert.ok(clientSource.includes('envViewRows[0],\n                  shellTabsBar(envTabs, tabsVisible),\n                  ...envViewRows.slice(1),'),
+    '根壳没有保持工具栏、公共标签栏、环境正文的行顺序');
   assert.ok(clientSource.includes('视图层暂不支持'), '占位缺少主文案');
   assert.ok(clientSource.includes('适配器未接入'), '占位缺少原因说明');
   assert.ok(clientSource.includes("className: 'utb-noview'"), '占位缺少容器类名');

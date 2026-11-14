@@ -1564,6 +1564,19 @@ window.__ModuleLoader__.load({
 .utb-menu-row.utb-menu-row:hover { background: rgba(164, 183, 229, 0.14); background: color-mix(in srgb, var(--dsw-alias-label-primary) 14%, transparent); }
 .utb-menu-row.utb-menu-row:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
 /* 视图层没有该环境时的占位：问号图标 + 说明，不留空白面板 */
+/* 公共区：无视图环境的禁用态外壳（渲染结构，不派发操作）。 */
+/* 公共区：无视图环境的空白画布（可画标注）。 */
+.utb-box[data-utb-shell="blank-box"] {
+  display: grid;
+  place-items: center;
+  /* 视图窗：与 web 的页面框同语义——独立表面 + 边框 + 不超出预览区，标注只画在窗内。 */
+  max-width: 100%;
+  max-height: 100%;
+  background: var(--dsw-alias-bg-base);
+  box-shadow: 0 0 0 1px var(--dsw-alias-border-l2), 0 8px 24px rgba(0, 0, 0, .32);
+}
+.utb-blank-hint { max-width: calc(100% - 16px); padding: 12px; text-align: center; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+
 .utb-noview { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; }
 .utb-noview-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: var(--dsw-alias-label-tertiary); background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent); }
 .utb-noview-text { display: flex; flex-direction: column; gap: 4px; font-size: 12px; line-height: 18px; }
@@ -2631,6 +2644,9 @@ window.__ModuleLoader__.load({
         ? remote.ui : null;
       const [activeViewId, setActiveViewId] = React.useState('primary');
       const [tabsVisible, setTabsVisible] = React.useState(true);
+      // Web callbacks can outlive the row that created them; reject them after an environment switch.
+      const tabsEnvRef = React.useRef(env);
+      tabsEnvRef.current = env;
       // A sibling tab switch is not a workspace retirement: do not poison retiredRuntimeRef.
       const viewSwitchRef = React.useRef(false);
       // The group list must survive the transient remote=null/idle snapshot while a child scope
@@ -2800,6 +2816,7 @@ window.__ModuleLoader__.load({
       }, [binding, childBinding]);
 
       function switchView(viewId) {
+        if (tabsEnvRef.current !== 'web') return;
         if (!viewId || viewId === activeViewId) return;
         if (annotRef.current.on) toggleAnnotMode();
         if (panModeRef.current) {
@@ -2814,7 +2831,7 @@ window.__ModuleLoader__.load({
       }
 
       function newTab() {
-        if (!tabsSupported || tabOpening) return;
+        if (tabsEnvRef.current !== 'web' || !stableViews || tabOpening) return;
         if (annotRef.current.on) toggleAnnotMode();
         if (panModeRef.current) {
           panModeRef.current = false;
@@ -2855,7 +2872,7 @@ window.__ModuleLoader__.load({
       }
 
       function closeView(view) {
-        if (!view) return;
+        if (tabsEnvRef.current !== 'web' || !view) return;
         if (view.kind === 'primary') {
           // Close the last (primary) tab into the EMPTY state: the fixed primary slot goes cold,
           // so the strip renders no tabs at all and keeps only the `+` entry. Target it by runtime
@@ -3804,6 +3821,25 @@ window.__ModuleLoader__.load({
        * painted rect (the <img> itself may be translated by canvas compositing), so this never reads
        * `frameShift`/`seedClip`.
        */
+      /**
+       * 目标环境的标注坐标映射注册表。环境实现（view 模块）接入时把 provider 注册到这里：
+       *   ENV_ANNOT_MAP.android = () => androidMap();
+       * 壳只负责解析与兜底，不再按环境名写死坐标推导。未注册 → 公共默认：空白视图窗 1:1 画布。
+       */
+      const ENV_ANNOT_MAP = {
+        web: () => (canvasOn && shot ? annotMap() : null),
+      };
+
+      function resolveAnnotMap() {
+        const provider = ENV_ANNOT_MAP[env];
+        if (typeof provider === 'function') return provider();
+        return annotBlankMap();
+      }
+
+      function annotMapForEnv() {
+        return resolveAnnotMap();
+      }
+
       function annotMap() {
         const img = frameImgRef.current;
         const box = frameBoxRef.current;
@@ -5437,7 +5473,7 @@ window.__ModuleLoader__.load({
 
       function onAnnotPointerDown(event) {
         if (!annotRef.current.on || event.button !== 0) return;
-        const map = annotMap();
+        const map = annotMapForEnv();
         if (!map || !annotInside(map, event.clientX, event.clientY)) return; // letterbox: no stroke
         event.preventDefault();
         event.stopPropagation();
@@ -5513,7 +5549,7 @@ window.__ModuleLoader__.load({
       /** Select/marquee hover: 'move' over a shape or inside the selection box, else the tool base. */
       function annotUpdateHoverCursor(event) {
         const base = annotRef.current.tool === 'marquee' ? 'crosshair' : 'default';
-        const map = annotMap();
+        const map = annotMapForEnv();
         if (!map || !annotInside(map, event.clientX, event.clientY)) {
           annotSetHoverCursor(base);
           return;
@@ -5707,7 +5743,9 @@ window.__ModuleLoader__.load({
         if (sizingRef.current) return;
         // 选元素模式与标注互斥：同一道闸，程序化/键盘入口也不得越过。
         if (pickRef.current.on) return;
-        if (annotRef.current.on || !viewSync || !canvasOn) return;
+        // 无视图环境没有页面，但仍有可画的空白画布：不要求视口同步 / 画布模式。
+        if (annotRef.current.on) return;
+        if (envHasView && (!viewSync || !canvasOn)) return;
         // Finish any page drag (release its button) *before* the mode gate is raised.
         if (dragRef.current.active) releaseFrameDrag();
         // Drop unsent pan/zoom intent: entering the mode must not publish a stale view.
@@ -7374,7 +7412,9 @@ window.__ModuleLoader__.load({
         const observer = new ResizeObserver(update);
         observer.observe(node);
         return () => observer.disconnect();
-      }, []);
+        // 依赖 env：切换环境会换掉 stage 节点（web 预览区 ↔ 无视图的空白视图窗），
+        // 只在挂载时观察会让新节点的 room 一直是 0，视图窗就无法等比适应。
+      }, [env]);
 
       const pageSize = { w: Math.max(200, Math.min(4096, Number(width) || 200)), h: Math.max(200, Math.min(4096, Number(height) || 200)) };
 
@@ -8354,8 +8394,11 @@ window.__ModuleLoader__.load({
       const posRange = canvasOn ? VIEW_LIMITS.canvas : VIEW_LIMITS.scroll;
       // P0-D annotation render facts. The SVG covers the *untranslated* painted rect; the viewBox is
       // the accepted canvas window. Committed geometry stays in canvas CSS px, so C/scale changes
+      /** 环境视图注册表（提前声明：changeEnv 要按它判断"这个环境有没有视图"）。 */
+      const ENV_VIEWS = { web: webViewBody };
+      const envHasView = typeof ENV_VIEWS[env] === 'function';
       // move the drawing with the content instead of re-basing it.
-      const annotReady = viewSync && canvasOn;
+      const annotReady = envHasView ? (viewSync && canvasOn) : true;
       // 选元素入口状态（数据属性供 GUI 验收读取）：on/ready/annot/sizing/unsupported/cold。
       const pickReadyNow = Boolean(pickRunning && ready && viewSync && canvasOn && !annotOn && !sizing);
       const pickEntryState = pickOn ? 'on'
@@ -8379,7 +8422,10 @@ window.__ModuleLoader__.load({
       const pickTagNow = pickScreenNow ? pickTagPosition(pickScreenNow, w * scale, ht * scale) : null;
       // 用户 2026-11-03 追加：三选一 panfit 状态（恰好一个 pressed；default = 既非拖拽也非适应窗口）。
       const panfitState = panMode ? 'pan' : fit ? 'fit' : 'default';
-      const annotMapNow = canvasOn && shot ? annotMap() : null;
+      // 无视图环境优先用空白画布映射：切换环境后运行态里可能残留 web 的旧帧（shot），
+      // 若先判 canvasOn && shot 会走进页面几何推导并拿到 null，导致标注图层不可见。
+      // 目标环境实现时把自己的映射注册进 ENV_ANNOT_MAP；没注册的环境走公共默认（空白视图窗）。
+      const annotMapNow = resolveAnnotMap();
       const annotMapSignatureNow = annotMapSignature(annotMapNow);
       if (!annotPanelIdRef.current) {
         annotPanelIdRef.current = 'utb-annot-' + Math.random().toString(36).slice(2, 10);
@@ -8656,8 +8702,6 @@ window.__ModuleLoader__.load({
        * 带本面板 scope），成功后才改本地状态；失败保留旧值并显示错误，不静默切换。
        * 未实现环境（!ready）仍不可选，也不会因为选择而启动任何探测。
        */
-      /** 环境视图注册表（提前声明：changeEnv 要按它判断"这个环境有没有视图"）。 */
-      const ENV_VIEWS = { web: webViewBody };
 
       function changeEnv(next) {
         if (annotRef.current.on || envBusy) return;
@@ -8673,6 +8717,9 @@ window.__ModuleLoader__.load({
         if (typeof ENV_VIEWS[next] !== 'function') {
           setEnvNotice('');
           setEnv(next);
+          // 无视图环境同样按该环境的默认分辨率（Android = 手机 393×852）铺视图窗，
+          // 否则会沿用 web 的 1024×768，窗口比预览区还大，看起来像直接画在底板上。
+          applyEnvDefaultSize(next);
           return;
         }
         if (!option.ready) return;
@@ -8771,15 +8818,44 @@ window.__ModuleLoader__.load({
         if (blankHint) return { kind: 'blank', text: blankHint, retry: false, reason: '' };
         return null;
       })();
-      const tabsSupported = Boolean(stableViews);
-      // The strip is a user preference, never a side effect of the tab count: one tab can show
-      // the strip (and its `+`) just like many. Hiding the strip only hides the row; the `+`
-      // lives inside it, so the toolbar never carries a second new-tab entry.
+      /**
+       * Component-local tabs providers, separate from environment body/annotation registration.
+       * Missing providers (or null models) expose no targets or actions; never fall back to Web.
+       */
+      const ENV_TABS = { web: webTabsProvider };
+      const tabsProvider = ENV_TABS[env];
+      const envTabs = typeof tabsProvider === 'function' ? tabsProvider() : null;
+      const tabsSupported = Boolean(envTabs);
+      // Preference is independent of the item count: a single tab still occupies its own row.
       const showTabs = tabsSupported && tabsVisible;
-      const tabText = (view) => {
-        const text = String((view && (view.title || view.hostLabel)) || '新页面').replace(/[\u0000-\u001f\u007f]/gu, '');
-        return text.slice(0, 80) || '新页面';
-      };
+
+      /** Web adapter: Host views, browser labels and runtime binding stay outside the shell. */
+      function webTabsProvider() {
+        if (!stableViews) return null;
+        const tabText = (view) => {
+          const text = String((view && (view.title || view.hostLabel)) || '新页面').replace(/[\u0000-\u001f\u007f]/gu, '');
+          return text.slice(0, 80) || '新页面';
+        };
+        return {
+          label: '浏览器标签页',
+          items: readyViewList.map((view) => ({
+            id: String(view.id),
+            label: tabText(view),
+            title: tabText(view),
+            closeLabel: (view.kind === 'primary' ? '重置标签 ' : '关闭标签 ') + tabText(view),
+            closeTitle: view.kind === 'primary' ? '关闭标签（回到空态）' : '关闭标签',
+            closeKind: view.kind === 'primary' ? 'primary' : 'popup',
+          })),
+          activeId: activeView ? String(activeView.id) : '',
+          canCreate: true,
+          creating: tabOpening,
+          createLabel: '新建标签页',
+          createTitle: '新建空白标签页',
+          onSelect: switchView,
+          onClose: (id) => closeView(readyViewList.find((view) => String(view.id) === id)),
+          onCreate: newTab,
+        };
+      }
       const POPUP_REASON_TEXT = {
         'no-opener': '无法确认来源', 'no-source': '无法确认来源', 'no-human-input': '需要真人点击',
         'automatic-popup': '自动弹窗已拦截', 'source-stale': '来源已过期', 'target-forbidden': '目标地址不允许',
@@ -8902,42 +8978,6 @@ h('div', { className: 'utb-bar' },
               openUrl
                 ? h('a', { className: 'utb-menu-item', role: 'menuitem', href: openUrl, target: '_blank', rel: 'noopener noreferrer', style: { textDecoration: 'none' }, onClick: () => setMenu(false) }, '在默认浏览器中打开')
                 : h('button', { type: 'button', className: 'utb-menu-item', role: 'menuitem', disabled: true }, '在默认浏览器中打开')))),
-        showTabs && h('div', {
-          className: 'utb-tabs',
-          role: 'tablist',
-          'aria-label': '浏览器标签页',
-          'data-utb-tabs': 'true',
-        }, readyViewList.map((view) => h('div', {
-          key: view.id,
-          id: 'utb-tab-' + view.id,
-          className: 'utb-tab',
-          role: 'tab',
-          'aria-selected': activeView && activeView.id === view.id,
-          'aria-label': tabText(view),
-          'data-utb-tab': String(view.id),
-          tabIndex: activeView && activeView.id === view.id ? 0 : -1,
-          title: tabText(view),
-          onClick: () => switchView(view.id),
-        },
-          h('span', { className: 'utb-tab-label' }, tabText(view)),
-          h('button', {
-            type: 'button',
-            className: 'utb-tab-close',
-            'aria-label': (view.kind === 'primary' ? '重置标签 ' : '关闭标签 ') + tabText(view),
-            title: view.kind === 'primary' ? '关闭标签（回到空态）' : '关闭标签',
-            'data-utb-tab-close': String(view.id),
-            'data-utb-tab-close-kind': view.kind === 'primary' ? 'primary' : 'popup',
-            onClick: (event) => { event.stopPropagation(); closeView(view); },
-          }, '×'))),
-          h('button', {
-            type: 'button',
-            className: 'utb-tab-new',
-            'data-utb-tab-new': 'strip',
-            'aria-label': '新建标签页',
-            title: '新建空白标签页',
-            disabled: tabOpening,
-            onClick: newTab,
-          }, '+')),
         tabNotice && h('div', { className: 'utb-sync-note utb-tab-note', role: 'status', 'aria-live': 'polite', 'data-utb-tab-notice': 'true' }, tabNotice),
         selectPop && selectPop.reason && h('div', {
           className: 'utb-sync-note utb-select-note',
@@ -8977,261 +9017,8 @@ h('div', { className: 'utb-bar' },
             title: '重新请求画面同步',
             onClick: retrySync,
           }, '重试同步')),
-        annotOn && h('div', { className: 'utb-annot-bar', id: annotPanelId, role: 'group', 'aria-label': '标注工具', ref: annotBarRef },
-          h('div', { className: 'utb-annot-group', role: 'group', 'aria-label': '标注工具选择' },
-            ANNOT_TOOLS.map((tool) => annotToolButton(tool.id, tool.label))),
-          h('div', {
-            className: 'utb-seg utb-annot-seg',
-            role: 'group',
-            'aria-label': '填充与外框',
-            'data-utb-annot-seg': 'fill-stroke',
-          },
-            h('button', {
-              type: 'button',
-              className: 'utb-seg-btn',
-              'data-utb-annot-mode': 'fill',
-              'aria-label': '填充',
-              title: '填充（仅圆形/矩形；当前色不透明）',
-              'aria-pressed': annotStyleMode === 'fill',
-              disabled: !annotIsClosedTool(annotTool),
-              onClick: () => changeAnnotStyleMode('fill'),
-            }, segDot(annotStyleMode === 'fill', 'fill-stroke'), '填充'),
-            h('button', {
-              type: 'button',
-              className: 'utb-seg-btn',
-              'data-utb-annot-mode': 'stroke',
-              'aria-label': '外框',
-              title: '外框（仅圆形/矩形；当前色 + 粗细）',
-              'aria-pressed': annotStyleMode === 'stroke',
-              disabled: !annotIsClosedTool(annotTool),
-              onClick: () => changeAnnotStyleMode('stroke'),
-            }, segDot(annotStyleMode === 'stroke', 'fill-stroke'), '外框')),
-          h('label', { className: 'utb-annot-check', title: '颜色' },
-            h('span', null, '颜色'),
-            h('input', {
-              type: 'color',
-              className: 'utb-annot-color',
-              value: annotColor,
-              'aria-label': '颜色',
-              disabled: annotTool === 'eraser' || annotIsSelectionTool(annotTool),
-              onChange: (e) => changeAnnotStyle({ color: String(e.target.value || '').toLowerCase() }),
-            })),
-          h('label', { className: 'utb-annot-check', title: '粗细（1–20 画布 px）' },
-            h('span', null, '粗细'),
-            h('input', {
-              type: 'number',
-              className: 'utb-num utb-annot-width',
-              min: 1,
-              max: 20,
-              step: 1,
-              value: String(annotWidth),
-              'aria-label': '粗细',
-              'data-utb-annot-field': 'width',
-              disabled: annotTool === 'text' || annotTool === 'eraser' || annotIsSelectionTool(annotTool),
-              onChange: (e) => {
-                const numeric = Number(e.target.value);
-                if (!Number.isFinite(numeric) || String(e.target.value).trim() === '') return;
-                changeAnnotStyle({ width: clampNumber(Math.round(numeric), 1, 20) });
-              },
-            })),
-          // v2 §11.4：横栏右侧（粗细之后）的可见文案按钮；仅模式内可见、无二次确认、空态禁用。
-          // 「粗细」之后：把当前页面连同标注截成一张图，加入聊天框附件。
-          // 禁用条件与「清除画布」同源（没有可视画面 / 正在截图都不派发）。
-          h('button', {
-            type: 'button',
-            className: 'utb-btn utb-annot-shot',
-            'aria-label': '截图（含标注）',
-            title: '把当前页面连同标注一起截图，加入聊天框附件',
-            'data-utb-annot-action': 'capture',
-            'data-utb-annot-shot': annotShotBusy ? 'busy' : (annotReady ? 'ready' : 'unsupported'),
-            disabled: !annotReady || annotShotBusy,
-            onClick: captureAnnotationShot,
-          }, annotShotBusy ? '截图中…' : '截图'),
-          annotShotNotice && h('span', {
-            className: 'utb-annot-sync',
-            role: 'status',
-            'aria-live': 'polite',
-            'data-utb-annot-shot-notice': 'true',
-          }, annotShotNotice),
-          annotSelectionCount() > 0 && h('button', {
-            type: 'button',
-            className: 'utb-btn utb-annot-delete',
-            'aria-label': '删除选中的标注',
-            title: '删除选中的标注（Delete / Backspace）',
-            'data-utb-annot-action': 'delete-selection',
-            'data-utb-annot-selection': String(annotSelectionCount()),
-            disabled: !annotReady,
-            onClick: () => annotDeleteSelection(),
-          }, '删除选中（' + annotSelectionCount() + '）'),
-          h('button', {
-            type: 'button',
-            className: 'utb-btn utb-annot-clear',
-            'aria-label': '清除画布',
-            title: '清除画布',
-            'data-utb-annot-action': 'clear',
-            disabled: !annotReady || (!annotShapesRef.current.length && !annotBusy && !annotText),
-            onPointerDown: annotClearPointerDown,
-            onClick: clearAnnotCanvas,
-          }, '清除画布')),
-        sizing && h('div', { className: 'utb-size', ref: sizeBarRef },
-          h('div', { className: 'utb-size-left' },
-            // 用户 2026-11-03 第 2 轮：左侧四个分辨率预设改为与「填充|外框」「拖拽|适应窗口|默认」
-            // 相同的分页选择器（绿色小球选中态）。选中 = 非拖拽且宽高精确匹配（零或一项选中）；
-            // 拖拽模式与预设互斥（pan 时四项全部 aria-pressed=false、小球隐藏）。
-            h('div', {
-              className: 'utb-seg utb-presets',
-              role: 'group',
-              'aria-label': '分辨率预设',
-              'data-utb-preset': '',
-            },
-              PRESETS.map((preset) => {
-                const selected = !panMode && w === preset.w && ht === preset.h;
-                return h('button', {
-                  key: preset.id,
-                  type: 'button',
-                  className: 'utb-seg-btn utb-preset',
-                  title: `${preset.label} ${preset.w} × ${preset.h}`,
-                  'data-utb-preset-opt': preset.id,
-                  'aria-label': preset.label,
-                  'aria-pressed': selected,
-                  disabled: annotOn,
-                  onClick: () => applySizePreset(preset),
-                }, segDot(selected, 'preset'), preset.label);
-              }))),
-          h('span', { className: 'utb-gap' }),
-          h('div', { className: 'utb-size-right' },
-            h('span', { className: 'utb-pos-label', 'aria-hidden': true }, 'X'),
-            h('input', {
-              className: 'utb-num utb-pos',
-              type: 'number',
-              min: posRange[0],
-              max: posRange[1],
-              step: 10,
-              value: posX,
-              'data-utb-field': 'x',
-              'aria-label': '视口 X 坐标（像素）',
-              title: canvasOn
-                ? '画布坐标 X（画布 CSS px，可为负）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
-                : viewSync
-                  ? '页面顶层滚动位置 X（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
-                  : '旧宿主不支持视口坐标同步',
-              disabled: !viewSync || annotOn,
-              onChange: (e) => changePositionField('x', e.target.value),
-              onFocus: () => { viewFocusRef.current = 'x'; },
-              onBlur: () => { viewFocusRef.current = ''; commitViewField('x'); },
-              onKeyDown: (e) => sizeFieldKey(e, 'x'),
-            }),
-            h('span', { className: 'utb-pos-label', 'aria-hidden': true }, 'Y'),
-            h('input', {
-              className: 'utb-num utb-pos',
-              type: 'number',
-              min: posRange[0],
-              max: posRange[1],
-              step: 10,
-              value: posY,
-              'data-utb-field': 'y',
-              'aria-label': '视口 Y 坐标（像素）',
-              title: canvasOn
-                ? '画布坐标 Y（画布 CSS px，可为负）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
-                : viewSync
-                  ? '页面顶层滚动位置 Y（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
-                  : '旧宿主不支持视口坐标同步',
-              disabled: !viewSync || annotOn,
-              onChange: (e) => changePositionField('y', e.target.value),
-              onFocus: () => { viewFocusRef.current = 'y'; },
-              onBlur: () => { viewFocusRef.current = ''; commitViewField('y'); },
-              onKeyDown: (e) => sizeFieldKey(e, 'y'),
-            }),
-            h('input', {
-              className: 'utb-num',
-              type: 'number',
-              min: VIEW_LIMITS.width[0],
-              max: VIEW_LIMITS.width[1],
-              value: width,
-              'data-utb-field': 'width',
-              'aria-label': '视口宽度（像素）',
-              title: '视口宽度（200–4096 px）；滚轮调整（Shift ×10，Alt ×1）',
-              disabled: annotOn,
-              onChange: (e) => changeSizeField('width', e.target.value),
-              onFocus: () => { viewFocusRef.current = 'width'; },
-              onBlur: () => { viewFocusRef.current = ''; commitViewField('width'); },
-              onKeyDown: (e) => sizeFieldKey(e, 'width'),
-            }),
-            h('span', { 'aria-hidden': true }, '×'),
-            h('input', {
-              className: 'utb-num',
-              type: 'number',
-              min: VIEW_LIMITS.height[0],
-              max: VIEW_LIMITS.height[1],
-              value: height,
-              'data-utb-field': 'height',
-              'aria-label': '视口高度（像素）',
-              title: '视口高度（200–4096 px）；滚轮调整（Shift ×10，Alt ×1）',
-              disabled: annotOn,
-              onChange: (e) => changeSizeField('height', e.target.value),
-              onFocus: () => { viewFocusRef.current = 'height'; },
-              onBlur: () => { viewFocusRef.current = ''; commitViewField('height'); },
-              onKeyDown: (e) => sizeFieldKey(e, 'height'),
-            }),
-            h('span', null, 'px'),
-            h('div', {
-              className: 'utb-seg utb-panfit',
-              role: 'group',
-              'aria-label': '拖拽与适应',
-              'data-utb-panfit': '',
-              'data-utb-panfit-state': panfitState,
-            },
-              h('button', {
-                type: 'button',
-                className: 'utb-seg-btn',
-                'data-utb-panfit-opt': 'pan',
-                'aria-label': '拖拽视口',
-                title: panMode
-                  ? '拖拽视口：按住画面拖动平移页面（内容跟手，X/Y 随之更新）；再点一次关闭并恢复页面交互'
-                  : '拖拽视口：点击后按住画面拖动可平移页面（内容跟手，X/Y 随之更新）；关闭后恢复页面交互',
-                'aria-pressed': panMode,
-                disabled: !viewSync || !canvasOn || annotOn,
-                onClick: pressPanMode,
-              }, segDot(panMode, 'panfit'), '拖拽'),
-              h('button', {
-                type: 'button',
-                className: 'utb-seg-btn',
-                'data-utb-panfit-opt': 'fit',
-                'aria-label': '适应窗口',
-                title: '适应窗口仅本地显示，不改变共享比例/Agent 截图比例',
-                'aria-pressed': fit,
-                disabled: annotOn,
-                onClick: pressFitMode,
-              }, segDot(fit, 'panfit'), '适应窗口'),
-              h('button', {
-                type: 'button',
-                className: 'utb-seg-btn',
-                'data-utb-panfit-opt': 'default',
-                'aria-label': '默认',
-                title: '默认：不拖拽、不自动适应，按共享比例显示（不发布视口）',
-                'aria-pressed': !panMode && !fit,
-                disabled: annotOn,
-                onClick: pressPanFitDefault,
-              }, segDot(!panMode && !fit, 'panfit'), '默认')),
-            h('input', {
-              className: 'utb-num utb-zoom',
-              type: 'number',
-              min: VIEW_LIMITS.scalePercent[0],
-              max: VIEW_LIMITS.scalePercent[1],
-              step: 5,
-              value: fit ? String(Math.round(fitScale * 100)) : zoom,
-              'data-utb-field': 'scale',
-              'aria-label': '预览缩放比例（百分比）',
-              title: fit
-                ? '适应窗口仅本地显示，不改变共享比例/Agent 截图比例'
-                : '预览缩放比例（10–200%）；手动修改会关闭适应窗口，并作为共享比例（Agent 截图默认密度）',
-              disabled: annotOn,
-              onChange: (e) => changeZoom(e.target.value),
-              onFocus: () => { viewFocusRef.current = 'scale'; },
-              onBlur: () => { viewFocusRef.current = ''; commitZoom(); },
-              onKeyDown: (e) => sizeFieldKey(e, 'scale'),
-            }),
-            h('span', { className: 'utb-dim', 'aria-hidden': true }, '%'))),
+        shellAnnotBar(),
+        shellSizeBar(),
         (pickOn || pickStatus) && h('div', {
           className: 'utb-sync-note utb-pick-note',
           role: 'status',
@@ -9483,7 +9270,194 @@ h('div', { className: 'utb-bar' },
                 // P0-D annotation layer: covers the untranslated painted rect, viewBox = accepted
                 // canvas window. Committed shapes are React nodes; the live draft is one imperative
                 // <g> updated by rAF (never re-rendered per pointer move).
-                h('svg', {
+                shellAnnotLayer(),
+                annotText ? h('input', {
+                  key: 'annot-text-input-' + annotText.id,
+                  className: 'utb-annot-text-input',
+                  ref: annotInputRef,
+                  type: 'text',
+                  maxLength: 200,
+                  defaultValue: '',
+                  'aria-label': '标注文字',
+                  autoFocus: true,
+                  style: {
+                    left: annotText.left,
+                    top: annotText.top,
+                    width: 220,
+                    height: Math.max(18, annotText.fontSize * 1.4),
+                    fontSize: annotText.fontSize,
+                    color: annotText.color,
+                    borderColor: annotText.color,
+                  },
+                  onKeyDown: annotTextKey,
+                  onBlur: () => commitAnnotText(),
+                  onCompositionStart: () => { annotComposingRef.current = true; },
+                  onCompositionEnd: () => { annotComposingRef.current = false; },
+                }) : null,
+                // 选元素悬浮框：纯面板 DOM，pointer-events:none，被 .utb-box 裁剪，不进 Host 截图。
+                pickOn ? h('div', {
+                  className: 'utb-pick-layer',
+                  'data-utb-pick-layer': 'true',
+                  'data-utb-pick-state': pickOverlay ? 'hover' : 'idle',
+                  'aria-hidden': 'true',
+                },
+                  pickScreenNow && pickOverlay ? h('div', {
+                    className: 'utb-pick-outline',
+                    'data-utb-pick-outline': 'true',
+                    'data-utb-pick-selector': pickOverlay.selector || '',
+                    'data-utb-pick-rect': JSON.stringify(pickOverlay.rect),
+                    style: {
+                      left: pickScreenNow.left,
+                      top: pickScreenNow.top,
+                      width: pickScreenNow.width,
+                      height: pickScreenNow.height,
+                    },
+                  }) : null,
+                  pickTagNow && pickOverlay ? h('span', {
+                    className: 'utb-pick-tag',
+                    'data-utb-pick-tag': pickOverlay.label,
+                    title: pickOverlay.selector || pickOverlay.label,
+                    style: { left: pickTagNow.left, top: pickTagNow.top },
+                  }, pickOverlay.label) : null) : null)
+              : h('div', { className: 'utb-empty' },
+                h('strong', null, '正在启动内嵌浏览器'),
+                '首次打开需要启动无头 Chromium，通常一两秒；完成后这里会显示实时画面。'))
+            : h('div', { className: 'utb-empty' },
+              h('strong', null, '预览网页'),
+              error
+                ? h('span', { role: 'alert', className: 'utb-empty-error' }, error)
+                : '在上方输入 HTTP 或 HTTPS 网址。页面由内嵌的无头浏览器渲染，不会抢占桌面焦点；尺寸模式可模拟 393 × 852 等移动视口。')),
+        ];
+      }
+      const envOption = ENVIRONMENTS.find((item) => item.id === env) || { id: env, label: env, short: env };
+      const envViewTitle = (envOption.short || envOption.label || env) + ' · 调试视图';
+      const envViewSupported = typeof ENV_VIEWS[env] === 'function';
+
+      /** 视图层没有该环境时占位：问号图标 + 一句人话，不留空白面板。 */
+      function noEnvView() {
+        const hostEnvOption = ENVIRONMENTS.find((item) => item.id === (resolvedEnvironment || 'web'));
+        const hostEnvLabel = (hostEnvOption && (hostEnvOption.label || hostEnvOption.id)) || (resolvedEnvironment || 'Web 视图');
+        return h('div', { className: 'utb-noview', 'data-utb-noview': env },
+          h('span', { className: 'utb-noview-icon', 'aria-hidden': true },
+            h('svg', { viewBox: '0 0 24 24', width: 28, height: 28, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' },
+              h('circle', { cx: 12, cy: 12, r: 9 }),
+              h('path', { d: 'M9.6 9.4a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.4' }),
+              h('circle', { cx: 12, cy: 17, r: .95, fill: 'currentColor', stroke: 'none' }))),
+          h('div', { className: 'utb-noview-text' },
+            h('strong', null, '视图层暂不支持'),
+            h('p', null, (envOption.label || env) + ' 的调试视图还没有实现（适配器未接入）。'),
+            h('p', { className: 'utb-noview-hint' }, '执行环境仍然是 ' + hostEnvLabel + '，这里只切换视图。'),
+            h('p', { className: 'utb-noview-hint' }, '可以在设置页查看该环境的适配器与依赖状态。')));
+      }
+
+      /* =====================================================================================
+       * 公共区（跨环境共享）：标注栏与状态栏。任何目标环境都能直接调用这两个组件；
+       * 它们不含 web 专有语义，放置位置由各环境视图自己决定（web 仍放在原位置）。
+       * ===================================================================================== */
+      /** 公共区：标注栏。仅在标注模式开启时出现；工具集、颜色、粗细、清除为跨环境通用能力。 */
+      function shellAnnotBar() {
+        return annotOn && h('div', { className: 'utb-annot-bar', id: annotPanelId, role: 'group', 'aria-label': '标注工具', ref: annotBarRef },
+          h('div', { className: 'utb-annot-group', role: 'group', 'aria-label': '标注工具选择' },
+            ANNOT_TOOLS.map((tool) => annotToolButton(tool.id, tool.label))),
+          h('div', {
+            className: 'utb-seg utb-annot-seg',
+            role: 'group',
+            'aria-label': '填充与外框',
+            'data-utb-annot-seg': 'fill-stroke',
+          },
+            h('button', {
+              type: 'button',
+              className: 'utb-seg-btn',
+              'data-utb-annot-mode': 'fill',
+              'aria-label': '填充',
+              title: '填充（仅圆形/矩形；当前色不透明）',
+              'aria-pressed': annotStyleMode === 'fill',
+              disabled: !annotIsClosedTool(annotTool),
+              onClick: () => changeAnnotStyleMode('fill'),
+            }, segDot(annotStyleMode === 'fill', 'fill-stroke'), '填充'),
+            h('button', {
+              type: 'button',
+              className: 'utb-seg-btn',
+              'data-utb-annot-mode': 'stroke',
+              'aria-label': '外框',
+              title: '外框（仅圆形/矩形；当前色 + 粗细）',
+              'aria-pressed': annotStyleMode === 'stroke',
+              disabled: !annotIsClosedTool(annotTool),
+              onClick: () => changeAnnotStyleMode('stroke'),
+            }, segDot(annotStyleMode === 'stroke', 'fill-stroke'), '外框')),
+          h('label', { className: 'utb-annot-check', title: '颜色' },
+            h('span', null, '颜色'),
+            h('input', {
+              type: 'color',
+              className: 'utb-annot-color',
+              value: annotColor,
+              'aria-label': '颜色',
+              disabled: annotTool === 'eraser' || annotIsSelectionTool(annotTool),
+              onChange: (e) => changeAnnotStyle({ color: String(e.target.value || '').toLowerCase() }),
+            })),
+          h('label', { className: 'utb-annot-check', title: '粗细（1–20 画布 px）' },
+            h('span', null, '粗细'),
+            h('input', {
+              type: 'number',
+              className: 'utb-num utb-annot-width',
+              min: 1,
+              max: 20,
+              step: 1,
+              value: String(annotWidth),
+              'aria-label': '粗细',
+              'data-utb-annot-field': 'width',
+              disabled: annotTool === 'text' || annotTool === 'eraser' || annotIsSelectionTool(annotTool),
+              onChange: (e) => {
+                const numeric = Number(e.target.value);
+                if (!Number.isFinite(numeric) || String(e.target.value).trim() === '') return;
+                changeAnnotStyle({ width: clampNumber(Math.round(numeric), 1, 20) });
+              },
+            })),
+          // v2 §11.4：横栏右侧（粗细之后）的可见文案按钮；仅模式内可见、无二次确认、空态禁用。
+          // 「粗细」之后：把当前页面连同标注截成一张图，加入聊天框附件。
+          // 禁用条件与「清除画布」同源（没有可视画面 / 正在截图都不派发）。
+          h('button', {
+            type: 'button',
+            className: 'utb-btn utb-annot-shot',
+            'aria-label': '截图（含标注）',
+            title: '把当前页面连同标注一起截图，加入聊天框附件',
+            'data-utb-annot-action': 'capture',
+            'data-utb-annot-shot': annotShotBusy ? 'busy' : (annotReady ? 'ready' : 'unsupported'),
+            disabled: !annotReady || annotShotBusy,
+            onClick: captureAnnotationShot,
+          }, annotShotBusy ? '截图中…' : '截图'),
+          annotShotNotice && h('span', {
+            className: 'utb-annot-sync',
+            role: 'status',
+            'aria-live': 'polite',
+            'data-utb-annot-shot-notice': 'true',
+          }, annotShotNotice),
+          annotSelectionCount() > 0 && h('button', {
+            type: 'button',
+            className: 'utb-btn utb-annot-delete',
+            'aria-label': '删除选中的标注',
+            title: '删除选中的标注（Delete / Backspace）',
+            'data-utb-annot-action': 'delete-selection',
+            'data-utb-annot-selection': String(annotSelectionCount()),
+            disabled: !annotReady,
+            onClick: () => annotDeleteSelection(),
+          }, '删除选中（' + annotSelectionCount() + '）'),
+          h('button', {
+            type: 'button',
+            className: 'utb-btn utb-annot-clear',
+            'aria-label': '清除画布',
+            title: '清除画布',
+            'data-utb-annot-action': 'clear',
+            disabled: !annotReady || (!annotShapesRef.current.length && !annotBusy && !annotText),
+            onPointerDown: annotClearPointerDown,
+            onClick: clearAnnotCanvas,
+          }, '清除画布'))
+      }
+
+      /** 公共区：状态栏。控制权 / 实测帧率与延迟 / 已选标注 / 同步状态 / 活动摘要。 */
+      /** 公共区：标注图层（跨环境共用）。无页面环境下由合成映射覆盖空白画布。 */
+      function shellAnnotLayer() {
+        return h('svg', {
                   className: 'utb-annot-layer',
                   ref: annotSvgRef,
                   'data-utb-annot-layer': 'true',
@@ -9562,64 +9536,24 @@ h('div', { className: 'utb-bar' },
                        h('rect', Object.assign({}, rect, { className: 'utb-annot-select-edge' })),
                        h('rect', Object.assign({}, rect, { className: 'utb-annot-select-ants' })));
                    })(),
-                   h('g', { key: 'annot-draft', 'data-utb-annot-state': 'draft', ref: annotDraftRef })),
-                annotText ? h('input', {
-                  key: 'annot-text-input-' + annotText.id,
-                  className: 'utb-annot-text-input',
-                  ref: annotInputRef,
-                  type: 'text',
-                  maxLength: 200,
-                  defaultValue: '',
-                  'aria-label': '标注文字',
-                  autoFocus: true,
-                  style: {
-                    left: annotText.left,
-                    top: annotText.top,
-                    width: 220,
-                    height: Math.max(18, annotText.fontSize * 1.4),
-                    fontSize: annotText.fontSize,
-                    color: annotText.color,
-                    borderColor: annotText.color,
-                  },
-                  onKeyDown: annotTextKey,
-                  onBlur: () => commitAnnotText(),
-                  onCompositionStart: () => { annotComposingRef.current = true; },
-                  onCompositionEnd: () => { annotComposingRef.current = false; },
-                }) : null,
-                // 选元素悬浮框：纯面板 DOM，pointer-events:none，被 .utb-box 裁剪，不进 Host 截图。
-                pickOn ? h('div', {
-                  className: 'utb-pick-layer',
-                  'data-utb-pick-layer': 'true',
-                  'data-utb-pick-state': pickOverlay ? 'hover' : 'idle',
-                  'aria-hidden': 'true',
-                },
-                  pickScreenNow && pickOverlay ? h('div', {
-                    className: 'utb-pick-outline',
-                    'data-utb-pick-outline': 'true',
-                    'data-utb-pick-selector': pickOverlay.selector || '',
-                    'data-utb-pick-rect': JSON.stringify(pickOverlay.rect),
-                    style: {
-                      left: pickScreenNow.left,
-                      top: pickScreenNow.top,
-                      width: pickScreenNow.width,
-                      height: pickScreenNow.height,
-                    },
-                  }) : null,
-                  pickTagNow && pickOverlay ? h('span', {
-                    className: 'utb-pick-tag',
-                    'data-utb-pick-tag': pickOverlay.label,
-                    title: pickOverlay.selector || pickOverlay.label,
-                    style: { left: pickTagNow.left, top: pickTagNow.top },
-                  }, pickOverlay.label) : null) : null)
-              : h('div', { className: 'utb-empty' },
-                h('strong', null, '正在启动内嵌浏览器'),
-                '首次打开需要启动无头 Chromium，通常一两秒；完成后这里会显示实时画面。'))
-            : h('div', { className: 'utb-empty' },
-              h('strong', null, '预览网页'),
-              error
-                ? h('span', { role: 'alert', className: 'utb-empty-error' }, error)
-                : '在上方输入 HTTP 或 HTTPS 网址。页面由内嵌的无头浏览器渲染，不会抢占桌面焦点；尺寸模式可模拟 393 × 852 等移动视口。')),
-        h('div', { className: 'utb-status' },
+                   h('g', { key: 'annot-draft', 'data-utb-annot-state': 'draft', ref: annotDraftRef }));
+      }
+
+      /** 公共区：无页面环境的合成标注映射——画布即视图尺寸，painted 覆盖整块。 */
+      function annotBlankMap() {
+        const box = document.querySelector('.utb-box[data-utb-shell="blank-box"]');
+        if (!box) return null;
+        const boxRect = box.getBoundingClientRect();
+        if (!(boxRect.width > 0) || !(boxRect.height > 0)) return null;
+        const bw = Math.max(1, Number(width) || 1024);
+        const bh = Math.max(1, Number(height) || 768);
+        // painted 与 boxRect 同为视口坐标：annotInside 直接用 clientX 比较，annotToCanvas 再除以 sx/sy。
+        const painted = { left: boxRect.left, top: boxRect.top, width: boxRect.width, height: boxRect.height };
+        return { painted, boxRect, cx: 0, cy: 0, w: bw, h: bh, sx: painted.width / bw, sy: painted.height / bh };
+      }
+
+      function shellStatusBar() {
+        return h('div', { className: 'utb-status' },
           h('span', { className: 'utb-mode', 'data-mode': mode, title: '当前控制权归属' },
             h('span', { className: 'utb-dot', 'aria-hidden': true }),
             MODE_LABEL[remote.mode === 'agent' ? 'agent' : mode]),
@@ -9645,39 +9579,285 @@ h('div', { className: 'utb-bar' },
           }, annotSyncText),
           h('span', { className: 'utb-gap' }),
           h('span', { className: 'utb-activity', title: remote.activity ? `运行时：${remote.activity}` : '视图状态' },
-            remote.activity || activity))
+            remote.activity || activity));
+      }
+
+      /**
+       * 公共标签栏：只消费 provider 的展示模型和意图回调，不解析目标身份或请求 Host。
+       * model = { label, items: [{ id, label, title, closeLabel, closeTitle, closeKind }],
+       *   activeId, canCreate, creating, createLabel, createTitle,
+       *   onSelect(id), onClose(id), onCreate() }; null = 当前环境未提供标签能力。
+       */
+      function shellTabsBar(model, visible) {
+        if (!model || !visible) return null;
+        return h('div', {
+          className: 'utb-tabs',
+          role: 'tablist',
+          'aria-label': model.label,
+          'data-utb-tabs': 'true',
+        }, model.items.map((item) => h('div', {
+          key: item.id,
+          id: 'utb-tab-' + item.id,
+          className: 'utb-tab',
+          role: 'tab',
+          'aria-selected': model.activeId === item.id,
+          'aria-label': item.label,
+          'data-utb-tab': item.id,
+          tabIndex: model.activeId === item.id ? 0 : -1,
+          title: item.title || item.label,
+          onClick: () => { if (typeof model.onSelect === 'function') model.onSelect(item.id); },
+        },
+          h('span', { className: 'utb-tab-label' }, item.label),
+          typeof model.onClose === 'function' && h('button', {
+            type: 'button',
+            className: 'utb-tab-close',
+            'aria-label': item.closeLabel,
+            title: item.closeTitle,
+            'data-utb-tab-close': item.id,
+            'data-utb-tab-close-kind': item.closeKind,
+            onClick: (event) => { event.stopPropagation(); model.onClose(item.id); },
+          }, '×'))),
+          model.canCreate && h('button', {
+            type: 'button',
+            className: 'utb-tab-new',
+            'data-utb-tab-new': 'strip',
+            'aria-label': model.createLabel,
+            title: model.createTitle,
+            disabled: model.creating || typeof model.onCreate !== 'function',
+            onClick: model.onCreate,
+          }, '+'));
+      }
+
+      /** 公共区：无视图环境的工具栏。未提供标签能力时显示禁用开关。 */
+      function shellBarPublic() {
+        // 与 web 工具栏一致：动作按钮组靠右（左侧留弹性空隙），不占左侧导航位。
+        return h('div', { className: 'utb-bar', 'data-utb-shell': 'public' },
+          h('span', { className: 'utb-gap' }),
+          button('标签页', h('span', { className: 'utb-tabs-glyph', 'aria-hidden': true }, '▤'), tabsSupported ? () => setTabsVisible((value) => !value) : undefined, !tabsSupported, {
+            'aria-pressed': tabsSupported && tabsVisible,
+            'data-utb-tabs-toggle': tabsSupported ? (tabsVisible ? 'on' : 'off') : 'unsupported',
+            title: tabsSupported ? (tabsVisible ? '隐藏标签页（页面保持）' : '显示标签页') : '该环境未提供标签页',
+          }),
+          button('标注', h(IconAnnot, null), toggleAnnotMode, !annotReady || sizing || pickOn, {
+            'aria-pressed': annotOn,
+            'aria-controls': annotPanelId,
+            'data-utb-annot-entry': annotOn ? 'on' : annotReady ? 'ready' : 'unsupported',
+          }),
+          button('尺寸调整', h(IconSize, null), toggleSizing, annotOn || pickOn, { 'aria-pressed': sizing }),
+          h('div', { className: 'utb-more' },
+            button('更多', h(IconMore, null), () => setMenu((v) => !v), false, { 'aria-expanded': menu, 'aria-haspopup': 'menu' }),
+            menu && h('div', { className: 'utb-pop', role: 'menu' },
+              h('button', { type: 'button', className: 'utb-menu-item', role: 'menuitem', onClick: () => setMenu(false) },
+                '该环境适配器未接入，暂无更多操作'))));
+      }
+
+      /** 公共区：尺寸栏（跨环境共享）。预设 / 宽高 / 坐标 / 缩放；无视图环境同样渲染。 */
+      function shellSizeBar() {
+        return sizing && h('div', { className: 'utb-size', ref: sizeBarRef },
+          h('div', { className: 'utb-size-left' },
+            // 用户 2026-11-03 第 2 轮：左侧四个分辨率预设改为与「填充|外框」「拖拽|适应窗口|默认」
+            // 相同的分页选择器（绿色小球选中态）。选中 = 非拖拽且宽高精确匹配（零或一项选中）；
+            // 拖拽模式与预设互斥（pan 时四项全部 aria-pressed=false、小球隐藏）。
+            h('div', {
+              className: 'utb-seg utb-presets',
+              role: 'group',
+              'aria-label': '分辨率预设',
+              'data-utb-preset': '',
+            },
+              PRESETS.map((preset) => {
+                const selected = !panMode && w === preset.w && ht === preset.h;
+                return h('button', {
+                  key: preset.id,
+                  type: 'button',
+                  className: 'utb-seg-btn utb-preset',
+                  title: `${preset.label} ${preset.w} × ${preset.h}`,
+                  'data-utb-preset-opt': preset.id,
+                  'aria-label': preset.label,
+                  'aria-pressed': selected,
+                  disabled: annotOn,
+                  onClick: () => applySizePreset(preset),
+                }, segDot(selected, 'preset'), preset.label);
+              }))),
+          h('span', { className: 'utb-gap' }),
+          h('div', { className: 'utb-size-right' },
+            h('span', { className: 'utb-pos-label', 'aria-hidden': true }, 'X'),
+            h('input', {
+              className: 'utb-num utb-pos',
+              type: 'number',
+              min: posRange[0],
+              max: posRange[1],
+              step: 10,
+              value: posX,
+              'data-utb-field': 'x',
+              'aria-label': '视口 X 坐标（像素）',
+              title: canvasOn
+                ? '画布坐标 X（画布 CSS px，可为负）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
+                : viewSync
+                  ? '页面顶层滚动位置 X（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
+                  : '旧宿主不支持视口坐标同步',
+              disabled: !viewSync || annotOn,
+              onChange: (e) => changePositionField('x', e.target.value),
+              onFocus: () => { viewFocusRef.current = 'x'; },
+              onBlur: () => { viewFocusRef.current = ''; commitViewField('x'); },
+              onKeyDown: (e) => sizeFieldKey(e, 'x'),
+            }),
+            h('span', { className: 'utb-pos-label', 'aria-hidden': true }, 'Y'),
+            h('input', {
+              className: 'utb-num utb-pos',
+              type: 'number',
+              min: posRange[0],
+              max: posRange[1],
+              step: 10,
+              value: posY,
+              'data-utb-field': 'y',
+              'aria-label': '视口 Y 坐标（像素）',
+              title: canvasOn
+                ? '画布坐标 Y（画布 CSS px，可为负）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
+                : viewSync
+                  ? '页面顶层滚动位置 Y（文档 CSS px）；滚轮调整（Shift ×10，Alt ×1），Enter 提交，Esc 恢复'
+                  : '旧宿主不支持视口坐标同步',
+              disabled: !viewSync || annotOn,
+              onChange: (e) => changePositionField('y', e.target.value),
+              onFocus: () => { viewFocusRef.current = 'y'; },
+              onBlur: () => { viewFocusRef.current = ''; commitViewField('y'); },
+              onKeyDown: (e) => sizeFieldKey(e, 'y'),
+            }),
+            h('input', {
+              className: 'utb-num',
+              type: 'number',
+              min: VIEW_LIMITS.width[0],
+              max: VIEW_LIMITS.width[1],
+              value: width,
+              'data-utb-field': 'width',
+              'aria-label': '视口宽度（像素）',
+              title: '视口宽度（200–4096 px）；滚轮调整（Shift ×10，Alt ×1）',
+              disabled: annotOn,
+              onChange: (e) => changeSizeField('width', e.target.value),
+              onFocus: () => { viewFocusRef.current = 'width'; },
+              onBlur: () => { viewFocusRef.current = ''; commitViewField('width'); },
+              onKeyDown: (e) => sizeFieldKey(e, 'width'),
+            }),
+            h('span', { 'aria-hidden': true }, '×'),
+            h('input', {
+              className: 'utb-num',
+              type: 'number',
+              min: VIEW_LIMITS.height[0],
+              max: VIEW_LIMITS.height[1],
+              value: height,
+              'data-utb-field': 'height',
+              'aria-label': '视口高度（像素）',
+              title: '视口高度（200–4096 px）；滚轮调整（Shift ×10，Alt ×1）',
+              disabled: annotOn,
+              onChange: (e) => changeSizeField('height', e.target.value),
+              onFocus: () => { viewFocusRef.current = 'height'; },
+              onBlur: () => { viewFocusRef.current = ''; commitViewField('height'); },
+              onKeyDown: (e) => sizeFieldKey(e, 'height'),
+            }),
+            h('span', null, 'px'),
+            h('div', {
+              className: 'utb-seg utb-panfit',
+              role: 'group',
+              'aria-label': '拖拽与适应',
+              'data-utb-panfit': '',
+              'data-utb-panfit-state': panfitState,
+            },
+              h('button', {
+                type: 'button',
+                className: 'utb-seg-btn',
+                'data-utb-panfit-opt': 'pan',
+                'aria-label': '拖拽视口',
+                title: panMode
+                  ? '拖拽视口：按住画面拖动平移页面（内容跟手，X/Y 随之更新）；再点一次关闭并恢复页面交互'
+                  : '拖拽视口：点击后按住画面拖动可平移页面（内容跟手，X/Y 随之更新）；关闭后恢复页面交互',
+                'aria-pressed': panMode,
+                disabled: !viewSync || !canvasOn || annotOn,
+                onClick: pressPanMode,
+              }, segDot(panMode, 'panfit'), '拖拽'),
+              h('button', {
+                type: 'button',
+                className: 'utb-seg-btn',
+                'data-utb-panfit-opt': 'fit',
+                'aria-label': '适应窗口',
+                title: '适应窗口仅本地显示，不改变共享比例/Agent 截图比例',
+                'aria-pressed': fit,
+                disabled: annotOn,
+                onClick: pressFitMode,
+              }, segDot(fit, 'panfit'), '适应窗口'),
+              h('button', {
+                type: 'button',
+                className: 'utb-seg-btn',
+                'data-utb-panfit-opt': 'default',
+                'aria-label': '默认',
+                title: '默认：不拖拽、不自动适应，按共享比例显示（不发布视口）',
+                'aria-pressed': !panMode && !fit,
+                disabled: annotOn,
+                onClick: pressPanFitDefault,
+              }, segDot(!panMode && !fit, 'panfit'), '默认')),
+            h('input', {
+              className: 'utb-num utb-zoom',
+              type: 'number',
+              min: VIEW_LIMITS.scalePercent[0],
+              max: VIEW_LIMITS.scalePercent[1],
+              step: 5,
+              value: fit ? String(Math.round(fitScale * 100)) : zoom,
+              'data-utb-field': 'scale',
+              'aria-label': '预览缩放比例（百分比）',
+              title: fit
+                ? '适应窗口仅本地显示，不改变共享比例/Agent 截图比例'
+                : '预览缩放比例（10–200%）；手动修改会关闭适应窗口，并作为共享比例（Agent 截图默认密度）',
+              disabled: annotOn,
+              onChange: (e) => changeZoom(e.target.value),
+              onFocus: () => { viewFocusRef.current = 'scale'; },
+              onBlur: () => { viewFocusRef.current = ''; commitZoom(); },
+              onKeyDown: (e) => sizeFieldKey(e, 'scale'),
+            }),
+            h('span', { className: 'utb-dim', 'aria-hidden': true }, '%')))
+      }
+      /** 公共区：无视图环境的预览区——空白画布，标注直接画在上面。 */
+      function shellBlankStage() {
+        const bw = Math.max(1, Number(width) || 1024);
+        const bh = Math.max(1, Number(height) || 768);
+        // 视图窗必须完整落在预览区内：fit 时按 room 等比缩放（与 web 的“适应窗口”同语义）。
+        const roomW = Number(room && room.w) || bw;
+        const roomH = Number(room && room.h) || bh;
+        const fitScale = Math.max(0.1, Math.min(1, roomW / bw, roomH / bh));
+        const winScale = fit ? fitScale : scale;
+        // 挂同一个 stage ref：复用已有的 ResizeObserver 量预览区尺寸，视图窗才能等比适应。
+        return h('div', { className: 'utb-stage', 'data-utb-shell': 'blank', ref: stage },
+          h('div', {
+            className: 'utb-box',
+            'data-utb-shell': 'blank-box',
+            'data-fitted': winScale < 1 ? 'true' : 'false',
+            'data-utb-annot': annotOn ? 'on' : 'off',
+            style: { width: bw * winScale, height: bh * winScale, position: 'relative' },
+          },
+            annotOn
+              ? shellAnnotLayer()
+              : h('div', { className: 'utb-blank-hint' },
+                '该环境暂无画面。点上方「标注」即可在这块空白画布上画，形状按画布坐标为所有环境共用。')));
+      }
+
+      /** 公共区：无视图环境的行集合（工具栏 / 标注栏 / 空白画布）；状态栏由根返回统一渲染。 */
+      function shellNoViewRows() {
+        return [
+          shellBarPublic(),
+          shellAnnotBar(),
+          shellSizeBar(),
+          shellBlankStage(),
         ];
       }
-      const envOption = ENVIRONMENTS.find((item) => item.id === env) || { id: env, label: env, short: env };
-      const envViewTitle = (envOption.short || envOption.label || env) + ' · 调试视图';
-      const envViewSupported = typeof ENV_VIEWS[env] === 'function';
 
-      /** 视图层没有该环境时占位：问号图标 + 一句人话，不留空白面板。 */
-      function noEnvView() {
-        const hostEnvOption = ENVIRONMENTS.find((item) => item.id === (resolvedEnvironment || 'web'));
-        const hostEnvLabel = (hostEnvOption && (hostEnvOption.label || hostEnvOption.id)) || (resolvedEnvironment || 'Web 视图');
-        return h('div', { className: 'utb-noview', 'data-utb-noview': env },
-          h('span', { className: 'utb-noview-icon', 'aria-hidden': true },
-            h('svg', { viewBox: '0 0 24 24', width: 28, height: 28, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' },
-              h('circle', { cx: 12, cy: 12, r: 9 }),
-              h('path', { d: 'M9.6 9.4a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.4' }),
-              h('circle', { cx: 12, cy: 17, r: .95, fill: 'currentColor', stroke: 'none' }))),
-          h('div', { className: 'utb-noview-text' },
-            h('strong', null, '视图层暂不支持'),
-            h('p', null, (envOption.label || env) + ' 的调试视图还没有实现（适配器未接入）。'),
-            h('p', { className: 'utb-noview-hint' }, '执行环境仍然是 ' + hostEnvLabel + '，这里只切换视图。'),
-            h('p', { className: 'utb-noview-hint' }, '可以在设置页查看该环境的适配器与依赖状态。')));
-      }
-
+      // The root owns row placement: the provider supplies tabs, the view supplies toolbar/body.
+      const envViewRows = envViewSupported ? ENV_VIEWS[env]() : shellNoViewRows();
       return h('div', {
         className: 'utb',
         'data-utb-tabs-supported': tabsSupported ? 'true' : 'false',
         'data-utb-tabs-visible': showTabs ? 'true' : 'false',
-        'data-utb-active-view': activeView ? String(activeView.id) : '',
+        'data-utb-active-view': envTabs ? envTabs.activeId : '',
         'data-utb-runtime-id': ui ? String(ui.runtimeId || '') : '',
         'data-utb-scope-binding': String(scope.binding || ''),
-        'data-utb-views-count': stableViews ? String(stableViews.views.length) : '0',
-        'data-utb-ready-views': String(readyViewList.length),
+        'data-utb-views-count': tabsSupported && stableViews ? String(stableViews.views.length) : '0',
+        'data-utb-ready-views': envTabs ? String(envTabs.items.length) : '0',
         'data-utb-tabs-pref': tabsVisible ? 'true' : 'false',
         'data-utb-active-busy': activeBusy ? 'true' : 'false',
         'data-utb-display-mode': displayMode,
@@ -9750,7 +9930,10 @@ h('div', { className: 'utb-bar' },
             'data-uts-config-error': hostConfig.state.error ? 'read' : 'select',
             title: hostConfig.state.error || envNotice,
           }, hostConfig.state.error || envNotice) : null),
-                  ...(envViewSupported ? ENV_VIEWS[env]() : [noEnvView()]));
+                  envViewRows[0],
+                  shellTabsBar(envTabs, tabsVisible),
+                  ...envViewRows.slice(1),
+                  shellStatusBar());
     }
 
     /* =====================================================================================

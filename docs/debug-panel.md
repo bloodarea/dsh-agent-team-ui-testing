@@ -1,6 +1,6 @@
 # 调试面板：公共视图接口与目标环境实现
 
-调试视图由公共外壳、可复用的视图组件和目标环境专有内容组成。公共部分提供环境选择、尺寸、标注和状态展示；目标环境决定实际画面、交互方式与专有工具。当前已接入 Web 视图，其余目标环境使用公共空白画布。
+调试视图由公共外壳、可复用的视图组件和目标环境专有内容组成。公共部分提供环境选择、多目标标签栏、尺寸、标注和状态展示；目标环境决定实际画面、交互方式与专有工具。当前已接入 Web 视图，其余目标环境使用公共空白画布。
 
 从 **更多 → 调试视图** 或右侧边栏的插件卡片进入。需要把元素或标注截图加入聊天框时，优先从当前会话右侧打开，让面板绑定该会话并保持聊天框可见。按截图练习见[图文教程（tutorial.md）](tutorial.md)，直接查 Web 操作见[Web 实现](#31-web)。
 
@@ -33,7 +33,9 @@ DebugView(props)
   → 对应入口包装
     → DebugViewBody
       ├─ 公共顶栏与环境选择
-      ├─ ENV_VIEWS[env]() 或 shellNoViewRows()
+      ├─ 环境工具栏（环境行集合的首行）
+      ├─ shellTabsBar(envTabs, tabsVisible)
+      ├─ 环境行集合的后续正文（ENV_VIEWS[env]() 或 shellNoViewRows()）
       └─ shellStatusBar()
 ```
 
@@ -41,15 +43,16 @@ DebugView(props)
 
 ### 2.2 公共渲染接点
 
-以下函数均无显式参数，直接读取 `DebugViewBody` 的闭包状态，返回 React 节点、节点数组或条件空值。它们是渲染辅助函数，不是拥有独立 props 与生命周期的 React 组件。
+以下接点返回 React 节点、节点数组或条件空值，是渲染辅助函数，不是拥有独立 props 与生命周期的 React 组件。`shellTabsBar(model, visible)` 显式接收展示模型与显隐状态；其余函数直接读取 `DebugViewBody` 的闭包状态。
 
 | 接点 | 返回与职责 | 当前调用方 |
 | --- | --- | --- |
+| `shellTabsBar(model, visible)` | 根据中立展示模型渲染标签、选中项、创建与关闭操作；不解析 URL 或调用 Web 路由 | 根外壳统一调用，模型来自当前环境的 `ENV_TABS` provider |
 | `shellAnnotBar()` | 标注模式下返回工具栏：绘制、选择／框选、样式、截图、删除与清除 | Web 与无视图分支 |
 | `shellSizeBar()` | 尺寸模式下返回预设、宽高、坐标、缩放和拖拽／适应／默认控制 | Web 与无视图分支 |
 | `shellAnnotLayer()` | 返回共享 SVG 标注图层，绘制图形、选择状态与手势草稿 | Web 预览区与公共空白画布 |
 | `shellStatusBar()` | 返回控制权、显示帧率／延迟、已选标注数、同步状态和活动摘要 | 外壳根部统一调用 |
-| `shellBarPublic()` | 返回无视图分支的标注、尺寸与更多工具栏 | `shellNoViewRows()` |
+| `shellBarPublic()` | 返回无视图分支的标签入口、标注、尺寸与更多工具栏；标签无 provider 时禁用 | `shellNoViewRows()` |
 | `shellBlankStage()` | 返回按当前尺寸与显示比例铺设的空白画布 | `shellNoViewRows()` |
 | `shellNoViewRows()` | 返回公共工具栏、标注栏、尺寸栏与空白画布的行集合 | 环境无视图实现时的根分支 |
 
@@ -63,9 +66,11 @@ DebugView(props)
 const ENV_VIEWS = { web: webViewBody };
 ```
 
-以当前本地视图 id `env` 查表，值为零参数渲染函数，返回该环境的 React 行节点数组。根部展开返回值；没有对应函数时调用 `shellNoViewRows()`。`webViewBody()` 内部再复用公共标注栏、尺寸栏和标注图层，状态栏由根部追加一次。
+以当前本地视图 id `env` 查表，值为零参数渲染函数，返回该环境的 React 行节点数组。没有对应函数时调用 `shellNoViewRows()`。根部先渲染行集合首项（工具栏），再渲染公共标签栏与后续正文，末尾追加一次公共状态栏。`webViewBody()` 内部复用公共标注栏、尺寸栏和标注图层。
 
 `ENV_VIEWS` 是组件执行时创建的局部对象，不是 Host 的适配器注册表，也没有对外导出的 `registerView()` 方法。目标视图当前仍通过同一闭包读取状态和调用操作处理器。
+
+标签栏单独通过 `ENV_TABS = { web: webTabsProvider }` 取模型。`webTabsProvider()` 负责把 Web 运行时列表转成中立的 `items/activeId`、展示文案与 `onSelect/onClose/onCreate` 回调；`shellTabsBar(model, visible)` 消费这些值。无 provider 或无实际能力时返回 `null`，公共标签入口禁用，不显示 Web 页也不调用 Web `/tabs`。完整展示字段与 Host 管理接口见[多标签页公共接口](multi-tab.md#1-公共抽象)。
 
 ### 2.4 标注坐标映射接口
 
@@ -115,7 +120,7 @@ Web 的 `annotMap()` 从实际帧显示区域、已接受的视口尺寸与画�
 
 ### 3.1 Web
 
-Web 在 `ENV_VIEWS` 中注册 `webViewBody()`，在 `ENV_ANNOT_MAP` 中注册 Web 画布映射。正文返回导航工具栏、标签栏、Web 提示、公共标注栏、公共尺寸栏和页面预览区；预览内部叠加公共标注图层，以及 Web 专有的下拉浮层、右键菜单与选元素提示。
+Web 在 `ENV_VIEWS` 中注册 `webViewBody()`，在 `ENV_ANNOT_MAP` 中注册 Web 画布映射，在 `ENV_TABS` 中注册 `webTabsProvider`。正文返回导航工具栏、Web 提示、公共标注栏、公共尺寸栏和页面预览区；公共标签栏由根部插入工具栏之后。预览内部叠加公共标注图层，以及 Web 专有的下拉浮层、右键菜单与选元素提示。
 
 #### 地址栏与最近访问
 

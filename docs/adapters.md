@@ -18,7 +18,7 @@
 | --- | --- | --- | --- |
 | **TargetAdapter** | 目标在哪里，当前能否连接和使用？ | 探测环境、创建目标会话；由会话发现、绑定和关闭目标 | 不定义工具操作的业务语义 |
 | **CapabilityAdapter** | 这个操作是否受支持、是否获准执行，结果和证据是什么？ | 操作清单、操作状态、参数预检、操作执行 | 不自行发现或绑定目标，不改变组合根的执行分支 |
-| **P0Provider** | 各种操作怎样共享采集、网络、显示空间、标注和目标数据？ | P0-A～E 数据服务与公共模型转换 | P0-E 只提供目标投影和租约原语；目标绑定与关闭仍归 TargetAdapter |
+| **P0Provider** | 各种操作怎样共享采集、网络、显示空间、标注和目标数据？ | P0-A～E 数据服务与公共模型转换 | E 家族的 provider surface 只提供目标投影和租约原语；多目标生命周期由 TargetAdapter 的可选 `tabs` 服务承接 |
 
 三者是三种职责不同的契约。一个工具操作使用哪些 P0 家族，由该操作的实现决定；普通点击不必经过全部 P0 家族。
 
@@ -76,6 +76,7 @@ TargetAdapter {
   }
   probe({ scope, snapshot, signal }) -> Promise<ReadinessReport>
   createSession({ scope, snapshot, signal }) -> Promise<TargetSession>
+  tabs?: TargetTabs  // 可选的跨环境多目标管理入口，见 multi-tab.md
   dispose() -> Promise<void>
 }
 
@@ -184,7 +185,9 @@ family.method({ args, session, snapshot, signal, context, ... })
 
 公共模型由 [P0 工厂与校验器](../core/p0.js) 定义，包括 Frame、NetworkEvent、DisplaySpace、AnnotationDoc、TargetIdentity 和 Lease。平台特有引用放在 `transportRef` 等明确的扩展位置。租约必须绑定 `targetId` 和整数 `generation`，获取、释放、查询必须各自执行对应语义。
 
-**P0-E 与 TargetAdapter 的区别：** `targets.list()` 提供公共目标投影，租约方法管理访问原语；发现、绑定、关闭目标的生命周期入口是 TargetSession。P0Provider 不另起一套目标生命周期。
+**P0-E 与 TargetAdapter 的区别：** `targets.list()` 提供公共目标投影，租约方法管理访问原语；TargetSession 负责一次调用的发现、绑定与释放。多目标的列举、选择、创建、关闭及控制权管理，由 TargetAdapter 的可选 `tabs` 服务承接，复用平台已有的生命周期资源；P0Provider 不另起一套目标生命周期。
+
+`tabs` 使用 [公共多目标接口](../core/target-tabs.js) 的 `createTargetTabs({ environment, handlers })`，暴露 `contractVersion/environment/actions/invoke(request, context)`。缺失 `tabs` 表示未接入多目标管理；服务只列出真实接线的动作，合法但缺失的动作报 `CAPABILITY_UNSUPPORTED`。公共层验证请求形状与动作所属字段，目标创建方式、`kind/source` 枚举、权限、资源限额和返回字段由环境实现决定。Web 标签页与未来 Blender 多实例可以实现相同管理职责，无需共用浏览器协议。完整请求与视图接口见[多标签页：公共接口与目标环境实现](multi-tab.md)。
 
 ## 3. Web / Chrome 的实现
 
@@ -206,7 +209,7 @@ Web 是目标环境，Chrome 是该环境的具体执行端。一次选择 Chrom
 
 | 角色 | 实现入口 | 对应 manifest 身份 |
 | --- | --- | --- |
-| TargetAdapter | [适配器模块](../targets/web/adapter.js) 的 `createWebTargetAdapter()` | `id: "web"`、`class: "target"`、`environment: "web"` |
+| TargetAdapter | [适配器模块](../targets/web/adapter.js) 的 `createWebTargetAdapter()`；可选 `tabs` 使用 [Web 多目标服务](../targets/web/tabs.js) | `id: "web"`、`class: "target"`、`environment: "web"` |
 | CapabilityAdapter | [适配器模块](../targets/web/adapter.js) 的 `createWebCapabilityAdapter()` | `id: "web.capability"`、`class: "capability"`、`environment: "web"` |
 | P0Provider | [P0 提供者模块](../targets/web/provider.js) 的 `createWebP0Provider()` | `id: "web.p0"`、`class: "p0"`、`environment: "web"` |
 | 创建、注册与派发接线 | [跨环境组合根](../integration/cross-environment.js) | `createWebFaces()`、`invokeTool()`、`p0Call()` |
@@ -343,6 +346,19 @@ browser_screenshot handler
 ```
 
 当前 `invokeTool()` 与每次 `p0Call()` 分别创建会话，不能把示意图理解为整次工具调用只创建一个 TargetSession。它们需要对齐实际 Runtime、目标与配置身份；会话标识或绑定计数不能替代页面本身的代次校验。
+
+### 4.5 一次多目标管理操作
+
+```text
+browser_tabs handler
+  → crossEnvironment.invokeTabs(args, exec)
+    → 当前 Web TargetAdapter.tabs.invoke(args, context)
+      → core/target-tabs：公共请求校验与实际动作派发
+        → targets/web/tabs：Web 参数、页面结果与 P0-E list 投影
+          → 现有 RuntimeRegistry：目标生命周期、选择、权限与控制权
+```
+
+这条调用仍经过外层 CapabilityAdapter 的工具准入与 Host 原有的 `tabs` 执行分支。公共接口不创建第二份页面表，也不把动作绕过原有的权限、CAS 和租约。Web 的 P0Provider 继续负责目标投影与租约原语；其他环境未提供 `tabs` 时没有可执行的多目标管理服务。
 
 ## 5. 接入与验证
 

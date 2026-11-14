@@ -19,7 +19,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [调试面板（debug-panel.md）](debug-panel.md) | 公共视图接口、环境正文与标注映射接点、Web 实现，以及其他目标环境的公共空白画布与接线边界 |
-| [多标签页（multi-tab.md）](multi-tab.md) | 打开、切换和关闭页面，理解 Agent 选页、团队访问权限与控制权 |
+| [多标签页（multi-tab.md）](multi-tab.md) | P0-E 跨环境多目标管理接口、公共标签栏、Web 实现及其他环境的空接点 |
 | [视口、画布与标注（viewport-control.md）](viewport-control.md) | 调整视口、坐标和缩放，使用拖拽、光标跟随、标注选择与框选 |
 | [选元素加入聊天框（element-picker.md）](element-picker.md) | 在画面中选取元素，以 `@` 引用加入聊天框，以及原生下拉浮层的操作与限制 |
 | [页面右键菜单（panel-context-menu.md）](panel-context-menu.md) | 页面自绘菜单与面板默认菜单的行为、常用操作与失效边界 |

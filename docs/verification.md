@@ -34,7 +34,9 @@ node tests/acceptance/devtools.mjs             # DevTools 独立窗口：Host �
 node tests/acceptance/pick-element-host.mjs    # 选元素 Host：坐标空间/命中/详情/可见区边界/只读语义
 node tests/acceptance/context-menu-host.mjs    # 页面右键：真实取消状态/iframe/默认菜单动作/过期令牌
 node tests/acceptance/workspace-isolation.test.mjs
-node tests/acceptance/p0e-multitab.mjs           # P0-E Host：per-tab BUSY、browser_tabs、容量、T2 ref
+node --test tests/contracts/target-tabs.test.mjs # P0-E 公共管理接口：非 Web 参数、可选动作与 Web 接线
+node --test tests/contracts/panel-tabs.test.mjs # 公共标签栏与环境 provider 隔离
+node tests/acceptance/p0e-multitab.mjs           # P0-E Web Host：per-tab BUSY、browser_tabs、容量、T2 ref
 node tests/acceptance/p0e-multitab-gui.mjs       # P0-E GUI：Agent A/B、active 状态、+、BUSY 提示
 node --test tests/acceptance/runtime-faults.test.mjs
 node --test tests/dynamic-t4.test.mjs          # T4 纯核心单测

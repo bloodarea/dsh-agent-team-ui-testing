@@ -1197,7 +1197,7 @@ function importSpecifiers(source) {
 
 test('targets/web sources import only node builtins and core modules', () => {
   const files = readdirSync(WEB_DIR).filter((name) => name.endsWith('.js'));
-  assert.deepEqual(files.sort(), ['adapter.js', 'provider.js']);
+  assert.deepEqual(files.sort(), ['adapter.js', 'provider.js', 'tabs.js']);
 
   const allowed = new Set(['../../core/index.js', '../../core/p0.js']);
   const forbiddenModules = [
@@ -1244,7 +1244,7 @@ test('core never imports targets or the host entry (no reverse dependency)', () 
 });
 
 test('web adapter declares no CDP or browser protocol dependency', () => {
-  for (const file of ['adapter.js', 'provider.js']) {
+  for (const file of ['adapter.js', 'provider.js', 'tabs.js']) {
     const source = readFileSync(join(WEB_DIR, file), 'utf8');
     assert.equal(/chrome-remote-interface|puppeteer|playwright|ws:\/\//.test(source), false, `${file} must not own CDP`);
   }

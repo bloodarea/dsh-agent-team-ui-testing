@@ -39,7 +39,7 @@ index.js               Host：BrowserHost、RuntimeRegistry、租约与串行队
 integration/           跨环境组合根：权威配置、adapter registry、工具准入、逐次 adapter 调度、
                        `/config` `/config/select` `/readiness` 路由与 Skill provider
 core/                  环境中立契约：身份/几何/时钟/证据/错误、配置解析与持久化、registry、
-                       六轴就绪、P0-A～E 中立模型（`core/p0.js`）
+                       六轴就绪、P0-A～E 中立模型（`core/p0.js`）、多目标管理接口（`core/target-tabs.js`）
 targets/web/           Web TargetAdapter / CapabilityAdapter / P0Provider（注入 Runtime，不直接发 CDP）
 targets/fake/          仅测试的确定性假环境（test-only，不是真实平台实现）
 browser-safety.js      错误类型与分类、CDP 封装、取消与定时器清理、URL 脱敏、目标/DNS 校验
@@ -73,7 +73,8 @@ tests/                 验收套件与确定性靶机
 
 - 三类 adapter 消费**同一份不可变 ConfigSnapshot**；`invoke` 时 revision 不一致抛 `CONFIG_STALE`，不静默用旧配置执行。
 - `executionClass`（`page|readOnly|hostOnly|networkRead|diagnostic|independentHttp|tabs`）由组合根决定是否进串行队列/ensure；adapter 不得改变该分支。
-- 目标发现/绑定/关闭只归 TargetAdapter；P0-E provider 的 `targets` 仅 `list/leaseAcquire/leaseRelease/leaseStatus`。
+- P0-E 多标签页是跨环境的多目标管理能力。[公共管理接口](../core/target-tabs.js) 由 TargetAdapter 的可选 `tabs` 服务实现；Web 经 [Web 多目标服务](../targets/web/tabs.js) 连接现有 RuntimeRegistry，其他环境留空。目标发现/绑定与生命周期仍归 TargetAdapter；P0-E provider 的 `targets` 仅 `list/leaseAcquire/leaseRelease/leaseStatus`，不另建生命周期。
+- 面板标签栏是公共 `shellTabsBar(model, visible)`，环境通过内部 `ENV_TABS` 提供展示模型和操作回调；当前只有 Web provider，未接入环境不能借用 Web 的目标或操作。Blender 等未来实现可以把一个标签映射为一个实例及资产，见[公共接口与环境实现](multi-tab.md)。
 - 平台协议（CDP、DOM、WAAPI 等）只出现在 `targets/web/` 或对应平台目录，不泄漏到 `core/`。
 
 ## 配置驱动执行与上下文

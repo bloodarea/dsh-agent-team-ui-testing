@@ -16242,7 +16242,14 @@ export function apply(ctx) {
   // Cross-environment composition root (M2/M3): authoritative config, adapter registry, tool
   // admission, per-execution adapter dispatch, readiness and Skill discovery. The Web runtime
   // stays here; `integration/` only consumes the public core/targets contracts.
-  const crossEnvironment = createCrossEnvironment({ ctx, registry, log, BrowserError, asBrowserError });
+  const crossEnvironment = createCrossEnvironment({
+    ctx, registry, log, BrowserError, asBrowserError,
+    webTabsLimits: {
+      TAB_WAIT_TIMEOUT_DEFAULT_MS, TAB_WAIT_TIMEOUT_MAX_MS,
+      TAB_WAIT_POLL_DEFAULT_MS, TAB_WAIT_POLL_MIN_MS, TAB_WAIT_POLL_MAX_MS,
+      TAB_ACQUIRE_TIMEOUT_DEFAULT_MS, TAB_ACQUIRE_TIMEOUT_MAX_MS,
+    },
+  });
   ctx.effect(() => () => crossEnvironment.dispose(), 'ui-testing: cross-environment');
   // Independent HTTP client: shares only the collected host origins, never a page runtime.
   const httpClient = new HttpClient({ origins: () => [...origins] });
@@ -18611,8 +18618,8 @@ export function apply(ctx) {
 
   register({
     name: 'browser_tabs',
-    description: 'P0-E 多标签页：list/current 只读诊断；wait 纯内存等待调用开始后新出现的标签（0–30000ms，不启动 Chromium、不取 lease），命中返回 matched/matchedTab/elapsedMs/polls，超时抛 WAIT_TIMEOUT；'
-      + 'select 选择当前 Agent 会话的 tab（原子 claim，不启动页面）；open 新建 about:blank 并选中；close 关闭当前会话持有 lease 的 tab（primary 只变 cold）。'
+    description: 'P0-E 多标签页的 Web 实现：list/current 只读诊断；wait 纯内存等待调用开始后新出现的标签（0–30000ms，不启动 Chromium、不取 lease），命中返回 matched/matchedTab/elapsedMs/polls，超时抛 WAIT_TIMEOUT；'
+      + 'select 选择当前 Agent 会话的 tab（不启动页面）；open 新建 about:blank 并选中；close 按页面访问权限关闭标签（primary 只变 cold）。'
       + 'list 每项含 source/parentTabId/openEventId/createdAt/lastUsedAt/idleRemainingMs/manageable，并返回本 workspace 最近 8 条 blocked popup notices 与最近 8 条 recentClosed（reason closed|idle|evicted）。'
       + 'select 的 mode=work（默认）设置写目标、observe 设置只读观察目标；select 不再 claim 15 秒写租约，被拒绝的 select 不改变调用者已有选择。'
       + '页面按 (workspace, provider, root) 分组：跨会话/跨 root 的标签根本不在同一组，因此 tabId 只会解析到本 root 的页。'
@@ -18642,198 +18649,7 @@ export function apply(ctx) {
     timeoutMs: 35000,
     output: { schema: { type: 'object' }, render: (args, value) => text(value) },
     async execute(args, exec) {
-      const action = String(args && args.action || '');
-      const primary = exec.primaryEntry;
-      const registry = exec.registry;
-      const sessionId = exec.sessionId;
-      if (!primary || !registry) throw new BrowserError('UNSUPPORTED', 'browser_tabs 需要 workspace 页面组');
-      const allowed = ['action', 'tabId', 'mode', 'kind', 'source', 'timeoutMs', 'pollMs',
-        'toSessionId', 'expectedControlRevision', 'expectedOwnershipRevision'];
-      if (args && Object.keys(args).some((key) => !allowed.includes(key))) {
-        throw new BrowserError('INVALID_ARGUMENT', 'browser_tabs 不接受未知字段', { field: 'additionalProperties', allowed });
-      }
-      // Every action declares exactly the fields it owns (ruling §7.5: "非所属 action 字段拒绝").
-      // A field that belongs to another action is never ignored: silently dropping
-      // `expectedControlRevision` would turn a CAS-guarded management call into an unguarded one.
-      const actionFields = {
-        list: ['action'],
-        current: ['action'],
-        open: ['action'],
-        select: ['action', 'tabId', 'mode'],
-        close: ['action', 'tabId'],
-        wait: ['action', 'tabId', 'kind', 'source', 'timeoutMs', 'pollMs'],
-        acquire: ['action', 'tabId', 'expectedControlRevision', 'timeoutMs'],
-        release: ['action', 'tabId', 'expectedControlRevision'],
-        transfer: ['action', 'tabId', 'toSessionId', 'expectedControlRevision', 'expectedOwnershipRevision'],
-      };
-      const foreign = Object.keys(args || {}).filter((key) => !(actionFields[action] || ['action']).includes(key));
-      if (foreign.length > 0) {
-        throw new BrowserError('INVALID_ARGUMENT', `${action} 不接受字段 ${foreign.join(',')}`, {
-          field: 'action', action, allowed: actionFields[action] || ['action'], rejected: foreign,
-        });
-      }
-      const principal = exec.principal || null;
-      if (action === 'list') {
-        // A01: the target list is a P0-E read; it goes through the provider so the projection and
-        // its evidence come from one place (the provider binds the calling target internally).
-        const listed = await p0(exec, 'E', 'list', {}, { entry: primary });
-        const providerRows = Array.isArray(listed) ? listed : (Array.isArray(listed?.tabs) ? listed.tabs : []);
-        // The provider projection answers "what target is this", not "may this caller act on it".
-        // The long-lived ownership/control/permission fields are added here, from the registry this
-        // call is authorised against, so the tool result carries one consistent ACL story (ruling
-        // §5 "每页返回") without teaching the P0 adapter about principals (that is M3's wiring).
-        const ownRows = new Map(registry.listTabs(primary, sessionId, principal)
-          .map((row) => [String(row.tabId), row]));
-        const tabs = providerRows.map((row) => {
-          const own = ownRows.get(String(row.tabId));
-          if (!own) return row;
-          return {
-            ...row,
-            accessVersion: own.accessVersion,
-            rootSessionId: own.rootSessionId,
-            creatorSessionId: own.creatorSessionId,
-            ownerSessionId: own.ownerSessionId,
-            controllerSessionId: own.controllerSessionId,
-            ownershipRevision: own.ownershipRevision,
-            controlRevision: own.controlRevision,
-            accessState: own.accessState,
-            permissions: own.permissions,
-          };
-        });
-        const selection = registry.selectionFor(primary, sessionId);
-        return {
-          ok: true, action, tabs,
-          notices: registry.noticesView(primary), recentClosed: registry.recentClosedView(primary),
-          accessVersion: 1,
-          // `selection` stays the workSelection compatibility projection (ruling §5).
-          selection,
-          workSelection: selection,
-          observationSelection: selection.observationTabId
-            ? { ...selection, tabId: selection.observationTabId }
-            : null,
-        };
-      }
-      if (action === 'current') {
-        // current never claims: it only confirms the caller's own (possibly retired) selection.
-        const selection = registry.confirmSelection(primary, sessionId);
-        return {
-          ok: true, action, tabId: selection.tabId, selection, workSelection: selection,
-          observationSelection: selection.observationTabId ? { ...selection, tabId: selection.observationTabId } : null,
-          confirmedResetReason: selection.confirmedResetReason || null,
-        };
-      }
-      if (action === 'select') {
-        if (typeof args.tabId !== 'string' || !args.tabId.trim()) throw new BrowserError('INVALID_ARGUMENT', 'select 需要 tabId', { field: 'tabId' });
-        if (args.tabId.trim().length > 128) throw new BrowserError('INVALID_ARGUMENT', 'select.tabId 必须是 1–128 字符', { field: 'tabId' });
-        const mode = args.mode === undefined ? 'work' : String(args.mode);
-        if (!['work', 'observe'].includes(mode)) {
-          throw new BrowserError('INVALID_ARGUMENT', 'select.mode 只接受 work/observe', { field: 'mode', allowed: ['work', 'observe'] });
-        }
-        // A refusal throws before anything is written, so a denied select leaves the caller's
-        // existing work/observation selection exactly as it was (plan §5).
-        const selected = registry.selectTab(primary, sessionId, args.tabId.trim(), { mode, principal });
-        return {
-          ok: true, action, mode,
-          tabId: selected.entry.tabId || selected.entry.viewId || 'primary',
-          selection: selected.selection,
-          workSelection: selected.selection.tabId ? selected.selection : null,
-          observationSelection: selected.selection.observationTabId
-            ? { ...selected.selection, tabId: selected.selection.observationTabId } : null,
-          // select never claims a lease any more: say so instead of leaving callers to infer it.
-          claimed: false,
-        };
-      }
-      if (action === 'open') {
-        const opened = await registry.openTab(primary, sessionId, 'agent', { principal });
-        return { ok: true, action, tabId: opened.entry.tabId || opened.entry.viewId, selection: opened.selection };
-      }
-      if (action === 'close') {
-        const tabId = typeof args.tabId === 'string' && args.tabId.trim() ? args.tabId.trim() : registry.selectionFor(primary, sessionId).tabId;
-        const closed = await registry.closeTab(primary, sessionId, tabId, { principal });
-        const closedEntry = registry.tabEntry(primary, tabId) || registry.primaryEntry(primary);
-        return { ok: true, action, tabId: closed.closed, changed: true, control: registry.controlProjection(closedEntry) };
-      }
-      if (action === 'acquire' || action === 'release' || action === 'transfer') {
-        // Management path. Order is the contract (plan §5.2): principal → same root → Lead role →
-        // target → expected version. `authorizePage` inside the registry enforces the first four,
-        // the transition enforces the versions, and the drain wait is the only thing that runs
-        // before the commit — never an abort of somebody's in-flight page operation.
-        if (typeof args.tabId !== 'string' || !args.tabId.trim()) {
-          throw new BrowserError('INVALID_ARGUMENT', `${action} 需要 tabId`, { field: 'tabId' });
-        }
-        const target = registry.tabEntry(primary, args.tabId.trim());
-        if (!target) throw new BrowserError('TAB_NOT_FOUND', '标签不存在或不属于当前 workspace', { tabId: args.tabId, fallbackTabId: 'primary' });
-        const revisionOf = (value, field) => {
-          if (value === undefined || value === null) {
-            throw new BrowserError('INVALID_ARGUMENT', `${action} 需要 ${field}`, { field });
-          }
-          if (!Number.isInteger(value) || value < 1 || value > Number.MAX_SAFE_INTEGER) {
-            throw new BrowserError('INVALID_ARGUMENT', `${field} 必须是 1–9007199254740991 的整数`, { field });
-          }
-          return value;
-        };
-        const expectedControlRevision = revisionOf(args.expectedControlRevision, 'expectedControlRevision');
-        if (action === 'acquire') {
-          const timeoutMs = args.timeoutMs === undefined ? TAB_ACQUIRE_TIMEOUT_DEFAULT_MS : args.timeoutMs;
-          if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > TAB_ACQUIRE_TIMEOUT_MAX_MS) {
-            throw new BrowserError('INVALID_ARGUMENT', `acquire.timeoutMs 必须是 0–${TAB_ACQUIRE_TIMEOUT_MAX_MS} 的整数`, {
-              field: 'timeoutMs', min: 0, max: TAB_ACQUIRE_TIMEOUT_MAX_MS,
-            });
-          }
-          const result = await registry.acquireControl(target, principal, {
-            expectedControlRevision, timeoutMs, signal: exec.signal,
-          });
-          return {
-            ok: true, action, changed: result.changed, waitedMs: result.waitedMs,
-            control: registry.controlProjection(target),
-          };
-        }
-        if (action === 'release') {
-          const result = registry.releaseControl(target, principal, { expectedControlRevision });
-          return { ok: true, action, changed: result.changed, control: registry.controlProjection(target) };
-        }
-        const expectedOwnershipRevision = revisionOf(args.expectedOwnershipRevision, 'expectedOwnershipRevision');
-        const result = registry.transferControl(target, principal, {
-          toSessionId: args.toSessionId, expectedControlRevision, expectedOwnershipRevision,
-        });
-        return {
-          ok: true, action, changed: result.changed, to: result.to,
-          control: registry.controlProjection(target),
-        };
-      }
-      if (action === 'wait') {
-        const timeoutMs = args.timeoutMs === undefined ? TAB_WAIT_TIMEOUT_DEFAULT_MS : args.timeoutMs;
-        if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > TAB_WAIT_TIMEOUT_MAX_MS) {
-          throw new BrowserError('INVALID_ARGUMENT', `wait.timeoutMs 必须是 0–${TAB_WAIT_TIMEOUT_MAX_MS} 的整数`, {
-            field: 'timeoutMs', min: 0, max: TAB_WAIT_TIMEOUT_MAX_MS,
-          });
-        }
-        const pollMs = args.pollMs === undefined ? TAB_WAIT_POLL_DEFAULT_MS : args.pollMs;
-        if (!Number.isInteger(pollMs) || pollMs < TAB_WAIT_POLL_MIN_MS || pollMs > TAB_WAIT_POLL_MAX_MS) {
-          throw new BrowserError('INVALID_ARGUMENT', `wait.pollMs 必须是 ${TAB_WAIT_POLL_MIN_MS}–${TAB_WAIT_POLL_MAX_MS} 的整数`, {
-            field: 'pollMs', min: TAB_WAIT_POLL_MIN_MS, max: TAB_WAIT_POLL_MAX_MS,
-          });
-        }
-        const tabId = args.tabId === undefined || args.tabId === null ? null : args.tabId;
-        if (tabId !== null && (typeof tabId !== 'string' || !tabId.trim() || tabId.trim().length > 128)) {
-          throw new BrowserError('INVALID_ARGUMENT', 'wait.tabId 必须是 1–128 字符', { field: 'tabId' });
-        }
-        const kind = args.kind === undefined ? null : String(args.kind);
-        if (kind !== null && !['primary', 'tab'].includes(kind)) {
-          throw new BrowserError('INVALID_ARGUMENT', 'wait.kind 只接受 primary/tab', { field: 'kind', allowed: ['primary', 'tab'] });
-        }
-        const source = args.source === undefined ? null : String(args.source);
-        if (source !== null && !['primary', 'gui-popup', 'agent-open'].includes(source)) {
-          throw new BrowserError('INVALID_ARGUMENT', 'wait.source 只接受 primary/gui-popup/agent-open', {
-            field: 'source', allowed: ['primary', 'gui-popup', 'agent-open'],
-          });
-        }
-        const waited = await registry.waitForTab(primary, sessionId, {
-          tabId: tabId === null ? null : tabId.trim(), kind, source, timeoutMs, pollMs,
-        }, exec.signal);
-        return { ok: true, action, ...waited };
-      }
-      throw new BrowserError('INVALID_ARGUMENT', 'browser_tabs.action 不合法', { field: 'action', allowed });
+      return crossEnvironment.invokeTabs(args, exec);
     },
   });
 

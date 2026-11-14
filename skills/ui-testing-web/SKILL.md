@@ -103,9 +103,9 @@ browser_viewport { "action": "set", "canvasX": 300, "canvasY": 200 }      // 画
 - **截图默认值改了**：`browser_screenshot` 省略 `scale` 现在跟随 `view.scale`（Agent 若把比例设成 0.65，后续默认截图就是 520×390 而不是 800×600）。需要固定分辨率时**显式给 scale**。
 - **边界**：画布是视图层合成，`O≠0` 时截图会重编码并披露 `composite:true`；`fixed`/`sticky` 随整帧平移；空白区域不存在于 DOM。面板画布交互与需认证的 GUI 路由不在本 Skill 的结论范围内。
 
-### P0-E（1 个，多标签页）
+### P0-E 的 Web 实现（1 个，多标签页）
 
-`browser_tabs` 是唯一的 page 组管理工具，权威行为见 `docs/multi-tab.md`。
+P0-E 是跨环境的多目标管理基础设施；在 Web 中一个标签对应一个浏览器页面。`browser_tabs` 是当前 Web 的 page 组管理工具，经 TargetAdapter 的可选 `tabs` 接口执行；其他环境可映射为应用实例或资产会话，目前尚未实现，不得向非 Web 目标套用此工具。公共接口与 Web 行为见[多标签页](../../docs/multi-tab.md)。
 
 ```jsonc
 { "action": "list | current | select | open | close | wait | acquire | release | transfer",

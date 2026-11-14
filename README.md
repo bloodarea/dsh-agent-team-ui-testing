@@ -83,7 +83,7 @@ The agent interprets the goal, chooses methods and judges results. The plugin co
 | T3 · Output and presentation debugging | Do layout, colour, shape or image differences match expectations? |
 | T4 · Process and behaviour debugging | How does state change over time, and do transitions, motion and workflows meet requirements? |
 
-Choose and combine T1–T4 by question. They do not require every environment to expose DOM, JavaScript or browser tabs. P0 provides shared data across tiers; the three adapter contracts define integration responsibilities. Definitions, routing and current implementations are in [capability tiers (capability-tiers.md)](docs/capability-tiers.md).
+Choose and combine T1–T4 by question. They do not require every environment to expose DOM, JavaScript or browser tabs. P0 provides shared data across tiers; P0-E defines common multi-target management, represented as browser tabs in Web or, for a future Blender adapter, separate instances loading individual 3D assets. The common interface and tab bar are implemented; other environments leave their implementation absent. See [multi-target management (multi-tab.md)](docs/multi-tab.md). The three adapter contracts define integration responsibilities. Definitions, routing and current implementations are in [capability tiers (capability-tiers.md)](docs/capability-tiers.md).
 
 ## Web capabilities available today
 

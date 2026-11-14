@@ -31,7 +31,7 @@
 
 ## 多标签（P0-E）
 
-`browser_tabs` 管理当前 workspace 的 primary + child 标签；Agent 的其余工具默认操作当前会话 selectedTab，无选择时 primary。详见[多标签页](multi-tab.md)。
+P0-E 的[多目标管理接口](multi-tab.md#1-公共抽象)由各目标环境实现，当前提供 Web 工具 `browser_tabs`。它管理当前 workspace、provider 与团队根内的 primary + child 页面；写工具走调用者 workSelection（默认指向自己已拥有的页，没有自有页则未绑定），读工具优先 observationSelection，再回退 workSelection。具体约定见[Web 实现](multi-tab.md#2-具体实现web)。
 
 | 工具 | 主要参数 | 要点 |
 | --- | --- | --- |

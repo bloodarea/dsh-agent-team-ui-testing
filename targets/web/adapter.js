@@ -7,7 +7,7 @@
  * discovery). Nothing here starts a browser, reads user configuration, or imports the host entry.
  *
  * Contracts follow docs/internal/cross-environment-foundation-m0.md §2.1 (v1):
- * - TargetAdapter:     { manifest, probe, createSession, dispose }
+ * - TargetAdapter:     { manifest, probe, createSession, dispose, tabs? }
  * - TargetSession:     { sessionId, environment, generation, configRevision, target,
  *                        listTargets, bind, close, dispose }
  * - CapabilityAdapter: { manifest, operationStatus, invoke, preflight, dispose }
@@ -673,6 +673,7 @@ function createCapabilityAdapterManifest() {
  * @param {object} [options]
  * @param {object} [options.registry] Shared runtime registry (read-only here). Entries describe
  *   discovered targets; `registry.host` means a runtime exists but has not been handshaked.
+ * @param {object} [options.tabs] Optional TargetTabs service injected by the composition root.
  * @param {object} [options.log] Optional logger (`debug`/`warn`); never receives user config.
  * @param {() => number} [options.now] Clock injection for `checkedAt`.
  * @param {string} [options.chromePath] Explicit Chromium executable (defaults to
@@ -688,6 +689,7 @@ export function createWebTargetAdapter({
   chromePath = process.env.DSH_UI_TESTING_CHROME,
   platform = process.platform,
   capabilityAvailability,
+  tabs,
 } = {}) {
   const manifest = createTargetAdapterManifest();
   const sessions = new Map();
@@ -994,7 +996,7 @@ export function createWebTargetAdapter({
     // The shared registry/runtime is owned by the composition root; dispose never closes it.
   }
 
-  return { manifest, probe, createSession, dispose };
+  return { manifest, probe, createSession, dispose, ...(tabs ? { tabs } : {}) };
 }
 
 /**

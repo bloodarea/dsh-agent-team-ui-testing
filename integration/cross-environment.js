@@ -46,6 +46,7 @@ import {
   resolveWebDriver,
 } from '../targets/web/adapter.js';
 import { createWebP0Provider } from '../targets/web/provider.js';
+import { createWebTargetTabs } from '../targets/web/tabs.js';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const DEFAULT_ENVIRONMENT = ENVIRONMENTS.WEB;
@@ -140,6 +141,7 @@ export function createCrossEnvironment({
   log = () => {},
   BrowserError,
   asBrowserError,
+  webTabsLimits = {},
   env = process.env,
 } = {}) {
   if (typeof BrowserError !== 'function') throw new TypeError('createCrossEnvironment requires BrowserError');
@@ -363,6 +365,18 @@ export function createCrossEnvironment({
     const targetAdapter = createWebTargetAdapter({
       registry,
       log,
+      tabs: createWebTargetTabs({
+        registry,
+        BrowserError,
+        limits: webTabsLimits,
+        listTargets: async (exec, primaryEntry) => {
+          const result = await p0Call({
+            family: 'E', method: 'list', exec,
+            runtime: exec.runtime ?? null, entry: primaryEntry, meta: exec.meta ?? null,
+          });
+          return result.value;
+        },
+      }),
       capabilityAvailability: ({ entry, snapshot }) => probeWebCapabilities({
         entry: entry ?? findEntryForSnapshot(snapshot),
         checkedAt: Date.now(),
@@ -875,6 +889,19 @@ export function createCrossEnvironment({
         // Session cleanup must never mask the operation result.
       }
     }
+  }
+
+  /** Target lifecycle dispatch; P0-E remains projection/lease only. Called inside invokeTool. */
+  async function invokeTabs(args, exec = {}) {
+    const snapshot = snapshotForAgent(exec.agent);
+    assertToolAllowed(exec.agent, 'browser_tabs');
+    prepareWeb(snapshot);
+    const { targetAdapter } = adapterRegistry.resolve(snapshot);
+    if (typeof targetAdapter.tabs?.invoke !== 'function') {
+      throw new BrowserError(ERROR_CODES.CAPABILITY_UNSUPPORTED,
+        `环境 ${snapshot.environment} 没有 TargetTabs 服务`, { environment: snapshot.environment });
+    }
+    return targetAdapter.tabs.invoke(args, exec);
   }
 
   function executionClassFor(name, args) {
@@ -1517,6 +1544,7 @@ export function createCrossEnvironment({
     assertToolAllowed,
     executionClassFor,
     invokeTool,
+    invokeTabs,
     p0Call,
     handleHttp,
     assertGuiAllowed,

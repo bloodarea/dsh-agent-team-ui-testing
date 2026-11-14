@@ -1,8 +1,82 @@
-# 多标签页（P0-E）
+# 多标签页（P0-E）：公共接口与目标环境实现
+
+P0-E 是跨目标环境的多目标管理基础设施。“标签页”是调试控制端组织多个独立目标的方式；目标可以是浏览器页面，也可以是应用实例、窗口或资产会话。Web 是当前已有的具体实现，其他环境的实现接点留空。
+
+## 1. 公共抽象
+
+### 目标与标签的映射
+
+一个标签对应一个可独立寻址、选择和管理生命周期的目标。目标适配器决定它实际代表什么：
+
+| 目标环境 | 标签对应的目标 | 当前实现 |
+| --- | --- | --- |
+| Web | 浏览器标签页及其独立页面 Runtime | 已接入 |
+| 3D / Blender | 可映射为多个 Blender 实例，每个实例加载一个 3D 资产 | 未实现，接口留空；此处仅说明映射方式 |
+| 桌面、移动端、TUI、游戏等 | 由适配器定义应用实例、窗口、设备会话或其他目标的边界 | 未实现，接口留空 |
+
+公共抽象不要求目标具备 URL、DOM、浏览器 profile、popup 或 `about:blank`，也不要求每个环境采用相同数量的目标、进程或资源限额。新增环境应声明自己的实际支持动作与目标语义。
+
+### 管理接口与职责
+
+[公共接口模块](../core/target-tabs.js) 提供 `createTargetTabs({ environment, handlers })`：
+
+```text
+TargetAdapter {
+  ...
+  tabs?: TargetTabs
+}
+
+TargetTabs {
+  contractVersion: 1
+  environment: string
+  actions: string[]                  // 实际接线的动作
+  invoke(request, context) -> Promise<平台结果>
+}
+
+request = { action, ...该动作的参数 }
+```
+
+`tabs` 是 TargetAdapter 可选的多目标管理服务。它使用目标实现已有的生命周期资源，不另建目标注册表；`TargetSession` 仍负责一次调用的发现、绑定与释放。P0Provider 的 `targets` 家族负责 `TargetIdentity` 投影和 `Lease` 原语，不能在 provider 内重复创建或关闭实际目标。三者的完整关系见[适配器接口](adapters.md#23-p0provider五个可选的数据家族)。
+
+| 动作 | 公共职责 | 参数 |
+| --- | --- | --- |
+| `list` | 列出当前作用域可见的目标 | 无附加字段 |
+| `current` | 查询调用者当前选择及失效确认状态 | 无附加字段 |
+| `select` | 更新调用者的工作或观察目标 | `tabId`、可选 `mode: work / observe` |
+| `open` | 按目标环境语义创建并选择目标 | 当前基础请求不带附加字段；资源内容由实现决定 |
+| `close` | 关闭指定目标或当前目标 | 可选 `tabId` |
+| `wait` | 有界等待目标出现 | 可选 `tabId / kind / source / timeoutMs / pollMs` |
+| `acquire` | 等待安全边界后接管控制权 | `tabId / expectedControlRevision`，可选 `timeoutMs` |
+| `release` | 将控制权归还所有者 | `tabId / expectedControlRevision` |
+| `transfer` | 转交所有权与控制权 | `tabId / toSessionId / expectedControlRevision / expectedOwnershipRevision` |
+
+公共层验证请求形状、动作所属字段与通用参数类型；未知或非所属字段报 `INVALID_ARGUMENT`，合法但未提供 handler 的动作报 `CAPABILITY_UNSUPPORTED`。`kind/source` 的具体取值与结果字段由目标环境定义，不能把 Web 的 `primary/tab`、`gui-popup` 枚举作为其他环境的要求。调用上下文传递作用域、调用者、取消信号和平台执行句柄；权限判定、资源配额、取消清理和平台错误由实现负责。
+
+接口返回各实现的结果，不把 Web 的 `title/url/runtimeId` 伪装成中立字段。目标身份与租约的公共模型分别由 [P0 模型](../core/p0.js) 的 `createTargetIdentity()`、`createLease()` 定义。`actions` 只说明哪些管理方法已接线，现场连接、目标身份和可用性还需独立探测。
+
+### 公共标签栏
+
+[面板实现](../client.js) 的 `shellTabsBar(model, visible)` 消费中立展示模型和回调：
+
+```text
+model = {
+  label, items: [{ id, label, title, closeLabel, closeTitle, closeKind }],
+  activeId, canCreate, creating, createLabel, createTitle,
+  onSelect(id), onClose(id), onCreate()
+}
+```
+
+组件只负责标签展示、当前项指示与操作意图，不解析 URL、连接浏览器或调用 Web 路由。组件内部 `ENV_TABS` 按当前环境解析 provider；只有 Web 注册了 `webTabsProvider`。未注册环境返回 `null`，标签入口禁用、标签栏不出现，也不会复用 Web 的目标和创建操作。该注册表是组件内部接点，尚不是第三方动态注册 SDK。
+
+GUI 当前目标与 Agent 的工作／观察选择分别管理。切换 GUI 标签不能隐式改变 Agent 的目标；不同标签的引用与证据仍需核对目标身份和代次。完整视图接点见[调试面板](debug-panel.md)。
+
+## 2. 具体实现：Web
+
+Web 使用 [Web 多目标服务](../targets/web/tabs.js) 实现公共管理接口，通过 [Web TargetAdapter](../targets/web/adapter.js) 的 `tabs` 接点交给[组合根](../integration/cross-environment.js) 调用。`browser_tabs` 是这一实现的 Agent 工具入口；`web.tabs` 是 Web 的能力 id，不是 P0-E 的全局归属。下文的页面组、字段、路由、容量、popup 与 profile 行为均为 **Web 实现约定**。
 
 页面组按 **(workspace, provider, 团队根)** 分组：同一个团队根（Lead 与它的成员）共享同一组页；不同独立会话、不同团队根即使同在一个 workspace，也各有自己的一组，互相看不见、也不能互相写。每组有一个稳定的 primary 槽位 + child 标签；primary 是每个根各一个槽，child 的**最多 3 个**是跨 root 合计的（不是每个根各 3 个），全局同时 live 上限 8。每个标签是一个独立 Runtime，拥有自己的 page、URL/history、view、标注、网络缓冲、T2 ref 表、串行队列和 single-owner lease；Cookie/localStorage/缓存仍由同一个 Chromium profile 共享，**不是登录态隔离**。
 
-## 身份与选择
+### 身份与选择
 
 | 概念 | 行为 |
 | --- | --- |
@@ -18,14 +92,14 @@
 
 面板自己的视图不受 Agent 的标签选择影响：session 作用域的 GUI 请求带 `X-UI-Testing-Scope-Tab: primary`（WS 用 `&tab=primary`），Host 见到它就跳过 Agent 的 `selectedTab` 解析，始终渲染本 workspace 的 primary。不带该提示的调用仍是"跟随该会话选中的标签"（工具与旧客户端行为不变）。
 
-## browser_tabs
+### browser_tabs
 
-唯一的 P0-E 管理工具（第 36 个工具，新增的 P0-D `browser_annotation` 是第 37 个）；其他工具的参数 schema 不变，调用默认走当前会话自己的选择（写用 workSelection，读优先 observationSelection）。
+Web 当前的 P0-E 管理工具；其他 Web 工具调用默认走当前会话自己的选择（写用 workSelection，读优先 observationSelection）。其他目标环境接入自己的工具与适配器，不要求复用 `browser_*` 名称。
 
 ```jsonc
 {
   "action": "list | current | select | open | close | wait | acquire | release | transfer",
-  "tabId": "select/open?/close/wait/acquire/release/transfer 使用；close 省略=当前标签",
+  "tabId": "select/close/wait/acquire/release/transfer 使用；close 省略=当前标签",
   "mode": "仅 select：work（默认）| observe",
   "kind": "仅 wait：primary | tab",
   "source": "仅 wait：primary | gui-popup | agent-open",
@@ -91,7 +165,7 @@
 - `WAIT_TIMEOUT`、`INVALID_ARGUMENT`（含"非所属 action 的字段"）。
 匿名调用 select/open/close 返回 `UNSUPPORTED`（`agent-session-required`）。结果统一附带 `tab:{id,runtimeId,selectionRevision}`；管理动作另附 `changed` 与 `control`（最终 controller/版本），被自动接管执行的写操作附 `autoAcquired:true`。
 
-## BUSY 与并发
+### BUSY 与并发
 
 - **15 秒 lease 只表示"短暂忙"，不决定权限**：谁能写由 root → 角色 → controller/版本决定。只读观察不占写租约（同一时间别人仍可写该页），写操作之间仍按 tab 串行。
 - **BUSY 按 tab 计**：Agent A 在 tab1 工作不阻止 Agent B 在 tab2；同一 tab 上另一会话正在执行写操作时，后到的写才返回 `BUSY`。
@@ -102,7 +176,7 @@
 - 关闭/idle 退休 child 时，仍指向该 child 的 Agent selection 进入 `pendingReset`；下一次普通页面工具先返回 `TARGET_NOT_FOUND(reason:selected-tab-closed,fallbackTabId:primary)` 且零派发，需 `browser_tabs.current` 或 `select` 明确确认。旧 Runtime 的在途操作不会重放到 primary。
 - primary close 只让 primary 变 cold，不级联 child；child close 只回收该 tab。
 
-## GUI 面板
+### GUI 面板
 
 - 地址栏下方有内部标签栏，由工具栏「标注」左侧的开关控制显隐；**单标签也占行**（默认显示）。标签栏最右是 `+` 新建空白标签；工具栏（地址栏行）不常驻 `+`。
 - 显隐开关（`data-utb-tabs-toggle`，aria-pressed）只作用于标签栏本身，页面/tabs/active 保留；隐藏时栏内的 `+` 一并隐藏，需要新建标签时先打开标签栏。开关行为与标签数量无关。
@@ -114,7 +188,7 @@
 - **面板按 runtime id 寻址当前标签**：active 标签是 child 时，`/state`、`/frame`、`/close`、`/tabs` 都带 `scope-binding` = 该标签的 runtimeId（primary 同理），Host 用这个 id 解析到**该标签自己的** entry（primary 或 child），不借用 Agent session 的 selectedTab，也不把 child 的 binding 当成 primary 的 workspace key。`scope=recent` 与 binding 都直接命中已存在的 entry，不会为同一 workspace 再造一个 Runtime。绑定必须命中真实 entry：`/close` 命中不到返回 404 `SCOPE_NOT_FOUND`（不返回假成功）；`/tabs.open` 解析不到所属 primary 也报 `SCOPE_NOT_FOUND`，只有真的到容量上限才是 `TAB_LIMIT`。
 - 4/8 容量与 per-tab lease 同样约束 GUI：第 5 个标签/tab 返回 `TAB_LIMIT` 并在本地提示。
 
-## 容量与来源
+### 容量与来源
 
 | 限制 | 值 |
 | --- | --- |
@@ -130,14 +204,14 @@
 
 空白首发弹窗（策略 A）：真人点击产生的 popup，如果原始 target 与 intent 都是空白/脚本窗口（`about:blank`/`data:`/`blob:`/`javascript:`），Host 会先接管并等待它的首个文档变成允许的 HTTP(S) 页面（最长 4s）；最终文档必须通过地址校验，否则仍以 `target-forbidden` 阻断并关闭该 target。这样兼容常见的 `window.open()` 后再 `location.href` 的站点写法，同时不放开自动弹窗或非法目标。
 
-## 生命周期与可观察性
+### 生命周期与可观察性
 
 - 每个标签的 idle 计时按最近一次页面工具/页面写操作刷新（`keepalive.refreshOnPageTools`）；`browser_tabs.list`、`browser_tabs.wait`、`browser_capabilities` 不刷新也不启动 Chromium。
 - 关闭分三类并记入 `recentClosed`：显式/外部关闭 `closed`、idle 回收 `idle`、全局容量 LRU 淘汰 `evicted`。被回收 tab 上的 Agent selection 仍按 pendingReset 语义处理（下一次页面工具零派发报 `TARGET_NOT_FOUND`，需 `browser_tabs.current` 或 `select` 确认）。
 - 被策略阻断的 popup 只进入 `notices`（按 workspace 隔离，不跨 workspace 聚合），不创建 tab；`openEventId` 用于把 notice 与具体点击/新页事件对上。
 - `wait` 可在不启动浏览器的前提下等待 GUI 真人弹窗或另一会话新建的标签，`source:'gui-popup'` 可区分真人 popup 与 `agent-open`。
 
-## Web 视图运行模式（无头 / 有头）
+### Web 视图运行模式（无头 / 有头）
 
 - 工具栏“Web 视图”环境选择器的左侧有 **无头 / 有头** 分段选择器，仅 Web 视图显示；默认 **无头**。
 - **有头** = 同一个共享 Chromium 以**离屏窗口**启动，并在 Linux/X11 上尽力用 `xdotool windowunmap` 从窗口管理器/任务栏/Alt-Tab 隐藏（`ui.display.window="offscreen"`、`ui.display.hidden=true`）；默认**无可见窗口、不抢焦点**。浏览器的进程本身仍出现在系统进程列表里（无法在不使用特权手段的情况下隐藏进程）。持久 profile（默认 `$DSH_HOME/ui-testing/headed-profile`，可用 `DSH_UI_TESTING_PROFILE_DIR` 覆盖）保留登录态 / 站点 Cookie；无头模式仍使用每次启动的临时 profile。
@@ -145,11 +219,11 @@
 - 有头模式在 POSIX 宿主上需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，否则返回 `DISPLAY_UNAVAILABLE` 并保持无头；Windows 宿主自带窗口系统，不需要这两个变量（任务栏/Alt-Tab 隐藏走 `WS_EX_TOOLWINDOW`，依赖系统 `powershell.exe`，不可用时退化为离屏位置）。设置 `DSH_UI_TESTING_HEADED_VISIBLE=1` 可让有头窗口正常显示（调试/手动登录用）；未安装 `xdotool` 时（仅 Linux/X11）退化为离屏位置，不保证从任务栏隐藏。
 - 有头不等于通过站点反自动化：Cloudflare / Turnstile 等仍可能挑战甚至拒绝自动化浏览器；需要人工交互时设 `DSH_UI_TESTING_HEADED_VISIBLE=1` 显示窗口再完成挑战，且不承诺一定通过。
 
-## 能力发现
+### 能力发现
 
 `browser_capabilities` 的 `tabs` 段报告版本、工具、`actions`（九个动作）、`maxTabsPerWorkspace:4`、`maxChildTabs:3`、`maxGlobalPages:8`、`idleMs`、`noticesLimit:8`、`closedHistoryLimit:8`、`busyScope`、`keepalive` 说明与当前 selectedTab/views；`limits.tabs` 提供同一组限额与生命周期字段。读取 capabilities 不启动 Chromium、不取 lease，也不会为陌生 root 创建持久 entry。
 
-## 边界（NOT）
+### 边界（NOT）
 
 - 不提供跨 workspace / 跨团队根选页（跨 root 的目标一律 not-found 语义，不回显对方 id/URL/标题）；不把 profile 隔离伪装成登录态隔离；notices/recentClosed 不跨 workspace 聚合。
 - 不做跨 tab 的缓存/网络/标注聚合，也不把其他 Agent 的 selectedTab 暴露给 list。
@@ -160,3 +234,22 @@
 - **证据归属未按 root 隔离**：`browser_network*`、T3 产品/基线、T4 动态会话仍按 workspace/session 归属，跨 root 共享同一采集器与存储，不能当作 root 隔离的证据。
 - **DevTools 直连地址仍会投影**：受管页可能仍返回 `127.0.0.1:<port>/devtools/...` 直连地址，该通道不受本页描述的权限模型约束。
 - 刷新/断线恢复、多面板并发、真实跨浏览器 SSO、idle/LRU 极端与 T3/T4 全矩阵仍按各套件 NOT_RUN 报告，不能由本页推断通过。
+
+## 3. 其他目标环境的扩展位置
+
+其他真实目标环境暂不注册 `TargetAdapter.tabs` 或 `ENV_TABS` provider。公共空白画布只提供视图回退，不能创建 Blender、桌面窗口或设备目标，也不能以 Web 的页数、profile 与 popup 策略推导其他环境行为。
+
+新增实现时，先在目标环境目录提供自己的 TargetAdapter 和 `createTargetTabs()` handlers，再在组合根接入该服务与环境工具；前端提供独立的标签展示模型与目标绑定回调。比如 Blender 可在 `open` 中启动一个实例、加载其资产，在 `list` 中返回该实例身份，在 `select` 中切换控制端绑定，在 `close` 中按应用自身的保存与生命周期规则释放实例。资产参数与保存规则需要实现时明确，当前没有这些动作的实际接线。
+
+## 4. 验证接口与实现
+
+| 检查 | 命令 | 能证明的范围 |
+| --- | --- | --- |
+| 公共多目标接口 | `node --test tests/contracts/target-tabs.test.mjs` | 请求校验、可选动作、缺失动作拒绝及非 Web 的 `kind/source`，不证明真实 Blender 可用 |
+| Web 服务与适配器 | `node --test tests/contracts/web-tabs.test.mjs tests/contracts/web-adapter.test.mjs` | 注入上下文、Web 参数与实际调用接线 |
+| 公共标签栏 | `node --test tests/contracts/panel-tabs.test.mjs` | 展示模型、环境 provider 分派及未实现环境不借用 Web 操作 |
+| 跨环境契约 | `node --test tests/contracts/*.test.mjs` | 现有配置、P0、适配器、权限与面板回归 |
+| Web 真实目标 | `node tests/acceptance/p0e-multitab.mjs` | 实际页面创建、选择、关闭、等待、队列与引用隔离 |
+| Web 团队控制 | `node tests/acceptance/team-tab-access.mjs` | root 隔离、成员权限、Lead 接管／归还／转交及 CAS |
+
+界面实测另见[验证与贡献](verification.md)。接口测试通过只证明抽象与接线约定；各环境的目标创建、输入、画面和资源清理需要自己的真实验收。
