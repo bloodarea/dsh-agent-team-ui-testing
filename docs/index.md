@@ -19,8 +19,6 @@
 | 文档 | 内容 |
 | --- | --- |
 | [调试面板（debug-panel.md）](debug-panel.md) | 公共视图接口、环境正文与标注映射接点、Web 实现，以及其他目标环境的公共空白画布与接线边界 |
-| [多标签页（multi-tab.md）](multi-tab.md) | P0-E 跨环境多目标管理接口、公共标签栏、Web 实现及其他环境的空接点 |
-| [视口、画布与标注（viewport-control.md）](viewport-control.md) | 调整视口、坐标和缩放，使用拖拽、光标跟随、标注选择与框选 |
 | [选元素加入聊天框（element-picker.md）](element-picker.md) | 在画面中选取元素，以 `@` 引用加入聊天框，以及原生下拉浮层的操作与限制 |
 | [页面右键菜单（panel-context-menu.md）](panel-context-menu.md) | 页面自绘菜单与面板默认菜单的行为、常用操作与失效边界 |
 
@@ -32,6 +30,8 @@
 | [工具参考（tools.md）](tools.md) | 37 个工具的名称、参数、返回与错误分类 |
 | [截图与图片交付（capture-p0.md）](capture-p0.md) | 截图区域、分辨率、标注叠加、文件留存与图片交付的证据边界 |
 | [网络调试（network-p0.md）](network-p0.md) | 请求、WebSocket、SSE、业务链路、网络控制与证据导出 |
+| [视口、画布与标注（viewport-control.md）](viewport-control.md) | 调整视口、坐标和缩放，使用拖拽、光标跟随、标注选择与框选 |
+| [多标签页（multi-tab.md）](multi-tab.md) | P0-E 跨环境多目标管理接口、公共标签栏、Web 实现及其他环境的空接点 |
 
 ## 诊断与验证
 
