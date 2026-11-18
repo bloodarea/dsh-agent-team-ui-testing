@@ -42,7 +42,7 @@
 | 游戏 | Unity、Unreal、Godot、Cocos 等 | 待接入 |
 | 3D | 三维应用与编辑工具 | 待接入 |
 
-这里的 Linux、Windows、macOS 指原生桌面测试目标；当前 Web 适配器已经可以运行在这三类宿主系统上。Web 下还接入了 Edge 驱动，真实 Edge 启动尚未验证；Firefox 尚未支持，详见[浏览器运行配置（browser-runtime.md）](docs/browser-runtime.md)。
+这里的 Linux、Windows、macOS 指原生桌面测试目标；当前 Web 适配器已经可以运行在这三类宿主系统上。Web 下已接入 Edge 驱动，真实 Edge 启动尚未验证。Firefox 尚未支持。详见[目标环境定义](docs/target-environments.md)和 [Web 目标环境配置](docs/browser-runtime.md)。
 
 ## 已落地的跨环境基础架构
 
@@ -93,7 +93,7 @@ T1–T4 按问题选用，可以组合，不要求每个环境提供 DOM、JavaS
 - **截图与视觉证据**：校验 PNG、显式区域和比例、标注叠加、像素比较与受管基线。见[截图交付（capture-p0.md）](docs/capture-p0.md)和[Chrome T3（capability-tiers.md）](docs/capability-tiers.md#web-chrome-t3)。
 - **网络与动态调试**：请求、WebSocket、SSE、链路与证据导出；有界帧采集、七类动态分析、WAAPI 控制与恢复、视觉和网络事件关联。见[网络调试（network-p0.md）](docs/network-p0.md)和[Chrome T4（capability-tiers.md）](docs/capability-tiers.md#web-chrome-t4)。
 
-当前 Web 实现默认无头，也可使用有头模式。浏览器依赖、执行端选择与 profile 行为见[浏览器运行配置（browser-runtime.md）](docs/browser-runtime.md)，启用与诊断见[环境设置（settings.md）](docs/settings.md)。
+当前 Web 实现默认无头，也可使用有头模式。浏览器依赖、执行端选择与 profile 行为见 [Web 目标环境配置](docs/browser-runtime.md)。启用与诊断见[环境设置](docs/settings.md)。
 
 ## 开始使用
 
@@ -109,7 +109,7 @@ dsh plugin --profile web add dsh-agent-team-ui-testing
 - **开发者**：看[开发者进阶（tutorial-advanced.md）](docs/tutorial-advanced.md)，了解工具调用、结果验证及网络、视觉和动态调试。
 - **查阅全部帮助**：打开[文档索引（docs/index.md）](docs/index.md)，按安装、面板、能力、诊断或架构查找。
 
-其他安装来源与固定版本方式见[浏览器运行配置（browser-runtime.md）](docs/browser-runtime.md#其他安装方式)。
+其他安装来源与固定版本方式见[快速开始](docs/getting-started.md#其他安装方式)。
 
 ## 使用与验证边界
 

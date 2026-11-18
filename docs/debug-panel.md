@@ -154,7 +154,7 @@ Web 通过 CDP screencast 提供页面帧。`createFrameTransport(handlers, scop
 | 指定元素 | Web 选元素层将页面节点转换为聊天框 `@` 引用 | [选元素（element-picker.md）](element-picker.md) |
 | 画标注并交付图片 | 复用公共标注栏与图层；使用 Web 坐标映射、Host 文档和截图接线 | [标注（viewport-control.md）](viewport-control.md#标注)、[截图交付（capture-p0.md）](capture-p0.md) |
 
-无头／有头开关属于 Web：当前在公共顶栏以 `env === 'web'` 且视图存在为条件显示，调用 Host `display` 操作，并处理页面与绑定重置。运行模式和 profile 说明见[浏览器运行配置（browser-runtime.md）](browser-runtime.md#无头与有头模式)。
+无头／有头开关属于 Web：当前在公共顶栏以 `env === 'web'` 且视图存在为条件显示，调用 Host `display` 操作，并处理页面与绑定重置。运行模式和 profile 说明见[Web 目标环境配置](browser-runtime.md#无头与有头模式)。
 
 #### 打开 Chrome DevTools
 

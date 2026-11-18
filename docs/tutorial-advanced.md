@@ -106,7 +106,7 @@ browser_screenshot { "includeAnnotations": true, "out": "output/capture/annotate
 
 | 问题 | 查阅位置 |
 | --- | --- |
-| 浏览器路径、有头模式、profile 或厂商身份 | [浏览器运行配置（browser-runtime.md）](browser-runtime.md) |
+| 浏览器路径、有头模式、profile 或厂商身份 | [Web 目标环境配置](browser-runtime.md) |
 | 环境开关、执行端选择、诊断结果与配置冲突 | [环境设置（settings.md）](settings.md)、[诊断状态码（diagnose-reason-codes.md）](diagnose-reason-codes.md) |
 | 客户端或 Host 代码改动未生效 | [改动如何生效（verification.md）](verification.md#改动如何生效) |
 | 选择测试套件、判读未运行项和报告 | [验证与贡献（verification.md）](verification.md) |

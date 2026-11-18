@@ -1,6 +1,8 @@
-# 浏览器运行配置
+# Web 目标环境配置
 
-插件使用本地浏览器，不随安装下载浏览器。默认执行端为 Chrome / Chromium，无头模式按需启动；`browser_state`、`browser_capabilities` 等诊断不会启动浏览器。安装步骤见[快速开始（getting-started.md）](getting-started.md)。
+Web（`web`）是[目标环境接口](target-environments.md#公共接口)的浏览器实现，具体目标是浏览器页面。Linux、macOS 和 Windows 均可作为这个实现的宿主平台。
+
+插件使用宿主机已有的浏览器。默认执行端为 Chrome / Chromium，在首次需要页面时以无头模式启动。`browser_state`、`browser_capabilities` 等诊断不会启动浏览器。插件安装步骤见[快速开始](getting-started.md)。
 
 ## 浏览器路径
 
@@ -22,15 +24,20 @@ Windows 不查注册表；非标准安装目录或 scoop/choco 的 `.cmd` shim �
 
 | 执行端（provider） | 可执行文件覆盖 | 当前边界 |
 | --- | --- | --- |
-| Chrome / Chromium | `DSH_UI_TESTING_CHROME` | 默认执行端 |
-| Edge | `DSH_UI_TESTING_EDGE` | 驱动已接入，真实 Edge 启动尚未验证 |
-| Firefox | — | 尚未支持，设置卡片不可启用 |
+| Chrome / Chromium（`chrome`） | `DSH_UI_TESTING_CHROME` | 默认启用并选中的执行端 |
+| Edge（`edge`） | `DSH_UI_TESTING_EDGE` | 默认关闭。驱动已接入，真实 Edge 启动尚未验证 |
+| Firefox（`firefox`） | — | 尚未支持，设置卡片不可启用 |
 
 Chrome 与 Edge 使用各自的候选路径；Edge 查找 Linux 的 `microsoft-edge` / `microsoft-edge-stable`、Windows 的 `Microsoft/Edge/Application/msedge.exe` 与 macOS 的 Edge 应用。覆盖无效时不会改用另一厂商。未启用的 provider 不探测；启用但缺少二进制时，依赖诊断报告 `failed / executable-missing`，不会打开页面。
 
 连接后通过 `Browser.getVersion` 校验产品身份：Chrome 的产品串需含 `Chrome/` 且不含 `Edg/`；Edge 需含 `Edg/`。身份不符报 `DEPENDENCY_MISSING / identity-mismatch`；Edge 无法取得产品串时按 `identity-unverified` 拒绝，Chrome 在取得产品串时核对。
 
-执行端的启用与选择见[环境设置（settings.md）](settings.md#启用与选择)。
+## 启用与选择 Web 执行端
+
+打开 **设置 → UI 测试 → Web**。打开 Web 总开关和所需浏览器卡片的「用户启用」开关。打开卡片开关后，当前执行端保持原选择。通用的选择与诊断操作见[环境设置](settings.md#启用与选择)。
+
+- Host 使用 `environments.web.providers.<id>.enabled` 保存各浏览器的启用状态，使用 `environments.web.provider` 保存全局或工作区的执行端选择。`enabledProviders` 从启用状态派生。缺少 provider 字段的旧配置默认启用并选择 Chrome。
+- 当前执行端依次取会话、父会话、工作区和全局的设置，缺省为 Chrome。所选执行端被禁用时，Host 保留选择并阻断执行。可从 Host 状态的 `resolved.provider` 查看生效值。调试面板预览按目标环境展示。
 
 ## 无头与有头模式
 
@@ -56,14 +63,4 @@ Web 视图可切换无头与有头模式。切换会关闭当前浏览器进程�
 
 ## 其他安装方式
 
-npm 安装按 semver 更新。需要 GitHub 来源或固定版本时可使用：
-
-```sh
-# 跟随仓库；package.json 的 version 变化时才提示更新
-dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing
-
-# 固定 tag，不接收更新提示；将 vX.Y.Z 替换为实际标签
-dsh plugin --profile web add github:bloodarea/dsh-agent-team-ui-testing#vX.Y.Z
-```
-
-开发时可将本仓库链接或复制进 profile。代码和文档改动的生效方式见[验证与贡献（verification.md）](verification.md#改动如何生效)。
+GitHub 安装、固定版本和本地开发安装方式见[快速开始](getting-started.md#其他安装方式)。

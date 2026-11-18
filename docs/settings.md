@@ -1,6 +1,6 @@
 # 环境设置
 
-打开 DSH 的 **设置 → UI 测试**。设置页管理目标环境与具体执行端，浏览器依赖见[浏览器运行配置（browser-runtime.md）](browser-runtime.md)。
+打开 DSH 的 **设置 → UI 测试**。设置页管理目标环境与具体执行端。环境定义和各环境的依赖、运行配置见[目标环境定义与配置入口](target-environments.md)。
 
 ## 启用与选择
 
@@ -13,11 +13,9 @@
 
 分组默认收起，展开状态保存在浏览器本地。分组覆盖 Web、Linux、Windows、macOS、Android、TUI、HarmonyOS、游戏、3D 与小程序；具体框架和容器列在各组卡片中。环境能力范围见[目标环境实现（capability-tiers.md）](capability-tiers.md#3-目标环境实现)。
 
-启用与可执行分别判断。尚无适配器的环境可以保存启用状态，但不能设为当前执行环境；卡片上的「未支持」「未接入」保留其含义。Firefox 当前不可启用；Edge 的真实启动验证范围见[浏览器执行端说明（browser-runtime.md）](browser-runtime.md#chromeedge-与-firefox)。
+启用与可执行分别判断。尚无适配器的环境可以保存启用状态，可执行选择要求已接入适配器。环境内的配置和支持状态见[各目标环境的配置](target-environments.md#各目标环境的配置)。
 
 调试面板的环境选择器只列出已启用环境。没有视图实现的环境只切换本地视图选择，不提交 Host 的执行环境选择；公共尺寸和截图处理器仍复用当前 Host，具体边界见[公共空白画布（debug-panel.md）](debug-panel.md#32-其他目标环境与公共空白画布)。对已有视图的环境，面板通过 `POST /plugins/ui-testing/config/select` 提交当前会话选择，成功后才更新显示，冲突或失败保留原选择并提示。
-
-Web 的当前 provider 按以下优先级解析：**会话 → 父会话 → 工作区 → 全局 → 默认 Chrome**。当前 provider 被禁用时保留选择并阻断执行，不静默改用另一浏览器。有效值可从 Host 状态中的 `resolved.provider` 读取；面板预览不按 provider 分栏。
 
 ## 配置保存与工具生效
 
@@ -31,7 +29,7 @@ Web 的当前 provider 按以下优先级解析：**会话 → 父会话 → 工
 
 提交成功后采用返回的 revision。遇到 `CONFIG_CONFLICT` 时显示冲突、采用最新 revision 并回滚本次改动，不显示保存成功。
 
-环境总开关写入 `environments.<env>.enabled`；Web 的分开关写入 `environments.web.providers.<id>.enabled`，`environments.web.provider` 保存执行端选择。`enabledProviders` 是派生列表，不另行存储；缺少 provider 字段的旧配置按默认选择 Chrome 且 Chrome 启用处理。
+环境总开关写入 `environments.<env>.enabled`。执行端的启用和选择字段由该环境定义，参见[各目标环境的配置](target-environments.md#各目标环境的配置)。
 
 配置默认保存在 `${DSH_HOME}/ui-testing/config.json`，可用 `DSH_UI_TESTING_CONFIG_DIR` 覆盖目录。配置快照与适配器准入见[适配器接口（adapters.md）](adapters.md#12-三者使用统一的配置快照结构)。
 

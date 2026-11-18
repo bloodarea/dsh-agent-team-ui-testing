@@ -42,7 +42,7 @@ The project brings Web, desktop, mobile, terminal, mini program, game and 3D app
 | Games | Unity, Unreal, Godot, Cocos and similar runtimes | Pending |
 | 3D | Three-dimensional applications and editing tools | Pending |
 
-Linux, Windows and macOS here are native desktop testing targets. The current Web adapter already runs on all three host systems. Web also has a wired Edge driver, but a real Edge launch remains unverified; Firefox is not supported. See [browser runtime configuration (browser-runtime.md)](docs/browser-runtime.md).
+Linux, Windows and macOS here are native desktop testing targets. The current Web adapter already runs on all three host systems. Web has a wired Edge driver, and a real Edge launch remains unverified. Firefox is unsupported. See the [target environment definitions](docs/target-environments.md) and [Web target configuration](docs/browser-runtime.md).
 
 ## Implemented cross-environment foundation
 
@@ -93,7 +93,7 @@ Choose and combine T1–T4 by question. They do not require every environment to
 - **Capture and visual evidence:** validated PNGs, explicit regions and scale, annotation overlays, pixel comparison and managed baselines. See [capture (capture-p0.md)](docs/capture-p0.md) and [Chrome T3 (capability-tiers.md)](docs/capability-tiers.md#web-chrome-t3).
 - **Network and dynamic debugging:** requests, WebSocket, SSE, tracing and evidence export; bounded frame capture, seven motion analyses, WAAPI control and restore, and visual/network event correlation. See [network debugging (network-p0.md)](docs/network-p0.md) and [Chrome T4 (capability-tiers.md)](docs/capability-tiers.md#web-chrome-t4).
 
-The current Web implementation defaults to headless and also offers a headed mode. Browser dependencies, providers and profile behaviour are covered in [browser runtime configuration (browser-runtime.md)](docs/browser-runtime.md); enablement and diagnostics are in [environment settings (settings.md)](docs/settings.md).
+The current Web implementation defaults to headless and also offers a headed mode. See [Web target configuration](docs/browser-runtime.md) for browser dependencies, providers and profiles. See [environment settings](docs/settings.md) for enablement and diagnostics.
 
 ## Getting started
 
@@ -109,7 +109,7 @@ Install into the profile you use, then restart DSH. For the first exercise, open
 - **Developers:** read the [developer follow-up (tutorial-advanced.md)](docs/tutorial-advanced.md) for tool calls, result verification and network, visual and dynamic debugging.
 - **All help topics:** open the [documentation index (docs/index.md)](docs/index.md) and browse installation, panel operations, capabilities, diagnostics and architecture.
 
-Other installation sources and version pinning are documented in [browser runtime configuration (browser-runtime.md)](docs/browser-runtime.md#其他安装方式).
+For other installation sources and version pinning, see [Getting started](docs/getting-started.md#其他安装方式).
 
 ## Usage and verification boundaries
 
