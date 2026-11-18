@@ -248,18 +248,21 @@ async function probeA08(configDir) {
   check('A08 会话级选择生效（fake 会话已写入配置）',
     select.statusCode === 200 && select.json.resolved && select.json.resolved.environment === 'fake',
     200, { status: select.statusCode, resolved: select.json.resolved && select.json.resolved.environment });
-  // 内核能力：当组合层把 step 准入交给声明层时，`when` 会把另一环境的工具挡在请求之外。
+  // 内核能力：`when` 的结果直接进入声明层。默认未激活任何能力组，所以 Web 会话只看到发现入口
+  // 与两个诊断；另一环境的工具同样被挡在请求之外。
+  const WEB_INITIAL = ['browser_capabilities', 'browser_state', 'browser_tools'];
   check('A08 内核：宿主按 step 准入时，when=false 的工具不进入声明（dsh-tools + dsh-system-prompt 实测）',
-    webNames.includes('browser_snapshot') && !webNames.includes('browser_fake_probe'),
-    { webHasSnapshot: true, webHasFake: false },
-    { count: webNames.length, hasSnapshot: webNames.includes('browser_snapshot'), hasFake: webNames.includes('browser_fake_probe') });
-  const FAKE_EXPECTED = ['browser_capabilities', 'browser_fake_probe', 'browser_state'];
-  check('A08 内核：fake 会话的声明只有 fake 探针 + 两个环境无关诊断',
+    webNames.length === WEB_INITIAL.length && WEB_INITIAL.every((name) => webNames.includes(name))
+      && !webNames.includes('browser_fake_probe'),
+    { webNames: WEB_INITIAL, webHasFake: false },
+    { count: webNames.length, names: webNames });
+  const FAKE_EXPECTED = ['browser_capabilities', 'browser_fake_probe', 'browser_state', 'browser_tools'];
+  check('A08 内核：fake 会话的声明只有 fake 探针 + 发现与两个环境无关诊断',
     fakeNames.length === FAKE_EXPECTED.length && FAKE_EXPECTED.every((name) => fakeNames.includes(name)),
     FAKE_EXPECTED, fakeNames);
 
-  // 本机组合层：模型请求按“已注册”构建（实测 request/header 不随 when 变化），所以隔离必须由
-  // 注册范围保证。这里直接核对声明面：Web 被禁用后，注册面不得再包含任何 Web 工具。
+  // 组合层：注册范围是环境上限（Web 禁用后不再注册任何 Web 操作），逐步 `when` 再决定本步发送。
+  // 这里直接核对注册面：Web 被禁用后，注册面不得再包含任何 Web 工具。
   const capabilitySnapshot = await getJson(harness, '/plugins/ui-testing/config');
   await putJson(harness, '/plugins/ui-testing/config', {
     expectedRevision: capabilitySnapshot.revision,
@@ -269,11 +272,11 @@ async function probeA08(configDir) {
   const capabilities = await harness.invoke('browser_capabilities', {}, { agent: agent('agent-web', harness.workspaceDir) });
   const declaration = capabilities.value?.adapter?.declaration;
   const registeredAfter = Array.isArray(declaration?.registeredTools) ? declaration.registeredTools : [];
-  const ALLOWED_AFTER_DISABLE = ['browser_state', 'browser_capabilities', 'browser_fake_probe'];
+  const ALLOWED_AFTER_DISABLE = ['browser_state', 'browser_capabilities', 'browser_fake_probe', 'browser_tools'];
   const webToolsAfter = registeredAfter.filter((name) => !ALLOWED_AFTER_DISABLE.includes(name));
-  check('A08 组合层：Web 禁用后注册面只剩两个中立诊断（模型请求不可能再带 Web schema）',
-    declaration?.registration === 'enabled-union' && webToolsAfter.length === 0 && declaration.isolated === true,
-    { registration: 'enabled-union', webToolsRemaining: 0, isolated: true },
+  check('A08 组合层：Web 禁用后注册面只剩发现入口与诊断（模型请求不可能再带 Web schema）',
+    declaration?.registration === 'environment-ceiling' && webToolsAfter.length === 0 && declaration.isolated === true,
+    { registration: 'environment-ceiling', webToolsRemaining: 0, isolated: true },
     { registration: declaration?.registration, webToolsRemaining: webToolsAfter.length, isolated: declaration?.isolated, registeredCount: declaration?.registeredCount });
   // 面板为权威（用户裁决 2026-11-07）：启用了哪些环境，就注册这些环境的工具，别的环境一个都不带。
   const enableBoth = await getJson(harness, '/plugins/ui-testing/config');
@@ -284,13 +287,14 @@ async function probeA08(configDir) {
   });
   const bothDeclaration = (await harness.invoke('browser_capabilities', {}, { agent: agent('agent-web', harness.workspaceDir) })).value?.adapter?.declaration;
   const bothRegistered = Array.isArray(bothDeclaration?.registeredTools) ? bothDeclaration.registeredTools : [];
-  // 37 个 Web 工具里已含 `browser_state`/`browser_capabilities` 两个中立诊断，再加 fake 探针 = 38。
-  check('A08 面板为权威：Web + fake 同时启用 → 注册面 = 37 个 Web 工具 + fake 探针 = 38',
-    bothDeclaration?.registeredCount === 38
+  // 中立发现/诊断入口（browser_tools + 两个诊断）+ 37 个 Web 工具 + fake 探针 = 39。
+  check('A08 面板为权威：Web + fake 同时启用 → 注册面 = 37 个 Web 工具 + 发现入口 + fake 探针 = 39',
+    bothDeclaration?.registeredCount === 39
       && bothRegistered.includes('browser_fake_probe')
+      && bothRegistered.includes('browser_tools')
       && bothRegistered.includes('browser_snapshot')
       && bothRegistered.includes('browser_network_events'),
-    { registeredCount: 38, hasProbe: true, hasWeb: true },
+    { registeredCount: 39, hasProbe: true, hasWeb: true },
     { registeredCount: bothDeclaration?.registeredCount, hasProbe: bothRegistered.includes('browser_fake_probe'), hasWeb: bothRegistered.includes('browser_snapshot') });
   const onlyFake = await getJson(harness, '/plugins/ui-testing/config');
   await putJson(harness, '/plugins/ui-testing/config', {
@@ -300,11 +304,12 @@ async function probeA08(configDir) {
   });
   const fakeOnlyDeclaration = (await harness.invoke('browser_capabilities', {}, { agent: agent('agent-web', harness.workspaceDir) })).value?.adapter?.declaration;
   const fakeOnlyRegistered = Array.isArray(fakeOnlyDeclaration?.registeredTools) ? fakeOnlyDeclaration.registeredTools : [];
-  check('A08 面板为权威：只启用 fake → 注册面只剩探针 + 2 个中立诊断（Web 工具一个都不带）',
-    fakeOnlyDeclaration?.registeredCount === 3
+  check('A08 面板为权威：只启用 fake → 注册面只剩探针 + 发现入口 + 2 个中立诊断（Web 工具一个都不带）',
+    fakeOnlyDeclaration?.registeredCount === 4
       && fakeOnlyRegistered.includes('browser_fake_probe')
+      && fakeOnlyRegistered.includes('browser_tools')
       && !fakeOnlyRegistered.includes('browser_snapshot'),
-    { registeredCount: 3, hasProbe: true, hasWeb: false },
+    { registeredCount: 4, hasProbe: true, hasWeb: false },
     { registeredCount: fakeOnlyDeclaration?.registeredCount, hasProbe: fakeOnlyRegistered.includes('browser_fake_probe'), hasWeb: fakeOnlyRegistered.includes('browser_snapshot') });
 
   await harness.dispose();

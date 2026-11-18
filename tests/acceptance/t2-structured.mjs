@@ -477,8 +477,16 @@ async function probeC1({ check, finding }) {
     // 30 = 10 T1 (docs/architecture.md + docs/viewport-control.md §7 browser_viewport) + 7 T2
     //    + 6 T3 (docs/t3-vision.md §2.1) + 7 network (docs/network-p0.md §2);
     // compared against harness EXPECTED_TOOLS so no group can drift silently.
-    check('实际注册恰好 30 个工具', names.length === expected.length && JSON.stringify([...names].sort()) === JSON.stringify([...expected].sort()), {
-      expected: { count: expected.length, names: expected }, actual: { count: names.length, names },
+    // The registry grows as capabilities are added, so the assertion is "the declared surface and
+    // the registered surface are the same SET" — not a frozen count. `browser_tools` is the
+    // discovery entry and is asserted separately.
+    const registeredExecution = names.filter((name) => name !== 'browser_tools');
+    check('注册的执行工具集与声明清单完全一致', registeredExecution.length === expected.length
+      && JSON.stringify([...registeredExecution].sort()) === JSON.stringify([...expected].sort()), {
+      expected: { count: expected.length, names: expected },
+      actual: { count: registeredExecution.length, names: registeredExecution },
+      missing: expected.filter((name) => !registeredExecution.includes(name)),
+      extra: registeredExecution.filter((name) => !expected.includes(name)),
     });
     const problems = [];
     for (const tool of EXPECTED_TOOLS) {
@@ -492,7 +500,7 @@ async function probeC1({ check, finding }) {
       if (typeof definition.description !== 'string' || !definition.description.trim()) problems.push(`${tool.name}: description 为空`);
       if (typeof definition.execute !== 'function') problems.push(`${tool.name}: execute 不是函数`);
     }
-    check('30 个工具的 parameters/required/execute/description 与契约 §2.2/§2.1/§2 一致', problems.length === 0, { expected: [], actual: problems });
+    check('全部声明工具的 parameters/required/execute/description 与契约 §2.2/§2.1/§2 一致', problems.length === 0, { expected: [], actual: problems });
 
     const rawCdp = names.filter((name) => /cdp|devtools|protocol|runtime\.|page\./i.test(name));
     check('没有暴露原始 CDP/协议命令工具', rawCdp.length === 0, { expected: [], actual: rawCdp });
@@ -514,17 +522,23 @@ async function probeC1({ check, finding }) {
     });
     const caps = await call(harness, 'browser_capabilities', {}, execOf());
     const toolEntries = (caps.value?.capabilities || []).filter((item) => item.tool);
-    check('capabilities 覆盖全部 35 个工具（含 10 个 T1 + 7 个 T2 + 6 个 T3 + 7 个 network + 5 个 T4）', toolEntries.length === EXPECTED_TOOLS.length && EXPECTED_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
-      expected: { count: EXPECTED_TOOLS.length }, actual: toolEntries.map((item) => `${item.tool}:${item.status}`),
+    // A tool may be described by more than one capability row (e.g. scripts inventory + analysis),
+    // so the contract is coverage of the tool SET, not a row count.
+    const uncovered = EXPECTED_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name));
+    check(`capabilities 覆盖全部 ${EXPECTED_TOOLS.length} 个声明工具`, uncovered.length === 0, {
+      expected: { tools: EXPECTED_TOOLS.length }, uncovered: uncovered.map((tool) => tool.name),
+      rows: toolEntries.length,
     });
     // Proves the pre-network surface did not regress independently of the new group: the 25
     // legacy tools (22 pre-viewport + browser_viewport + browser_tabs + browser_annotation) must
     // still be declared, and the 7 network tools must be declared too.
-    check('旧 25 工具（22 旧 + browser_viewport + browser_tabs + browser_annotation）与 7 个 network、5 个 T4 工具都各自完整声明', LEGACY_TOOLS.length === 25 && NETWORK_TOOLS.length === 7
+    // LEGACY/NETWORK/T4 are DERIVED lists: the contract is that each group is fully declared,
+    // and that the groups together account for the whole declared surface (no orphan tool).
+    check('既有工具组（legacy/network/T4）都各自完整声明，且合计覆盖全部声明工具', LEGACY_TOOLS.length >= 25 && NETWORK_TOOLS.length === 7
       && LEGACY_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name))
       && NETWORK_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name))
       && T4_TOOLS.every((tool) => toolEntries.some((item) => item.tool === tool.name)), {
-      expected: { legacy: 25, network: 7, t4: 5 },
+      expected: { legacy: `>=25 (实际 ${LEGACY_TOOLS.length})`, network: 7, t4: 5 },
       actual: { legacyMissing: LEGACY_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name),
         networkMissing: NETWORK_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name),
         t4Missing: T4_TOOLS.filter((tool) => !toolEntries.some((item) => item.tool === tool.name)).map((tool) => tool.name) },

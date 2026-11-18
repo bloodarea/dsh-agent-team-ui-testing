@@ -22,7 +22,11 @@ import { SELECT_UNSUPPORTED_HINT } from '../../select-control.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const clientSource = fs.readFileSync(path.resolve(here, '../../client.js'), 'utf8');
-const hostSource = fs.readFileSync(path.resolve(here, '../../index.js'), 'utf8');
+// The page-facing Host code (element picking, /select and /element handling) lives in the Web
+// environment's runtime module since the Host/runtime split; the plugin entry keeps only wiring.
+const hostSource = fs.readFileSync(path.resolve(here, '../../targets/web/host.js'), 'utf8')
+  + '\n' + fs.readFileSync(path.resolve(here, '../../targets/web/routes.js'), 'utf8')
+  + '\n' + fs.readFileSync(path.resolve(here, '../../index.js'), 'utf8');
 
 /* ------------------------------------------------------------------------------------------------
  * ① 定位纯函数
@@ -171,14 +175,19 @@ const selectRoute = (() => {
 })();
 
 test('Host：/select 的门禁顺序与 /input 一致，且在 runtime.run 之前', () => {
-  const allowed = selectRoute.indexOf('crossEnvironment.assertGuiAllowed(scopeRequest)');
+  // The route lives in the Web environment's route module (`targets/web/routes.js`) since the
+  // Host/runtime split; the environment gate arrives as the injected `assertGuiAllowed`.
+  const allowed = selectRoute.indexOf('assertGuiAllowed(scopeRequest)');
   const selectCall = selectRoute.indexOf('await select()');
   const touch = selectRoute.indexOf('registry.touch(entry)');
+  // The scoped lease/ownership gate is `assertGuiPageWrite`, whose own A10 call is part of the
+  // helper above the routes in the same module.
   const lease = selectRoute.indexOf('assertGuiPageWrite(');
   const validate = selectRoute.indexOf('normalizeSelectWriteRequest(body)');
   const dispatch = selectRoute.indexOf('entry.runtime.run(');
   const mark = selectRoute.indexOf('registry.markRecent(entry)');
   assert.ok(allowed > -1, '必须过 A10 环境门');
+  assert.ok(hostSource.includes('assertGuiAllowed(scopeRequest)'), '租约门自身也要过 A10 环境门');
   assert.ok(allowed < selectCall, '环境门在解析 scope 之前');
   assert.ok(selectCall < touch && touch < lease, '与 /input 相同的 select → touch → 租约顺序');
   assert.ok(lease < validate, '租约/权限门在参数校验之前（拒绝零派发）');
@@ -189,7 +198,7 @@ test('Host：/select 的门禁顺序与 /input 一致，且在 runtime.run 之�
 test('Host：/select 的拒绝分支直接返回，不进队列', () => {
   const refused = selectRoute.slice(selectRoute.indexOf('if (!request.ok)'), selectRoute.indexOf('const applied ='));
   assert.ok(refused.includes('sendJson(res, scopeHttpStatus(request.code)'), '拒绝要回结构化错误');
-  assert.ok(refused.includes('return;'));
+  assert.ok(refused.includes('return true;'), '拒绝分支到此为止（并告诉调用方已答复）');
   assert.ok(!refused.includes('runtime.run('), '拒绝分支里不许有派发');
 });
 

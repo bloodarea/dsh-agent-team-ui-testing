@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { apply } from '../../index.js';
 
 /**
- * The tool surface implemented by index.js, 37 tools:
+ * The tool surface implemented by index.js, 37 execution tools:
  *   10 T1 (docs/architecture.md + docs/viewport-control.md §7 `browser_viewport`)
  * + 1 P0-D annotations (`browser_annotation`, docs/viewport-control.md)
  * + 1 P0-E multi-tab (`browser_tabs`, docs/internal/p0e-multitab-contract.md §3)
@@ -47,6 +47,13 @@ import { apply } from '../../index.js';
  * network `action` enumerations) are NOT expressible as a required array - they are validated at
  * execution time - so `required: []` here never means "no arguments allowed".
  */
+/**
+ * The always-disclosed discovery/selection entry. It is registered next to the 37 execution tools
+ * but is not a Web operation, so it is kept out of EXPECTED_TOOLS (whose groups mirror the
+ * operation inventory). Suites that count the registration surface add it explicitly.
+ */
+export const DISCOVERY_TOOL = 'browser_tools';
+
 export const EXPECTED_TOOLS = Object.freeze([
   // --- T1 (docs/architecture.md) -------------------------------------------------------------
   Object.freeze({ name: 'browser_navigate', required: ['url'] }),
@@ -96,6 +103,18 @@ export const EXPECTED_TOOLS = Object.freeze([
   Object.freeze({ name: 'browser_network_control', required: ['action'] }),
   Object.freeze({ name: 'browser_network_evidence', required: ['action'] }),
   Object.freeze({ name: 'browser_network_subscribe', required: ['action'] }),
+  // --- FR-11 Cookie Store (cookie-store.js): 37 → 38 ---------------------------------------
+  Object.freeze({ name: 'browser_cookies', required: ['action'] }),
+  // --- FR-01 Scope & Safety Controller (security-scope.js): 38 → 39 ------------------------
+  Object.freeze({ name: 'browser_security_scope', required: ['action'] }),
+  // --- FR-02 Attack Surface Discovery (attack-surface.js): 39 → 40 -------------------------
+  Object.freeze({ name: 'browser_surface', required: ['action'] }),
+  // --- FR-03/FR-04 JavaScript static analysis (script-analysis.js): 40 → 41 -------------------
+  Object.freeze({ name: 'browser_script', required: ['action'] }),
+  // --- FR-09/FR-10 security findings + rules (finding.js): 41 → 42 ---------------------------
+  Object.freeze({ name: 'browser_findings', required: ['action'] }),
+  // --- FR-08 business logic (business-logic.js): 42 → 43 -------------------------------------
+  Object.freeze({ name: 'browser_biz', required: ['action'] }),
   // --- Web T4 dynamic behavior (docs/t4-dynamic-behavior.md §7.2) --------------------------
   // Only the contract-fixed root `required` entries are registered; every conditional rule
   // (captureVisual->source, source->encoding, window xor frameIds, action-specific control

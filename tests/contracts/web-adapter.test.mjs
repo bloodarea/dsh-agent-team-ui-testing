@@ -120,7 +120,7 @@ test('target adapter manifest is a legal v1 target manifest', () => {
   assert.equal(typeof adapter.dispose, 'function');
 });
 
-test('capability adapter manifest declares 37 operation specs (name/capability/executionClass)', () => {
+test('capability adapter manifest declares 43 operation specs (name/capability/executionClass)', () => {
   const adapter = createWebCapabilityAdapter({ dispatch: () => ({}) });
   const { manifest } = adapter;
   assert.equal(manifest.contractVersion, 1);
@@ -130,7 +130,7 @@ test('capability adapter manifest declares 37 operation specs (name/capability/e
   assert.deepEqual(manifest.capabilities, WEB_CAPABILITIES);
 
   assert.ok(Array.isArray(manifest.operations));
-  assert.equal(manifest.operations.length, 37);
+  assert.equal(manifest.operations.length, 43);
   const knownClasses = new Set(Object.values(WEB_EXECUTION_CLASSES));
   const declaredClasses = new Set();
   for (const operation of manifest.operations) {
@@ -187,10 +187,16 @@ test('operation inventory matches the shipped capability grouping (T1/P0-D/P0-E/
     'web.t2': 7,
     'web.t3': 6,
     'web.network': 7,
+    'web.p0.cookies': 1,
+    'web.p0.security': 1,
+    'web.p0.surface': 1,
+    'web.p0.scripts': 1,
+    'web.p0.findings': 1,
+    'web.p0.business': 1,
     'web.t4': 5,
   });
-  assert.equal(WEB_TOOL_OPERATION_NAMES.length, 37);
-  assert.equal(WEB_TOOL_OPERATION_SPECS.length, 37);
+  assert.equal(WEB_TOOL_OPERATION_NAMES.length, 43);
+  assert.equal(WEB_TOOL_OPERATION_SPECS.length, 43);
 });
 
 test('resolveExecutionClass applies the declared action-level refinements', () => {
@@ -547,7 +553,7 @@ async function capabilityFixture({
 const TARGET_BOUND_EXECUTION_CLASSES = new Set(['page', 'tabs']);
 
 function assertTargetFreeMatrix(matrix, expectedAvailability) {
-  assert.equal(Object.keys(matrix).length, 37);
+  assert.equal(Object.keys(matrix).length, 43);
   for (const spec of WEB_TOOL_OPERATION_SPECS) {
     const value = matrix[spec.name];
     assert.equal(value.support, 'supported', spec.name);
@@ -1197,33 +1203,57 @@ function importSpecifiers(source) {
 
 test('targets/web sources import only node builtins and core modules', () => {
   const files = readdirSync(WEB_DIR).filter((name) => name.endsWith('.js'));
-  assert.deepEqual(files.sort(), ['adapter.js', 'provider.js', 'tabs.js']);
+  assert.deepEqual(files.sort(), ['adapter.js', 'environment.js', 'frame-transport.js', 'host.js', 'invoke.js', 'provider.js', 'routes.js', 'scope-target.js', 'tabs.js', 'tools.js', 'transition.js']);
 
-  const allowed = new Set(['../../core/index.js', '../../core/p0.js']);
+  // A platform implementation may import `core/`, the neutral platform helpers that are not
+  // environment-specific (`browser-safety.js` error/CDP types, `select-control.js` projections) and
+  // its own sibling modules; it must never import the Host entry, `integration/`, or another
+  // target's implementation.
+  const allowed = new Set([
+    '../../core/index.js', '../../core/p0.js', '../../core/contracts.js',
+    '../../browser-safety.js', '../../select-control.js', '../../context-menu.js',
+    '../../context-menu.js', '../../frame-push.js', '../../select-control.js',
+    './adapter.js', './host.js', './invoke.js', './provider.js', './routes.js',
+    './scope-target.js', './tabs.js', './transition.js',
+  ]);
+  // `host.js` (the runtime) and `tools.js` (the page-facing tool handlers) *are* the runtime layer:
+  // they own the CDP transport through `browser-safety.js` and load the Web-only pipelines lazily.
+  // Every other file in this directory must stay free of the runtime chain.
   const forbiddenModules = [
     'capture-p0.js',
     'network-p0.js',
     'vision-t3.js',
     'vision-baseline.js',
     'dynamic-t4.js',
-    'browser-safety.js',
     'frame-source.js',
+    // `frame-push.js` is the neutral socket transport; only the runtime layer may mount it.
     'frame-push.js',
   ];
+  const forbiddenForRuntime = ['browser-safety.js'];
+  const runtimeLayerFiles = new Set(['frame-transport.js', 'host.js', 'invoke.js', 'routes.js', 'tools.js', 'transition.js']);
 
   for (const file of files) {
     const source = readFileSync(join(WEB_DIR, file), 'utf8');
     const specs = importSpecifiers(source);
-    assert.ok(specs.length > 0, `${file} has imports`);
+    // A module may be self-contained (e.g. the shared scope→entry rule has no dependency at all).
+    if (specs.length === 0) continue;
     for (const spec of specs) {
       const isNodeBuiltin = spec.startsWith('node:');
       assert.ok(isNodeBuiltin || allowed.has(spec), `${file} imports ${spec}`);
-      assert.equal(forbiddenModules.some((name) => spec.endsWith(name)), false, `${file} imports ${spec}`);
+      if (!runtimeLayerFiles.has(file) || !spec.endsWith('frame-push.js')) {
+        assert.equal(forbiddenModules.some((name) => spec.endsWith(name)), false, `${file} imports ${spec}`);
+      }
+      if (!runtimeLayerFiles.has(file)) {
+        assert.equal(forbiddenForRuntime.some((name) => spec.endsWith(name)), false, `${file} imports ${spec}`);
+      }
       const looksLikeHostEntry = /(^|\/)index\.js$/.test(spec) && spec !== '../../core/index.js';
       assert.equal(looksLikeHostEntry, false, `${file} must not import the host entry: ${spec}`);
       assert.equal(spec.includes('/targets/'), false, `${file} must not import another target: ${spec}`);
+      assert.equal(spec.includes('integration/'), false, `${file} must not import the host integration layer: ${spec}`);
     }
-    assert.equal(/import\s*\(/.test(source), false, `${file} must not use dynamic import`);
+    if (!runtimeLayerFiles.has(file)) {
+      assert.equal(/import\s*\(/.test(source), false, `${file} must not use dynamic import`);
+    }
     assert.equal(/require\s*\(/.test(source), false, `${file} must not use require`);
     assert.equal(source.includes("from '../../index.js'"), false, `${file} must not import the host entry`);
   }
@@ -1244,8 +1274,12 @@ test('core never imports targets or the host entry (no reverse dependency)', () 
 });
 
 test('web adapter declares no CDP or browser protocol dependency', () => {
-  for (const file of ['adapter.js', 'provider.js', 'tabs.js']) {
+  for (const file of ['adapter.js', 'environment.js', 'frame-transport.js', 'invoke.js', 'provider.js', 'routes.js', 'tabs.js', 'tools.js', 'transition.js']) {
     const source = readFileSync(join(WEB_DIR, file), 'utf8');
     assert.equal(/chrome-remote-interface|puppeteer|playwright|ws:\/\//.test(source), false, `${file} must not own CDP`);
   }
+  // `host.js` is the runtime: it owns the CDP transport but must not pull in a third-party driver.
+  const runtimeSource = readFileSync(join(WEB_DIR, 'host.js'), 'utf8');
+  assert.equal(/chrome-remote-interface|puppeteer|playwright/.test(runtimeSource), false,
+    'host.js must not depend on a third-party browser driver');
 });

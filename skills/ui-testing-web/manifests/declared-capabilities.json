@@ -125,7 +125,8 @@
     "missing_exec_scope": "legacy:default",
     "diagnostics_do_not_start": [
       "browser_state",
-      "browser_capabilities"
+      "browser_capabilities",
+      "browser_tools"
     ],
     "lease_checked_tools": [
       "browser_navigate",
@@ -708,6 +709,62 @@
       "constraints": "action 必填 create|poll|ack|close|list；订阅者=调用方 agent 会话；每 scope 活动订阅上限 16、pin 硬上限 1000、poll limit 1–200；ack 前不丢只限 pin 预算内，超出给 gap/dropped 计数绝不静默，也不淘汰其他订阅已 pin 的事件；cursor/afterSeq 不得低于已投递水位、ackSeq 不得越过已交付边界（均 NET_RULE_INVALID）；他人订阅只报 NET_SUBSCRIPTION_FORBIDDEN；订阅不阻塞采集（背压只体现为 pin/dropped 计数与 integrity issue）。"
     },
     {
+      "id": "web.p0.security.scope",
+      "status": "partial",
+      "tool": "browser_security_scope",
+      "source_lines": "docs/tools.md 安全（security 组）；security-scope.js；index.js securityScopeOp/#scopeCheckDispatch",
+      "constraints": "会话授权边界：精确 Origin 白名单+路径前缀+预算(maxRequests/maxConcurrent/timeWindowMs)+passive/active+stop。生效后每次导航(含重定向落点)与 Cookie 导出读取派发前逐次校验,越界/超预算/被动拒绝均 0 次派发并留审计;stop 幂等不可撤销;status 不含探索轨迹;未 set 时普通 GUI 测试不受影响(按需启用)"
+    },
+    {
+      "id": "web.p0.surface.build",
+      "status": "partial",
+      "tool": "browser_surface",
+      "source_lines": "docs/tools.md 安全（security 组）；attack-surface.js；index.js surfaceBuild",
+      "constraints": "build=从网络采集事件+当前页面 DOM 事实构建 Inventory;apiOperations/pageRoutes=observed(网络实发),forms=inferred(DOM 可发起),unverifiedPaths=unverified(调用方注入静态线索);不主动派发请求;每操作可回链首次观测 seq"
+    },
+    {
+      "id": "web.p0.scripts.analysis",
+      "status": "partial",
+      "tool": "browser_script",
+      "source_lines": "docs/tools.md 安全（security 组）；script-analysis.js；index.js scriptArm/scriptInventory/scriptSource/scriptFormat/scriptStrings/scriptSinks/scriptAnalyze",
+      "constraints": "Debugger 域按需启用(armed),未启用返回 armed:false;脚本清单带 sha256/URL/来源/SourceMap 存在性(不含内容);格式化标注 isOriginalSource:false 并给逐行原始位置映射;字符串还原三态 decoded/plain/unknown 且 unknown 不伪造;Source-to-Sink 置信度 high/medium/low,low 表示只找到 sink 未找到来源,不得声称可利用;静态分析不执行页面代码"
+    },
+    {
+      "id": "web.p0.findings",
+      "status": "partial",
+      "tool": "browser_findings",
+      "source_lines": "docs/tools.md 安全（security 组）；finding.js；security-rules.js",
+      "constraints": "状态只能由证据类型推导(static-pattern→potential, observed-once→likely, differential/reproduced+≥2复现+对照→confirmed),调用方不能指定 confirmed;规则引擎对空事实不产生候选;High/Critical 证据完整率须 100%;报告做凭据 canary 自检;加权召回率与 Precision 按契约公式"
+    },
+    {
+      "id": "web.p0.business.logic",
+      "status": "partial",
+      "tool": "browser_biz",
+      "source_lines": "docs/tools.md 安全（security 组）；business-logic.js",
+      "constraints": "判定基于服务端最终状态而非请求被接受;数量/价格边界、券重复累加、客户端金额信任、重复提交幂等、非法状态迁移;每个确认问题需 ≥2 次可复现(BIZ-05);probe 的每个请求都经 scope 闸门;候选的 allowedStatus 永不为 confirmed"
+    },
+    {
+      "id": "web.p0.cookies.metadata",
+      "status": "partial",
+      "tool": "browser_cookies",
+      "source_lines": "docs/tools.md 安全（security 组）；cookie-store.js；index.js cookieMetadata/cookieExport/cookieImport",
+      "constraints": "metadata=当前标签页精确 Origin 的 Cookie 元数据白名单投影(名称/Domain/Path/Expires/Secure/HttpOnly/SameSite),value 结构性排除;CDP Network.getCookies({urls:[origin]}),无 Storage.getCookies 兜底"
+    },
+    {
+      "id": "web.p0.cookies.export",
+      "status": "partial",
+      "tool": "browser_cookies",
+      "source_lines": "docs/tools.md 安全（security 组）；cookie-store.js validateApproval/publishCookieExport/canaryScan",
+      "constraints": "export 需人类在插件配置目录 security-approvals.json 签发授权(绑定 workspace/runtime/tab/origin、一次性、过期;HttpOnly 需 allowHttpOnly:true 专项),Agent confirm 字符串一律无效;明文只写持久根内 0600 no-clobber .json;超限整次失败不截断;响应/日志/网络证据零明文(canary 自检)"
+    },
+    {
+      "id": "web.p0.cookies.import",
+      "status": "partial",
+      "tool": "browser_cookies",
+      "source_lines": "docs/tools.md 安全（security 组）；cookie-store.js parseCookieImport/cookieSetParams",
+      "constraints": "只接受本工具导出的快照(kind/version 校验);HttpOnly 条目需 importHttpOnly:true;CDP Network.setCookie 逐条回填当前 Origin;失败条目只计数不回传"
+    },
+    {
       "id": "web.network.p0",
       "status": "verified",
       "source_lines": "网络 P0 聚合能力（采集/时序/分析/链路/控制/证据/订阅）+ docs/web/network-p0.md §1、§12、§13",
@@ -898,6 +955,46 @@
       "T4 动态视觉（帧序列/动画时序/连续视觉推理）仍 unsupported",
       "3 条 notApplicable：C25 DOM 小数 / Blink 截断行为、C30 inert 子树不参与 hit-test（elementFromPoint 与 CDP 均返回 BODY）、C31 页面级 downs/ups 计数（原因均已记录）",
       "本地恶意进程 TOCTOU 与网络文件系统 HEAD CAS：基线/落盘守卫不是安全沙箱"
+    ]
+  },
+  "disclosure": {
+    "entry": "browser_tools",
+    "default_requested_definitions": [
+      "browser_tools",
+      "browser_state",
+      "browser_capabilities"
+    ],
+    "groups": {
+      "basic": {
+        "count": 15,
+        "requires": []
+      },
+      "network": {
+        "count": 9,
+        "requires": [
+          "basic"
+        ]
+      },
+      "vision": {
+        "count": 6,
+        "requires": [
+          "basic"
+        ]
+      },
+      "dynamic": {
+        "count": 5,
+        "requires": [
+          "basic"
+        ]
+      }
+    },
+    "contract": "docs/tool-disclosure.md",
+    "effective": "next model step",
+    "state": "per-Agent in-memory WeakMap; cleared on environment/provider/admission change; reset on restore or plugin reload; never persisted to the user session",
+    "guarantees": [
+      "activation can only narrow what environment admission and the host tool whitelist already allow",
+      "a step's admitted set is frozen for that step: activation does not change the current request",
+      "a forced call to an undisclosed definition fails with UNKNOWN_TOOL"
     ]
   }
 }

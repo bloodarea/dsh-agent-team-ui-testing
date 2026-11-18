@@ -601,6 +601,47 @@ async function handleNetworkRoute(req, res, url, state) {
     return true;
   }
 
+  // Deterministic Set-Cookie fixture (FR-11 Cookie Store acceptance). Name/value are fixed
+  // literals validated against a strict whitelist, so the route cannot be abused as an
+  // arbitrary-header setter. httpOnly=1 -> HttpOnly; secure=1 -> Secure; sameSite is
+  // Strict|Lax|None (default Lax). The response body only echoes the parameters, never the
+  // jar; the browser's cookie store is the single source of truth.
+  if (pathname === '/n/cookie') {
+    if (method !== 'GET') return methodNotAllowed(res, ['GET']);
+    const name = String(searchParams.get('name') || '');
+    const value = String(searchParams.get('value') || '');
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name) || !/^[a-zA-Z0-9_.:@-]{1,128}$/.test(value)) {
+      json(res, 400, { error: 'cookie-parameter-invalid' });
+      return true;
+    }
+    const httpOnly = searchParams.get('httpOnly') === '1';
+    const secure = searchParams.get('secure') === '1';
+    const sameSiteRaw = String(searchParams.get('sameSite') || 'Lax');
+    const sameSite = ['Strict', 'Lax', 'None'].includes(sameSiteRaw) ? sameSiteRaw : 'Lax';
+    const maxAge = searchParams.get('maxAge');
+    const attributes = [
+      `${name}=${value}`,
+      'Path=/',
+      `SameSite=${sameSite}`,
+      httpOnly ? 'HttpOnly' : '',
+      secure ? 'Secure' : '',
+      Number.isFinite(Number(maxAge)) && maxAge !== null ? `Max-Age=${Number(maxAge)}` : '',
+    ].filter(Boolean);
+    json(res, 200, { set: true, name, httpOnly, secure, sameSite }, { 'set-cookie': attributes.join('; ') });
+    return true;
+  }
+
+  if (pathname === '/n/clear-cookie') {
+    if (method !== 'GET') return methodNotAllowed(res, ['GET']);
+    const name = String(searchParams.get('name') || '');
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+      json(res, 400, { error: 'cookie-parameter-invalid' });
+      return true;
+    }
+    json(res, 200, { cleared: true, name }, { 'set-cookie': `${name}=; Path=/; Max-Age=0` });
+    return true;
+  }
+
   if (pathname === '/n/echo') {
     if (method !== 'POST' && method !== 'PUT') return methodNotAllowed(res, ['POST', 'PUT']);
     const raw = Buffer.from(await readBody(req), 'utf8');

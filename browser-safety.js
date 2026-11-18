@@ -116,6 +116,41 @@ const TAXONOMY = {
   // T4 extend on a stopped/retained session: the session is gone but starting a new one may
   // recover, hence scope + retryable (docs/t4-dynamic-behavior.md §extend).
   DYNAMIC_SESSION_NOT_ACTIVE: ['scope', true],
+  // FR-11 Cookie Store (cookie-store.js): every COOKIE_* refusal is a *classified* answer —
+  // `input` = bad arguments, `scope` = no runtime/tab, `authorization` = no human approval or a
+  // cross-origin/scope mismatch (never silently substituted), `output` = the controlled file side,
+  // `resource` = declared export budgets (whole-snapshot failure, never truncation). None of them
+  // may degrade to INTERNAL, and none may leak a cookie value in its message (redactText applies).
+  COOKIE_INVALID_ARGUMENT: ['input', false], COOKIE_RUNTIME_UNAVAILABLE: ['scope', true],
+  COOKIE_ORIGIN_MISMATCH: ['authorization', false], COOKIE_SCOPE_FORBIDDEN: ['authorization', false],
+  COOKIE_APPROVAL_REQUIRED: ['authorization', false], COOKIE_APPROVAL_INVALID: ['authorization', false],
+  COOKIE_APPROVAL_CONSUMED: ['authorization', false], COOKIE_APPROVAL_EXPIRED: ['authorization', false],
+  COOKIE_HTTPONLY_FORBIDDEN: ['authorization', false], COOKIE_QUOTA_EXCEEDED: ['resource', false],
+  COOKIE_OUTPUT_PATH_INVALID: ['input', false], COOKIE_OUTPUT_EXISTS: ['output', false],
+  COOKIE_OUTPUT_WRITE_FAILED: ['output', true], COOKIE_OUTPUT_ROOT_UNKNOWN: ['output', false],
+  COOKIE_CDP_FAILED: ['capability', true], COOKIE_IMPORT_INVALID: ['input', false],
+  // FR-01 Scope & Safety Controller (security-scope.js): every SECURITY_SCOPE_* refusal is a
+  // *classified* policy answer — `input` = bad configuration, `scope` = session stopped or not
+  // configured, `authorization` = an origin/path/passive-mode violation (0 dispatches),
+  // `resource` = budget/concurrency ceilings. None degrade to INTERNAL.
+  SECURITY_SCOPE_INVALID: ['input', false], SECURITY_SCOPE_NOT_CONFIGURED: ['scope', true],
+  SECURITY_SCOPE_STOPPED: ['scope', false], SECURITY_SCOPE_ORIGIN_VIOLATION: ['authorization', false],
+  SECURITY_SCOPE_PATH_VIOLATION: ['authorization', false], SECURITY_SCOPE_BUDGET_EXCEEDED: ['resource', false],
+  SECURITY_SCOPE_PASSIVE_MODE: ['authorization', false], SECURITY_SCOPE_CONCURRENCY_EXCEEDED: ['resource', false],
+  // INF-08/GATE-07: a destructive operation is a policy refusal (0 dispatches), not a
+  // capability gap; `authorization` + not retryable is the honest classification.
+  SECURITY_SCOPE_DANGEROUS_OPERATION: ['authorization', false],
+  // INF-05 rate limit: a declared budget, so `resource` and not retryable (the same burst would
+  // hit the same ceiling; the caller must slow down, not repeat).
+  SECURITY_SCOPE_RATE_EXCEEDED: ['resource', false],
+  // FR-03/FR-04 JavaScript static analysis (script-analysis.js): `capability` = Debugger not armed
+  // (an opt-in invasive capability), `input` = bad script selector, `scope` = script gone.
+  SCRIPT_NOT_ARMED: ['capability', false], SCRIPT_NOT_FOUND: ['scope', false],
+  SCRIPT_INVALID_ARGUMENT: ['input', false], SCRIPT_TOO_LARGE: ['resource', false],
+  // FR-09/FR-10 findings: `input` = a malformed finding, `scope` = unknown findingId.
+  FINDING_INVALID_ARGUMENT: ['input', false], FINDING_NOT_FOUND: ['scope', false],
+  // FR-08 business logic probes: `input` = bad scenario/argument.
+  BIZ_INVALID_ARGUMENT: ['input', false],
 };
 
 /** Frozen copy of the error taxonomy: every thrown code must have an entry (tests enforce it). */

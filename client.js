@@ -8,6 +8,163 @@ window.__ModuleLoader__.load({
     let reactDom = null;
     try { reactDom = require('react-dom'); } catch { reactDom = null; }
 
+    /**
+     * 视图注册表：把「环境 id → 视图实现」做成一张表加三个查询。
+     *
+     * 公共外壳不 import 任何环境的视图代码，只通过这张表组合；一个环境要接入面板，只需把一个
+     * 渲染函数登记进自己的注册项（web 目前是唯一实现，其余环境落到公共空白画布）。
+     */
+    function createViewRegistry(views) {
+      const table = views && typeof views === 'object' ? views : {};
+      const lookup = (id) => {
+        const key = typeof id === 'string' ? id : '';
+        return key && typeof table[key] === 'function' ? table[key] : null;
+      };
+      return {
+        ids() { return Object.keys(table).filter((key) => typeof table[key] === 'function'); },
+        has(id) { return lookup(id) !== null; },
+        render(id) {
+          const view = lookup(id);
+          return view ? view() : null;
+        },
+        // 无视图环境：外壳自己渲染公共空白画布，绝不借用别的环境的正文。
+        renderOr(id, fallback) {
+          const view = lookup(id);
+          return view ? view() : (typeof fallback === 'function' ? fallback() : null);
+        },
+      };
+    }
+
+    /**
+     * Web 视图通道：一个视图实例自己的帧流 + 状态轮询 + 种子截图。
+     *
+     * 这是「视图自己管理连接与轮询」的边界：外壳只负责在视图出现/消失时 `mount` / `unmount`，
+     * 通道内部持有 transport、定时器、AbortController 和 objectURL 的清理。无视图环境（空白画布）
+     * 根本不 mount，因此不会对仍在运行的目标产生任何帧流、截图或轮询。
+     *
+     * 依赖全部通过参数注入（不读外壳闭包以外的东西），所以它可以脱离浏览器单测。
+     */
+    function createWebViewChannel(deps = {}) {
+      const {
+        createFrameTransport, getHost, ingestHostState, discardBinding,
+        scopeRef, visibleRef, writesPausedRef, requestGenerationRef,
+        transportRef, frameMetaRef, shotUrlRef,
+        setShot, setTransportKind, setSeedStatus,
+        win = (typeof window !== 'undefined' ? window : globalThis),
+        urlApi = (typeof URL !== 'undefined' ? URL : globalThis.URL),
+        // Instance teardown must also release what the page thinks the human is still holding:
+        // a held key lives in the page until a keyUp arrives, so it is the view instance's job.
+        onBeforeUnmount = null,
+      } = deps;
+      let active = null;
+
+      function releaseFrames() {
+        if (shotUrlRef.current) {
+          try { urlApi.revokeObjectURL(shotUrlRef.current); } catch { /* ignore */ }
+          shotUrlRef.current = '';
+        }
+        for (const objectUrl of frameMetaRef.current.keys()) {
+          try { urlApi.revokeObjectURL(objectUrl); } catch { /* ignore */ }
+        }
+        frameMetaRef.current.clear();
+      }
+
+      /**
+       * Start the channel for one view instance.
+       *
+       * @returns {Function} cleanup (idempotent)
+       */
+      function mount() {
+        if (active) unmount();
+        const scopeNow = scopeRef.current;
+        let mounted = true;
+        // A fresh transport per generation: old frames/object URLs never survive a rebuild.
+        releaseFrames();
+        setShot('');
+        const transport = createFrameTransport({
+          onFrame({ blob, meta }) {
+            if (!mounted) return;
+            const nextUrl = urlApi.createObjectURL(blob);
+            frameMetaRef.current.set(nextUrl, meta);
+            const previous = shotUrlRef.current;
+            shotUrlRef.current = nextUrl;
+            setShot(nextUrl);
+            if (previous) win.setTimeout(() => {
+              try { urlApi.revokeObjectURL(previous); } catch { /* ignore */ }
+              frameMetaRef.current.delete(previous);
+            }, 2000);
+          },
+          onState(state) { if (mounted) ingestHostState(state); },
+          onTransport(kind) { if (mounted) setTransportKind(kind); },
+          onSeedStatus(status) {
+            if (!mounted) return;
+            setSeedStatus(status && status.state === 'failed'
+              ? { reason: String(status.reason || 'unknown') }
+              : null);
+          },
+          canWrite() { return !writesPausedRef.current && visibleRef.current; },
+        }, scopeNow);
+        transportRef.current = transport;
+        transport.start();
+
+        // State polling is decoupled from the frame stream: a still page keeps refreshing its
+        // address/runtime state on a fixed interval.
+        const controller = new AbortController();
+        let cancelled = false;
+        let timer = 0;
+        async function tick() {
+          // Capture the action generation per request, not per poll cycle: a navigation action bumps
+          // the generation and must not stop this poller from rescheduling (only stale responses
+          // are dropped).
+          const generation = requestGenerationRef.current;
+          try {
+            const state = await getHost('/state', scopeNow, controller.signal);
+            if (!cancelled && generation === requestGenerationRef.current) {
+              // The transport needs the (redacted) url before the adopted seed context is published,
+              // otherwise a URL change would key one seed request under the previous page.
+              if (transportRef.current) transportRef.current.noteState({ url: state.url });
+              ingestHostState(state);
+            }
+          } catch (error) {
+            if (cancelled || (error && error.name === 'AbortError')) return;
+            const code = error && error.code ? String(error.code) : '';
+            // A binding whose entry was evicted (idle close) must be re-resolved, not reused.
+            if (scopeNow.kind === 'recent' && scopeNow.binding && /SCOPE_NOT_FOUND|BINDING/i.test(code)) {
+              discardBinding(scopeNow.binding);
+            }
+          }
+          if (!cancelled) timer = win.setTimeout(tick, 500);
+        }
+        tick();
+
+        active = {
+          stop() {
+            mounted = false;
+            // Release held keys while the transport can still carry the keyUp events.
+            if (typeof onBeforeUnmount === 'function') {
+              try { onBeforeUnmount(); } catch { /* teardown is best effort */ }
+            }
+            cancelled = true;
+            win.clearTimeout(timer);
+            try { controller.abort(); } catch { /* ignore */ }
+            try { transport.close(); } catch { /* ignore */ }
+            if (transportRef.current === transport) transportRef.current = null;
+            releaseFrames();
+          },
+        };
+        return unmount;
+      }
+
+      /** Tear the channel down (idempotent): closes the WS/poll loops and revokes every frame URL. */
+      function unmount() {
+        const current = active;
+        active = null;
+        if (current) current.stop();
+      }
+
+      return { mount, unmount, get active() { return active !== null; } };
+    }
+
     const ID = 'ui-testing-browser';
     /** 面板构建标识：刷新后用它确认浏览器里跑的是哪一份 client.js（排查「改了没生效」）。 */
     const CLIENT_BUILD = '2026-11-11T18:50+08:00·address-history-per-workspace';
@@ -2400,6 +2557,27 @@ window.__ModuleLoader__.load({
       const [navBusy, setNavBusy] = React.useState(false);
       const [mode, setMode] = React.useState('idle');
       const [env, setEnv] = React.useState('web');
+      /**
+       * 环境视图注册表（提前声明）：外壳按它决定「这个环境有没有自己的视图」。
+       *
+       * 公共外壳只认这张表，不认 Web 的实现细节；`webViewBody` 是函数声明，可以提前引用。
+       * 无视图环境（空白画布）对外壳的语义是：**不对仍在运行的目标做任何宿主写入**——
+       * 视口不发布、不取页面截图、不轮询 Host 状态、不同步标注，只铺一张本地画布。
+       */
+      const ENV_VIEWS = { web: webViewBody };
+      /**
+       * 视图接点（公共外壳 ↔ 环境视图的唯一接口）。
+       *
+       * 外壳只问三件事：这个环境有没有视图（`has`）、把它的正文渲染出来（`render`）、以及在没有
+       * 视图时渲染公共空白画布（`renderOr`）。新增一个环境 = 往表里加自己的一项，外壳不改。
+       * 这是纯函数，可脱离浏览器单测（tests/contracts/panel-view-registry.test.mjs）。
+       */
+      const viewRegistry = createViewRegistry(ENV_VIEWS);
+      const hasEnvironmentView = (id) => viewRegistry.has(id);
+      const envHasView = hasEnvironmentView(env);
+      // 回调与订阅里读的是"当前渲染的环境"，渲染期间同步刷新。
+      const envHasViewRef = React.useRef(envHasView);
+      envHasViewRef.current = envHasView;
       // Host-backed environment selection: busy while the POST /config/select is in flight, and a
       // local failure notice that keeps the previous value (never a silent switch).
       const [envBusy, setEnvBusy] = React.useState(false);
@@ -2427,6 +2605,15 @@ window.__ModuleLoader__.load({
       const dirtyRef = React.useRef(false);
       const editVersionRef = React.useRef(0);
       const requestGenerationRef = React.useRef(0);
+      /**
+       * 面板实例代次：每一次"换视图"（换环境、换作用域/运行时代次）都 +1。
+       *
+       * 迟到响应唯一能造成的伤害就是覆盖新视图：帧、状态和视口写入的回包在采纳前都要核对它。
+       * 与目标代次（`scopeEpoch` / 帧 `epoch`）分开，是因为同一目标也可能被重新挂载成新的面板
+       * 实例（A→B→A 切换），目标代次不变而实例已经换了。
+       */
+      const panelGenerationRef = React.useRef(0);
+      const bumpPanelGeneration = () => { panelGenerationRef.current += 1; };
       const retiredRuntimeRef = React.useRef('');
       const pendingRef = React.useRef({ active: false, editVersion: 0, address: '' });
       // ---- Shared viewport state (Host `ui.view`) -------------------------------------------
@@ -2690,6 +2877,10 @@ window.__ModuleLoader__.load({
       if (scopeTokenRef.current !== scopeKey) {
         scopeTokenRef.current = scopeKey;
         scopeEpochRef.current += 1;
+        // A scope/binding transition is a new panel instance too: in-flight view writes for the
+        // previous instance must not be adopted either (panelGenerationRef is declared below with
+        // the other refs; this assignment runs after they exist on every render).
+        if (typeof bumpPanelGeneration === 'function') bumpPanelGeneration();
       }
       const scopeEpoch = scopeEpochRef.current;
       const scopeRef = React.useRef(scope);
@@ -3619,6 +3810,9 @@ window.__ModuleLoader__.load({
         const queuedSpace = viewQueueSpaceRef.current;
         viewQueueSpaceRef.current = null;
         if (!patch) return;
+        // 空白画布（当前环境没有视图）：视口写入的目标已经不在这块面板上——丢弃本次合并补丁，
+        // 对仍在运行的目标产生零视口写入（plan §公共面板负责组合）。
+        if (!envHasViewRef.current) return;
         const isZoomPatch = patch.scale !== undefined && (patch.x !== undefined || patch.y !== undefined);
         if (isZoomPatch) zoomDebug('flush', { patch, inFlight: viewInFlightRef.current });
         if (viewInFlightRef.current) {
@@ -3651,8 +3845,12 @@ window.__ModuleLoader__.load({
         const submitted = {};
         for (const field of Object.keys(patch)) submitted[field] = viewEditRef.current[field];
         viewInFlightRef.current = true;
+        // Capture the panel instance this write belongs to: a response that arrives after the view
+        // was replaced describes a view that is no longer on screen.
+        const panelGeneration = panelGenerationRef.current;
         try {
           const payload = await callHost('viewport', body, { scope: scopeNow, signal });
+          if (panelGeneration !== panelGenerationRef.current) return;
           // The response carries the canvas projection too: adopt it before the view it describes so
           // the X/Y drafts and the composited displacement never lag a settled canvas set.
           if (payload && (payload.state || payload.ui)) adoptCanvas(canvasOf(payload));
@@ -7511,7 +7709,8 @@ window.__ModuleLoader__.load({
       // later request/WS carries that binding. A WS must never start on bare `recent`, because
       // the next request could resolve a different recent entry.
       React.useEffect(() => {
-        if (!visible || identity.kind !== 'recent' || binding || legacyHost) return undefined;
+        // Only a view with a page polls the Host to discover a binding; a blank canvas never does.
+        if (!visible || !envHasView || identity.kind !== 'recent' || binding || legacyHost) return undefined;
         let cancelled = false;
         let retryTimer = 0;
         const controller = new AbortController();
@@ -7576,92 +7775,38 @@ window.__ModuleLoader__.load({
         return () => { cancelled = true; window.clearTimeout(retryTimer); controller.abort(); };
       }, [visible, identity.kind, identityKey, binding, legacyHost, identity.paused]);
 
-      // 画面传输：优先同源 WebSocket 推送，失败自动回退到 /frame HTTP 轮询。
-      // Hidden sidebar tabs / a hidden document stop the WS and both poll loops without
-      // closing the Host page or unmounting the component.
+      /**
+       * 视图实例自己持有通道（帧流 + 状态轮询 + 种子截图）：外壳只决定"现在有没有视图要显示"。
+       *
+       * 通道对象在实例生命周期内只创建一次，`mount()` 返回幂等的清理函数：切页/切环境/隐藏面板
+       * 都会卸载旧通道（关 WS、停轮询、撤销 objectURL）。无视图环境（空白画布）根本不 mount，
+       * 因此对仍在运行的目标零帧流、零截图、零轮询。
+       */
+      const viewChannelRef = React.useRef(null);
+      if (!viewChannelRef.current) {
+        viewChannelRef.current = createWebViewChannel({
+          createFrameTransport,
+          getHost,
+          ingestHostState,
+          discardBinding,
+          scopeRef,
+          visibleRef,
+          writesPausedRef,
+          requestGenerationRef,
+          transportRef,
+          frameMetaRef,
+          shotUrlRef,
+          setShot,
+          setTransportKind,
+          setSeedStatus,
+          // Leaving the view must not leave a key held down in the page.
+          onBeforeUnmount: () => { try { releasePanelKeys(); } catch { /* ignore */ } },
+        });
+      }
       React.useEffect(() => {
-        if (!visible || !ready) return undefined;
-        const scopeNow = scopeRef.current;
-        let mounted = true;
-        // A fresh transport per generation: old frames/object URLs never survive a rebuild.
-        if (shotUrlRef.current) {
-          try { URL.revokeObjectURL(shotUrlRef.current); } catch { /* ignore */ }
-          shotUrlRef.current = '';
-        }
-        for (const objectUrl of frameMetaRef.current.keys()) {
-          try { URL.revokeObjectURL(objectUrl); } catch { /* ignore */ }
-        }
-        frameMetaRef.current.clear();
-        setShot('');
-        const transport = createFrameTransport({
-          onFrame({ blob, meta }) {
-            if (!mounted) return;
-            const nextUrl = URL.createObjectURL(blob);
-            frameMetaRef.current.set(nextUrl, meta);
-            const previous = shotUrlRef.current;
-            shotUrlRef.current = nextUrl;
-            setShot(nextUrl);
-            if (previous) window.setTimeout(() => {
-              URL.revokeObjectURL(previous);
-              frameMetaRef.current.delete(previous);
-            }, 2000);
-          },
-          onState(state) { if (mounted) ingestHostState(state); },
-          onTransport(kind) { if (mounted) setTransportKind(kind); },
-          onSeedStatus(status) {
-            if (!mounted) return;
-            setSeedStatus(status && status.state === 'failed'
-              ? { reason: String(status.reason || 'unknown') }
-              : null);
-          },
-          canWrite() { return !writesPausedRef.current && visibleRef.current; },
-        }, scopeNow);
-        transportRef.current = transport;
-        transport.start();
-        return () => {
-          mounted = false;
-          transport.close();
-          if (transportRef.current === transport) transportRef.current = null;
-          for (const objectUrl of frameMetaRef.current.keys()) URL.revokeObjectURL(objectUrl);
-          frameMetaRef.current.clear();
-          if (shotUrlRef.current) URL.revokeObjectURL(shotUrlRef.current);
-          shotUrlRef.current = '';
-        };
-      }, [scopeEpoch, ready, visible]);
-
-      // 状态同步与帧流解耦：静止页面没有新帧时，地址/运行态仍按固定间隔刷新。
-      React.useEffect(() => {
-        if (!visible || !ready) return undefined;
-        const scopeNow = scopeRef.current;
-        const controller = new AbortController();
-        let cancelled = false;
-        let timer = 0;
-        async function tick() {
-          // Capture the action generation per request, not per effect: a navigation action bumps
-          // the generation and must not stop this poller from rescheduling (only stale responses
-          // are dropped).
-          const generation = requestGenerationRef.current;
-          try {
-            const state = await getHost('/state', scopeNow, controller.signal);
-            if (!cancelled && generation === requestGenerationRef.current) {
-              // The transport needs the (redacted) url before the adopted seed context is published,
-              // otherwise a URL change would key one seed request under the previous page.
-              if (transportRef.current) transportRef.current.noteState({ url: state.url });
-              ingestHostState(state);
-            }
-          } catch (error) {
-            if (cancelled || (error && error.name === 'AbortError')) return;
-            const code = error && error.code ? String(error.code) : '';
-            // A binding whose entry was evicted (idle close) must be re-resolved, not reused.
-            if (scopeNow.kind === 'recent' && scopeNow.binding && /SCOPE_NOT_FOUND|BINDING/i.test(code)) {
-              discardBinding(scopeNow.binding);
-            }
-          }
-          if (!cancelled) timer = window.setTimeout(tick, 500);
-        }
-        tick();
-        return () => { cancelled = true; window.clearTimeout(timer); controller.abort(); };
-      }, [scopeEpoch, ready, visible]);
+        if (!visible || !ready || !envHasView) return undefined;
+        return viewChannelRef.current.mount();
+      }, [scopeEpoch, ready, visible, envHasView]);
 
       // 性能观测：FPS 与延迟都来自实际显示（img.onload + rAF），不是轮询间隔。
       React.useEffect(() => {
@@ -8394,9 +8539,6 @@ window.__ModuleLoader__.load({
       const posRange = canvasOn ? VIEW_LIMITS.canvas : VIEW_LIMITS.scroll;
       // P0-D annotation render facts. The SVG covers the *untranslated* painted rect; the viewBox is
       // the accepted canvas window. Committed geometry stays in canvas CSS px, so C/scale changes
-      /** 环境视图注册表（提前声明：changeEnv 要按它判断"这个环境有没有视图"）。 */
-      const ENV_VIEWS = { web: webViewBody };
-      const envHasView = typeof ENV_VIEWS[env] === 'function';
       // move the drawing with the content instead of re-basing it.
       const annotReady = envHasView ? (viewSync && canvasOn) : true;
       // 选元素入口状态（数据属性供 GUI 验收读取）：on/ready/annot/sizing/unsupported/cold。
@@ -8693,7 +8835,8 @@ window.__ModuleLoader__.load({
         dirty.scale = null;
         setWidth(String(target.width));
         setHeight(String(target.height));
-        queueViewPatch({ width: target.width, height: target.height });
+        // 无视图环境只改本地布局：选择空白画布不得改写仍在运行的目标的视口。
+        if (hasEnvironmentView(next)) queueViewPatch({ width: target.width, height: target.height });
         changePanMode(false);
         changeFit(target.fit);
       }
@@ -8716,6 +8859,8 @@ window.__ModuleLoader__.load({
         // v1 宿主不接受 planned 环境，提交只会被拒并回滚，没有任何好处。
         if (typeof ENV_VIEWS[next] !== 'function') {
           setEnvNotice('');
+          // A new view instance: anything still in flight for the previous view must not be adopted.
+          bumpPanelGeneration();
           setEnv(next);
           // 无视图环境同样按该环境的默认分辨率（Android = 手机 393×852）铺视图窗，
           // 否则会沿用 web 的 1024×768，窗口比预览区还大，看起来像直接画在底板上。
@@ -8735,6 +8880,7 @@ window.__ModuleLoader__.load({
         selectHostEnvironment(next, config.revision, scopeRef.current).then((payload) => {
           hostConfig.adopt(payload);
           setEnvBusy(false);
+          bumpPanelGeneration();
           setEnv(next);
           applyEnvDefaultSize(next);
         }).catch((error) => {
@@ -9331,7 +9477,7 @@ h('div', { className: 'utb-bar' },
       }
       const envOption = ENVIRONMENTS.find((item) => item.id === env) || { id: env, label: env, short: env };
       const envViewTitle = (envOption.short || envOption.label || env) + ' · 调试视图';
-      const envViewSupported = typeof ENV_VIEWS[env] === 'function';
+      const envViewSupported = hasEnvironmentView(env);
 
       /** 视图层没有该环境时占位：问号图标 + 一句人话，不留空白面板。 */
       function noEnvView() {
@@ -9847,8 +9993,9 @@ h('div', { className: 'utb-bar' },
         ];
       }
 
-      // The root owns row placement: the provider supplies tabs, the view supplies toolbar/body.
-      const envViewRows = envViewSupported ? ENV_VIEWS[env]() : shellNoViewRows();
+      // The root owns row placement: the provider supplies tabs, the view supplies toolbar/body,
+      // and a view-less environment falls back to the公共空白画布 (`renderOr`).
+      const envViewRows = viewRegistry.renderOr(env, shellNoViewRows);
       return h('div', {
         className: 'utb',
         'data-utb-tabs-supported': tabsSupported ? 'true' : 'false',

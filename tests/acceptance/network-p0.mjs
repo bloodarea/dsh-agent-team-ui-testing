@@ -2345,10 +2345,20 @@ async function probeC50({ harness, check }) {
   // the next additive tool. Groups: legacy (T1/T2/T3/P0-E) + 7 network + 5 T4.
   const expectedTotal = (module.EXPECTED_TOOLS && module.EXPECTED_TOOLS.length) || names.length;
   const t4Names = (module.T4_TOOLS || []).map((tool) => tool.name);
-  check('注册表工具数与 harness EXPECTED_TOOLS 一致（legacy + 7 network + 5 T4），名称与契约一致', names.length === expectedTotal
+  // `names` includes the `browser_tools` discovery entry; EXPECTED_TOOLS lists execution tools only.
+  const executionNames = names.filter((name) => name !== 'browser_tools');
+  check('注册表执行工具集与 harness EXPECTED_TOOLS 一致（legacy + 7 network + 5 T4），名称与契约一致', executionNames.length === expectedTotal
     && networkNames.every((name) => names.includes(name)) && legacyNames.every((name) => names.includes(name))
     && t4Names.every((name) => names.includes(name)),
-    { expected: { total: expectedTotal, network: 7, legacy: legacyNames.length, t4: 5 }, actual: { total: names.length, missingNetwork: networkNames.filter((n) => !names.includes(n)), missingT4: t4Names.filter((n) => !names.includes(n)) } });
+    {
+      expected: { total: expectedTotal, network: 7, legacy: legacyNames.length, t4: 5 },
+      actual: {
+        total: executionNames.length,
+        missingNetwork: networkNames.filter((n) => !names.includes(n)),
+        missingT4: t4Names.filter((n) => !names.includes(n)),
+        extra: executionNames.filter((name) => !(module.EXPECTED_TOOLS || []).some((tool) => tool.name === name)),
+      },
+    });
   const schemaProblems = [];
   for (const tool of module.NETWORK_TOOLS) {
     const definition = harness.tools.get(tool.name);
@@ -2432,9 +2442,12 @@ async function probeC52({ harness, check, notRun }) {
   const exec = execOf('c52');
   const module = await harnessModule();
   const expectedTotal = (module.EXPECTED_TOOLS && module.EXPECTED_TOOLS.length) || harness.toolNames().length;
-  check('本套件所有探针使用的工具都在 harness EXPECTED_TOOLS 注册表内（无 CDP shim）', harness.toolNames().length === expectedTotal
+  // Same off-by-the-discovery-entry rule as C50: compare execution tools, and every registered
+  // name must still be a `browser_*` tool (no CDP shim leaking into the surface).
+  const executionNames52 = harness.toolNames().filter((name) => name !== 'browser_tools');
+  check('本套件所有探针使用的工具都在 harness EXPECTED_TOOLS 注册表内（无 CDP shim）', executionNames52.length === expectedTotal
     && harness.toolNames().every((name) => name.startsWith('browser_')),
-    { expected: expectedTotal, actual: harness.toolNames().length });
+    { expected: expectedTotal, actual: executionNames52.length });
   await freshSession(harness, { exec, name: 'c52' });
   await clickAndAwait(harness, '#net-fetch-json', 'fetch-json', { exec });
   const legacy = await call(harness, 'browser_network', { limit: 20 }, exec);

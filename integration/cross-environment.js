@@ -1,13 +1,16 @@
 /**
  * Composition root for the cross-environment foundation (M2/M3).
  *
- * `index.js` remains the Web implementation and composition entry; this module owns the
- * environment-neutral control plane: authoritative config, adapter registry, tool admission,
- * per-execution adapter invocation, readiness, Skill discovery and the `/config` HTTP surface.
+ * This module owns the environment-neutral control plane: authoritative config, adapter registry,
+ * tool admission, per-execution adapter invocation, readiness aggregation, Skill discovery and the
+ * `/config` HTTP surface.
  *
- * Dependency direction: this module imports `core/` and `targets/` only. It never imports
- * `index.js`, and the platform implementations never import this module. `index.js` injects the
- * Web runtime/registry through explicit callbacks, so `core/` stays free of CDP/page assumptions.
+ * Dependency direction: this module imports `core/` only. Environment implementations (Web today,
+ * another platform later) are not imported here — the composition root receives a registration
+ * directory (`core/environments.js`) and resolves every platform question through it: adapters,
+ * the P0 provider, the operation table, the provider gate, per-provider readiness and the
+ * capability probe. A Host built this way cannot read a platform runtime's internals, and adding
+ * an environment never requires editing this file.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -24,29 +27,15 @@ import {
   DEFAULT_WEB_PROVIDER,
   ENVIRONMENTS,
   ERROR_CODES,
-  IMPLEMENTED_WEB_PROVIDERS,
   KNOWN_ENVIRONMENTS,
   READINESS_STATUS,
   SUPPORT,
-  WEB_PROVIDER_IDS,
   axis,
   createReadinessReport,
-  isImplementedWebProvider,
   isPlannedEnvironment,
   resolveSnapshot,
-  webProviderSupport,
 } from '../core/index.js';
-import { createFakeEnvironment } from '../targets/fake/adapter.js';
-import {
-  WEB_TOOL_OPERATIONS,
-  createWebCapabilityAdapter,
-  createWebTargetAdapter,
-  resolveExecutionClass,
-  resolveProviderExecutable,
-  resolveWebDriver,
-} from '../targets/web/adapter.js';
-import { createWebP0Provider } from '../targets/web/provider.js';
-import { createWebTargetTabs } from '../targets/web/tabs.js';
+import { createEnvironmentDirectory } from '../core/environments.js';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const DEFAULT_ENVIRONMENT = ENVIRONMENTS.WEB;
@@ -112,16 +101,32 @@ function configDirectory(env = process.env) {
  * must be answerable in *every* environment — including one the user disabled. They never touch a
  * page, so they are not bound to a single capability id.
  */
-const ENV_NEUTRAL_TOOLS = Object.freeze(['browser_state', 'browser_capabilities']);
+const ENV_NEUTRAL_TOOLS = Object.freeze([
+  // One discovery/selection entry plus the two diagnostics. All three stay registered in every
+  // environment (including a disabled one) so "which capability groups exist, why is this refused,
+  // how do I get the rest of the tools" is always answerable without a page or a model round trip.
+  'browser_tools', 'browser_state', 'browser_capabilities',
+]);
 
 function isNeutralTool(name) {
   return ENV_NEUTRAL_TOOLS.includes(name);
 }
 
-function capabilityForTool(name) {
-  if (isNeutralTool(name)) return null;
-  if (name === FAKE_TOOL) return 'fake.t1';
-  return WEB_TOOL_OPERATIONS[name] ?? null;
+/**
+ * Which environment declares this tool, and under which capability?
+ *
+ * The operation table belongs to the environment's own registration entry ("each entry provides
+ * capabilities and tool descriptions"), so the Host asks the directory instead of importing a
+ * platform module or keeping a second copy of the Web table.
+ */
+function capabilityFromEnvironments(name, environments) {
+  for (const entry of environments.entries()) {
+    const operation = entry.operations ? entry.operations[name] : undefined;
+    if (operation === undefined) continue;
+    if (typeof operation === 'string') return operation;
+    return operation?.capability ?? null;
+  }
+  return null;
 }
 
 function operationForTool(name) {
@@ -143,6 +148,10 @@ export function createCrossEnvironment({
   asBrowserError,
   webTabsLimits = {},
   env = process.env,
+  // Environment registration directory. The composition root assembles it by environment id; the
+  // public control plane only resolves entries from it. An empty directory means "no environment
+  // implementation is wired", which every lookup below reports as unsupported instead of guessing.
+  environments = null,
 } = {}) {
   if (typeof BrowserError !== 'function') throw new TypeError('createCrossEnvironment requires BrowserError');
   const classify = typeof asBrowserError === 'function' ? asBrowserError : (error) => error;
@@ -160,260 +169,86 @@ export function createCrossEnvironment({
   let invalidateSkills = () => {};
 
   /**
-   * Per-capability readiness probe (A13).
+   * Environment implementations are resolved by id from the injected registration directory
+   * (plan §Host 负责编排，环境实现负责执行): the public Host knows *what* an environment is and
+   * *when* to build it, never *how* it is built.
    *
-   * The old probe answered "there is a bound target, so capabilities are fine". That is not a
-   * measurement: structure reading, input dispatch, the network collector and the frame source are
-   * independent, and a page can have some of them and lack the others. Each check below reads a
-   * real signal off the live runtime, records `checkedAt`, and the union decides the status:
-   * every check ok -> `available`, some ok -> `partial`, none -> `unavailable`, no target ->
-   * `not-probed`. Nothing is inferred from a target merely existing.
+   * An `eager` entry (deterministic fixtures: no process, no socket) registers its adapters at
+   * construction; every other environment appears on its first real demand (A14), and `dispose()`
+   * handles the never-instantiated case.
    */
-  function probeWebCapabilities({ entry, checkedAt }) {
-    const runtime = entry?.runtime ?? null;
-    if (!runtime) {
-      return {
-        status: READINESS_STATUS.NOT_PROBED,
-        reason: 'no-runtime',
-        checkedAt,
-        evidence: { kind: 'capability-matrix', checks: {}, checkedAt },
-      };
+  const environmentDirectory = environments ?? createEnvironmentDirectory({ log });
+
+  function registerEnvironmentAdapters(environmentId) {
+    const id = String(environmentId);
+    const known = environmentDirectory.peek(id);
+    if (known) return known;
+    const entry = environmentDirectory.entry(id);
+    if (!entry) return null;
+    // Test-only environments follow the same allowance that gates the test tools.
+    if (entry.testOnly && !allowTestEnvironments) return null;
+    let record;
+    try {
+      record = environmentDirectory.instance(id, {
+        // Late-bound host services: the P0 dispatch entry resolves environments itself, and the
+        // page-entry lookup belongs to the Host's runtime registry.
+        p0Call: (request) => p0Call(request),
+        findEntryForSnapshot: (snapshot) => findEntryForSnapshot(snapshot),
+      });
+    } catch (error) {
+      log(`ui-testing: environment ${id} unavailable: ` + String((error && error.message) || error));
+      return null;
     }
-    const cdpAttached = Boolean(runtime.cdp && runtime.cdp.closed !== true);
-    const checks = {
-      // Structure (T2 snapshot / DOM reads) needs an attached page session.
-      structure: cdpAttached
-        ? { status: READINESS_STATUS.OK }
-        : { status: READINESS_STATUS.FAILED, reason: 'cdp-not-attached' },
-      // Input is dispatched through the same session; it is a separate entry because a read-only
-      // transport (or a closed Input domain) must be able to report structure without input.
-      input: cdpAttached && typeof runtime.input === 'function'
-        ? { status: READINESS_STATUS.OK }
-        : { status: READINESS_STATUS.FAILED, reason: cdpAttached ? 'input-unsupported' : 'cdp-not-attached' },
-      // Network collection is an independent object; its absence is a real capability gap.
-      network: runtime.net
-        ? { status: READINESS_STATUS.OK }
-        : { status: READINESS_STATUS.FAILED, reason: 'collector-missing' },
-      // Frame source (screencast / screenshot loop) is what T3/T4 preview depends on.
-      frames: runtime.frames
-        ? { status: READINESS_STATUS.OK }
-        : { status: READINESS_STATUS.FAILED, reason: 'frame-source-missing' },
-    };
-    const okChecks = Object.values(checks).filter((check) => check.status === READINESS_STATUS.OK).length;
-    const total = Object.keys(checks).length;
-    const status = okChecks === total
-      ? READINESS_STATUS.OK
-      : (okChecks === 0 ? AVAILABILITY.UNAVAILABLE : 'partial');
-    const failed = Object.entries(checks).filter(([, check]) => check.status !== READINESS_STATUS.OK);
-    const busy = runtime.lease && runtime.lease.expiresAt > Date.now() && runtime.active > 0;
-    return {
-      status: busy && status === READINESS_STATUS.OK ? AVAILABILITY.BUSY : status,
-      reason: busy && status === READINESS_STATUS.OK
-        ? 'page-busy'
-        : (failed.length === 0 ? null : failed.map(([name]) => name).join(',')),
-      checkedAt,
-      target: {
-        targetId: entry?.tabId ?? runtime.runtimeId ?? null,
-        generation: Number.isInteger(runtime.generation) ? runtime.generation : null,
-      },
-      evidence: {
-        kind: 'capability-matrix',
-        checkedAt,
-        okCount: okChecks,
-        total,
-        checks,
-        runtime: { id: runtime.runtimeId ?? null, cdpAttached, url: typeof runtime.url === 'string' ? runtime.url : null },
-      },
-    };
+    if (!record) return null;
+    if (record.targetAdapter) adapterRegistry.registerTargetAdapter(record.targetAdapter);
+    if (record.capabilityAdapter) adapterRegistry.registerCapabilityAdapter(record.capabilityAdapter);
+    if (record.p0Provider) adapterRegistry.registerP0Provider(record.p0Provider);
+    return record;
+  }
+
+  for (const eagerEntry of environmentDirectory.entries()) {
+    if (eagerEntry.eager === true) registerEnvironmentAdapters(eagerEntry.id);
+  }
+
+  /** The Web implementation record, or null while the Web environment has not been demanded. */
+  function webRecord() {
+    return environmentDirectory.peek(ENVIRONMENTS.WEB);
+  }
+
+  /** The capability a tool is declared under, from whichever environment declares it. */
+  const capabilityForTool = (name) => {
+    if (isNeutralTool(name)) return null;
+    if (name === FAKE_TOOL) return 'fake.t1';
+    return capabilityFromEnvironments(name, environmentDirectory);
+  };
+
+  /** The registration entry of the environment a snapshot resolved to (null when not wired). */
+  function environmentEntryFor(snapshot) {
+    const id = snapshot && typeof snapshot.environment === 'string' ? snapshot.environment : null;
+    return id ? environmentDirectory.entry(id) : null;
   }
 
   /**
-   * Web P0 provider: the single entry to the platform data plane for families A-E.
+   * Provider/target gate of the resolved environment.
    *
-   * The dispatch receives the invocation `context` (page runtime, exec, action meta) plus the
-   * bound `session`, so the provider — not the tool layer — decides which target/generation the
-   * data belongs to. Passing `session` is what makes generation/lease answers real instead of a
-   * static projection (A01/A05).
+   * Only the environment knows which of its providers may execute right now, so the Host asks the
+   * entry. An environment that declares no gate is never blocked by one.
    */
-  function createWebProvider() {
-    return createWebP0Provider({
-      log,
-      p0Dispatch: async (family, method, { args = {}, session = null, context = null, signal = null } = {}) => {
-        const runtime = context?.runtime;
-        if (!runtime) {
-          throw new AdapterError(ERROR_CODES.PROVIDER_UNAVAILABLE, 'web P0 provider has no runtime context', {
-            details: { family, method },
-          });
-        }
-        if (family === 'A' && method === 'screenshot') return runtime.screenshot(args, signal);
-        if (family === 'A' && method === 'capture') return runtime.capture(args, signal);
-        if (family === 'A' && method === 'product') return runtime.browserProduct(signal);
-        if (family === 'B') {
-          // `context` is the invocation view (a superset of the tool's `exec`), which is what the
-          // network methods expect for owner/session attribution.
-          if (method === 'start' || method === 'stop' || method === 'status' || method === 'reset') {
-            return runtime.netSession({ ...args, action: method }, context, signal);
-          }
-          if (method === 'events') return runtime.netEvents(args);
-          if (method === 'detail') return runtime.netDetail(args);
-          if (method === 'control') return runtime.netControl(args, context, signal);
-          if (method === 'trace') return runtime.netTrace(args);
-          if (method === 'evidence') return runtime.netEvidence(args, context);
-          if (method === 'subscribe') return runtime.netSubscribe(args, context.meta?.sessionId);
-        }
-        if (family === 'C' && method === 'read') return runtime.viewProjection();
-        if (family === 'C' && method === 'set') return runtime.applyView(args.patch ?? args, { signal, source: 'agent' });
-        if (family === 'D' && method === 'annotationRead') return runtime.annotationsDocument();
-        if (family === 'D' && method === 'annotationWrite') return runtime.acceptAnnotations(args);
-        if (family === 'E' && method === 'list') {
-          return registry.listTabs(context.primaryEntry ?? context.entry, context.meta?.sessionId);
-        }
-        if (family === 'E') {
-          return leaseFamily(method, { args, session, runtime, context });
-        }
-        throw new AdapterError(ERROR_CODES.CAPABILITY_UNSUPPORTED, `web P0 method ${family}.${method} is not wired`, {
-          details: { family, method },
-        });
-      },
-    });
-  }
-
-  /**
-   * P0-E lease lifecycle against the *real* page lease (A05).
-   *
-   * The page runtime owns the single-owner lease (`runtime.lease`). `leaseAcquire/Release/Status`
-   * used to be wired to one read-only projection, with `generation: null`, so a caller could not
-   * tell which target the lease covered. Each method now answers for the bound target and
-   * generation the calling session actually holds, and a foreign owner is a BUSY refusal, not a
-   * silent sharing of someone else's lease.
-   */
-  function leaseFamily(method, { args = {}, session = null, runtime, context = null }) {
-    const targetId = session?.target?.targetId ?? runtime?.runtimeId ?? null;
-    const generation = Number.isInteger(session?.generation) ? session.generation : null;
-    const sessionId = context?.meta?.sessionId ?? session?.sessionId ?? null;
-    const leaseIdOf = (owner) => (targetId && generation !== null ? `web:${targetId}:${generation}:${owner ?? 'none'}` : null);
-    if (method === 'leaseAcquire') {
-      if (!targetId) {
-        throw new AdapterError(ERROR_CODES.TARGET_NOT_BOUND, 'leaseAcquire requires a bound target', {
-          details: { operation: 'E.leaseAcquire' },
-        });
-      }
-      if (typeof runtime.claim !== 'function') {
-        throw new AdapterError(ERROR_CODES.PROVIDER_UNAVAILABLE, 'leaseAcquire requires a page runtime lease', {
-          details: { operation: 'E.leaseAcquire' },
-        });
-      }
-      runtime.claim(sessionId ?? 'anonymous');
-      const expiresAt = Number.isFinite(runtime.lease?.expiresAt) ? runtime.lease.expiresAt : null;
-      return {
-        leaseId: leaseIdOf(sessionId),
-        targetId,
-        generation,
-        owner: { kind: 'session', id: sessionId ?? 'anonymous' },
-        expiresAt,
-        expired: false,
-        remainingMs: expiresAt === null ? null : Math.max(0, expiresAt - Date.now()),
-      };
+  function driverFor(snapshot) {
+    const entry = environmentEntryFor(snapshot);
+    if (!entry || typeof entry.driver !== 'function') {
+      return { provider: snapshot?.provider ?? null, blocked: null };
     }
-    if (method === 'leaseRelease') {
-      if (typeof runtime.release !== 'function') {
-        throw new AdapterError(ERROR_CODES.PROVIDER_UNAVAILABLE, 'leaseRelease requires a page runtime lease', {
-          details: { operation: 'E.leaseRelease' },
-        });
-      }
-      const owner = runtime.lease?.sessionId ?? null;
-      const requested = typeof args.leaseId === 'string' ? args.leaseId : null;
-      if (requested !== null && leaseIdOf(owner) !== null && requested !== leaseIdOf(owner)) {
-        throw new AdapterError(ERROR_CODES.GENERATION_MISMATCH, 'leaseRelease targets a different lease', {
-          details: { operation: 'E.leaseRelease', requested, current: leaseIdOf(owner) },
-        });
-      }
-      runtime.release(owner ?? sessionId ?? 'anonymous');
-      return { released: true, leaseId: requested ?? leaseIdOf(owner), targetId, generation };
+    try {
+      return entry.driver(snapshot) ?? { provider: snapshot?.provider ?? null, blocked: null };
+    } catch (error) {
+      return { provider: snapshot?.provider ?? null, blocked: 'driver-unavailable', error: String((error && error.message) || error) };
     }
-    // leaseStatus
-    const lease = runtime.lease ?? null;
-    const owner = lease?.sessionId ?? null;
-    const expiresAt = Number.isFinite(lease?.expiresAt) ? lease.expiresAt : null;
-    return {
-      lease: lease === null ? null : {
-        leaseId: leaseIdOf(owner),
-        targetId,
-        generation,
-        owner: { kind: 'session', id: owner },
-        expiresAt,
-      },
-      expired: expiresAt === null ? true : expiresAt <= Date.now(),
-      remainingMs: expiresAt === null ? 0 : Math.max(0, expiresAt - Date.now()),
-      targetId,
-      generation,
-    };
-  }
-
-  /*
-   * Lazy Web faces (A14 按需加载 / 生命周期接线).
-   *
-   * The three Web adapters used to be created and registered unconditionally at composition-root
-   * construction, so a Host that only ever runs the fake environment still instantiated the whole
-   * Web surface. They are now created on first demand — the first Web-scoped admission, readiness
-   * probe or tool call — and `dispose()` handles the never-created case.
-   */
-  let webFaces = null;
-  let webFaceError = null;
-
-  function createWebFaces() {
-    const targetAdapter = createWebTargetAdapter({
-      registry,
-      log,
-      tabs: createWebTargetTabs({
-        registry,
-        BrowserError,
-        limits: webTabsLimits,
-        listTargets: async (exec, primaryEntry) => {
-          const result = await p0Call({
-            family: 'E', method: 'list', exec,
-            runtime: exec.runtime ?? null, entry: primaryEntry, meta: exec.meta ?? null,
-          });
-          return result.value;
-        },
-      }),
-      capabilityAvailability: ({ entry, snapshot }) => probeWebCapabilities({
-        entry: entry ?? findEntryForSnapshot(snapshot),
-        checkedAt: Date.now(),
-      }),
-    });
-    const capabilityAdapter = createWebCapabilityAdapter({
-      log,
-      dispatch: async ({ context }) => {
-        if (!context || typeof context.execute !== 'function') {
-          throw new AdapterError(ERROR_CODES.PROVIDER_UNAVAILABLE, 'web dispatch requires context.execute');
-        }
-        // Keep the complete tool result. Some tools (browser_eval) legitimately have a `value`
-        // field; the adapter's envelope unwrapping must not change the tool's own result shape.
-        const raw = await context.execute();
-        context.rawResult = raw;
-        return raw;
-      },
-    });
-    const provider = createWebProvider();
-    adapterRegistry.registerTargetAdapter(targetAdapter);
-    adapterRegistry.registerCapabilityAdapter(capabilityAdapter);
-    adapterRegistry.registerP0Provider(provider);
-    return { targetAdapter, capabilityAdapter, provider };
   }
 
   /** Ensure the Web faces exist. Returns null when the Web environment is not in play. */
   function ensureWebRegistered() {
-    if (webFaces) return webFaces;
-    if (webFaceError) return null;
-    try {
-      webFaces = createWebFaces();
-      return webFaces;
-    } catch (error) {
-      webFaceError = String((error && error.message) || error);
-      log('ui-testing: web faces unavailable: ' + webFaceError);
-      return null;
-    }
+    return registerEnvironmentAdapters(ENVIRONMENTS.WEB);
   }
 
   /**
@@ -427,18 +262,16 @@ export function createCrossEnvironment({
       && snapshot.enabledEnvironments.includes(ENVIRONMENTS.WEB);
   }
 
-  /** Load the Web faces for one resolved snapshot (no-op when Web is not involved). */
-  function prepareWeb(snapshot) {
-    if (!snapshotNeedsWeb(snapshot)) return null;
-    return ensureWebRegistered();
+  /** Bring up the implementation of whatever environment a snapshot resolved to (A14). */
+  function prepareEnvironment(snapshot) {
+    const id = snapshot && typeof snapshot.environment === 'string' ? snapshot.environment : null;
+    return id ? registerEnvironmentAdapters(id) : null;
   }
 
-  let fakeEnvironment = null;
-  if (allowTestEnvironments) {
-    fakeEnvironment = createFakeEnvironment();
-    adapterRegistry.registerTargetAdapter(fakeEnvironment.targetAdapter);
-    adapterRegistry.registerCapabilityAdapter(fakeEnvironment.capabilityAdapter);
-    adapterRegistry.registerP0Provider(fakeEnvironment.p0Provider);
+  /** Compatibility alias: the Web environment is the one this bundle ships first. */
+  function prepareWeb(snapshot) {
+    if (!snapshotNeedsWeb(snapshot)) return null;
+    return registerEnvironmentAdapters(ENVIRONMENTS.WEB);
   }
 
   const configListeners = new Set();
@@ -554,52 +387,13 @@ export function createCrossEnvironment({
     if (!Array.isArray(snapshot.capabilities) || !snapshot.capabilities.includes(capability)) return false;
     if (name === FAKE_TOOL) return snapshot.environment === ENVIRONMENTS.FAKE;
     // §4.3: admission also answers the provider question. A disabled selection, an unknown name or
-    // a provider without a driver refuses the Web operations (never a silent browser swap).
-    if (snapshot.environment === ENVIRONMENTS.WEB && WEB_TOOL_OPERATIONS[name] !== undefined) {
-      if (resolveWebDriver(snapshot).blocked !== null) return false;
+    // a provider without a driver refuses the environment's operations (never a silent swap).
+    const entry = environmentEntryFor(snapshot);
+    if (entry && typeof entry.admitTool === 'function') {
+      const verdict = entry.admitTool(name, snapshot);
+      if (verdict === false) return false;
     }
     return true;
-  }
-
-  /**
-   * Web provider switches for one resolved snapshot (derived, never a second stored list).
-   * `implementedProviders` is the subset a driver actually exists for.
-   */
-  function webProvidersFor(snapshot) {
-    const entry = isPlainObject(snapshot?.environmentConfig) ? snapshot.environmentConfig : {};
-    const providers = isPlainObject(entry.providers) ? entry.providers : {};
-    const enabledProviders = WEB_PROVIDER_IDS.filter((id) => providers[id]?.enabled === true);
-    return {
-      providers,
-      enabledProviders,
-      implementedProviders: enabledProviders.filter((id) => isImplementedWebProvider(id)),
-      totalEnabled: entry.enabled === true,
-    };
-  }
-
-  /**
-   * Providers enabled by *any* selectable scope (global + workspace switches). A session may only
-   * choose between these, so this union is the registration ceiling (§4.3).
-   */
-  function enabledProviderUnion() {
-    const config = configStore.getConfig();
-    const consider = (entry) => {
-      const web = isPlainObject(entry) ? entry.environments?.[ENVIRONMENTS.WEB] : null;
-      if (!isPlainObject(web) || !isPlainObject(web.providers)) return;
-      for (const id of WEB_PROVIDER_IDS) {
-        if (web.providers[id]?.enabled === true) union.add(id);
-      }
-    };
-    const union = new Set();
-    consider(config.global);
-    for (const entry of Object.values(config.workspaces || {})) consider(entry);
-    return union;
-  }
-
-  /** True when the Web tools may exist at all: some implemented provider is enabled somewhere. */
-  function webProviderSurfaceAvailable() {
-    const union = enabledProviderUnion();
-    return IMPLEMENTED_WEB_PROVIDERS.some((id) => union.has(id));
   }
 
   /** The provider/execution identity block exposed by /config, /config/select and capabilities. */
@@ -630,27 +424,41 @@ export function createCrossEnvironment({
   }
 
   /**
-   * Tool names to *register* — the declaration set (A08).
+   * Tool names to *register* — the declaration ceiling (A08).
    *
-   * Measured on the running host (2026-11-07, `request/header` events of a live session): a
-   * per-step `when` that returned false did **not** remove the tool from the model-facing list,
-   * and the call still reached the plugin body. This composition therefore builds the request from
-   * what is *registered*, exactly like the pre-migration behaviour: registration scope is the
-   * effective isolation, and `when` is only a second gate for compositions that do apply step
-   * admission to declarations.
+   * Current installed hosts (verified on 0.2.2-rc.3, `LlmAdapter.stream` request capture plus
+   * `request/header` events) recompute `when` for every model step, send only the admitted
+   * definitions, and dispatch with that same step set. A `when` that returns false therefore does
+   * remove the tool from the request and makes a forced call fail with `UNKNOWN_TOOL`; the older
+   * note here (measured on 2026-11-07) described a build that ignored step admission and must not
+   * be used to justify registration churn.
    *
-   * So the union is limited to the environments a scope may actually select (plus the neutral
-   * diagnostics): a disabled environment's tools are unregistered and cannot appear in any
-   * request, while an enabled one stays available to the agents that select it.
+   * Registration still keeps the environment ceiling: a disabled environment's tools are not
+   * registered at all, so no agent of any environment can ever receive them. Which *registered*
+   * tools a particular agent's step actually receives is decided per step by the plugin's own
+   * disclosure selection (`integration/tool-disclosure.js`) inside the same `when`.
    */
   function declarableToolNames() {
     const names = new Set(ENV_NEUTRAL_TOOLS);
     const enabled = enabledEnvironmentUnion();
-    // §4.3: the Web tools exist while the total switch is valid AND at least one *implemented*
-    // provider is enabled. The 36 names are registered once; provider routing happens per call, so
-    // enabling one or two providers never changes the registered set.
-    if (enabled.has(ENVIRONMENTS.WEB) && webProviderSurfaceAvailable()) {
-      for (const name of Object.keys(WEB_TOOL_OPERATIONS)) names.add(name);
+    // Each enabled environment contributes its own operation table. A platform whose surface is
+    // currently unavailable (e.g. Web with no implemented provider enabled) declares nothing, so a
+    // disabled surface never leaks tool names into a request.
+    const config = configStore.getConfig();
+    for (const environmentId of enabled) {
+      const entry = environmentDirectory.entry(environmentId);
+      if (!entry) continue;
+      if (entry.testOnly && !allowTestEnvironments) continue;
+      if (typeof entry.surfaceAvailable === 'function') {
+        let available = false;
+        try {
+          available = entry.surfaceAvailable({ config, snapshot: null }) === true;
+        } catch {
+          available = false;
+        }
+        if (!available) continue;
+      }
+      for (const name of Object.keys(entry.operations ?? {})) names.add(name);
     }
     // The test-only probe follows the same rule: registered only while the fake environment is
     // selectable, so it can never leak into a Web-only request.
@@ -721,10 +529,10 @@ export function createCrossEnvironment({
       throw new BrowserError(ERROR_CODES.INVALID_ARGUMENT, `unknown P0 family ${String(family)}`, { family });
     }
     const snapshot = snapshotForAgent(exec?.agent);
-    prepareWeb(snapshot);
+    registerEnvironmentAdapters(snapshot.environment);
     // §4.4 provider gate for the P0 surface: a disabled / unknown / unimplemented provider refuses
     // the call instead of being answered by whichever browser happens to be running.
-    const driver = resolveWebDriver(snapshot);
+    const driver = driverFor(snapshot);
     if (driver.blocked !== null) {
       const disabled = driver.blocked === 'environment-disabled' || driver.blocked === 'provider-disabled';
       throw new BrowserError(
@@ -831,7 +639,7 @@ export function createCrossEnvironment({
     }
     const session = await adapterSessionFor({ snapshot, resolvedScope, exec });
     try {
-      const classForCall = executionClass || resolveExecutionClass(name, args) || 'page';
+      const classForCall = executionClass || executionClassFor(name, args) || 'page';
       if (name === FAKE_TOOL) {
         const targets = await session.listTargets({ signal: exec.signal });
         if (targets[0]) await session.bind(targets[0].targetId, { signal: exec.signal });
@@ -906,7 +714,16 @@ export function createCrossEnvironment({
 
   function executionClassFor(name, args) {
     if (name === FAKE_TOOL) return 'page';
-    return resolveExecutionClass(name, args);
+    // The execution class is part of the environment's tool description (queue/lease/ensure
+    // decisions differ per platform), so it is asked of the entry that declares the tool.
+    const snapshot = snapshotForAgent(null);
+    const entry = environmentEntryFor(snapshot);
+    if (entry && typeof entry.executionClassFor === 'function') {
+      const declared = entry.executionClassFor(name, args);
+      if (declared) return declared;
+      return null;
+    }
+    return null;
   }
 
   function resolveRequestScope(scopeRequest) {
@@ -1066,117 +883,28 @@ export function createCrossEnvironment({
       });
     }
     // Per-provider cards (§7): each provider answers with its own axes; the environment-level
-    // axes stay as the summary the earlier pages already rely on.
-    const webEntry = config.global.environments?.[ENVIRONMENTS.WEB] ?? null;
+    // axes stay as the summary the earlier pages already rely on. Which providers exist, and how
+    // to probe them, is the environment's own knowledge (`entry.providerReadiness`).
     for (const environment of environments) {
-      if (environment.id !== ENVIRONMENTS.WEB) continue;
-      environment.providers = providerReadinessBlock({
-        snapshot,
-        webEntry,
-        checkedAt,
-        axes: environment.axes,
-      });
+      const registration = environmentDirectory.entry(environment.id);
+      if (!registration || typeof registration.providerReadiness !== 'function') continue;
+      const entryConfig = isPlainObject(config.global?.environments)
+        ? config.global.environments[environment.id] ?? null
+        : null;
+      try {
+        environment.providers = registration.providerReadiness({
+          snapshot,
+          entryConfig,
+          checkedAt,
+          axes: environment.axes,
+        });
+      } catch (error) {
+        log(`ui-testing: provider readiness for ${environment.id} unavailable: ` + String((error && error.message) || error));
+      }
     }
     return { checkedAt, configRevision: snapshot.revision, environments };
   }
 
-  /**
-   * Per-provider readiness for the web environment (§7).
-   *
-   * Structural rule: a provider that is disabled (or has no driver) is **never probed** and never
-   * started — its axes are answered from config facts. An enabled, implemented provider **is** probed
-   * for its dependency with *its own* executable candidates, so "not installed" is reported as
-   * `failed / executable-missing` instead of an unverified state, and never by borrowing chrome's
-   * evidence (§8: code reuse is not verification). Session-level axes (connection/target/capability)
-   * belong to the selected provider only; every other provider reports `provider-not-selected`.
-   *
-   * @param {{snapshot:object, webEntry:object, checkedAt:number, axes:object}} input
-   */
-  function providerReadinessBlock({ snapshot, webEntry, checkedAt, axes }) {
-    const switches = isPlainObject(webEntry?.providers) ? webEntry.providers : {};
-    const totalEnabled = webEntry?.enabled === true;
-    const selectedProvider = typeof snapshot?.provider === 'string' ? snapshot.provider : null;
-    const notProbed = (reason) => axis(READINESS_STATUS.NOT_PROBED, { reason, checkedAt });
-    const out = {};
-    for (const id of WEB_PROVIDER_IDS) {
-      const enabled = switches[id]?.enabled === true;
-      const support = webProviderSupport(id);
-      const implemented = isImplementedWebProvider(id);
-      const selected = selectedProvider === id;
-      const blockedReason = !totalEnabled
-        ? 'environment-disabled'
-        : (!enabled
-          ? 'provider-disabled'
-          : (support === 'pending'
-            ? 'provider-driver-pending'
-            : (!implemented ? 'provider-not-implemented' : null)));
-      if (blockedReason !== null) {
-        out[id] = {
-          id,
-          selected,
-          enabled,
-          support,
-          implemented,
-          axes: {
-            support: axis(implemented ? SUPPORT.SUPPORTED : SUPPORT.UNSUPPORTED, {
-              reason: support === 'pending' ? 'provider-driver-pending' : (implemented ? null : 'provider-not-implemented'),
-              checkedAt,
-            }),
-            enabled: axis('false', { reason: blockedReason, checkedAt }),
-            dependency: notProbed(blockedReason),
-            connection: notProbed(blockedReason),
-            target: axis(READINESS_STATUS.UNBOUND, { reason: blockedReason, checkedAt }),
-            capability: notProbed(blockedReason),
-          },
-        };
-        continue;
-      }
-      // Dependency is a filesystem fact about *this* provider's own executable, so it does not
-      // depend on which provider is currently selected: a machine without Edge must show that on
-      // the Edge card even while Chrome is the one executing.
-      let resolution = null;
-      try {
-        resolution = resolveProviderExecutable({ provider: id });
-      } catch (error) {
-        resolution = null;
-      }
-      const dependencyEvidence = {
-        id: id === DEFAULT_WEB_PROVIDER ? 'chromium' : id,
-        kind: 'executable',
-        provider: id,
-        path: resolution ? resolution.path : null,
-        // Version is never invented: null means "not observed" (probe must not launch anything).
-        version: null,
-      };
-      const dependencyAxis = resolution === null
-        ? notProbed('provider-dependency-not-verified')
-        : (resolution.path
-          ? axis(READINESS_STATUS.OK, { checkedAt, evidence: dependencyEvidence })
-          : axis(READINESS_STATUS.FAILED, {
-            reason: resolution.reason || 'executable-missing',
-            checkedAt,
-            evidence: dependencyEvidence,
-          }));
-      out[id] = {
-        id,
-        selected,
-        enabled,
-        support,
-        implemented,
-        axes: {
-          support: axis(SUPPORT.SUPPORTED, { checkedAt }),
-          enabled: axis('true', { reason: null, checkedAt }),
-          dependency: dependencyAxis,
-          connection: selected && axes?.connection ? axes.connection : notProbed('provider-not-selected'),
-          target: selected && axes?.target
-            ? axes.target
-            : axis(READINESS_STATUS.UNBOUND, { reason: 'provider-not-selected', checkedAt }),
-          capability: selected && axes?.capability ? axes.capability : notProbed('provider-not-selected'),
-        },
-      };
-    }
-    return out;
-  }
 
   function safeResolveAdapter(id, snapshot) {
     try {
@@ -1377,7 +1105,7 @@ export function createCrossEnvironment({
         && registered.every((name, index) => name === admitted[index]);
       declaration = {
         surface: 'host-tool-registration',
-        registration: 'enabled-union',
+        registration: 'environment-ceiling',
         environment: snapshot.environment,
         sessionEnvironment: snapshot.environment,
         registeredTools: registered,
@@ -1385,10 +1113,14 @@ export function createCrossEnvironment({
         admittedTools: admitted,
         admittedCount: admitted.length,
         isolated,
-        note: isolated
-          ? '注册面 = 当前环境和公共诊断，模型请求里的插件 schema 与执行准入一致'
-          : '本机组合的模型请求按“已注册”构建（实测：when 返回 false 的工具仍在 request/header 里），'
-            + '因此隔离由注册范围保证；admittedTools 只反映逐 Agent 的第二道闸门',
+        // Neither list is the model-request payload: `registeredTools` is the registration
+        // ceiling, `admittedTools` is environment admission for the resolved scope, and the
+        // per-Agent progressive-disclosure selection is applied per step in the `when` condition.
+        // Read `browser_tools status`/`browser_capabilities.disclosure` for that selection, and the
+        // provider request itself for what was actually sent.
+        note: '注册面 = 当前环境允许注册的工具（含发现与诊断）；admittedTools = 该作用域的环境准入集合。'
+          + '两者都不是模型请求的实际发送列表：逐 Agent 的披露选择在本步 when 中应用，'
+          + '实际发送内容以 provider 请求为准。',
       };
     } catch {
       declaration = null;
@@ -1515,15 +1247,9 @@ export function createCrossEnvironment({
   async function dispose() {
     if (disposed) return;
     disposed = true;
-    if (webFaces) {
-      try { await webFaces.targetAdapter.dispose(); } catch { /* best effort */ }
-      try { await webFaces.capabilityAdapter.dispose(); } catch { /* best effort */ }
-      try { await webFaces.provider.dispose(); } catch { /* best effort */ }
-      webFaces = null;
-    }
-    if (fakeEnvironment) {
-      try { await fakeEnvironment.dispose(); } catch { /* best effort */ }
-    }
+    // Implementation instances are released through the directory so the Host never has to know
+    // which objects an environment created.
+    try { await environmentDirectory.dispose(); } catch { /* best effort */ }
     try { await adapterRegistry.dispose(); } catch { /* best effort */ }
     try { configStore.dispose(); } catch { /* best effort */ }
   }
@@ -1531,12 +1257,16 @@ export function createCrossEnvironment({
   return {
     configStore,
     adapterRegistry,
+    // Environment registration directory (diagnostics read it; tests assert laziness on it).
+    environments: environmentDirectory,
     // Lazy Web faces: null until the Web environment is actually used (A14).
-    get webTargetAdapter() { return webFaces?.targetAdapter ?? null; },
-    get webCapabilityAdapter() { return webFaces?.capabilityAdapter ?? null; },
-    get webP0Provider() { return webFaces?.provider ?? null; },
+    get webTargetAdapter() { return webRecord()?.targetAdapter ?? null; },
+    get webCapabilityAdapter() { return webRecord()?.capabilityAdapter ?? null; },
+    get webP0Provider() { return webRecord()?.p0Provider ?? null; },
     ensureWebRegistered,
+    prepareEnvironment,
     prepareWeb,
+    driverFor,
     allowTestEnvironments,
     snapshotForAgent,
     snapshotForScope,

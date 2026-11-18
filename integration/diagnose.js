@@ -101,6 +101,13 @@ export function validateProbeArgs(tool, args) {
 }
 
 /** The only operations this dispatcher may run. Everything else is refused above. */
+/**
+ * Fallback dispatch whitelist (plan §HTTP、WS 与诊断).
+ *
+ * The authoritative list is what the resolved environment *declares*
+ * (`entry.diagnostics.allowedTools`); this map only keeps the historical behaviour for a host whose
+ * environment registers no diagnostics block at all.
+ */
 const DISPATCHER_ALLOWED = new Map([
   ['browser_capabilities', true],
   ['browser_eval', true],
@@ -109,6 +116,21 @@ const DISPATCHER_ALLOWED = new Map([
   ['browser_computed_style', true],
   ['browser_network', true],
 ]);
+
+/** The environment this diagnostic run is about (the snapshot is authoritative). */
+function environmentIdFor(ctx) {
+  const id = ctx?.snapshot?.environment;
+  return typeof id === 'string' && id ? id : 'web';
+}
+
+/** The probes an environment declares, or `null` when the host wired no diagnostics at all. */
+function declaredProbes(environments, environmentId) {
+  if (!environments || typeof environments.entry !== 'function') return null;
+  const entry = environments.entry(environmentId);
+  if (!entry) return null;
+  const probes = Array.isArray(entry.diagnostics?.probes) ? entry.diagnostics.probes : [];
+  return { entry, probes };
+}
 
 export function createDiagnose(deps) {
   const {
@@ -171,7 +193,11 @@ export function createDiagnose(deps) {
 
   /** A tool dispatch restricted to this contract's fixed operations, through the real handler. */
   async function dispatch(ctx, tool, args, signal) {
-    if (!DISPATCHER_ALLOWED.has(tool)) {
+    const declaredEntry = deps.environments?.entry?.(environmentIdFor(ctx)) ?? null;
+    const declaredAllowed = Array.isArray(declaredEntry?.diagnostics?.allowedTools)
+      ? declaredEntry.diagnostics.allowedTools
+      : null;
+    if (declaredAllowed ? !declaredAllowed.includes(tool) : !DISPATCHER_ALLOWED.has(tool)) {
       throw Object.assign(new Error('诊断调度器不支持该操作：' + tool), { code: 'UNSUPPORTED' });
     }
     const validated = validateProbeArgs(tool, args);
@@ -526,7 +552,7 @@ export function createDiagnose(deps) {
     let adapterError = null;
     try {
       const resolvedAdapter = crossEnvironment.adapterRegistry.resolve({
-        ...ctx.snapshot, environment: 'web', adapterId: ctx.provider,
+        ...ctx.snapshot, environment: environmentIdFor(ctx), adapterId: ctx.provider,
       });
       adapterOk = Boolean(resolvedAdapter && resolvedAdapter.targetAdapter);
       checks.push({ id: 'adapter-resolve', status: adapterOk ? 'pass' : 'fail', detail: adapterOk ? 'adapter ' + ctx.provider + ' 可解析' : '未解析出适配器' });
@@ -817,10 +843,22 @@ export function createDiagnose(deps) {
       }
     };
 
-    await run('snapshot', 'browser_snapshot', { maxNodes: 50 });
-    await run('screenshot', 'browser_screenshot', {});
-    await run('computed-style', 'browser_computed_style', { selector: 'body', properties: ['display'] });
-    await run('network-read', 'browser_network', { limit: 5 });
+    // The probe list belongs to the environment (plan §HTTP、WS 与诊断): the dispatcher is generic
+    // and the platform declares what it can answer read-only. "declares no probes" is reported as
+    // its own answer, never as a silent empty success.
+    const declared = declaredProbes(deps.environments, environmentIdFor(ctx));
+    if (declared && declared.probes.length === 0) {
+      return [{ id: 'probes', status: 'skip', detail: 'environment-declares-no-probes' }];
+    }
+    const list = declared
+      ? declared.probes
+      : [
+        { id: 'snapshot', tool: 'browser_snapshot', args: { maxNodes: 50 } },
+        { id: 'screenshot', tool: 'browser_screenshot', args: {} },
+        { id: 'computed-style', tool: 'browser_computed_style', args: { selector: 'body', properties: ['display'] } },
+        { id: 'network-read', tool: 'browser_network', args: { limit: 5 } },
+      ];
+    for (const probe of list) await run(probe.id, probe.tool, probe.args ?? {});
     return out;
   }
 

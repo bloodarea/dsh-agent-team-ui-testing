@@ -196,12 +196,21 @@ test('M5 A08/A09/A11/A15: real ToolsService + SkillRegistry environment isolatio
     };
     const toolNamesFor = async (agent) => (await schemasFor(agent)).map((schema) => schema.name).sort();
 
-    await t.test('A08: default global web — 37 web schemas, no fake schema (both agents)', async () => {
+    await t.test('A08: default global web — discovery + diagnostics only, no fake schema (both agents)', async () => {
+      // Progressive disclosure: the registration surface is the full 37 operations, but a step
+      // receives only the discovery entry and the two diagnostics until that Agent activates a
+      // capability group. This is the real assembly boundary (`tools.resolve` -> `tools.schemas`),
+      // not the registration list.
+      const INITIAL = ['browser_capabilities', 'browser_state', 'browser_tools'];
       for (const [label, agent] of [['agent-web', agentWeb], ['agent-fake', agentFake]]) {
         const names = await toolNamesFor(agent);
-        assert.equal(names.length, 37, `${label}: expected the 37 Web schemas, got ${names.length}: ${JSON.stringify(names)}`);
-        assert.deepEqual(names, WEB_TOOLS, describeMissing(`${label} default web schema set`, names, WEB_TOOLS));
-        assert.ok(!names.includes('browser_fake_probe'), `${label}: browser_fake_probe leaked into the default web schema list`);
+        assert.deepEqual(names, INITIAL, `${label}: expected the 3 initial schemas, got ${JSON.stringify(names)}`);
+        assert.ok(!names.includes('browser_fake_probe'), `${label}: browser_fake_probe leaked into the default schema list`);
+        // Every other operation stays registered, it is just not declared for this step.
+        for (const name of WEB_TOOLS) {
+          if (INITIAL.includes(name)) continue;
+          assert.equal(tools.get(name, agent) !== undefined, true, `${name} must still be registered`);
+        }
       }
       const read = await callRoute(httpHandlers, { path: '/plugins/ui-testing/config?view=global' });
       assert.equal(read.status, 200, `GET /config failed: ${read.body}`);
@@ -238,16 +247,16 @@ test('M5 A08/A09/A11/A15: real ToolsService + SkillRegistry environment isolatio
       assert.equal(select.json.revision, 2, `session select must bump revision to 2, got ${select.json.revision}`);
       assert.equal(select.json.resolved.environment, 'fake', `select response resolved environment=${select.json.resolved.environment}`);
 
-      // 3) A08 at the real assembly boundary: B sees only the fake schema; A keeps all 37.
+      // 3) A08 at the real assembly boundary: B sees only the fake surface; A keeps its own state.
       const fakeNames = await toolNamesFor(agentFake);
-      // The fake environment offers its own operation plus the environment-neutral diagnostics
-      // (browser_state / browser_capabilities): "why is it refused / what is supported here" must
-      // stay answerable in every environment (plan §5.2.4, §6.2). No Web operation may leak.
-      assert.deepEqual(fakeNames, ['browser_capabilities', 'browser_fake_probe', 'browser_state'],
-        `agent-fake schemas after selecting fake: expected the fake probe + neutral diagnostics, got ${JSON.stringify(fakeNames)}`);
+      // The fake environment offers its own operation plus the neutral discovery/diagnostic entries
+      // (browser_tools / browser_state / browser_capabilities): "why is it refused / what is
+      // supported here" must stay answerable in every environment (plan §5.2.4, §6.2).
+      assert.deepEqual(fakeNames, ['browser_capabilities', 'browser_fake_probe', 'browser_state', 'browser_tools'],
+        `agent-fake schemas after selecting fake: expected the fake probe + neutral entries, got ${JSON.stringify(fakeNames)}`);
       const webNames = await toolNamesFor(agentWeb);
-      assert.equal(webNames.length, 37, `agent-web must keep the 37 Web schemas after B selected fake, got ${webNames.length}`);
-      assert.deepEqual(webNames, WEB_TOOLS, describeMissing('agent-web schema set after B selected fake', webNames, WEB_TOOLS));
+      assert.deepEqual(webNames, ['browser_capabilities', 'browser_state', 'browser_tools'],
+        `agent-web must keep its own (unactivated) schema set after B selected fake, got ${JSON.stringify(webNames)}`);
       assert.ok(!webNames.includes('browser_fake_probe'), 'agent-web must not see the fake schema (A11 cross-agent leak)');
 
       // 4) The same split is visible through the HTTP config views.
@@ -325,7 +334,38 @@ test('M5 A08/A09/A11/A15: real ToolsService + SkillRegistry environment isolatio
       assert.notDeepEqual(namesB, namesA, 'agent-fake and agent-web catalogs are identical after selecting different environments');
     });
 
+    await t.test('A08b: activation changes only that Agent and only the next assembly', async () => {
+      const definition = tools.get('browser_tools', agentWeb);
+      assert.ok(definition && typeof definition.execute === 'function', 'browser_tools must be executable for the agent');
+      const activate = (groups) => definition.execute({ action: 'activate', groups }, { agent: agentWeb });
+      const initial = await toolNamesFor(agentWeb);
+      assert.deepEqual(initial, ['browser_capabilities', 'browser_state', 'browser_tools']);
+
+      const basic = await activate(['basic']);
+      assert.deepEqual(basic.selected, ['basic']);
+      const basicNames = await toolNamesFor(agentWeb);
+      assert.equal(basicNames.length, 18, `basic selection must assemble 18 schemas, got ${basicNames.length}`);
+      assert.ok(basicNames.includes('browser_click') && basicNames.includes('browser_snapshot'));
+
+      const network = await activate(['network']);
+      assert.deepEqual(network.selected, ['basic', 'network'], 'network must add its basic dependency');
+      const networkNames = await toolNamesFor(agentWeb);
+      assert.equal(networkNames.length, 27, `basic+network must assemble 27 schemas, got ${networkNames.length}`);
+      assert.ok(!networkNames.includes('browser_vision_image'), 'vision must not leak into the network selection');
+
+      // A second Agent is unaffected by the first Agent's selection.
+      assert.deepEqual(await toolNamesFor(agentFake), ['browser_capabilities', 'browser_fake_probe', 'browser_state', 'browser_tools']);
+
+      await definition.execute({ action: 'reset' }, { agent: agentWeb });
+      assert.deepEqual(await toolNamesFor(agentWeb), ['browser_capabilities', 'browser_state', 'browser_tools']);
+    });
+
     await t.test('A15: serialized schema bytes and skill catalog/body sizes (facts only)', async () => {
+      // Measure the full surface explicitly so the byte comparison is about a real selection.
+      const discovery = tools.get('browser_tools', agentWeb);
+      for (const groups of [['basic'], ['network'], ['vision'], ['dynamic']]) {
+        await discovery.execute({ action: 'activate', groups }, { agent: agentWeb });
+      }
       const webSchemas = await schemasFor(agentWeb);
       const fakeSchemas = await schemasFor(agentFake);
       const webSchemaBytes = Buffer.byteLength(JSON.stringify(webSchemas), 'utf8');
@@ -352,12 +392,12 @@ test('M5 A08/A09/A11/A15: real ToolsService + SkillRegistry environment isolatio
 
       assert.ok(webSchemaBytes > 0 && fakeSchemaBytes > 0, 'schema serialization must be non-empty');
       assert.ok(fakeSchemaBytes < webSchemaBytes,
-        `fake schema payload (${fakeSchemaBytes}B) should be smaller than the 37-tool web payload (${webSchemaBytes}B)`);
+        `fake schema payload (${fakeSchemaBytes}B) should be smaller than the fully disclosed web payload (${webSchemaBytes}B)`);
       const fakeNameSet = new Set(fakeSchemas.map((schema) => schema.name));
       // Environment-neutral diagnostics are intentionally present in every environment; every other
       // Web operation must be absent from the fake *schema set* (name identity, not a substring of
       // some description).
-      const NEUTRAL_DIAGNOSTICS = ['browser_state', 'browser_capabilities'];
+      const NEUTRAL_DIAGNOSTICS = ['browser_state', 'browser_capabilities', 'browser_tools'];
       for (const name of WEB_TOOLS) {
         if (NEUTRAL_DIAGNOSTICS.includes(name)) continue;
         assert.ok(!fakeNameSet.has(name), `fake schema set still declares the web tool ${name}`);

@@ -949,6 +949,64 @@ const TOOL_EFFECTS = Object.freeze({
     list: [CALLER_LOCAL_COLLECTOR],
   }),
 
+  // --- FR-11 Cookie Store: metadata is a cached host read; export/import stay host-level ---------
+  // (CDP + controlled file) but they are *authorization-sensitive*, so the write path is
+  // WRITE_HOST rather than CALLER_LOCAL: without a human-issued approval record the whole call
+  // refuses before any CDP dispatch or file I/O happens.
+  browser_cookies: actionTable('browser_cookies', {
+    metadata: [OBSERVE_HOST_VIEW],
+    export: [WRITE_HOST_VIEW],
+    'import': [WRITE_HOST_VIEW],
+  }),
+  browser_security_scope: actionTable('browser_security_scope', {
+    status: [OBSERVE_HOST_VIEW],
+    set: [WRITE_HOST_VIEW],
+    stop: [WRITE_HOST_VIEW],
+  }),
+  // Surface build reads the collector + runs a FIXED extraction script on the current page
+  // (never a caller-supplied script, so it is not browser_eval): page observation + host read.
+  browser_surface: actionTable('browser_surface', {
+    build: [OBSERVE_HOST_VIEW, OBSERVE_PAGE],
+  }),
+  // Script analysis: list reads collected descriptors; every other action runs CDP Debugger
+  // commands against the current page (host-level, no page queue/lease).
+  browser_script: actionTable('browser_script', {
+    list: [OBSERVE_HOST_VIEW],
+    armed: [WRITE_HOST_VIEW],
+    source: [WRITE_HOST_VIEW],
+    format: [WRITE_HOST_VIEW],
+    strings: [WRITE_HOST_VIEW],
+    sinks: [WRITE_HOST_VIEW],
+    analyze: [WRITE_HOST_VIEW],
+    // RT actions: breakpoints/pause change live page execution control (host-level, but they do
+    // take control of the page's run state), so they are writes on the host view.
+    breakpoint: [WRITE_HOST_VIEW],
+    stack: [OBSERVE_HOST_VIEW],
+    scope: [OBSERVE_HOST_VIEW],
+    resume: [WRITE_HOST_VIEW],
+    correlate: [OBSERVE_HOST_VIEW],
+    verify: [OBSERVE_HOST_VIEW],
+  }),
+  // Findings live in Host memory for the workspace scope: reads are cached host reads, writes
+  // create/update the caller's own records (never another scope's).
+  browser_biz: actionTable('browser_biz', {
+    // evaluate is a pure invariant check over supplied facts; probe dispatches requests that
+    // are already scope-gated inside the runtime (no page queue, no lease).
+    evaluate: [OBSERVE_HOST_VIEW],
+    probe: [OBSERVE_HOST_VIEW, OBSERVE_PAGE],
+  }),
+  browser_findings: actionTable('browser_findings', {
+    add: [CALLER_LOCAL_HOST],
+    evaluate: [OBSERVE_HOST_VIEW],
+    list: [OBSERVE_HOST_VIEW],
+    grade: [OBSERVE_HOST_VIEW],
+    report: [OBSERVE_HOST_VIEW],
+    retest: [CALLER_LOCAL_HOST],
+    // reproduce replays a real request, so it observes the page as well as writing this scope's
+    // own record.
+    reproduce: [OBSERVE_HOST_VIEW, OBSERVE_PAGE],
+  }),
+
   // --- Dynamic (T4) ----------------------------------------------------------------------------
   browser_dynamic_session: actionTable('browser_dynamic_session', {
     status: [OBSERVE_COLLECTOR],

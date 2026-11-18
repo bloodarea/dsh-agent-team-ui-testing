@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { BrowserError, asBrowserError } from '../../browser-safety.js';
 import { TARGET_TABS_ACTIONS } from '../../core/index.js';
 import { createCrossEnvironment } from '../../integration/cross-environment.js';
+import { createEnvironmentDirectory } from '../../core/environments.js';
+import { createWebEnvironmentEntry } from '../../targets/web/environment.js';
 import { createWebTargetAdapter } from '../../targets/web/adapter.js';
 import { createWebTargetTabs } from '../../targets/web/tabs.js';
 import { createHarness } from '../acceptance/harness.mjs';
@@ -165,8 +167,11 @@ test('platform permission, CAS, busy and wait failures pass through with origina
 test('composition root sends admitted browser_tabs through TargetAdapter.tabs and keeps P0-E projection', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'target-tabs-root-'));
   const f = fixture();
+  // The composition root no longer hardwires the Web assembly: the caller registers the entry.
+  const environments = createEnvironmentDirectory({});
+  environments.register(createWebEnvironmentEntry({ BrowserError, registry: f.registry }));
   const root = createCrossEnvironment({
-    registry: f.registry, BrowserError, asBrowserError,
+    registry: f.registry, BrowserError, asBrowserError, environments,
     env: { DSH_UI_TESTING_CONFIG_DIR: dir },
   });
   t.after(async () => {

@@ -347,6 +347,11 @@ test('keys: target and selection keys are versioned, scoped and require a real g
 
 const ALL_TOOLS = [
   'browser_annotation',
+  // Security Testing surface (FR-01/02/03/05/08/09/10/11): every one of these must be classified
+  // per action, not just by tool name — a security call that reads a host cache and one that
+  // dispatches to the page have completely different authorisation requirements.
+  'browser_biz', 'browser_cookies', 'browser_findings', 'browser_script',
+  'browser_surface', 'browser_security_scope',
   'browser_capabilities', 'browser_click', 'browser_computed_style', 'browser_dynamic_correlate',
   'browser_dynamic_session', 'browser_eval', 'browser_fill_form', 'browser_http_request',
   'browser_input', 'browser_motion_analyze', 'browser_motion_control', 'browser_motion_observe',
@@ -376,6 +381,17 @@ const TOOL_ACTIONS = {
   browser_dynamic_session: ['start', 'stop', 'status', 'reset', 'extend'],
   browser_motion_control: ['pause', 'resume', 'seek', 'rate', 'restore'],
   browser_vision_baseline: ['list', 'get', 'create', 'update', 'delete'],
+  // Security surface: each action of each tool is classified independently, so a new action
+  // cannot inherit an old action's (possibly weaker) classification.
+  browser_security_scope: ['status', 'set', 'stop'],
+  browser_cookies: ['metadata', 'export', 'import'],
+  browser_surface: ['build'],
+  browser_script: [
+    'list', 'armed', 'source', 'format', 'strings', 'sinks', 'analyze',
+    'breakpoint', 'stack', 'scope', 'resume', 'correlate', 'verify',
+  ],
+  browser_findings: ['add', 'evaluate', 'list', 'grade', 'report', 'retest'],
+  browser_biz: ['evaluate', 'probe'],
 };
 
 /** An argument bag good enough to classify one action. */
@@ -394,8 +410,8 @@ function bagFor(tool, action) {
   return { ...(EXTRA_ARGS[tool] ?? {}), ...(action === null ? {} : argsFor(tool, action)) };
 }
 
-test('effect table: all 37 browser_* tools are classified, and each row is well formed', () => {
-  assert.equal(ALL_TOOLS.length, 37);
+test('effect table: all 43 browser_* tools are classified, and each row is well formed', () => {
+  assert.equal(ALL_TOOLS.length, 43);
   for (const tool of ALL_TOOLS) {
     assert.equal(isKnownOperation(tool), true, `${tool} is missing from the effect table`);
     const actions = TOOL_ACTIONS[tool] ?? [null];
@@ -414,12 +430,14 @@ test('effect table: all 37 browser_* tools are classified, and each row is well 
   }
 });
 
-test('effect table: the registered tool set in index.js is fully classified', () => {
-  // Guards the *other* direction: a tool added to index.js without a row here would otherwise be
-  // classified by nothing at all. Reading the registration list is the cheapest honest signal.
-  const source = readFileSync(new URL('../../index.js', import.meta.url), 'utf8');
+test('effect table: the registered tool set is fully classified', () => {
+  // Guards the *other* direction: a tool added to the plugin without a row here would otherwise be
+  // classified by nothing at all. The Web tool surface lives in the environment module and the
+  // neutral discovery entry in the Host entry, so both are read.
+  const source = readFileSync(new URL('../../index.js', import.meta.url), 'utf8')
+    + '\n' + readFileSync(new URL('../../targets/web/tools.js', import.meta.url), 'utf8');
   const names = new Set([...source.matchAll(/name: '(browser_[a-z_0-9]+)'/g)].map((match) => match[1]));
-  assert.ok(names.size >= 37, `expected at least 37 registered tools, found ${names.size}`);
+  assert.ok(names.size >= 43, `expected at least 43 registered tools, found ${names.size}`);
   const missing = [...names].filter((name) => !isKnownOperation(name));
   assert.deepEqual(missing, [], `tools without an effect row: ${missing.join(', ')}`);
 });

@@ -1,6 +1,6 @@
 # 能力贯通手册（T1 / T2 / T3 / T4 / P0 怎么组合用）
 
-> 工具面 **37 个**：T1 10 + P0-E 1（`browser_tabs`）+ P0-D 1（`browser_annotation`）+ T2 7 + T3 6 + 网络 P0 7 + 动态 T4 5。
+> 执行工具面 **37 个**（另有发现入口 `browser_tools`，默认只发送 3 个定义）：T1 10 + P0-E 1（`browser_tabs`）+ P0-D 1（`browser_annotation`）+ T2 7 + T3 6 + 网络 P0 7 + 动态 T4 5。
 > 本文是**选路 + 组合配方**；单层细节见 `references/tiers/*.md`，动画调试全流程见 `references/scenarios/visual-motion.md`。
 
 ## 0. 先探能力，别假设

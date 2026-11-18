@@ -23,3 +23,7 @@ export * from './p0.js';
 // `contracts.js`/`errors.js`, so authorisation stays testable without a browser or a Host.
 export * from './tab-access.js';
 export * from './target-tabs.js';
+// Environment registration contract: an entry declares capabilities + tool descriptions and builds
+// its implementation lazily. Host-side integration resolves entries by environment id, so no
+// platform module has to be hardwired into the composition root.
+export * from './environments.js';

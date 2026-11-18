@@ -772,3 +772,39 @@ if (isTestEntryPoint) {
     });
   }
 }
+
+/* -----------------------------------------------------------------------------------------------
+ * R1-11 补充：body 查询必须只靠 requestId 就能命中
+ * （工具事件投影把 targetId/cdpSessionId 抹成 null，按事件字段查会永远 miss）
+ * ---------------------------------------------------------------------------------------------- */
+
+check('BODY-IDX', '只给 requestId 也能读到已捕获的 body（targetId/session 未知时回退索引）', () => {
+  const store = new NetworkStore();
+  // Written with a target id the caller will NOT know about.
+  store.addBody({
+    targetId: 'T-secret', cdpSessionId: 'S-secret', requestId: 'rq.1', hopId: 0,
+    kind: 'request', state: 'captured', data: '{"productId":1,"qty":2}', contentType: 'application/json',
+  });
+  const byRequestOnly = store.readBody({ requestId: 'rq.1', hopId: 0, kind: 'request' });
+  assert.ok(byRequestOnly !== null, 'requestId-only lookup must find the body');
+  assert.equal(byRequestOnly.data, '{"productId":1,"qty":2}');
+  assert.equal(byRequestOnly.available, true);
+  // The exact-key lookup still works and is preferred.
+  const exact = store.readBody({ targetId: 'T-secret', cdpSessionId: 'S-secret', requestId: 'rq.1', hopId: 0, kind: 'request' });
+  assert.equal(exact.data, '{"productId":1,"qty":2}');
+  // A different hop or kind must not borrow another record's body.
+  assert.equal(store.readBody({ requestId: 'rq.1', hopId: 1, kind: 'request' }), null);
+  assert.equal(store.readBody({ requestId: 'rq.1', hopId: 0, kind: 'response' }), null);
+});
+
+check('BODY-IDX', 'unavailable 记录同样可按 requestId 命中，并保留原因码', () => {
+  const store = new NetworkStore();
+  store.addBody({
+    targetId: 'T1', requestId: 'rq.2', hopId: 0, kind: 'request', state: 'unavailable',
+    reasonCode: 'cdp-error', reasonDetail: 'No post data',
+  });
+  const read = store.readBody({ requestId: 'rq.2', hopId: 0, kind: 'request' }, {});
+  assert.ok(read !== null, 'the unavailable record is addressable by requestId');
+  assert.equal(read.available, false);
+  assert.equal(read.reasonCode, 'cdp-error');
+});

@@ -147,6 +147,18 @@ export const ENVIRONMENT_CAPABILITIES = Object.freeze({
     'web.p0.display',
     'web.p0.canvas',
     'web.p0.targets',
+    // FR-11 Cookie Store: metadata read + human-approved controlled export/import.
+    'web.p0.cookies',
+    // FR-01 Scope & Safety Controller: session-scoped origin allowlist, budget, stop.
+    'web.p0.security',
+    // FR-02 Attack Surface Discovery: structured inventory (DISC-01..07).
+    'web.p0.surface',
+    // FR-03/FR-04 JavaScript static analysis (script inventory / strings / sinks).
+    'web.p0.scripts',
+    // FR-09/FR-10 security findings + rule engine.
+    'web.p0.findings',
+    // FR-08 business logic testing (server-state invariants).
+    'web.p0.business',
   ]),
   fake: Object.freeze([
     'fake.t1',
@@ -175,6 +187,12 @@ export const CAPABILITY_IDS = Object.freeze({
     DISPLAY: 'web.p0.display',
     CANVAS: 'web.p0.canvas',
     TARGETS: 'web.p0.targets',
+    COOKIES: 'web.p0.cookies',
+    SECURITY: 'web.p0.security',
+    SURFACE: 'web.p0.surface',
+    SCRIPTS: 'web.p0.scripts',
+    FINDINGS: 'web.p0.findings',
+    BUSINESS: 'web.p0.business',
   }),
   FAKE: Object.freeze({
     T1: 'fake.t1',

@@ -954,6 +954,8 @@ export class NetworkStore {
     this.chains = new Map();
     this.hops = new Map();
     this.bodies = new Map();
+    /** requestId-only index so a caller without target/session ids can still read a body. */
+    this.bodyIndex = new Map();
     /** TOOL-P1-04：读不到 body 时的原因记录（与 `bodies` 分开，避免污染导出/计数/配额口径）。 */
     this.bodyFailures = new Map();
     this.headers = new Map();
@@ -1349,6 +1351,15 @@ export class NetworkStore {
     return [targetId ?? '', cdpSessionId ?? '', requestId ?? '', Number.isInteger(hopId) ? hopId : 0, kind].join('\u0000');
   }
 
+  /**
+   * Lookup suffix that identifies a body WITHOUT the target/session ids.
+   * Tool event projections omit `targetId`/`cdpSessionId`, so a caller that only knows the
+   * requestId would otherwise always miss and report "no body" for a body that was captured.
+   */
+  #bodyIndexKey(kind, requestId, hopId) {
+    return [requestId ?? '', Number.isInteger(hopId) ? hopId : 0, kind].join('\u0000');
+  }
+
   setHeaders({ targetId = null, cdpSessionId = null, requestId = null, hopId = null, kind = 'response', headers = {} } = {}) {
     if (!requestId) return null;
     const safe = sanitizeHeaders(headers);
@@ -1379,6 +1390,7 @@ export class NetworkStore {
   addBody({ targetId = null, cdpSessionId = null, requestId = null, hopId = null, kind = 'response', state = 'captured', data = '', base64Encoded = false, contentType = null, redacted = 'none', payloadOmitted = false, reasonCode = null, reasonDetail = null } = {}) {
     if (!requestId) return null;
     const key = this.#key(kind, { targetId, cdpSessionId, requestId, hopId });
+    this.bodyIndex.set(this.#bodyIndexKey(kind, requestId, hopId), key);
     if (state === 'unavailable') {
       this.noteBodyUnavailable();
       const code = normalizeBodyReasonCode(reasonCode);
@@ -1437,7 +1449,14 @@ export class NetworkStore {
 
   bodyRecord({ targetId = null, cdpSessionId = null, requestId = null, hopId = null, kind = 'response' } = {}) {
     const key = this.#key(kind, { targetId, cdpSessionId, requestId, hopId });
-    return this.bodies.get(key) || this.bodyFailures.get(key) || null;
+    const direct = this.bodies.get(key) || this.bodyFailures.get(key) || null;
+    if (direct !== null) return direct;
+    // Exact key missed: fall back to the request-only index so a caller that knows just the
+    // requestId (every tool projection) can still read a captured body.
+    if (!requestId) return null;
+    const indexed = this.bodyIndex.get(this.#bodyIndexKey(kind, requestId, hopId));
+    if (indexed === undefined) return null;
+    return this.bodies.get(indexed) || this.bodyFailures.get(indexed) || null;
   }
 
   /** 只读（不补抓、不启动 CDP，§2.3 / R1-11）。不可得时回放原因码，仍不读取页面/网络。 */

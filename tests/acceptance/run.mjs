@@ -347,8 +347,8 @@ function newChromeProcesses(harness) {
  * ---------------------------------------------------------------------------------------------- */
 
 async function probe1ToolSurface({ harness, check, finding }) {
-  const { EXPECTED_TOOLS } = await import(pathToFileURL(join(HERE, 'harness.mjs')).href);
-  const expectedNames = EXPECTED_TOOLS.map((tool) => tool.name);
+  const { EXPECTED_TOOLS, DISCOVERY_TOOL } = await import(pathToFileURL(join(HERE, 'harness.mjs')).href);
+  const expectedNames = [...EXPECTED_TOOLS.map((tool) => tool.name), DISCOVERY_TOOL];
   const actualNames = harness.toolNames();
 
   // 37 = 10 T1 + 1 P0-E browser_tabs (docs/architecture.md + docs/viewport-control.md §7 browser_viewport)
@@ -358,8 +358,8 @@ async function probe1ToolSurface({ harness, check, finding }) {
   //      + 5 T4 (docs/t4-dynamic-behavior.md §7 / docs/t4-dynamic-behavior.md §2).
   //      Counted against EXPECTED_TOOLS so a group surface cannot drift silently; the "same
   //      names" assertion below still proves nothing extra.
-  check(`工具注册面恰好是 ${EXPECTED_TOOLS.length} 个 browser_* 工具（10 T1 + 1 P0-D + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4）`, actualNames.length === EXPECTED_TOOLS.length, {
-    expected: { count: EXPECTED_TOOLS.length, names: expectedNames },
+  check(`工具注册面恰好是 ${expectedNames.length} 个 browser_* 工具（39 个执行工具 + 1 个发现入口）`, actualNames.length === expectedNames.length, {
+    expected: { count: expectedNames.length, names: expectedNames },
     actual: { count: actualNames.length, names: actualNames },
   });
   check('工具名与 docs/architecture.md + t2/t3/network 契约完全一致（无缺失、无多余）', JSON.stringify([...actualNames].sort()) === JSON.stringify([...expectedNames].sort()), {
@@ -379,7 +379,20 @@ async function probe1ToolSurface({ harness, check, finding }) {
     }
     if (typeof definition.description !== 'string' || !definition.description.trim()) schemaProblems.push(`${tool.name}: description 为空`);
   }
-  check('每个工具的 parameters/required/execute/description 与预期一致', schemaProblems.length === 0, {
+  const discovery = harness.tools.get(DISCOVERY_TOOL);
+  const discoveryProblems = [];
+  if (!discovery) discoveryProblems.push('browser_tools: 未注册');
+  else {
+    if (typeof discovery.execute !== 'function') discoveryProblems.push('browser_tools: execute 不是函数');
+    if (discovery.parameters?.type !== 'object') discoveryProblems.push('browser_tools: parameters.type != object');
+    if (JSON.stringify(discovery.parameters?.required) !== JSON.stringify(['action'])) discoveryProblems.push('browser_tools: required != ["action"]');
+    if (!/activate/.test(String(discovery.description || ''))) discoveryProblems.push('browser_tools: description 未说明 activate');
+    const props = discovery.parameters?.properties ?? {};
+    if (!Array.isArray(props.action?.enum) || props.action.enum.join(',') !== 'status,activate,reset') discoveryProblems.push('browser_tools: action enum');
+    if (!Array.isArray(props.groups?.items?.enum) || props.groups.items.enum.join(',') !== 'basic,network,vision,dynamic') discoveryProblems.push('browser_tools: groups enum');
+  }
+  check('发现入口 schema 与激活参数正确', discoveryProblems.length === 0, { problems: discoveryProblems });
+  check('每个执行工具的 parameters/required/execute/description 与预期一致', schemaProblems.length === 0, {
     expected: EXPECTED_TOOLS,
     actual: { problems: schemaProblems },
   });
@@ -1748,7 +1761,7 @@ async function main() {
     helpers: harnessModule,
   };
 
-  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 37 个 browser_* 工具（10 T1 + 1 P0-D + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4），名称/参数 schema 与 docs/architecture.md + docs/viewport-control.md §7 + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 + docs/network-p0.md §2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
+  await runProbe({ id: 'P1-tool-surface', title: '工具注册面与能力发现', group: 'infrastructure', expected: '恰好 38 个 browser_* 工具（37 个执行工具 + 1 个发现入口 browser_tools），名称/参数 schema 与 docs/architecture.md + docs/viewport-control.md §7 + docs/t2-structured-gui.md §2.2 + docs/t3-vision.md §2.1 + docs/network-p0.md §2 一致，无原始 CDP 工具；HTTP 路由可用' }, ({ check, finding }) => probe1ToolSurface({ harness: harnessA, check, finding }));
   await runProbe({
     id: 'P23-network-surface',
     title: 'network P0 工具面（注册/schema/离线诊断/owner/BUSY/旧工具不变）',

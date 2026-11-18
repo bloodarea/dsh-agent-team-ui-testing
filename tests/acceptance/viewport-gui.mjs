@@ -3147,6 +3147,7 @@ async function main() {
 
   });
 
+
   await scenario('V2 host shared view', async () => {
     const snapshot = await hostView();
     if (!snapshot.ui || snapshot.ui.version !== 1 || !snapshot.view) {
@@ -9080,6 +9081,160 @@ async function main() {
       notRun('V10.6', 'resize geometry barrier is best-effort',
         'the frame protocol is not extended: input is paused for at most 250 ms after a width/height change (documented partial)');
     });
+
+  // ----------------------------------------------------------------------------------------------
+  // V1b — 空白画布的宿主隔离（plan §3 完成条件）：切到没有视图的环境后，面板不得再对仍在运行的
+  // 目标做任何宿主写入/截图/轮询/标注同步，只铺一张本地画布。
+  // ----------------------------------------------------------------------------------------------
+  await scenario('V1b blank-canvas isolation', async () => {
+    const configNow = await pageHostFetch('/config', { headers: requireScope() });
+    if (configNow.status !== 200 || !configNow.json || !configNow.json.ok) {
+      check('V1b.0', 'Host config is readable', false, 200, { status: configNow.status, text: configNow.text });
+      return;
+    }
+    const enabled = await pageHostFetch('/config', {
+      method: 'PUT',
+      headers: Object.assign({ 'content-type': 'application/json' }, requireScope()),
+      body: {
+        expectedRevision: configNow.json.revision,
+        scope: 'global',
+        patch: { environments: { android: { enabled: true } } },
+      },
+    });
+    check('V1b.1', 'a planned environment can be enabled on the Host', enabled.status === 200,
+      200, { status: enabled.status, text: enabled.text });
+    if (enabled.status !== 200) return;
+
+    // The combo re-reads the Host config on focus (it must not go stale across windows). React
+    // listens to `focusin`, so the event has to bubble like a real focus would.
+    const reloaded = await pageEvaluate(`(() => {
+      const select = document.querySelector('select[aria-label="选择运行环境"]');
+      if (!select) return 'no-select';
+      select.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      select.dispatchEvent(new FocusEvent('focus', { bubbles: false }));
+      return 'focused';
+    })()`);
+    if (reloaded !== 'focused') log(`[V1b] focus dispatch: ${reloaded}`);
+    const listed = await waitFor(async () => pageEvaluate(`(() => {
+      const select = document.querySelector('select[aria-label="选择运行环境"]');
+      if (!select) return undefined;
+      const values = [...select.options].map((option) => option.value);
+      return values.includes('android') ? values : undefined;
+    })()`), { timeoutMs: 15000, intervalMs: 200, label: 'android option listed' }).catch(() => undefined);
+    check('V1b.2', 'the enabled planned environment appears in the panel combo',
+      Array.isArray(listed) && listed.includes('android'), { hasAndroid: true }, listed || 'not listed');
+    if (!listed) return;
+
+    const before = state.requests.length;
+    const switched = await pageEvaluate(`(() => {
+      const select = document.querySelector('select[aria-label="选择运行环境"]');
+      if (!select) return 'no-select';
+      select.value = 'android';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'switched';
+    })()`);
+    check('V1b.3', 'the panel switches to the blank canvas', switched === 'switched', 'switched', switched);
+
+    const blank = await waitFor(async () => pageEvaluate(`(() => {
+      const root = document.querySelector('[data-utb-view]');
+      const stage = document.querySelector('[data-utb-shell="blank"]');
+      return root && root.getAttribute('data-utb-view') === 'android' && stage
+        ? {
+          view: root.getAttribute('data-utb-view'),
+          supported: root.getAttribute('data-utb-view-supported'),
+          stage: !!stage,
+          hint: (stage.textContent || '').slice(0, 40),
+        }
+        : undefined;
+    })()`), { timeoutMs: 8000, intervalMs: 120, label: 'blank canvas rendered' }).catch(() => undefined);
+    check('V1b.4', 'a view-less environment renders the shared blank canvas',
+      Boolean(blank) && blank.supported === 'false' && blank.stage === true,
+      { view: 'android', supported: 'false' }, blank || 'not rendered');
+    if (!blank) return;
+
+    const roots = await pageEvaluate(`(() => {
+      const list = [...document.querySelectorAll('[data-utb-view]')];
+      return list.map((node) => ({ view: node.getAttribute('data-utb-view'), supported: node.getAttribute('data-utb-view-supported') }));
+    })()`);
+    log(`[V1b] panel roots: ${JSON.stringify(roots)}`);
+
+    // Observe the panel for a window of time: no page traffic may reach the still-running target.
+    await sleep(1500);
+    const after = state.requests.slice(before).filter((entry) => entry.url.includes('/plugins/ui-testing/'));
+    const count = (needle) => after.filter((entry) => entry.url.includes('/plugins/ui-testing/' + needle)).length;
+    const observed = {
+      viewport: count('viewport'),
+      screenshot: count('screenshot'),
+      state: count('state'),
+      annotations: count('annotations'),
+      input: count('input'),
+      frame: count('frame'),
+      total: after.length,
+    };
+    check('V1b.5', 'no viewport write reaches the old target from the blank canvas',
+      observed.viewport === 0, 0, observed);
+    check('V1b.6', 'no screenshot request is issued for the blank canvas',
+      observed.screenshot === 0, 0, observed);
+    check('V1b.7', 'the blank canvas does not poll the old target state',
+      observed.state === 0, 0, observed);
+    check('V1b.8', 'the blank canvas does not sync annotations to the old target',
+      observed.annotations === 0, 0, observed);
+
+    // The Web target itself is untouched: still running, still the same page.
+    const webState = await hostState();
+    const webUi = webState.ui && typeof webState.ui === 'object' ? webState.ui : {};
+    check('V1b.9', 'the Web target stays running (isolation, not teardown)',
+      Boolean(webUi.runtimeId) && webState.running !== false,
+      { running: true }, { running: webState.running, runtimeId: webUi.runtimeId || null });
+
+    // Restore the panel for the rest of the suite: back to the Web view, and switch the planned
+    // environment off again so later scenarios see the same config they were written for.
+    await pageEvaluate(`(() => {
+      const select = document.querySelector('select[aria-label="选择运行环境"]');
+      if (!select) return 'no-select';
+      select.value = 'web';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'restored';
+    })()`);
+    let restored = false;
+    for (let attempt = 1; attempt <= 3 && !restored; attempt += 1) {
+      await pageEvaluate(`(() => {
+        const select = document.querySelector('select[aria-label="选择运行环境"]');
+        if (!select) return 'no-select';
+        select.value = 'web';
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'restored';
+      })()`);
+      restored = await waitFor(async () => pageEvaluate(`(() => {
+        const root = document.querySelector('[data-utb-view]');
+        const stage = document.querySelector('[data-utb-shell="blank"]');
+        return root && root.getAttribute('data-utb-view') === 'web' && !stage;
+      })()`), { timeoutMs: 12000, intervalMs: 150, label: 'web view restored' }).catch(() => false);
+      if (!restored) {
+        const diagnostic = await pageEvaluate(`(() => {
+          const node = document.querySelector('.utb-env-error');
+          const select = document.querySelector('select[aria-label="选择运行环境"]');
+          return { notice: node ? (node.textContent || '').slice(0, 120) : '', value: select ? select.value : null };
+        })()`);
+        log(`[V1b] restore attempt ${attempt} did not take: ${JSON.stringify(diagnostic)}`);
+      }
+    }
+    check('V1b.10', 'the panel returns to the Web view after the blank canvas', restored === true, true, restored);
+    const configBack = await pageHostFetch('/config', { headers: requireScope() });
+    if (configBack.status === 200 && configBack.json && configBack.json.ok) {
+      await pageHostFetch('/config', {
+        method: 'PUT',
+        headers: Object.assign({ 'content-type': 'application/json' }, requireScope()),
+        body: {
+          expectedRevision: configBack.json.revision,
+          scope: 'global',
+          patch: { environments: { android: { enabled: false } } },
+        },
+      });
+    }
+    // Give the restored view one frame poll so the later scenarios start from a live picture.
+    await sleep(800);
+  });
   }
 
   const failed = checks.filter((entry) => !entry.pass);

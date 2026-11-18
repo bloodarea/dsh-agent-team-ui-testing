@@ -5,7 +5,7 @@
 ## 1. 文档与像素读取入口
 
 - `browser_state()` 返回顶层 `annotations`（与已认证 `/state` 的 `ui.annotations` 同源；旧 Host 无此字段 → 按 `unsupported` 处理，不要假装读到）。
-- `browser_capabilities()` 的 `annotations` 段声明读取方式、`space`（恒为 `canvas-css-px`）与 `limits`；**工具面是 37 个已注册的 `browser_*`（当前 Web 环境注册并准入的那些）**。读取结构化标注既可以用 `browser_state` 的一个字段，也可以用 `browser_annotation {action:"read"}`（同一份文档，返回 `revision/shapes/shapeCount/truncated/truncation/foreground`）。
+- `browser_capabilities()` 的 `annotations` 段声明读取方式、`space`（恒为 `canvas-css-px`）与 `limits`；**工具面是 37 个已注册的执行工具加发现入口 `browser_tools`（默认只发送发现与诊断，激活分组后才披露其余 schema）**。读取结构化标注既可以用 `browser_state` 的一个字段，也可以用 `browser_annotation {action:"read"}`（同一份文档，返回 `revision/shapes/shapeCount/truncated/truncation/foreground`）。
 - `browser_screenshot {includeAnnotations:true}` 叠加当前目标已提交且经 Host 接受的六种形状，渲染与面板的颜色、粗细、填充/外框语义一致；不包含未提交草稿、工具栏、选中控件或其它面板 UI。
 - `includeAnnotations?:boolean=false` 默认关闭。默认截图、T3 原始源与 T4 的 screencast/screenshot-loop 帧源均不含面板标注；默认图里没有线不能说明用户没画。`capture.canvas.composite` 仅说明画布合成，标注叠加看 `capture.annotations`；T3 的 `annotations` 参数是独立的图片后处理标记。
 - 面板的「选择」「框选」是**人类侧编辑工具**：只改本地面板选中态（品牌色光晕、包围框、底部状态栏的「已选 N 个」），拖动移动或删除才改同一份文档；选中态不写文档、不进入 `annotations` 读取结果，也不进带标注截图。不要从标注文档推断「当前选中了哪几个」。

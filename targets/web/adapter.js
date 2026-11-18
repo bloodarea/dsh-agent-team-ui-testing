@@ -57,6 +57,12 @@ export const WEB_CAPABILITIES = Object.freeze([
   'web.p0.display',
   'web.p0.canvas',
   'web.p0.targets',
+  'web.p0.cookies',
+  'web.p0.security',
+  'web.p0.surface',
+  'web.p0.scripts',
+  'web.p0.findings',
+  'web.p0.business',
 ]);
 
 /**
@@ -131,6 +137,24 @@ export const WEB_TOOL_OPERATIONS = Object.freeze({
   browser_network_evidence: 'web.network',
   browser_network_subscribe: 'web.network',
 
+  // FR-11 — Cookie Store (metadata read + human-approved controlled export/import).
+  browser_cookies: 'web.p0.cookies',
+
+  // FR-01 — Scope & Safety Controller (session authorization boundary).
+  browser_security_scope: 'web.p0.security',
+
+  // FR-02 — Attack Surface Discovery (network collector + DOM facts).
+  browser_surface: 'web.p0.surface',
+
+  // FR-03/FR-04 — JavaScript static analysis (Debugger domain, opt-in).
+  browser_script: 'web.p0.scripts',
+
+  // FR-09/FR-10 — security findings + rule engine.
+  browser_findings: 'web.p0.findings',
+
+  // FR-08 — business logic testing (invariants over observed server state).
+  browser_biz: 'web.p0.business',
+
   // T4 — dynamic behaviour.
   browser_dynamic_session: 'web.t4',
   browser_motion_observe: 'web.t4',
@@ -199,6 +223,28 @@ export const WEB_TOOL_OPERATION_SPECS = Object.freeze([
   spec('browser_network_evidence', 'web.network', 'networkRead', ['networkRead', 'readOnly']),
   spec('browser_network_subscribe', 'web.network', 'networkRead', ['networkRead', 'readOnly']),
 
+  // FR-11 Cookie Store: metadata status is a host read; export/import bind to the runtime+tab
+  // (same-origin + human approval), so the default is hostOnly — never a page lease.
+  spec('browser_cookies', 'web.p0.cookies', 'hostOnly', ['hostOnly', 'readOnly']),
+
+  // FR-01 Scope: status is a cached host read; set/stop reconfigure the boundary (hostOnly —
+  // no page lease) and check is a pure pre-flight answer.
+  spec('browser_security_scope', 'web.p0.security', 'hostOnly', ['hostOnly', 'readOnly']),
+
+  // FR-02 Surface: build reads the collector (host read) + current DOM (page read → hostOnly
+  // because it runs a fixed extraction script through the existing runtime, no caller script).
+  spec('browser_surface', 'web.p0.surface', 'hostOnly', ['hostOnly', 'readOnly']),
+
+  // FR-03 Script: list is a cached host read; armed/source/format/strings/sinks touch CDP
+  // Debugger only (no page queue, no lease) — hostOnly.
+  spec('browser_script', 'web.p0.scripts', 'hostOnly', ['hostOnly', 'readOnly']),
+
+  // FR-09/FR-10 Findings: pure Host memory (no CDP, no page) — always available.
+  spec('browser_findings', 'web.p0.findings', 'hostOnly', ['hostOnly', 'readOnly']),
+
+  // FR-08 Business logic: probes dispatch through the page (scope-gated), evaluation is pure Host.
+  spec('browser_biz', 'web.p0.business', 'hostOnly', ['hostOnly', 'readOnly']),
+
   // T4
   spec('browser_dynamic_session', 'web.t4', 'page', ['page', 'hostOnly']),
   spec('browser_motion_observe', 'web.t4', 'page'),
@@ -229,6 +275,31 @@ export function resolveExecutionClass(operation, args = {}) {
   if (operation === 'browser_dynamic_session') {
     if (action === 'status' || action === 'reset') return 'hostOnly';
     return 'page';
+  }
+  // FR-11 Cookie Store: metadata reads are cache-only host reads; export/import stay hostOnly
+  // (CDP + file work, no page lease) so an export never activates or owns the page.
+  if (operation === 'browser_cookies') {
+    if (action === 'metadata') return 'readOnly';
+    return 'hostOnly';
+  }
+  // FR-01 Scope: status is a cached host read; set/stop reconfigure the boundary.
+  if (operation === 'browser_security_scope') {
+    if (action === 'status') return 'readOnly';
+    return 'hostOnly';
+  }
+  if (operation === 'browser_surface') {
+    return 'hostOnly';
+  }
+  if (operation === 'browser_script') {
+    if (action === 'list') return 'readOnly';
+    return 'hostOnly';
+  }
+  if (operation === 'browser_findings') {
+    if (['list', 'grade', 'report', 'evaluate'].includes(action)) return 'readOnly';
+    return 'hostOnly';
+  }
+  if (operation === 'browser_biz') {
+    return action === 'evaluate' ? 'readOnly' : 'hostOnly';
   }
   return entry.executionClass;
 }

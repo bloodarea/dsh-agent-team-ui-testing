@@ -8,7 +8,7 @@
  *   - every `references/*.md` mentioned/backticked in SKILL.md exists on disk;
  *   - every browser_* tool name mentioned in SKILL.md is one of the tools index.js actually
  *     registers (no invented capabilities, no Playwright/Puppeteer tool names);
- *   - the composed surface is consistent: index.js registers 37 tools (10 T1 + 1 P0-D annotations
+ *   - the composed surface is consistent: index.js registers 38 tools (37 execution + 1 discovery; 10 T1 + 1 P0-D annotations
  *     + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4) and the manifest declares every tier as supported. Capability status
  *     ledgers live in docs/internal/ (local engineering notes) and are no longer part of the
  *     shipped skill, so they are not checked here.
@@ -137,13 +137,19 @@ async function main() {
   const actualTools = new Set();
   for (const match of indexSource.matchAll(/name:\s*'((?:browser_)[a-z0-9_]+)'/g)) actualTools.add(match[1]);
   // `browser_fake_probe` is a test-only registration (guarded by DSH_UI_TESTING_TEST_HOOKS) and is
-  // never part of the production 37-tool surface this check protects.
+  // never part of the production 38-tool surface this check protects.
   actualTools.delete('browser_fake_probe');
+  // The discovery entry is registered through the shared `DISCOVERY_TOOL` constant (so the group
+  // table and the definition cannot drift), which the literal-name scan above cannot see.
+  assertDiscovery: {
+    if (/name:\s*DISCOVERY_TOOL/.test(indexSource)) actualTools.add('browser_tools');
+  }
   // 37 = 10 T1 + 1 P0-D (`browser_annotation`) (docs/architecture.md + docs/viewport-control.md)
   //      + 1 P0-E (`browser_tabs`)
   //      + 7 T2 (docs/t2-structured-gui.md §2.2) + 6 T3 (docs/t3-vision.md §2.1)
   //      + 7 network (docs/network-p0.md §2).
   const expectedTools = [
+    'browser_tools',
     'browser_navigate', 'browser_eval', 'browser_screenshot', 'browser_input', 'browser_network',
     'browser_computed_style', 'browser_http_request', 'browser_viewport', 'browser_state', 'browser_capabilities',
     'browser_tabs', 'browser_annotation',
@@ -156,8 +162,10 @@ async function main() {
     'browser_network_subscribe',
     'browser_dynamic_session', 'browser_motion_observe', 'browser_motion_analyze',
     'browser_motion_control', 'browser_dynamic_correlate',
+    'browser_security_scope', 'browser_cookies', 'browser_surface', 'browser_script', 'browser_findings',
+    'browser_biz',
   ];
-  record(`index.js 中可解析出 ${expectedTools.length} 个实际注册的 browser_* 工具（10 T1 + 1 P0-D + 1 P0-E + 7 T2 + 6 T3 + 7 network + 5 T4）`,
+  record(`index.js 中可解析出 ${expectedTools.length} 个实际注册的 browser_* 工具（43 个执行工具 + 1 个发现入口 browser_tools）`,
     actualTools.size === expectedTools.length && expectedTools.every((name) => actualTools.has(name))
       && [...actualTools].every((name) => expectedTools.includes(name)), [...actualTools]);
 
