@@ -31,7 +31,7 @@
 
 | 目标环境 | 接入方向 | 当前真实适配器 |
 | --- | --- | --- |
-| Web | 浏览器页面与 Web 应用 | 已接入 Chrome / Chromium，提供 37 个 `browser_*` 工具 |
+| Web | 浏览器页面与 Web 应用 | 已接入 Chrome / Chromium，提供 44 个 `browser_*` 工具（43 个执行工具 + 发现入口） |
 | Linux | Linux 原生桌面、Electron、Tauri 等 | 待接入 |
 | Windows | 原生桌面、.NET、WinUI、Electron、Tauri 等 | 待接入 |
 | macOS | 原生桌面、Electron、Tauri 等 | 待接入 |
@@ -87,7 +87,7 @@ T1–T4 按问题选用，可以组合，不要求每个环境提供 DOM、JavaS
 
 ## 当前可以使用的 Web 能力
 
-- **37 个 Agent 工具**：覆盖状态读取、结构化交互、静态视觉、动态行为、网络调试、标签页与标注。参数见[工具参考（tools.md）](docs/web/tools.md)。
+- **43 个执行工具**：覆盖状态读取、结构化交互、静态视觉、动态行为、网络调试、标签页与标注。参数见[工具参考（tools.md）](docs/web/tools.md)。
 - **人机共享调试面板**：实时预览、尺寸控制、画布平移缩放、选元素加入聊天框，以及双方共享的标注。操作见 [Web 调试面板](docs/web/debug-panel.md)。
 - **团队页面协作**：页面组按工作区、provider、团队根划分；支持每个 Agent 的工作／观察选页、页面归属与队长接管、归还和转交。边界见 [Web 多标签页](docs/web/multi-tab.md)。
 - **截图与视觉证据**：校验 PNG、显式区域和比例、标注叠加、像素比较与受管基线。见[截图交付（capture-p0.md）](docs/web/capture-p0.md)和[Chrome T3（capability-tiers.md）](docs/web/capability-tiers.md#web-chrome-t3)。

@@ -31,7 +31,7 @@ The project brings Web, desktop, mobile, terminal, mini program, game and 3D app
 
 | Target environment | Intended scope | Current real adapter |
 | --- | --- | --- |
-| Web | Browser pages and Web applications | Chrome / Chromium integrated, with 37 `browser_*` tools |
+| Web | Browser pages and Web applications | Chrome / Chromium integrated, with 44 `browser_*` tools (43 execution tools plus the discovery entry) |
 | Linux | Native desktop, Electron, Tauri and similar applications | Pending |
 | Windows | Native desktop, .NET, WinUI, Electron, Tauri and similar applications | Pending |
 | macOS | Native desktop, Electron, Tauri and similar applications | Pending |
@@ -87,7 +87,7 @@ Choose and combine T1–T4 by question. They do not require every environment to
 
 ## Web capabilities available today
 
-- **37 agent tools:** state inspection, structured interaction, static vision, dynamic behaviour, networking, tabs and annotations. Parameters are in the [tool reference (tools.md)](docs/web/tools.md).
+- **43 execution tools:** state inspection, structured interaction, static vision, dynamic behaviour, networking, tabs and annotations. Parameters are in the [tool reference (tools.md)](docs/web/tools.md).
 - **A shared human/agent debug panel:** live preview, size controls, canvas pan and zoom, element references in chat and shared annotations. See the [Web debug panel](docs/web/debug-panel.md).
 - **Team page collaboration:** page groups are scoped by workspace, provider and team root, with per-agent work/observation selections, ownership, and Lead acquire/release/transfer controls. See [Web multi-tab access](docs/web/multi-tab.md).
 - **Capture and visual evidence:** validated PNGs, explicit regions and scale, annotation overlays, pixel comparison and managed baselines. See [capture (capture-p0.md)](docs/web/capture-p0.md) and [Chrome T3 (capability-tiers.md)](docs/web/capability-tiers.md#web-chrome-t3).

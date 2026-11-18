@@ -7,15 +7,31 @@
 ```text
 package.json           DSH bundle 清单（dsh.bundle.patch + dsh.client，platform: web）
 cordis.patch.yml       注册插件：id = ui-testing-browser
-index.js               Host：BrowserHost、RuntimeRegistry、租约与串行队列、scoped HTTP 路由、
-                       37 个工具注册、共享 view、标注存储、网络采集、T4 会话、
-                       固定 loopback 调试端口与 scoped `ui.devtools` 投影；Web 实现与组合根
+index.js               Host 入口：环境注册项装配、工具准入/披露/注册（定义来自 Web 环境）、
+                       scoped HTTP 认证、控制面（/config、/readiness、诊断）路由与页面路由委托、
+                       作用域/主体解析、证据壳与配置切换的清理编排
+targets/web/host.js    Web 运行时：BrowserHost（Chromium 进程）、Runtime（页面 + CDP 会话）、
+                       RuntimeRegistry（页面组、单写租约、P0-E 投影）、独立 HTTP 客户端、
+                       T2 结构投影、标注文档校验、采集请求归一、元素选取
+targets/web/tools.js   Web 工具面：执行工具与发现入口的 schema + handler、T3 视觉链路；
+                       由 Host 注入 log/组合根/披露/页面 registry 后返回定义表
+targets/web/invoke.js  Web 派发管线：页面/标签解析、执行类别分支、串行队列与单写租约、
+                       派发前复核、handler 执行与活动标记；只返回平台事实，证据壳仍在 Host
+targets/web/routes.js  面板页面路由：/frame、/state、/metrics、/element、/select、/annotations、
+                       /input、/screenshot、/tabs、/close 等；认证与控制面仍由 Host 负责
+targets/web/environment.js       Web 环境注册项：能力探针、P0 派发、租约族、逐 provider 就绪卡片、
+                                操作表、provider 门禁与诊断探针声明
+targets/web/frame-transport.js   帧推送 WebSocket 升级接线（挂载/退役/释放）
+targets/web/scope-target.js      作用域→页面条目的唯一规则（binding 不新建、session 跟随选中标签）
+targets/web/transition.js        环境切换清理：取消在途、轮换选中标签、关闭页面
 integration/           跨环境组合根：权威配置、adapter registry、工具准入、逐次 adapter 调度、
-                       `/config` `/config/select` `/readiness` 路由与 Skill provider
+                       `/config` `/config/select` `/readiness` 路由与 Skill provider；只 import core/，
+                       平台实现一律通过环境注册目录解析
 core/                  环境中立契约：身份/几何/时钟/证据/错误、配置解析与持久化、registry、
-                       六轴就绪、P0-A～E 中立模型（`core/p0.js`）、多目标管理接口（`core/target-tabs.js`）
-targets/web/           Web TargetAdapter / CapabilityAdapter / P0Provider（注入 Runtime，不直接发 CDP）
-targets/fake/          仅测试的确定性假环境（test-only，不是真实平台实现）
+                       六轴就绪、P0-A～E 中立模型（`core/p0.js`）、多目标管理接口
+                       （`core/target-tabs.js`）、环境注册项契约与惰性目录（`core/environments.js`）
+targets/web/           Web 三面 TargetAdapter / CapabilityAdapter / P0Provider（注入 Runtime，不直接发 CDP）
+targets/fake/          仅测试的确定性假环境（test-only，不是真实平台实现）及其注册项
 browser-safety.js      错误类型与分类、CDP 封装、取消与定时器清理、URL 脱敏、目标/DNS 校验
 capture-p0.js          PNG 结构/CRC/解码、像素统计、尺寸校验、映射投影、原子安全写入
 network-p0.js          网络事件与会话、配额、分析、链路、规则、JSONL/HAR、订阅（零依赖）
@@ -33,7 +49,9 @@ skills/ui-testing-fake/    test-only 假环境说明（生产默认不可发现�
 tests/                 验收套件与确定性靶机
 ```
 
-`index.js` 只负责 Web 实现、编排与 CDP；纯算法与状态机都在独立模块里，可脱离浏览器单测。`core/` 不 import `index.js`、`targets/` 或任何平台实现；`targets/web/` 只 import `core/` 与 Node 内置模块，平台能力通过注入的 dispatch 使用。
+`index.js` 只负责 Host 侧的装配与准入：注册工具、解析作用域与主体、认证并路由 HTTP、聚合就绪；Web 运行时（进程、页面、租约、CDP）与工具 handler 在 `targets/web/`。纯算法与状态机都在独立模块里，可脱离浏览器单测。`core/` 不 import `index.js`、`targets/` 或任何平台实现；`targets/web/` 只 import `core/`、中性平台助手（`browser-safety.js`、`select-control.js`、`context-menu.js`）、Node 内置模块与同目录模块，平台能力通过注入的 dispatch 使用，Host 服务通过注入的查询函数使用。
+
+环境实现由注册项装配（`core/environments.js`）：每项声明能力、工具描述、provider 门禁、诊断探针与 `create(api)` 惰性构造入口；公共组合根按环境 id 解析，新增环境不需要修改组合根。
 
 Web 专用模块（帧源、采集、T3 视觉、基线、P0 网络）与 Web 三面 adapter 在首次真正需要时才加载/创建；Web 被禁用时既不加载这些模块，也不创建 adapter、不启动 Chromium。
 

@@ -16,6 +16,8 @@
 
 **组合根**负责把三者与宿主服务连接起来：解析配置、注册和选择适配器、控制工具准入、决定队列与租约、注入平台执行句柄，并在调用结束后释放会话。在当前插件中，这些工作由 [Host 入口](../index.js) 与 [跨环境组合根](../integration/cross-environment.js) 协作完成。
 
+三者由**环境注册项**按环境 id 装配，组合根不 import 任何平台模块：注册项在 [core/environments.js](../core/environments.js) 定义（id、能力与操作表、provider 门禁、诊断探针、`create(api)` 惰性构造、可选的自有工具定义），由 Host 入口登记，组合根通过目录解析。Web 的注册项是 [targets/web/environment.js](../targets/web/environment.js)，测试夹具是 [targets/fake/environment.js](../targets/fake/environment.js)。
+
 ### 1.2 三者使用统一的配置快照结构
 
 Host 将全局、工作区和会话配置解析为不可变的 `ConfigSnapshot`。会话选择优先于继承父会话的有效配置，再依次回退到工作区与全局。三种适配器从快照读取当前环境、允许的能力、目标和配置版本。各调用入口分别解析快照，统一结构不代表嵌套调用始终复用同一个对象或 revision；具体调用边界见 [Web 截图的调用链](web/adapters.md#44-一次使用-p0-的操作截图)。
@@ -197,10 +199,10 @@ Chrome 的可执行文件、CDP、DOM 和页面模型属于 Web 实现。新环�
 2. **实现 TargetAdapter。** 提供 manifest、六轴探测与目标会话；明确平台资源所有权、绑定代次、关闭和取消清理。
 3. **实现 CapabilityAdapter。** 提供操作映射、状态、预检和执行；为组合根提供可注入的执行边界。
 4. **实现需要的 P0 家族。** 将平台数据转换成公共模型；缺失家族和未接线方法如实报告不支持。
-5. **在组合根接线。** 注册三种适配器，补齐配置解析、工具注册与会话准入、执行分支、P0 派发和 Skill 发现；平台连接参数通过统一的配置快照结构传递。
+5. **提供环境注册项。** 在 [core/environments.js](../core/environments.js) 的契约下声明 id、能力与操作表、执行类别、provider 门禁、诊断探针，并由 `create(api)` 构造三种适配器；Host 入口登记该注册项后，组合根不需要改动。平台连接参数通过统一的配置快照结构传递。
 6. **验证身份与资源边界。** 检查 revision、目标代次、证据、可选能力、取消与释放，再做真实平台的操作闭环。
 
-[假环境实现](../targets/fake/adapter.js) 可用于对照接口与确定性契约验证。它不是实际平台，不能用假目标通过来证明真实平台可用，也不能用其单槽标注存储证明真实会话隔离。
+[假环境实现](../targets/fake/adapter.js) 及其注册项 [targets/fake/environment.js](../targets/fake/environment.js) 可用于对照接口与确定性契约验证。它不是实际平台，不能用假目标通过来证明真实平台可用，也不能用其单槽标注存储证明真实会话隔离。
 
 ### 4.2 验证入口
 

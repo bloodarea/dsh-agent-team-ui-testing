@@ -25,8 +25,11 @@ Web 是目标环境，Chrome 是该环境的具体执行端。一次选择 Chrom
 | TargetAdapter | [适配器模块](../../targets/web/adapter.js) 的 `createWebTargetAdapter()`；可选 `tabs` 使用 [Web 多目标服务](../../targets/web/tabs.js) | `id: "web"`、`class: "target"`、`environment: "web"` |
 | CapabilityAdapter | [适配器模块](../../targets/web/adapter.js) 的 `createWebCapabilityAdapter()` | `id: "web.capability"`、`class: "capability"`、`environment: "web"` |
 | P0Provider | [P0 提供者模块](../../targets/web/provider.js) 的 `createWebP0Provider()` | `id: "web.p0"`、`class: "p0"`、`environment: "web"` |
-| 创建、注册与派发接线 | [跨环境组合根](../../integration/cross-environment.js) | `createWebFaces()`、`invokeTool()`、`p0Call()` |
-| Chrome 进程、页面与协议执行 | [Host 入口](../../index.js) | `BrowserHost`、`RuntimeRegistry`、`Runtime` |
+| 注册项与构造接线 | [Web 环境注册项](../targets/web/environment.js) | `createWebEnvironmentEntry()`、`create()`、操作表、provider 门禁与诊断探针 |
+| 公共派发与准入 | [跨环境组合根](../../integration/cross-environment.js) | `invokeTool()`、`p0Call()`、按环境目录解析适配器 |
+| 派发管线（队列/租约/复核） | [Web 派发管线](../targets/web/invoke.js) | 页面解析、执行类别分支、单写租约、派发前复核 |
+| 面板页面路由 | [Web 面板路由](../targets/web/routes.js) | `/frame`、`/state`、`/element`、`/select`、`/screenshot` 等 |
+| Chrome 进程、页面与协议执行 | [Web 运行时模块](../targets/web/host.js) | `BrowserHost`、`RuntimeRegistry`、`Runtime`；由 Host 入口注入上下文、Host 服务查询与 P0-E 限制 |
 
 适配器通过注入接口访问运行时：TargetAdapter 使用 registry，CapabilityAdapter 使用 dispatch，P0Provider 使用 p0Dispatch。实际 Chrome/CDP 操作保留在 Host 运行时中。
 

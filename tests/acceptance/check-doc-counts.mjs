@@ -1,7 +1,7 @@
 /**
  * check-doc-counts.mjs — 文档计数一致性守卫。
  *
- * 唯一事实来源是 `index.js` 里真实注册的工具。任何文档/Skill/README/package.json 宣称的计数
+ * 唯一事实来源是真实注册的工具（Web 工具面在 `targets/web/tools.js`，Host 入口登记）。任何文档/Skill/README/package.json 宣称的计数
  * 必须与它一致——否则"加了工具但只改一处文档"的漂移会悄悄进入发布物。
  *
  * 检查两类说法：
@@ -42,9 +42,13 @@ const TOTAL_CLAIM = /(\d+)\s*(?:个\s*)?`browser_\*`/g;
  * first literal browser_* name inside it. Counting lines would silently undercount.
  */
 function registeredNames() {
-  const source = readFileSync(join(REPO_ROOT, 'index.js'), 'utf8');
+  // Registration calls live in the Web tool surface since the Host/runtime split; the Host entry
+  // only registers the discovery entry, so both files are scanned.
+  const source = ['targets/web/tools.js', 'index.js']
+    .map((file) => readFileSync(join(REPO_ROOT, file), 'utf8'))
+    .join('\n');
   const names = [];
-  const starts = [...source.matchAll(/^  register\(\{/gm)].map((match) => match.index);
+  const starts = [...source.matchAll(/^\s{2,4}register\(\{/gm)].map((match) => match.index);
   for (let index = 0; index < starts.length; index += 1) {
     const from = starts[index];
     const to = index + 1 < starts.length ? starts[index + 1] : source.length;
@@ -62,7 +66,7 @@ const total = names.length;
 const execution = names.filter((name) => name !== 'browser_tools').length;
 
 if (total === 0) {
-  console.error('✖ 无法从 index.js 解析出注册工具（正则或结构变了）');
+  console.error('✖ 无法从 targets/web/tools.js + index.js 解析出注册工具（正则或结构变了）');
   process.exit(1);
 }
 

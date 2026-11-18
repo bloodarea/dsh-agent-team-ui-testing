@@ -35,6 +35,9 @@ const SKILL_DIR = join(SKILLS_ROOT, 'ui-testing-web');
 const SKILL_FILE = join(SKILL_DIR, 'SKILL.md');
 const MANIFEST_FILE = join(SKILL_DIR, 'manifests', 'declared-capabilities.json');
 const INDEX_FILE = join(REPO_ROOT, 'index.js');
+// Registration calls live in the Web tool surface since the Host/runtime split (the Host entry only
+// registers the discovery entry), so both files are the source of truth for "no invented tools".
+const TOOL_SURFACE_FILE = join(REPO_ROOT, 'targets/web/tools.js');
 
 const ALLOWED_STATUSES = new Set(['implemented', 'implemented-not-verified', 'verified', 'partial', 'unsupported']);
 
@@ -132,8 +135,8 @@ async function main() {
     return failSummary();
   }
 
-  // 1. index.js actually registered tool names (source of truth for "no invented tools").
-  const indexSource = await readFile(INDEX_FILE, 'utf8');
+  // 1. actually registered tool names (source of truth for "no invented tools").
+  const indexSource = (await readFile(TOOL_SURFACE_FILE, 'utf8')) + '\n' + (await readFile(INDEX_FILE, 'utf8'));
   const actualTools = new Set();
   for (const match of indexSource.matchAll(/name:\s*'((?:browser_)[a-z0-9_]+)'/g)) actualTools.add(match[1]);
   // `browser_fake_probe` is a test-only registration (guarded by DSH_UI_TESTING_TEST_HOOKS) and is
@@ -165,7 +168,7 @@ async function main() {
     'browser_security_scope', 'browser_cookies', 'browser_surface', 'browser_script', 'browser_findings',
     'browser_biz',
   ];
-  record(`index.js 中可解析出 ${expectedTools.length} 个实际注册的 browser_* 工具（43 个执行工具 + 1 个发现入口 browser_tools）`,
+  record(`可解析出 ${expectedTools.length} 个实际注册的 browser_* 工具（43 个执行工具 + 1 个发现入口 browser_tools）`,
     actualTools.size === expectedTools.length && expectedTools.every((name) => actualTools.has(name))
       && [...actualTools].every((name) => expectedTools.includes(name)), [...actualTools]);
 
@@ -191,7 +194,7 @@ async function main() {
   // 4. Tool names in SKILL.md are all real (no invented/Playwright names).
   const mentionedTools = new Set([...body.matchAll(/browser_[a-z0-9_]+/g)].map((match) => match[0]));
   const inventedTools = [...mentionedTools].filter((name) => !actualTools.has(name));
-  record(`SKILL.md 中出现的每个 browser_* 工具名都是 index.js 实际注册的 ${expectedTools.length} 个之一`, inventedTools.length === 0, { mentioned: [...mentionedTools], invented: inventedTools });
+  record(`SKILL.md 中出现的每个 browser_* 工具名都是实际注册的 ${expectedTools.length} 个之一`, inventedTools.length === 0, { mentioned: [...mentionedTools], invented: inventedTools });
 
   // 5. Contract keywords that must stay documented in SKILL.md.
   record('Skill 明确记录错误码、lease、截图回退契约', ['BrowserError', 'BUSY', 'browser_capabilities', 'base64-fallback'].every((term) => raw.includes(term)), '缺少 M0–M2 契约关键词');
