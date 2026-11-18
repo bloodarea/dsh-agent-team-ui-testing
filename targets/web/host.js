@@ -5445,13 +5445,12 @@ export class Runtime {
     const cdp = this.cdp;
     if (!cdp || cdp.closed) return Promise.resolve(false);
     const host = this.host;
-    // Already this browser's front target: the panel heartbeat calls this many times a second and
-    // must stay free. Front-ness is a property of the *browser*, not of this runtime, so a sibling
-    // runtime calling `activate()` clears it — which is exactly why the old per-runtime 300 ms
-    // throttle could skip the one bringToFront an input dispatch depended on.
-    if (host && host.frontRuntimeId === this.runtimeId) return Promise.resolve(true);
-    // Coalesce: every caller inside the same window shares one in-flight Page.bringToFront instead
-    // of being skipped (the old code `return`ed, so the caller believed the page was fronted).
+    // Never skip the bringToFront: front-ness also changes *outside* this runtime (Chromium fronts a
+    // freshly created tab, the user clicks another tab, a popup opens), so any "already front" cache
+    // goes stale and the one call an input dispatch depends on is exactly the one that gets skipped —
+    // measured on douyin: with a stale cache the tab stayed background and every press/key was
+    // dropped by the renderer while `Page.bringToFront` had not been sent at all.
+    // Coalescing keeps the cost at one in-flight call per burst instead of one per caller.
     if (this.activating) return this.activating;
     this.activating = (async () => {
       try {
@@ -8382,7 +8381,7 @@ export class Runtime {
     if (mustBeObserved && await this.#installInputProbe(signal)) {
       for (let attempt = 1; attempt <= 2; attempt += 1) {
         await dispatchAll();
-        const probe = await this.#readInputProbe(signal);
+        const probe = await this.#readInputProbeSettled(signal);
         if (!probe || probe.present === false) break;
         const verdict = inputDeliveryVerdict(probe.seen, requiredGroups);
         const delivered = verdict.delivered;
@@ -14160,7 +14159,7 @@ export class Runtime {
       // page refuses must not turn a working click into a false INPUT_NOT_DELIVERED).
       if (!(await this.#installInputProbe(signal))) { verified = false; await gesture(); break; }
       await gesture();
-      const probe = await this.#readInputProbe(signal);
+      const probe = await this.#readInputProbeSettled(signal);
       if (!probe || probe.present === false) { verified = false; break; }
       verdict = inputDeliveryVerdict(probe.seen, INPUT_DELIVERY_CLICK_GROUPS);
       if (!verdict.delivered) {
@@ -14183,6 +14182,19 @@ export class Runtime {
     }
     draft.dispatch.completed = true;
     return { x, y };
+  }
+
+  /**
+   * Read the probe, giving a busy renderer one more chance to dispatch the input first.
+   *
+   * A page pinned at a few frames per second can leave events queued for tens of milliseconds; an
+   * immediate read would then libel it as "not delivered". The happy path stays a single read.
+   */
+  async #readInputProbeSettled(signal) {
+    const first = await this.#readInputProbe(signal);
+    if (!first || first.present === false || first.seen.length > 0) return first;
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    return { ...first, late: true };
   }
 
   /** Install the one-shot delivery probe in the current document (best effort, never throws). */

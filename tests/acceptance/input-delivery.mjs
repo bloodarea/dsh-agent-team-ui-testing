@@ -149,14 +149,17 @@ try {
       check('D13 concurrent activate() calls coalesce into one Page.bringToFront',
         sent.length === 1 && first === true && second === true && third === true,
         { sends: 1, resolved: [true, true, true] }, { sends: sent.length, resolved: [first, second, third] });
-      const cached = await primary.activate();
-      check('D14 an already-front runtime does not re-send', cached === true && sent.length === 1,
-        { sends: 1 }, { sends: sent.length, resolved: cached });
+      // No "already front" cache: front-ness also changes outside this runtime (Chromium fronts a
+      // newly created tab, the user clicks another tab), so a later call must really front again.
+      // Only *concurrent* callers are coalesced (D13) — that is what bounds the cost.
+      const again = await primary.activate();
+      check('D14 a later activate() really fronts again instead of trusting a cache',
+        again === true && sent.length === 2, { sends: 2 }, { sends: sent.length, resolved: again });
       // A sibling taking the front is exactly what the old per-runtime throttle could not see.
       host.frontRuntimeId = 'some-other-runtime';
       const refront = await primary.activate();
       check('D15 a sibling taking the front forces a real bringToFront again',
-        refront === true && sent.length === 2, { sends: 2 }, { sends: sent.length, resolved: refront });
+        refront === true && sent.length === 3, { sends: 3 }, { sends: sent.length, resolved: refront });
       check('D16 the host records this runtime as the front one', host.frontRuntimeId === primary.runtimeId,
         primary.runtimeId, host.frontRuntimeId);
     } finally {
