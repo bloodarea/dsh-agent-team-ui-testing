@@ -37,7 +37,7 @@ annotations = {
 
 - `source.trusted` **恒为 false**：标注是线索，不是页面事实。
 - `view` 是**发布那一刻**的客户端视图快照；`context.documentKey` 是文档身份，导航/刷新会轮换并清空（v3 起跨页签/跨会话保留，见下）。
-- `browser_screenshot {includeAnnotations:true}` 返回 `capture.annotations={enabled:true,composited,space,revision,updatedAt,source,context,shapeCount,stale,staleReason,truncated,truncation}`；未开启时为 `null`。`source/context/truncation` 直接沿用 state 标注文档；空文档 `source:null`、`composited:false`，有来源时 `source.trusted=false`。`shapeCount` 是接收的形状总量，可能包含 region 外的图形，不代表截图内可见数量；`composited` 也不证明某形状可见。精确字段说明见 `docs/capture-p0.md`。
+- `browser_screenshot {includeAnnotations:true}` 返回 `capture.annotations={enabled:true,composited,space,revision,updatedAt,source,context,shapeCount,stale,staleReason,truncated,truncation}`；未开启时为 `null`。`source/context/truncation` 直接沿用 state 标注文档；空文档 `source:null`、`composited:false`，有来源时 `source.trusted=false`。`shapeCount` 是接收的形状总量，可能包含 region 外的图形，不代表截图内可见数量；`composited` 也不证明某形状可见。精确字段说明见 `docs/web/capture-p0.md`。
 
 ## 4. 图形与字段
 
@@ -106,5 +106,5 @@ annotations = {
 
 ## 11. 参考
 
-- 权威契约：`docs/viewport-control.md`（共享视口、画布与标注）、`docs/tools.md`（`browser_annotation` 参数/错误/限额）
+- 权威契约：`docs/web/viewport-control.md`（共享视口、画布与标注）、`docs/web/tools.md`（`browser_annotation` 参数/错误/限额）
 - 验收入口：`tests/acceptance/viewport.mjs`、`tests/acceptance/viewport-gui.mjs`、`tests/acceptance/annotation-capture.mjs`、`tests/acceptance/annotation-agent.mjs`

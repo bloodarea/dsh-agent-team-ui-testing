@@ -1,10 +1,8 @@
-# 调试面板：公共视图接口与目标环境实现
+# 调试面板公共视图接口
 
-调试视图由公共外壳、可复用的视图组件和目标环境专有内容组成。公共部分提供环境选择、多目标标签栏、尺寸、标注和状态展示；目标环境决定实际画面、交互方式与专有工具。当前已接入 Web 视图，其余目标环境使用公共空白画布。
+调试视图由公共外壳、可复用组件和环境正文组成。公共外壳处理环境选择、多目标标签栏、尺寸、标注与状态。前端接点是 [client.js](../client.js) 中的组件内部接口。
 
-从 **更多 → 调试视图** 或右侧边栏的插件卡片进入。需要把元素或标注截图加入聊天框时，优先从当前会话右侧打开，让面板绑定该会话并保持聊天框可见。按截图练习见[图文教程（tutorial.md）](tutorial.md)，直接查 Web 操作见[Web 实现](#31-web)。
-
-本文先说明公共接口与接线，再按目标环境说明具体行为。这里的公共接口是当前各环境复用的**组件内部接点**，不是独立导出的视图 SDK；实现集中在 [client.js](../client.js)，还没有动态注册第三方视图的公开方法。
+从 **更多 → 调试视图** 或右侧边栏进入。右侧会话入口可绑定当前会话。
 
 ## 1. 视图层的职责与边界
 
@@ -39,7 +37,7 @@ DebugView(props)
       └─ shellStatusBar()
 ```
 
-主面板的身份可能解析为 `recent`，没有可写入的聊天会话。右侧入口可绑定当前会话；选元素或加入截图前仍要检查聊天框服务是否可用，见[选元素前置条件（element-picker.md）](element-picker.md#前置)。
+主面板的身份可能解析为 `recent`，没有可写入的聊天会话。右侧入口可绑定当前会话；选元素或加入截图前仍要检查聊天框服务是否可用，见[选元素前置条件（element-picker.md）](web/element-picker.md#前置)。
 
 ### 2.2 公共渲染接点
 
@@ -60,27 +58,17 @@ DebugView(props)
 
 ### 2.3 环境正文注册接口
 
-当前正文注册表的实际形状是：
+`ENV_VIEWS` 以环境 id 为键，值为环境的正文渲染函数。
 
-```js
-const ENV_VIEWS = { web: webViewBody };
-```
-
-以当前本地视图 id `env` 查表，值为零参数渲染函数，返回该环境的 React 行节点数组。没有对应函数时调用 `shellNoViewRows()`。根部先渲染行集合首项（工具栏），再渲染公共标签栏与后续正文，末尾追加一次公共状态栏。`webViewBody()` 内部复用公共标注栏、尺寸栏和标注图层。
+以当前本地视图 id `env` 查表，值为零参数渲染函数，返回该环境的 React 行节点数组。没有对应函数时调用 `shellNoViewRows()`。根部先渲染行集合首项（工具栏），再渲染公共标签栏与后续正文，末尾追加一次公共状态栏。
 
 `ENV_VIEWS` 是组件执行时创建的局部对象，不是 Host 的适配器注册表，也没有对外导出的 `registerView()` 方法。目标视图当前仍通过同一闭包读取状态和调用操作处理器。
 
-标签栏单独通过 `ENV_TABS = { web: webTabsProvider }` 取模型。`webTabsProvider()` 负责把 Web 运行时列表转成中立的 `items/activeId`、展示文案与 `onSelect/onClose/onCreate` 回调；`shellTabsBar(model, visible)` 消费这些值。无 provider 或无实际能力时返回 `null`，公共标签入口禁用，不显示 Web 页也不调用 Web `/tabs`。完整展示字段与 Host 管理接口见[多标签页公共接口](multi-tab.md#1-公共抽象)。
+标签栏单独通过 `ENV_TABS` 获取展示模型。无 provider 或能力不可用时返回 `null`，公共标签入口禁用。字段与 Host 管理接口见[多目标管理接口](multi-tab.md#1-公共抽象)。
 
 ### 2.4 标注坐标映射接口
 
-共享标注图层通过独立的映射接点取得当前环境的坐标转换：
-
-```js
-const ENV_ANNOT_MAP = {
-  web: () => (canvasOn && shot ? annotMap() : null),
-};
-```
+共享标注图层通过 `ENV_ANNOT_MAP` 取得当前环境的坐标转换。
 
 `resolveAnnotMap()` 调用当前环境的 provider；环境没有注册 provider 时，回退到 `annotBlankMap()`。`annotMapForEnv()` 是该解析过程的包装。已有 provider 返回 `null` 时直接保留不可映射状态，不继续套用其他环境的几何信息。
 
@@ -96,71 +84,21 @@ provider 返回映射对象或 `null`：
 
 指针位置按 `cx + (clientX - painted.left) / sx`、`cy + (clientY - painted.top) / sy` 转回画布坐标，并限制在当前窗口内。映射在手势开始时冻结，避免显示尺寸变化使同一笔使用不同坐标系。
 
-Web 的 `annotMap()` 从实际帧显示区域、已接受的视口尺寸与画布原点推导映射。公共 `annotBlankMap()` 以空白视图窗作为绘制区，原点为 `(0, 0)`，逻辑尺寸取当前宽高；空白视图经过适应或缩放后，比例不一定是 1:1。
+公共 `annotBlankMap()` 以空白视图窗作为绘制区，原点为 `(0, 0)`，逻辑尺寸取当前宽高；空白视图经过适应或缩放后，比例不一定是 1:1。
 
-坐标、绘制与选择规则见[视口、画布与标注（viewport-control.md）](viewport-control.md)。映射只解决显示与输入坐标，不负责采集真实目标或创建环境独立的标注文档。
+坐标、绘制与选择规则见[显示空间、画布与标注接口](viewport-control.md)。映射只解决显示与输入坐标，不负责采集真实目标或创建环境独立的标注文档。
 
 ### 2.5 配置、状态与操作接线
 
 环境下拉框只列出已启用的环境。对已有视图的环境，`changeEnv(next)` 提交带配置 revision 的 Host 选择，成功后才更新；对没有视图的环境，仅更新本地视图 id，不提交执行环境选择。完整配置规则见[环境设置（settings.md）](settings.md#启用与选择)。
 
-当前公共组件使用的几个 Host 接点如下；它们仍由面板现有处理器连接，不构成已经跨所有环境实现的统一传输协议：
-
-| 接点 | 当前用途与限制 |
-| --- | --- |
-| `POST /plugins/ui-testing/config/select` | 为已有视图提交当前作用域的执行环境选择；冲突或失败保留原选择 |
-| `GET /plugins/ui-testing/state` | 接收当前 Host 状态，更新目标身份、共享视口、画布与标注上下文 |
-| `POST /plugins/ui-testing/viewport` | 公共尺寸处理器提交视口修改，仍使用当前 Host 的版本和几何语义 |
-| `POST /plugins/ui-testing/annotations` | 将已提交图形同步到 Host 返回的标注文档上下文 |
-| `POST /plugins/ui-testing/screenshot` | 标注栏以 `includeAnnotations: true` 请求截图，再加入绑定会话的聊天框附件 |
+公共组件复用 Host 状态与操作处理器。现有传输与路由接线见 [Web 调试面板](web/debug-panel.md#面板状态与操作接线)。
 
 共享标注文档仍依据 Host 返回的作用域、运行时和页面身份管理；切换前端 `env` 不会自动创建另一套环境命名空间。图形可见、已同步、截图成功与真实目标验证通过是不同结论。
 
 ## 3. 具体目标环境实现
 
-### 3.1 Web
-
-Web 在 `ENV_VIEWS` 中注册 `webViewBody()`，在 `ENV_ANNOT_MAP` 中注册 Web 画布映射，在 `ENV_TABS` 中注册 `webTabsProvider`。正文返回导航工具栏、Web 提示、公共标注栏、公共尺寸栏和页面预览区；公共标签栏由根部插入工具栏之后。预览内部叠加公共标注图层，以及 Web 专有的下拉浮层、右键菜单与选元素提示。
-
-#### 地址栏与最近访问
-
-输入 HTTP(S) 地址后按 Enter，或点右侧「转到」。两者共用 `submit()` 的地址校验；标注模式或导航进行中禁用「转到」。返回、前进与刷新分别使用 Host 的历史、刷新接点；它们属于 Web 导航语义。
-
-时钟按钮打开最近访问列表：
-
-- 最近的地址在上，最多 7 条；重复访问只置顶，点条目直接跳转。
-- 空地址、`about:blank` 和应用自身地址不记录。
-- 点外部或按 Esc 收起；切换工作区作用域或进入标注模式也会收起。
-- 历史按工作区保存在浏览器 `localStorage`：`dsh-agent-team-ui-testing:address-history:v2:<工作区作用域 id>`。同工作区的多个面板共享，作用域未解析时不读写；旧版 `v1` 历史不迁移。
-
-#### 页面输入与预览
-
-Web 通过 CDP screencast 提供页面帧。`createFrameTransport(handlers, scope)` 已与 React 渲染分开：接收帧、状态等回调及作用域，返回启动、关闭、状态通知、seed 更新／重试与统计方法；当前实现仍使用 Web 帧格式、同源 WebSocket 和 Host HTTP 路由，不是通用的环境帧源 API。
-
-预览优先从 `/plugins/ui-testing/frames` WebSocket 收帧，HTTP `/frame` 轮询兜底，必要时用 Host 截图作 PNG seed。帧回调更新 `shot` 与几何元数据，Web `<img>` 使用这些数据渲染。状态另行通过 `/state` 轮询接收；`ingestHostState()`、`acceptRemote()` 处理作用域与状态版本，拒绝过时快照。
-
-点击预览使其获得焦点后，鼠标、滚轮与键盘事件经 `sendEvents()` 串行发送到 Host 输入接口。键盘支持修饰键组合、F1–F12、Home/End、PageUp/PageDown、Delete/Insert；按下与松开分别转发，离开焦点时释放仍按住的键。
-
-标注、选元素和尺寸调整有各自的输入规则。普通点击没有到达页面时，先检查当前模式、控制权与画面同步状态。坐标、缩放、拖拽、输入屏障与光标跟随见[视口、画布与标注（viewport-control.md）](viewport-control.md#面板交互)。
-
-浏览器原生的 alert/confirm、文件选择器不在页面画面中。单选 `<select>` 使用面板浮层；多选、列表框和不支持的情况会提示改用键盘，详见[选元素与原生下拉（element-picker.md）](element-picker.md)。页面右键菜单的优先级和默认操作见[页面右键菜单（panel-context-menu.md）](panel-context-menu.md)。
-
-#### 标签页、标注与尺寸
-
-| 操作 | 环境专有与公共部分 | 详细入口 |
-| --- | --- | --- |
-| 切换或新建页面 | Web 标签栏位于地址栏下方，工具栏开关控制显隐，`+` 在标签栏内；GUI 与 Agent 选页独立 | [多标签页（multi-tab.md）](multi-tab.md) |
-| 调整画面 | 复用公共尺寸栏；Web 的视口写入、页面几何与输入屏障决定操作是否可执行 | [视口控制（viewport-control.md）](viewport-control.md) |
-| 指定元素 | Web 选元素层将页面节点转换为聊天框 `@` 引用 | [选元素（element-picker.md）](element-picker.md) |
-| 画标注并交付图片 | 复用公共标注栏与图层；使用 Web 坐标映射、Host 文档和截图接线 | [标注（viewport-control.md）](viewport-control.md#标注)、[截图交付（capture-p0.md）](capture-p0.md) |
-
-无头／有头开关属于 Web：当前在公共顶栏以 `env === 'web'` 且视图存在为条件显示，调用 Host `display` 操作，并处理页面与绑定重置。运行模式和 profile 说明见[Web 目标环境配置](browser-runtime.md#无头与有头模式)。
-
-#### 打开 Chrome DevTools
-
-在「更多 → 打开调试工具」中，为当前页面打开 Chrome 自带 DevTools 的独立窗口。需要该工作区的浏览器运行时已经启动，且 GUI 与 DSH 同机、通过 `127.0.0.1` 或 `localhost` 访问；远程 GUI 暂不支持。
-
-弹窗被浏览器拦截时，使用提示中的「在新标签页打开调试工具」链接。DevTools 直接连接页面 CDP；断点、Console 求值、设备和网络模拟会改变页面，自动化取证前应恢复设置并重新采集。连接与访问边界见[外部 DevTools（architecture.md）](architecture.md#外部-devtools)。
+- [Web 调试面板](web/debug-panel.md)
 
 ### 3.2 其他目标环境与公共空白画布
 

@@ -10,15 +10,15 @@
 
 **进一步了解：[完整文档与帮助（docs/index.md）](docs/index.md)**
 
-[快速开始（getting-started.md）](docs/getting-started.md) · [新手图文教程（tutorial.md）](docs/tutorial.md) · [开发者进阶（tutorial-advanced.md）](docs/tutorial-advanced.md) · [架构（architecture.md）](docs/architecture.md)
+[快速开始（getting-started.md）](docs/getting-started.md) · [新手图文教程（tutorial.md）](docs/web/tutorial.md) · [开发者进阶（tutorial-advanced.md）](docs/web/tutorial-advanced.md) · [架构（architecture.md）](docs/architecture.md)
 
 <p>
   <a href="https://www.npmjs.com/package/dsh-agent-team-ui-testing"><img src="https://img.shields.io/npm/v/dsh-agent-team-ui-testing?style=flat-square&amp;logo=npm&amp;logoColor=white" alt="npm version"></a>
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/stargazers"><img src="https://img.shields.io/github/stars/bloodarea/dsh-agent-team-ui-testing?style=flat-square&amp;logo=github" alt="GitHub stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/bloodarea/dsh-agent-team-ui-testing?style=flat-square" alt="License: MIT"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="插件要求 Node.js >= 22"></a>
-  <a href="docs/browser-runtime.md"><img src="https://img.shields.io/badge/Web%20host-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Web 适配器的宿主系统"></a>
-  <a href="docs/tools.md"><img src="https://img.shields.io/badge/Web%20tools-37-brightgreen?style=flat-square" alt="当前 Web 适配器的 37 个工具"></a>
+  <a href="docs/web/browser-runtime.md"><img src="https://img.shields.io/badge/Web%20host-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Web 适配器的宿主系统"></a>
+  <a href="docs/web/tools.md"><img src="https://img.shields.io/badge/Web%20tools-37-brightgreen?style=flat-square" alt="当前 Web 适配器的 37 个工具"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-plugin-4B32C3?style=flat-square" alt="DSH plugin"></a>
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="预发布"></a>
 </p>
@@ -42,7 +42,7 @@
 | 游戏 | Unity、Unreal、Godot、Cocos 等 | 待接入 |
 | 3D | 三维应用与编辑工具 | 待接入 |
 
-这里的 Linux、Windows、macOS 指原生桌面测试目标；当前 Web 适配器已经可以运行在这三类宿主系统上。Web 下已接入 Edge 驱动，真实 Edge 启动尚未验证。Firefox 尚未支持。详见[目标环境定义](docs/target-environments.md)和 [Web 目标环境配置](docs/browser-runtime.md)。
+这里的 Linux、Windows、macOS 指原生桌面测试目标；当前 Web 适配器已经可以运行在这三类宿主系统上。Web 下已接入 Edge 驱动，真实 Edge 启动尚未验证。Firefox 尚未支持。详见[目标环境定义](docs/target-environments.md)和 [Web 目标环境配置](docs/web/browser-runtime.md)。
 
 ## 已落地的跨环境基础架构
 
@@ -87,13 +87,13 @@ T1–T4 按问题选用，可以组合，不要求每个环境提供 DOM、JavaS
 
 ## 当前可以使用的 Web 能力
 
-- **37 个 Agent 工具**：覆盖状态读取、结构化交互、静态视觉、动态行为、网络调试、标签页与标注。参数见[工具参考（tools.md）](docs/tools.md)。
-- **人机共享调试面板**：实时预览、尺寸控制、画布平移缩放、选元素加入聊天框，以及双方共享的标注。操作见[调试面板（debug-panel.md）](docs/debug-panel.md)。
-- **团队页面协作**：页面组按工作区、provider、团队根划分；支持每个 Agent 的工作／观察选页、页面归属与队长接管、归还和转交。边界见[多标签页（multi-tab.md）](docs/multi-tab.md)。
-- **截图与视觉证据**：校验 PNG、显式区域和比例、标注叠加、像素比较与受管基线。见[截图交付（capture-p0.md）](docs/capture-p0.md)和[Chrome T3（capability-tiers.md）](docs/capability-tiers.md#web-chrome-t3)。
-- **网络与动态调试**：请求、WebSocket、SSE、链路与证据导出；有界帧采集、七类动态分析、WAAPI 控制与恢复、视觉和网络事件关联。见[网络调试（network-p0.md）](docs/network-p0.md)和[Chrome T4（capability-tiers.md）](docs/capability-tiers.md#web-chrome-t4)。
+- **37 个 Agent 工具**：覆盖状态读取、结构化交互、静态视觉、动态行为、网络调试、标签页与标注。参数见[工具参考（tools.md）](docs/web/tools.md)。
+- **人机共享调试面板**：实时预览、尺寸控制、画布平移缩放、选元素加入聊天框，以及双方共享的标注。操作见 [Web 调试面板](docs/web/debug-panel.md)。
+- **团队页面协作**：页面组按工作区、provider、团队根划分；支持每个 Agent 的工作／观察选页、页面归属与队长接管、归还和转交。边界见 [Web 多标签页](docs/web/multi-tab.md)。
+- **截图与视觉证据**：校验 PNG、显式区域和比例、标注叠加、像素比较与受管基线。见[截图交付（capture-p0.md）](docs/web/capture-p0.md)和[Chrome T3（capability-tiers.md）](docs/web/capability-tiers.md#web-chrome-t3)。
+- **网络与动态调试**：请求、WebSocket、SSE、链路与证据导出；有界帧采集、七类动态分析、WAAPI 控制与恢复、视觉和网络事件关联。见[网络调试（network-p0.md）](docs/web/network-p0.md)和[Chrome T4（capability-tiers.md）](docs/web/capability-tiers.md#web-chrome-t4)。
 
-当前 Web 实现默认无头，也可使用有头模式。浏览器依赖、执行端选择与 profile 行为见 [Web 目标环境配置](docs/browser-runtime.md)。启用与诊断见[环境设置](docs/settings.md)。
+当前 Web 实现默认无头，也可使用有头模式。浏览器依赖、执行端选择与 profile 行为见 [Web 目标环境配置](docs/web/browser-runtime.md)。启用与诊断见[环境设置](docs/settings.md)。
 
 ## 开始使用
 
@@ -105,8 +105,8 @@ dsh plugin --profile web add dsh-agent-team-ui-testing
 
 安装到要使用的 profile 后重启 DSH。首次练习推荐从当前会话右侧边栏打开调试视图，让聊天框同时可见。
 
-- **普通用户**：跟随[新手图文教程（tutorial.md）](docs/tutorial.md)，用对话完成订单查询、选元素、圈图和保存结果；教程附可运行的本地演示。
-- **开发者**：看[开发者进阶（tutorial-advanced.md）](docs/tutorial-advanced.md)，了解工具调用、结果验证及网络、视觉和动态调试。
+- **普通用户**：跟随[新手图文教程（tutorial.md）](docs/web/tutorial.md)，用对话完成订单查询、选元素、圈图和保存结果；教程附可运行的本地演示。
+- **开发者**：看[开发者进阶（tutorial-advanced.md）](docs/web/tutorial-advanced.md)，了解工具调用、结果验证及网络、视觉和动态调试。
 - **查阅全部帮助**：打开[文档索引（docs/index.md）](docs/index.md)，按安装、面板、能力、诊断或架构查找。
 
 其他安装来源与固定版本方式见[快速开始](docs/getting-started.md#其他安装方式)。
@@ -114,7 +114,7 @@ dsh plugin --profile web add dsh-agent-team-ui-testing
 ## 使用与验证边界
 
 - **支持与可用分别判断**：公共底座已实现；真实目标适配器和现场依赖决定当前能执行什么。能力声明、配置启用和实际测试通过是不同结论。
-- **视觉与动态验证有范围**：当前 T3/T4 使用确定性算法，未提供内置 VLM/OCR；采样不足和未覆盖场景需要明确保留，见[能力与限制（capability-tiers.md）](docs/capability-tiers.md#web-chrome)。
+- **视觉与动态验证有范围**：当前 T3/T4 使用确定性算法，未提供内置 VLM/OCR；采样不足和未覆盖场景需要明确保留，见[能力与限制（capability-tiers.md）](docs/web/capability-tiers.md#web-chrome)。
 - **页面隔离与登录态不同**：Web 页面状态按 Runtime 管理，同一浏览器 profile 的 Cookie 与存储共享。截图和采集内容分享前应检查，不能假定已去除所有敏感信息。
 - **证据需要独立核对**：输入已派发、接口返回成功或图片附件已交付，都不自动证明业务结果、视觉断言或模型接收完整分辨率图像。测试入口与报告判读见[验证与贡献（verification.md）](docs/verification.md)。
 

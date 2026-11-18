@@ -1,6 +1,6 @@
 # T2 · 结构化 GUI
 
-**实现状态：已实现（7 个工具）。** 权威契约是 [能力分层与接口 · Chrome T2](../../../../docs/capability-tiers.md#web-chrome-t2)；能力 id 为 `web.t2.snapshot/click/type/scroll/fill_form/node_state/wait_for`，聚合项 `web.t2.structured-dom`。运行态以 `browser_capabilities` 与真实调用结果为准，本文与 manifest 都不是可用性证明。
+**实现状态：已实现（7 个工具）。** 权威契约是 [能力分层与接口 · Chrome T2](../../../../docs/web/capability-tiers.md#web-chrome-t2)；能力 id 为 `web.t2.snapshot/click/type/scroll/fill_form/node_state/wait_for`，聚合项 `web.t2.structured-dom`。运行态以 `browser_capabilities` 与真实调用结果为准，本文与 manifest 都不是可用性证明。
 
 ## 能力（已实现）
 
@@ -56,6 +56,6 @@
 覆盖注册面、冷启动能力、工作区隔离、快照、ref 生命周期（含 LRU 与跨快照保留）、唯一 selector、可信动作、表单、滚动、等待、错误码、证据、租约、取消。
 2. 能力状态声明见 `manifests/declared-capabilities.json`。
 
-4. ✅ `browser_capabilities` 按 [Chrome T2 契约](../../../../docs/capability-tiers.md#web-chrome-t2) 报 `limits.structuredGui`（C2 required 检查通过）。
+4. ✅ `browser_capabilities` 按 [Chrome T2 契约](../../../../docs/web/capability-tiers.md#web-chrome-t2) 报 `limits.structuredGui`（C2 required 检查通过）。
 
 因此 7 个 T2 工具与聚合项记 `verified`；真实宿主会话已补齐，**仅剩 provider 图像可见性（T1 遗留）与仅 advisory 覆盖的 closed-shadow「不产生 ref」细分未验证**。不要把 verified 外推到跨帧、视觉（T3/T4）或 provider 图像可见性。

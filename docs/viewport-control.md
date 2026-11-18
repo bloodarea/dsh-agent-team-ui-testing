@@ -1,98 +1,11 @@
-# 视口、画布与标注
+# 显示空间、画布与标注接口（P0-C／D）
 
-本页描述三件共享同一份状态的能力：**共享视口**（尺寸、滚动、显示比例）、**混合画布**（带符号的原点与空白区域）和**客户端标注**（人和 Agent 读写同一份文档）。
+P0-C 使用显示空间描述几何与坐标映射。P0-D 使用标注文档共享图形和上下文。公共面板通过环境映射接点投影标注。标注可用于指认问题位置，验收结论需要目标证据。
 
-## 共享视口
+公共面板的映射字段和坐标转换见[标注坐标映射接口](debug-panel.md#24-标注坐标映射接口)。
 
-每个 DSH 工作区的 Runtime 持有唯一权威对象：
+公共模型和提供者接口见[P0Provider](adapters.md#23-p0provider五个可选的数据家族)。
 
-```text
-view = { version, mode, x, y, canvasX, canvasY, width, height, scale, source, revision }
-```
+## 目标环境实现
 
-| 字段 | 含义 | 范围 |
-| --- | --- | --- |
-| `x` / `y` | 页面顶层滚动位置（文档 CSS px） | set 只接受非负，超出内容范围会被 clamp；RTL 页面的观测值可为负 |
-| `canvasX` / `canvasY` | 视口左上角在文档画布上的位置 | ±10,000,000，可为负 |
-| `width` / `height` | 页面 CSS 视口尺寸 | 整数 200–4096 |
-| `scale` | 显示比例，也是省略 scale 时的截图默认密度 | 0.1–2（10%–200%） |
-| `source` | 最近一次写入来源：`default`/`gui`/`agent`/`page` | — |
-| `revision` | 内容变化时递增，用于乐观并发 | 整数 |
-
-要点：
-
-- 宽高变化才发 `Emulation.setDeviceMetricsOverride`；只改 `scale` 或只改 `x/y` **不改变**页面 CSS 视口、DPR 与页面缩放。
-- `deviceScaleFactor` 固定为 1、`mobile=false`，不用页面 zoom 或 CDP 的 scale/positionX/Y 实现放大。
-- `browser_viewport action:"get"` 是**只读缓存诊断**：不启动浏览器、不发 CDP、不进队列、不占租约，可读取他人租约下的缓存；`viewMeta.stale=true` 表示缓存不新鲜（不保证页面此刻没动）。
-- `action:"set"` 是**页面操作**：预检在队列外，随后懒启动 + 串行队列 + single-owner lease；成功后回读 `settled`、`clamped`、`overrideApplied`。
-- `expectedRevision` 与当前 revision 不一致时返回 `VIEWPORT_CONFLICT`（HTTP 409），patch **零应用**并返回最新 view；不要自动重放旧 patch。
-- 页面自主滚动会被观测到，以 `source:"page"` 回显并递增 revision，因此缓存 revision 可能随时失效。
-
-## 混合画布
-
-- `canvasX/canvasY` 是视口左上角在文档画布中的坐标，可为负或超出内容边界。
-- 当 `canvasX ≠ x` 时存在偏移 `O = C − S`；偏移区域在面板中显示为深色棋盘格，在截图与 T3 中是**纯白 `#ffffff`**。
-- 未开启标注叠加时，`O = 0` 的截图与 T3 同旧行为字节/像素一致；`O ≠ 0` 时先截真实页面帧再白底合成，并披露 `capture.canvas.composite=true`（可能重编码）。显式开启 `includeAnnotations:true` 时还会绘制已接受的标注文档，不能据此承诺原页面 PNG 字节不变。
-- 面板支持拖拽平移与以屏幕光标为锚点的滚轮缩放；拖拽写画布坐标，页面本身不接收这些输入。
-- `canvasX/canvasY` 与 `x/y` 不能出现在同一个 patch（`INVALID_ARGUMENT`）。
-- 空白区域不存在于 DOM 中；`O ≠ 0` 时坐标输入 fail-closed（宁可短暂「点不动」也不误派发）。
-
-## 标注
-
-- 工具（从左到右）：**选择**、**框选**、圆形、矩形、线段、箭头、画笔、文字、橡皮擦；另有填充/外框、颜色、粗细、**截图**与清除画布。
-- **选择工具**：点击选中指针下最上层的图形；细线命中容差保持约 6 屏幕 CSS px，不随预览缩小而变难点。`Shift` / `Ctrl` / `Command` + 点击切换多选，`Alt` + 点击减选。空白处拖动也能框选。从选中图形的**包围框内任意位置**（含空心矩形内部）拖拽会整体移动，多选时所有选中图形一起移动；框选后也可直接在选框内（含成员之间的空隙）拖动整组。移动达到 4 屏幕 CSS px 才启动；启动后可拖回起点，`Shift` 拖动约束为水平或垂直，松开 `Shift` 恢复自由移动。**抬手时才发布**移动后的文档，`Esc` 取消当前移动。
-- **框选工具**：两种选择工具都可拖出虚线矩形，实时高亮**包围盒与矩形相交**的图形；这是标注对象的包围盒选择。`Shift` 框选追加（已有选中项保持），`Alt` 减选，`Shift+Alt` 取交集，`Ctrl` / `Command` 切换命中项；拖动中可切换组合键，结果始终基于起拖前的集合。`Esc` 恢复框选前的集合。未达到 4 屏幕 CSS px 的空白点击清空选择，带组合键的空白点击保留原选择。
-- **键盘**：标注画布获得焦点时，`V` / `M` 切换选择 / 框选；选择工具下 `Ctrl/Command+A` 全选，`Ctrl/Command+D` 取消选择，方向键移动 1 画布 px，`Shift+方向键` 移动 10 画布 px。`Delete` / `Backspace` 或标注栏「删除选中（N）」删除选中项。输入框中的编辑按键仍属于输入框。无手势时，第一下 `Esc` 清空选择，再按退出标注模式。切回绘制/橡皮擦/文字会清空选择，选择与框选之间切换保留。
-- **选中反馈**：被选图形叠加品牌色加粗光晕、半透明包围框，多选时另有整体边界框；面板**底部状态栏**在延迟（`FPS / ms`）后面显示「已选 N 个」。选中态只属于当前面板：不写 Host 文档、不改图形数据，也不进入 `includeAnnotations` 截图（截图只含已接受的形状）。
-- **截图按钮**（标注栏、紧接「粗细」之后）：把**当前页面连同已接受的标注**合成一张 PNG，直接作为附件放进本会话的聊天框（`createDrafts` + `addAttachments`，字节随消息发送，不落盘、不占页面队列之外的东西）。它走 Host 的 `POST /screenshot {includeAnnotations:true}`，与 `browser_screenshot {includeAnnotations:true}` 是**同一条离屏合成路径**，所以像素与证据一致；成功时不弹任何提示（附件缩略图本身就是结果），只有失败才在按钮旁给出具体原因。截图前若还有待发布的笔画会先 flush（≤260ms），避免少一笔；聊天框处于发送中（busy）时按钮报「聊天框正忙」并**立即释放**已注册的附件，不留孤儿。
-- 锚定在**画布坐标**中，可画在空白区域；标注模式下页面不接收任何指针或键盘输入。
-- 标注是独立文档，不进入页面 DOM；默认截图、T3 原始源图与 T4 帧源不含面板标注。`browser_screenshot {includeAnnotations:true}` 可叠加当前目标已提交且经 Host 接受的六种形状（`circle/rect/line/arrow/brush/text`），渲染语义与面板一致。
-- Agent 读取：`browser_state.annotations`（或认证 `/state` 的 `ui.annotations`），返回图形列表与 `revision`。用户提到标注、画、圈、框、箭头或笔迹等指代面板标注时，先读该文档，再用 `browser_screenshot {includeAnnotations:true}` 查看像素；手写内容无法可靠辨认时如实说明，不猜字。
-- **Agent 写入**：`browser_annotation` 读写**同一份**标注文档（每个 Runtime 一份），四类动作 `read` / `draw` / `erase` / `clear`。用途是「你圈一下 / 标给我看 / 我指的这个在这儿」——把结论画到人眼前的调试视图上，或给人类已有的标注补充意图（文字标注写问题、问号等提示）。
-  - `draw` 的 `shapes` **追加**到现有文档（1–64 个/次），不是替换；`erase` 用 `ids` 和/或 `point{x,y,radius?}`（默认半径 8 画布 px，命中规则与面板橡皮擦一致：形状到点的距离 ≤ `max(strokeWidth/2,6)` 与 `radius` 取大者）；`clear` 清空画布。
-  - 形状与面板工具的对应关系：`circle` 圆形、`rect` 矩形、`line` 线段、`arrow` 箭头、`brush` 画笔（铅笔）、`text` 文字。「颜色」→ `color`（`#rrggbb`，默认 `#ff3b30`）；「粗细」→ `strokeWidth`（整数 1–20，默认 3）；「外框/填充」→ `style:"stroke"|"fill"`（也接受 `fill`/`stroke` 布尔，二者不可同时给），只对 `circle`/`rect` 有效，`text` 固定 `fill`、`line`/`arrow`/`brush` 固定 `stroke`。`id` 可省略（Host 从现有最大 id 继续分配 `a<N>`），`arrow` 的 head 与 `text.fontSize`（固定 20）由 Host 决定。
-  - **整份替换语义**：文档按整份替换发布。人类在面板里下一次编辑会整体提交自己的形状列表（其中已包含 Agent 画的形状，因为面板会采纳 Host 文档），人类「清除画布」会连 Agent 的形状一起清掉。写动作可用 `expectRevision` 做乐观并发，不匹配报 `ANNOTATION_REVISION_CONFLICT`（零写入，返回 `currentRevision`）。
-  - **前台硬约束**：`draw`/`erase`/`clear` 只在目标标签页正被人类在调试视图里选中且可见时才允许，否则零写入并报 `ANNOTATION_NOT_FOREGROUND`；依据是面板在认证请求上携带的前台标签心跳（约 1.5s 新鲜窗口），人切走标签、关掉面板或把 DSH 标签页切到后台都会让它过期。先看 `browser_state.annotations.foreground = {active, ageMs, maxAgeMs}` 再决定画不画。`read` 不受此限；页面未运行（未启动）时写标注报 `INVALID_ARGUMENT`（reason `annotation-runtime-not-running`）。
-  - **软限额与裁剪**：与面板写面相同（`maxShapes` 128、单笔画笔 512 点、文档总点数 8192、文字 200 字符、文档 65536 字节），Host 确定性裁剪并如实回 `truncated` / `truncation`。
-  - **不碰页面**：不启动浏览器、不进页面串行队列、不占 single-owner lease、不写页面 `lastError`、不改页面 DOM/CSS；只写 Host 侧文档，面板下一次 `/state` 轮询就会画出来。`includeAnnotations:true` 的截图会把 Agent 画的与人类画的形状一起叠加。
-- 带标注截图与页面共用 `region`/`scale` 映射、裁剪和缩放；不包含未提交草稿、工具栏、选中控件或其它面板 UI，详见[截图与图片交付](capture-p0.md)。
-- **按 Runtime 隔离，也就是每个标签页一份**，不是整个工作区一份：面板在 A 标签画的，Agent 默认目标若在 B 标签（`primary` 与 GUI 弹出的 `child` 是两个 Runtime）就读不到——先 `browser_tabs list` 对 `url`、或比对 `read` 返回的 `context.runtimeId` 与目标 tab 的 `runtimeId`，不一致就 `browser_tabs select` 过去。同一标签页内重挂面板、切换会话保留；导航换文档时清空；不同工作区互不可见。
-- **写面有两处，写的是同一份文档**：面板通过认证的 `POST /plugins/ui-testing/annotations` 提交（带 `clientRevision` 幂等与 `409 annotation-context-stale`），Agent 通过 `browser_annotation` 提交；两者共用 Host 侧软限额（图形数、单笔点数、总点数、文字长度、文档字节数）与确定性裁剪。
-
-## 截图比例
-
-- `browser_screenshot` 省略 `scale` 时在调用内解析为当前 `view.scale`（冷启动为 1），证据中标注 `capture.request.scaleSource:"view"` 与 `viewRevision`。
-- 显式 `scale` 范围 0.1–4，只影响本次调用，不改 view、DPR、滚动或视口。
-- `region` 使用画布 CSS 像素；`O = 0` 时与文档坐标相同。
-- 两轴期望像素小于 1 时提前返回 `INVALID_ARGUMENT(empty-output-dimensions)`。
-
-## 面板交互
-
-- **键盘按住语义**：预览拿到焦点后，一次 `keydown` 只向页面发一次 `keyDown`、`keyup` 单独转发，所以按住 <kbd>W</kbd>+<kbd>A</kbd> 这种连续输入在页面里真的保持按住（旧实现按下即松开，按住类交互全部失效）；焦点离开预览时自动把仍按住的键补一次 `keyUp`，不会把按键卡在页面里。
-- **光标形状跟随页面**：预览里移动指针时，面板按 ~120ms 节流询问 `POST /element {cursorOnly:true}` 拿到光标下元素的 computed `cursor`（`pointer`→手型、`text`→文本、`grab`/`grabbing` 等），写回预览层；只接受 CSS 关键字白名单，`cursor:url(...)` 之类永不落到样式上。指针离开、落在画布空白、或进入选元素/标注/拖拽模式时回到箭头/十字。节流窗口内保留最后指针位置并补发查询，快速移到另一磁贴后停住也会更新；换帧尚未解码或同步屏障暂时关闭时，最多等待约 1 秒再回退。离开预览、进入空白、切换模式/标签/文档或画布位置时，会取消待查询并失效旧响应，避免旧位置的光标覆盖复位。
-- 尺寸预设（宽屏 / 横屏 / 平板 / 手机）是分页选择器，选中项显示绿色小球；点击预设把 X/Y 归零并保持当前显示模式。
-- `拖拽 | 适应窗口 | 默认` 三选一互斥；「适应窗口」只是本地显示偏好，不发布比例。
-- 数值框支持滚轮：X/Y/W/H 步长 10（Shift 100、Alt 1），比例步长 5（Shift 10、Alt 1）。
-- 显示比例超过 100% 是位图放大，不增加像素密度；需要更高分辨率时显式给截图 `scale`。
-- 预览内的普通滚轮由面板统一消费：只有落在页面内容上的点会滚目标页；空白、letterbox、舞台 margin 或输入屏障未就绪时零派发，也不会滚动面板/舞台/宿主。Ctrl/Meta、拖拽模式的画布缩放和标注模式保持原语义。
-- 输入屏障持续失配 ≥650ms 时显示「画面同步中，暂时无法操作」与「重试同步」；点击空白区域只显示「此处是画布空白，请在页面区域操作」，不派发页面输入。
-- 「选元素」模式与标注、尺寸调整三者**双向互斥**：任一开启时另外两个入口 disabled；选元素模式内页面零输入，但普通滚轮仍滚动目标页，滚动稳定后按最后指针位置重取悬浮命中。详见 [选元素加入聊天框](element-picker.md)。
-- 页面滚动时整帧按保留偏移 `O = C − S`（`T = −O × 显示比例`）定位，不随帧采集滚动 `F` 与状态 `C` 的异步到达产生伪平移；`O = 0` 时保持旧像素不动，`O ≠ 0` 时保留合法的空白带。
-- 「更多 → 打开调试工具」打开的是 Chrome 自带 DevTools 的独立窗口，直接连接当前页面的 CDP；它不是插件工具，不受面板标注模式、串行队列或 single-owner lease 约束。device toolbar、DPR/网络模拟、断点、Console 求值等会改变页面，自动化取证前应恢复设置并重新采集。
-
-页面内容右键优先交给页面；未取消默认行为时，面板显示后退、前进、重新加载与复制相关项。页面菜单、键盘操作、iframe、失效与截图边界详见[页面右键菜单](panel-context-menu.md)。
-
-## 内部标签页
-
-- 面板在**地址栏下方**提供内部标签栏；一个标签对应一个浏览器页面，由「标注」左侧开关控制显隐，单标签时也占一行（默认显示）。它不是新的 DSH 侧边栏分页。
-- 页面里由**真人操作**触发的 `target=_blank` / `window.open` 会在同一面板新增标签并自动选中；原标签保留，各有独立 URL、历史、输入、标注、尺寸与 DevTools。切回原标签仍是原页面，子页自己的后退不会影响原页。
-- 标签栏可与标注栏、尺寸栏等横向栏上下叠加；「标注」按钮左侧的标签页开关控制显示/隐藏，单标签下同样生效，隐藏只收起栏，页面与标签状态保留。
-- 关闭标签会回收该页面的 Runtime；关闭当前标签后回到原页面或剩下的标签。每个工作区 primary + 最多 3 个 child（共 4 个），并计入全局 8 页上限；标签栏最右 `+` 新建空白标签，工具栏不常驻 `+`（标签栏隐藏时先打开标签栏再新建）。
-- 自动弹窗、没有真人输入、目标地址被导航策略拒绝或超容量时仍会阻断，并在面板给出提示；不会把这些 target 交给 Agent 工具。
-- 所有页面共享同一个浏览器 profile（Cookie、localStorage、cache）；这是浏览器语义，不是登录态隔离。Agent 的 `browser_*` 工具默认操作当前会话的选择（写用 workSelection、读优先 observationSelection，均无设置时 primary），不会因为 GUI 切换标签而改目标；`browser_tabs` 提供 list/current/select/open/close/wait/acquire/release/transfer，跨 root 的目标一律 not-found 语义。
-
-## 限制
-
-- 实时预览是 1× screencast；宽高变更后的输入屏障只是 best-effort（≤250 ms），画布偏移使用 fail-closed 屏障。
-- 画布是视图层合成，不是页面级无限画布；`fixed`/`sticky` 元素会随整帧平移。
-- 面板标注栏的「截图」按钮与 `browser_screenshot` 的 `includeAnnotations:true` 是同一份合成结果；默认截图、T3 原始源图与 T4 帧源不包含面板标注，带标注截图须显式传 `includeAnnotations:true`，并结合 `browser_state.annotations` 核对文档身份与 revision。标注来源 `source.trusted=false`，不能替代页面事实或独立验证。
+- [Web 实现](web/viewport-control.md)

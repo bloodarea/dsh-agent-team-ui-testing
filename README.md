@@ -10,15 +10,15 @@ Give a single Agent or an Agent Team in [DeepSeekHarness (DSH)](https://github.c
 
 **Learn more: [Complete documentation and help (docs/index.md)](docs/index.md)**
 
-[Getting started (getting-started.md)](docs/getting-started.md) · [Beginner walkthrough (tutorial.md)](docs/tutorial.md) · [Developer follow-up (tutorial-advanced.md)](docs/tutorial-advanced.md) · [Architecture (architecture.md)](docs/architecture.md)
+[Getting started (getting-started.md)](docs/getting-started.md) · [Beginner walkthrough (tutorial.md)](docs/web/tutorial.md) · [Developer follow-up (tutorial-advanced.md)](docs/web/tutorial-advanced.md) · [Architecture (architecture.md)](docs/architecture.md)
 
 <p>
   <a href="https://www.npmjs.com/package/dsh-agent-team-ui-testing"><img src="https://img.shields.io/npm/v/dsh-agent-team-ui-testing?style=flat-square&amp;logo=npm&amp;logoColor=white" alt="npm version"></a>
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/stargazers"><img src="https://img.shields.io/github/stars/bloodarea/dsh-agent-team-ui-testing?style=flat-square&amp;logo=github" alt="GitHub stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/bloodarea/dsh-agent-team-ui-testing?style=flat-square" alt="License: MIT"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Plugin requires Node.js >= 22"></a>
-  <a href="docs/browser-runtime.md"><img src="https://img.shields.io/badge/Web%20host-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Host systems for the Web adapter"></a>
-  <a href="docs/tools.md"><img src="https://img.shields.io/badge/Web%20tools-37-brightgreen?style=flat-square" alt="37 tools in the current Web adapter"></a>
+  <a href="docs/web/browser-runtime.md"><img src="https://img.shields.io/badge/Web%20host-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Host systems for the Web adapter"></a>
+  <a href="docs/web/tools.md"><img src="https://img.shields.io/badge/Web%20tools-37-brightgreen?style=flat-square" alt="37 tools in the current Web adapter"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-plugin-4B32C3?style=flat-square" alt="DSH plugin"></a>
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="Pre-release"></a>
 </p>
@@ -42,7 +42,7 @@ The project brings Web, desktop, mobile, terminal, mini program, game and 3D app
 | Games | Unity, Unreal, Godot, Cocos and similar runtimes | Pending |
 | 3D | Three-dimensional applications and editing tools | Pending |
 
-Linux, Windows and macOS here are native desktop testing targets. The current Web adapter already runs on all three host systems. Web has a wired Edge driver, and a real Edge launch remains unverified. Firefox is unsupported. See the [target environment definitions](docs/target-environments.md) and [Web target configuration](docs/browser-runtime.md).
+Linux, Windows and macOS here are native desktop testing targets. The current Web adapter already runs on all three host systems. Web has a wired Edge driver, and a real Edge launch remains unverified. Firefox is unsupported. See the [target environment definitions](docs/target-environments.md) and [Web target configuration](docs/web/browser-runtime.md).
 
 ## Implemented cross-environment foundation
 
@@ -87,13 +87,13 @@ Choose and combine T1–T4 by question. They do not require every environment to
 
 ## Web capabilities available today
 
-- **37 agent tools:** state inspection, structured interaction, static vision, dynamic behaviour, networking, tabs and annotations. Parameters are in the [tool reference (tools.md)](docs/tools.md).
-- **A shared human/agent debug panel:** live preview, size controls, canvas pan and zoom, element references in chat and shared annotations. See the [debug panel (debug-panel.md)](docs/debug-panel.md).
-- **Team page collaboration:** page groups are scoped by workspace, provider and team root, with per-agent work/observation selections, ownership, and Lead acquire/release/transfer controls. See [multi-tab access (multi-tab.md)](docs/multi-tab.md).
-- **Capture and visual evidence:** validated PNGs, explicit regions and scale, annotation overlays, pixel comparison and managed baselines. See [capture (capture-p0.md)](docs/capture-p0.md) and [Chrome T3 (capability-tiers.md)](docs/capability-tiers.md#web-chrome-t3).
-- **Network and dynamic debugging:** requests, WebSocket, SSE, tracing and evidence export; bounded frame capture, seven motion analyses, WAAPI control and restore, and visual/network event correlation. See [network debugging (network-p0.md)](docs/network-p0.md) and [Chrome T4 (capability-tiers.md)](docs/capability-tiers.md#web-chrome-t4).
+- **37 agent tools:** state inspection, structured interaction, static vision, dynamic behaviour, networking, tabs and annotations. Parameters are in the [tool reference (tools.md)](docs/web/tools.md).
+- **A shared human/agent debug panel:** live preview, size controls, canvas pan and zoom, element references in chat and shared annotations. See the [Web debug panel](docs/web/debug-panel.md).
+- **Team page collaboration:** page groups are scoped by workspace, provider and team root, with per-agent work/observation selections, ownership, and Lead acquire/release/transfer controls. See [Web multi-tab access](docs/web/multi-tab.md).
+- **Capture and visual evidence:** validated PNGs, explicit regions and scale, annotation overlays, pixel comparison and managed baselines. See [capture (capture-p0.md)](docs/web/capture-p0.md) and [Chrome T3 (capability-tiers.md)](docs/web/capability-tiers.md#web-chrome-t3).
+- **Network and dynamic debugging:** requests, WebSocket, SSE, tracing and evidence export; bounded frame capture, seven motion analyses, WAAPI control and restore, and visual/network event correlation. See [network debugging (network-p0.md)](docs/web/network-p0.md) and [Chrome T4 (capability-tiers.md)](docs/web/capability-tiers.md#web-chrome-t4).
 
-The current Web implementation defaults to headless and also offers a headed mode. See [Web target configuration](docs/browser-runtime.md) for browser dependencies, providers and profiles. See [environment settings](docs/settings.md) for enablement and diagnostics.
+The current Web implementation defaults to headless and also offers a headed mode. See [Web target configuration](docs/web/browser-runtime.md) for browser dependencies, providers and profiles. See [environment settings](docs/settings.md) for enablement and diagnostics.
 
 ## Getting started
 
@@ -105,8 +105,8 @@ dsh plugin --profile web add dsh-agent-team-ui-testing
 
 Install into the profile you use, then restart DSH. For the first exercise, open the debug view from the current session's right sidebar and keep the chat visible.
 
-- **New users:** follow the [beginner walkthrough (tutorial.md)](docs/tutorial.md) to query an order, pick elements, annotate and save results through conversation. A runnable local demo is included.
-- **Developers:** read the [developer follow-up (tutorial-advanced.md)](docs/tutorial-advanced.md) for tool calls, result verification and network, visual and dynamic debugging.
+- **New users:** follow the [beginner walkthrough (tutorial.md)](docs/web/tutorial.md) to query an order, pick elements, annotate and save results through conversation. A runnable local demo is included.
+- **Developers:** read the [developer follow-up (tutorial-advanced.md)](docs/web/tutorial-advanced.md) for tool calls, result verification and network, visual and dynamic debugging.
 - **All help topics:** open the [documentation index (docs/index.md)](docs/index.md) and browse installation, panel operations, capabilities, diagnostics and architecture.
 
 For other installation sources and version pinning, see [Getting started](docs/getting-started.md#其他安装方式).
@@ -114,7 +114,7 @@ For other installation sources and version pinning, see [Getting started](docs/g
 ## Usage and verification boundaries
 
 - **Support and availability are separate:** the shared foundation exists; real adapters and local dependencies determine which targets can execute. A capability declaration, an enabled setting and a passing test are different conclusions.
-- **Visual and temporal conclusions have limits:** current T3/T4 use deterministic algorithms with no built-in VLM/OCR. Insufficient sampling and untested scenarios must remain explicit. See [capabilities and limits (capability-tiers.md)](docs/capability-tiers.md#web-chrome).
+- **Visual and temporal conclusions have limits:** current T3/T4 use deterministic algorithms with no built-in VLM/OCR. Insufficient sampling and untested scenarios must remain explicit. See [capabilities and limits (capability-tiers.md)](docs/web/capability-tiers.md#web-chrome).
 - **Page isolation does not isolate login state:** Web page state is managed per Runtime; cookies and storage are shared within a browser profile. Review captures before sharing and do not assume all sensitive content has been removed.
 - **Evidence needs independent verification:** dispatched input, a successful interface call or a delivered image attachment does not by itself prove business success, a visual assertion or full-resolution image visibility to the model. See [verification and reports (verification.md)](docs/verification.md).
 

@@ -2,7 +2,7 @@
 
 ## 1. 安装
 
-准备好 [DSH](https://github.com/deepseek-ai/deepseek-harness)、Node.js 24.9+ 和本地 Chrome / Chromium（插件不自带浏览器），然后安装到要使用的 profile：
+准备好 [DSH](https://github.com/deepseek-ai/deepseek-harness) 和 Node.js 24.9+，将插件装到要使用的 profile。
 
 ```sh
 dsh plugin --profile web add dsh-agent-team-ui-testing
@@ -10,28 +10,11 @@ dsh plugin --profile web add dsh-agent-team-ui-testing
 
 上例使用 `web` profile。安装后重启 DSH。需要从 GitHub 安装或固定版本时，参见[其他安装方式](#其他安装方式)。
 
-## 2. 打开页面
+## 2. 配置并使用目标环境
 
-从 **更多 → 调试视图** 或右侧边栏的插件卡片打开面板，在地址栏输入你的本地网页地址，例如 `http://127.0.0.1:3000`，按 Enter。该地址需要已有应用服务运行。
-
-找不到浏览器时，用 `DSH_UI_TESTING_CHROME` 指定可执行文件后重新启动 DSH。浏览器路径、执行端和运行模式见[Web 目标环境配置](browser-runtime.md#浏览器路径)。
-
-## 第一次调用
-
-在当前会话中告诉 Agent：
-
-> 查看我刚打开的页面，列出可操作的控件，并把截图保存到 output/capture/first.png。
-
-Agent 应先用 `browser_capabilities`、`browser_state` 核对当前目标，再用 `browser_snapshot` 读取控件、`browser_screenshot` 留存截图。若看到的页面不同，先用 `browser_tabs` 核对并切换目标。
-
-接着指定一个控件，让 Agent 点击或填写，并读取操作后的结果。
-
-## 按需查阅
-
-- 想跟着截图走一遍：[图文教程（tutorial.md）](tutorial.md)。
-- 设置环境或检查连接：[环境设置（settings.md）](settings.md)。
-- 查面板操作：[调试面板（debug-panel.md）](debug-panel.md)。
-- 查参数或选择调试方法：[工具参考（tools.md）](tools.md)、[能力分层（capability-tiers.md）](capability-tiers.md)。
+- [Web 快速开始](web/getting-started.md)说明如何准备浏览器、打开网页并首次调用工具。
+- [目标环境定义与配置入口](target-environments.md)索引各环境的运行条件。
+- [环境设置](settings.md)说明如何启用环境并检查连接。
 
 ## 其他安装方式
 

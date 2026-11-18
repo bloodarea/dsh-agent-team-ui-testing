@@ -1,6 +1,6 @@
 # T3 · 静态视觉
 
-> 权威契约：[能力分层与接口 · Chrome T3](../../../../docs/capability-tiers.md#web-chrome-t3)。本文件是已实现能力的操作摘要，字段、边界与验收口径以契约为准。
+> 权威契约：[能力分层与接口 · Chrome T3](../../../../docs/web/capability-tiers.md#web-chrome-t3)。本文件是已实现能力的操作摘要，字段、边界与验收口径以契约为准。
 
 ## 已实现的六个工具（当前工具面 37 = 10 T1 + 1 P0-E + 1 P0-D + 7 T2 + 6 T3 + 7 network + 5 T4）
 

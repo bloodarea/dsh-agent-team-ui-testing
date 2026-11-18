@@ -39,7 +39,7 @@ Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DS
 | [harness.mjs](harness.mjs) | 加载真实 `apply(ctx)`，捕获注册工具、HTTP/WS 路由；透传 `exec.agent.id`/`exec.signal`，收集错误分类与 render content；模拟 optional attachments 与 `agent/disposed` 事件。 |
 | [run.mjs](run.mjs) | P1–P13 主浏览器与帧管线回归，并集成 M0–M2、P20、P21、P22 与 P23 探针；P1/P14/P16/P21/P23 断言 36 工具面（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 5 T4 + 7 network）。 |
 | [capture-p0.mjs](capture-p0.mjs) | **P0 截图基础设施验收**：C1–C14覆盖默认暂存/显式持久与生命周期，以及默认/scale/region/小数 scale/文档坐标+滚动/帧管线/空白识别/安全写入/参数与结构化错误/附件对比/能力探测/清理与可重复性/`captureBeyondViewport` 布局稳定性；断言全部是 PNG 像素真值（`capture-p0.js` 独立解码）与文件事实。 |
-| [t2-structured.mjs](t2-structured.mjs) | **Web T2 验收套件**：依据 [能力分层与接口 · Chrome T2](../../docs/capability-tiers.md#web-chrome-t2) 验证 C1–C38（snapshot/ref/selector/click/type/scroll/fill_form/node_state/wait_for/证据/错误/lease/隔离），真值为 `window.__t2` 的真实 DOM 事件与靶机 DOM。 |
+| [t2-structured.mjs](t2-structured.mjs) | **Web T2 验收套件**：依据 [能力分层与接口 · Chrome T2](../../docs/web/capability-tiers.md#web-chrome-t2) 验证 C1–C38（snapshot/ref/selector/click/type/scroll/fill_form/node_state/wait_for/证据/错误/lease/隔离），真值为 `window.__t2` 的真实 DOM 事件与靶机 DOM。 |
 | [workspace-isolation.test.mjs](workspace-isolation.test.mjs) | 按 DSH 工作区 page 隔离：同 apply 一 Chromium 多 target、scope 身份链、URL/viewport/history/network 独立、同工作区 BUSY/跨工作区并发、close/abort/CDP 断线、scoped WS/frame/metrics、recent binding、owner-only、8 page/idle/viewer TTL、popup/Document 阻断。 |
 | [devtools.mjs](devtools.mjs) | **DevTools 独立窗口 Host 级验收**：cold/running `ui.devtools` 投影、scoped-only 与 legacy 隔离、固定 loopback 端口 + 精确 allow-origin、stderr/`/json/version` 身份核对、真实前端连接（shadow DOM MARKER）、screencast/T2 共存、bind/身份不符有界重试与清理。 |
 | [devtools-gui.mjs](devtools-gui.mjs) | **DevTools 独立窗口 GUI 验收**：自启私有隔离 DSH（随机端口/临时 DSH_HOME，不用 3080/3081）+ 无头 Chrome；冷态禁用、真实点击后 popup URL/opener/referrer/MARKER、预览共存、`window.open=null` fallback、标注模式禁用；2 条 NOT_RUN 原样报告。 |
@@ -64,7 +64,7 @@ Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DS
 
 | ID | 必需行为 |
 | --- | --- |
-| P1 | 恰好 36 工具（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 5 T4 + 7 network）、required 与 `docs/architecture.md` + [能力分层与接口 · Chrome T2](../../docs/capability-tiers.md#web-chrome-t2) + [Chrome T3](../../docs/capability-tiers.md#web-chrome-t3) + `docs/network-p0.md` §2 一致、schema、HTTP 路由、owner 诊断、未启动时 capability 可用。 |
+| P1 | 恰好 36 工具（10 T1 + 1 P0-E + 7 T2 + 6 T3 + 5 T4 + 7 network）、required 与 `docs/architecture.md` + [能力分层与接口 · Chrome T2](../../docs/web/capability-tiers.md#web-chrome-t2) + [Chrome T3](../../docs/web/capability-tiers.md#web-chrome-t3) + `docs/network-p0.md` §2 一致、schema、HTTP 路由、owner 诊断、未启动时 capability 可用。 |
 | P2 | loopback 导航成功；state URL/title 与页面一致；SPA 改标题可读；file 拒绝、不可达 `NAV_FAILED`、失败恢复。 |
 | P3 | 按值 JS/Promise/undefined；页面异常返回 `EVAL_ERROR` 对象及消息、stack、details。 |
 | P4 | CSS 精确值、全集；缺失元素返回 `TARGET_NOT_FOUND` 操作失败。 |
@@ -86,7 +86,7 @@ Chromium 默认 `/opt/google/chrome/chrome`（两套套件相同）；显式 `DS
 | P22 | 独立 `browser_http_request`：默认 GET/5s/64KiB、`ok:true≠2xx`、headers 小写→string[]、默认不跟随/显式跟随每跳复验、方法规则、超时/取消、阻断目标与重定向阻断零派发（`http.request` spy）、非法参数零副作用、正文截断/字节/base64/压缩、无 cookie jar、脱敏、证据 target 为初始 URL、真实 lossless、未启动/关闭态、卸载 ABORTED。 |
 | P23 | network P0 工具面（`docs/network-p0.md` §1.2.4/§2/§8.5/§8.8）：7 个 `browser_network_*` 注册与 required/schema 一致；无会话时 `session status`（`session:null`+limits）、`events`（空+`sessionId:null`）、`detail`/`subscribe`（NET_* 码）、`evidence index/integrity`、`trace query/window`、`control intercept-list` 全部可诊断且**不启动 Chromium**（无新 profile）；`control` 对其他 owner BUSY、只读查询不占租约；旧 `browser_network` 仍只回 `{ok,entries:[元数据]}` 白名单字段。 |
 
-## T2 结构化验收探针（`t2-structured.mjs`，对应 [能力分层与接口 · Chrome T2](../../docs/capability-tiers.md#web-chrome-t2)）
+## T2 结构化验收探针（`t2-structured.mjs`，对应 [能力分层与接口 · Chrome T2](../../docs/web/capability-tiers.md#web-chrome-t2)）
 
 2026-11-01 优化轮（契约中的冗余文本压缩、「不自动滚入视口 + hint + 两帧稳定性」、C4/C25/C26 验收条目）的用例已并入 C4/C6/C25/C26；靶机新节点见 `tests/ui_test_fixture/README.md` §T2.10。
 
@@ -222,7 +222,7 @@ T1随机flake须如实并列：上方05-49-22为22/22、324/324、exit0；最终
 
 公开maxDelta增量后复跑 **13/13、117/117、0 failed、exit0**（[报告](runs/capture-p0-2026-11-01T05-09-04-665Z-79630/report.json)），新增白页maxDelta=0/内容页255两条断言；前三份115项报告是增量前证据。
 
-C6的 `/frame` HTTP响应是application/json，image字段为base64 JPEG，以JPEG魔数及解码尺寸验证，不声称HTTP Content-Type=image/jpeg。C13的scroll/视口/红块/绿块/fixed rect前后完全相同，仅说明本fixture/版本未观察到持久布局变化，不能排除瞬时LBI。附件比较只依据metadata，缺字段不推断一致；provider视觉及P0真实宿主重载仍NOT_RUN，canvas源分辨率限制与本地TOCTOU边界仍在。权威契约见 [capture-p0.md](../../docs/capture-p0.md)。
+C6的 `/frame` HTTP响应是application/json，image字段为base64 JPEG，以JPEG魔数及解码尺寸验证，不声称HTTP Content-Type=image/jpeg。C13的scroll/视口/红块/绿块/fixed rect前后完全相同，仅说明本fixture/版本未观察到持久布局变化，不能排除瞬时LBI。附件比较只依据metadata，缺字段不推断一致；provider视觉及P0真实宿主重载仍NOT_RUN，canvas源分辨率限制与本地TOCTOU边界仍在。权威契约见 [capture-p0.md](../../docs/web/capture-p0.md)。
 
 ## 故障注入覆盖
 

@@ -370,7 +370,7 @@ The T2 fixture long text block is deterministic: exactly three hundred character
 
 ## 网络靶机契约（`/n/*`、`/web-network.html`、`/web-network-frame.html`）
 
-> 本节为 **网络采集验收** 的确定性真值表。`tests/acceptance/` 的网络脚本逐条依赖下表的路径、状态码、响应体、时序与 `window.__net` 结构；改动任何一项都必须同步修改验收脚本与 [docs/network-p0.md](../../docs/network-p0.md) §9。
+> 本节为 **网络采集验收** 的确定性真值表。`tests/acceptance/` 的网络脚本逐条依赖下表的路径、状态码、响应体、时序与 `window.__net` 结构；改动任何一项都必须同步修改验收脚本与 [docs/network-p0.md](../../docs/web/network-p0.md) §9。
 
 ### NET.1 通用不变量
 
@@ -514,7 +514,7 @@ iframe 页另有 `window.__netFrame = {version:1, done, status, body, error}`，
 
 ## 电商业务链路靶机契约（`/shop/*`、`/api/shop/*`）
 
-> 5 个**真实 MPA 页面**（每次跳转都是全页导航，不是 SPA）+ 确定性 `/api/shop/*`。供端到端业务链路追踪验收使用；冻结 runId 为 `chain-1`，冻结订单号 `ORD-chain-1-1`。改这里任何 id、路径、响应体都必须同步改验收脚本与 [docs/network-p0.md](../../docs/network-p0.md) 的 §14。
+> 5 个**真实 MPA 页面**（每次跳转都是全页导航，不是 SPA）+ 确定性 `/api/shop/*`。供端到端业务链路追踪验收使用；冻结 runId 为 `chain-1`，冻结订单号 `ORD-chain-1-1`。改这里任何 id、路径、响应体都必须同步改验收脚本与 [docs/network-p0.md](../../docs/web/network-p0.md) 的 §14。
 
 ### SHOP.1 通用不变量
 
