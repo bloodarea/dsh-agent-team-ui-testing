@@ -140,6 +140,7 @@ Source、图像处理、定位、比较、动作、基线与断言的完整说�
 | `BUSY` | 该页队列正被其他会话的**写**操作占用（短暂忙；只读观察不占写租约，权限问题不会报 BUSY） |
 | `REF_STALE` | ref 所属快照或文档已失效，需要重新 snapshot |
 | `NOT_INTERACTABLE` | 目标不可见/被遮挡/持续运动，零派发 |
+| `INPUT_NOT_DELIVERED` | CDP 已派发但页面未观察到该事件（重试一次后仍无），见[输入送达校验](input-delivery.md) |
 | `TARGET_NOT_UNIQUE` | selector 命中多个元素 |
 | `VIEWPORT_CONFLICT` | `expectedRevision` 不匹配，patch 未应用 |
 | `VISION_*` | 视觉源、尺寸、基线或比较错误 |

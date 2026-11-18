@@ -214,7 +214,9 @@ export function createWebRoutes({
       // Metrics is the panel's viewer heartbeat: a hidden/closed panel stops renewing and its
       // page becomes idle-collectable even if a leaked WS socket never sent a Close frame.
       entry.runtime.touchViewer();
-      entry.runtime.activate();
+      // Heartbeat only: front the previewed page, but never let a failed bringToFront escape as an
+      // unhandled rejection (the panel is not waiting for it).
+      entry.runtime.activate().catch(() => false);
       sendJson(res, 200, { ok: true, metrics: entry.runtime.metrics() });
       return true;
     }

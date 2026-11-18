@@ -68,6 +68,7 @@ node tests/acceptance/audit-a11-scope.mjs               # 会话级环境选择�
 node tests/acceptance/viewport-gui.mjs     # 隔离 DSH + 无头 Chrome 的面板断言
 DSH_VIEWPORT_GUI_ONLY=V16c node tests/acceptance/viewport-gui.mjs # 选择手感：实时框选、组合键、拖动/取消、键盘与缩放命中
 DSH_VIEWPORT_GUI_ONLY=V1b node tests/acceptance/viewport-gui.mjs  # 空白画布隔离：切到无视图环境后零视口写入/零截图/零状态轮询/零标注同步
+node tests/acceptance/input-delivery.mjs   # 输入送达校验：页面侧证据、纯文本不判、未送达抛 INPUT_NOT_DELIVERED、activate 合并与重新前置
 node tests/acceptance/canvas-wheel.mjs     # 隔离 DSH + 无头 Chrome 的滚轮消费/命中/A2 瞬态
 node tests/acceptance/popup-tabs.mjs       # 隔离 DSH + 无头 Chrome 的内部标签页/target=_blank/关闭回收
 node tests/acceptance/devtools-gui.mjs     # 隔离 DSH + 无头 Chrome 的 DevTools 弹窗断言

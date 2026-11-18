@@ -2376,6 +2376,14 @@ export class BrowserHost {
     this.profilePersistent = false;
     /** Best-effort X11 unmap result: headed window is offscreen and not in WM/taskbar. */
     this.windowHidden = false;
+    /**
+     * Which runtime last brought its page to the front of this browser.
+     *
+     * Front-ness is per browser window, not per runtime: tracking it here is what lets
+     * `Runtime.activate()` answer "already front" without the per-runtime throttle that used to
+     * skip the bringToFront an input dispatch depended on.
+     */
+    this.frontRuntimeId = undefined;
   }
 
   get pageCount() { return this.ownedTargets.size; }
@@ -3961,6 +3969,71 @@ export const T2_NODE_INFO_FN = `function (options) {
 
 /** The real (deep-shadow) activeElement, as a remote object so CDP can describe it. */
 
+/**
+ * One-shot delivery probe for synthetic input (docs/web/input-delivery.md).
+ *
+ * A CDP `Input.*` dispatch returning is **not** evidence that the page saw anything: the event can
+ * land in a renderer whose document was replaced, or in a page this runtime no longer owns. The
+ * probe installs capture listeners inside the page *before* the dispatch and reports what the page
+ * actually observed afterwards, so "dispatched" can never be mistaken for "delivered".
+ *
+ * Kept as source strings (no bundler, no page globals leaking into the app's namespace): the marker
+ * is deleted by the read step, and a 5 s timer removes the listeners even if the read never comes.
+ */
+export const INPUT_PROBE_INSTALL_FN = `(function () {
+  var KEY = '__utb_input_probe__';
+  try {
+    var previous = window[KEY];
+    if (previous && typeof previous.cleanup === 'function') previous.cleanup();
+  } catch (error) { /* a broken previous probe must not block this one */ }
+  var types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'keydown', 'keyup', 'input', 'wheel', 'mousemove'];
+  var state = { seen: [], started: Date.now() };
+  var record = function (event) { state.seen.push(event.type); };
+  for (var index = 0; index < types.length; index += 1) document.addEventListener(types[index], record, true);
+  var cleanup = function () {
+    for (var i = 0; i < types.length; i += 1) document.removeEventListener(types[i], record, true);
+  };
+  var timer = setTimeout(cleanup, 5000);
+  state.cleanup = function () { clearTimeout(timer); cleanup(); };
+  window[KEY] = state;
+  return { installed: true, types: types.length };
+})()`;
+
+/** Read (and immediately remove) the probe above: `seen` is what the page really observed. */
+export const INPUT_PROBE_READ_FN = `(function () {
+  var KEY = '__utb_input_probe__';
+  var state = window[KEY];
+  if (!state) return { present: false, seen: [] };
+  var seen = state.seen.slice();
+  try { if (typeof state.cleanup === 'function') state.cleanup(); delete window[KEY]; } catch (error) { /* ignore */ }
+  return { present: true, seen: seen };
+})()`;
+
+/** The two halves a click gesture cannot happen without (a handler may suppress `click` itself). */
+export const INPUT_DELIVERY_CLICK_GROUPS = Object.freeze([
+  Object.freeze(['mousedown', 'pointerdown']),
+  Object.freeze(['mouseup', 'pointerup']),
+]);
+
+/**
+ * Decide whether a dispatched gesture was actually delivered, from what the page recorded.
+ *
+ * `groups` lists what the page must have observed: each group is a set of alternative event types
+ * and **every** group must be satisfied. A synthetic click the page never saw produces nothing, so
+ * requiring press *and* release keeps the check honest without depending on `click` (which a
+ * handler may legitimately have suppressed via `preventDefault`).
+ */
+export function inputDeliveryVerdict(seen, groups = INPUT_DELIVERY_CLICK_GROUPS) {
+  const events = Array.isArray(seen) ? seen : [];
+  const required = Array.isArray(groups) && groups.length ? groups : INPUT_DELIVERY_CLICK_GROUPS;
+  const matched = required.map((group) => events.some((type) => group.includes(type)));
+  return {
+    delivered: matched.every(Boolean),
+    missing: required.filter((group, index) => !matched[index]).map((group) => group.join('|')),
+    seen: events.slice(0, 12),
+  };
+}
+
 /** The real (deep-shadow) activeElement, as a remote object so CDP can describe it. */
 export const T2_DEEP_FOCUS_FN = `(function () {
   var doc = document;
@@ -5368,13 +5441,28 @@ export class Runtime {
    * the one producing frames. Known limitation: with several panels open at once the previews
    * alternate instead of updating simultaneously, and the page's `visibilityState` follows.
    */
-  activate() {
-    const now = Date.now();
-    if (this.activateAt && now - this.activateAt < 300) return;
-    this.activateAt = now;
+  activate(signal) {
     const cdp = this.cdp;
-    if (!cdp || cdp.closed) return;
-    cdp.send('Page.bringToFront', {}, { timeoutMs: 1000 }).catch(() => {});
+    if (!cdp || cdp.closed) return Promise.resolve(false);
+    const host = this.host;
+    // Already this browser's front target: the panel heartbeat calls this many times a second and
+    // must stay free. Front-ness is a property of the *browser*, not of this runtime, so a sibling
+    // runtime calling `activate()` clears it — which is exactly why the old per-runtime 300 ms
+    // throttle could skip the one bringToFront an input dispatch depended on.
+    if (host && host.frontRuntimeId === this.runtimeId) return Promise.resolve(true);
+    // Coalesce: every caller inside the same window shares one in-flight Page.bringToFront instead
+    // of being skipped (the old code `return`ed, so the caller believed the page was fronted).
+    if (this.activating) return this.activating;
+    this.activating = (async () => {
+      try {
+        await cdp.send('Page.bringToFront', {}, { timeoutMs: 2000, signal });
+        if (host) host.frontRuntimeId = this.runtimeId;
+        return true;
+      } finally {
+        this.activating = null;
+      }
+    })();
+    return this.activating;
   }
 
   /** Lazily created P0 network store (scope-local attribution is fixed at first use). */
@@ -5502,7 +5590,7 @@ export class Runtime {
       // The page being operated must be the compositing one, otherwise its preview freezes.
       // A pure observation opts out (`activate:false`) so looking at somebody's page cannot move
       // their foreground page or toggle their `visibilityState`.
-      if (activate) this.activate();
+      if (activate) await this.activate(signal).catch(() => false);
       await abortable(previous, signal);
       checkAbort(signal);
       if (agent) this.claim(sessionId);
@@ -5748,7 +5836,9 @@ export class Runtime {
       if (typeof resume === 'function') { try { await this.refreshMetadata(signal); } catch { /* pending navigation */ } }
       // Publish the fresh runtime state (history/url/title) once the page is up.
       this.refreshMetadataSoon();
-      this.activate();
+      // Best effort: a page that just came up should be the compositing one, but a failed
+      // bringToFront must not fail the page start (the input path verifies delivery itself).
+      this.activate().catch(() => false);
       this.log(`page target ${page.targetId} ready (generation ${page.generation})`);
       return cdp;
     } catch (error) {
@@ -8206,51 +8296,116 @@ export class Runtime {
     const prepared = events.map((event) => ({ event, prepared: prepareInputEvent(event) }));
     await this.ensure(signal);
     const viewport = this.viewport;
-    for (const item of prepared) {
-      const { event } = item;
-      const params = item.prepared.params;
-      if (item.prepared.kind === 'key') {
-        const type = String(params.type || '').toLowerCase();
-        const identity = inputKeyIdentity(event);
-        const modifier = inputKeyModifier(event);
-        const synthesize = event.synthesizeModifiers !== false;
-        // A keyUp still reports the modifier it is releasing; a press reports the state *before*
-        // it lands (same order a real OS produces).
-        params.modifiers = (Number(params.modifiers) || 0) | (synthesize ? this.#heldModifierBits() : 0);
-        if (identity) {
-          if (inputPressesKey(type)) this.inputState.keys.set(identity, modifier);
-          else if (type === 'keyup') this.inputState.keys.delete(identity);
-        }
-      } else if (item.prepared.kind === 'mouse' || item.prepared.kind === 'wheel') {
-        if (event.synthesizeModifiers !== false) {
-          params.modifiers = (Number(params.modifiers) || 0) | this.#heldModifierBits();
-        }
-        if (item.prepared.kind === 'mouse') {
-          const hasDelta = Number.isFinite(event.deltaX) || Number.isFinite(event.deltaY);
-          if (hasDelta) {
-            if (!params.type) params.type = 'mouseMoved';
-            const base = this.inputState.cursor
-              || { x: Math.round(viewport.width / 2), y: Math.round(viewport.height / 2) };
-            const next = {
-              x: Math.min(Math.max(0, base.x + (Number.isFinite(event.deltaX) ? event.deltaX : 0)), Math.max(0, viewport.width - 1)),
-              y: Math.min(Math.max(0, base.y + (Number.isFinite(event.deltaY) ? event.deltaY : 0)), Math.max(0, viewport.height - 1)),
-            };
-            params.x = next.x;
-            params.y = next.y;
-            this.inputState.cursor = { ...next };
-            if (params.type === 'mouseMoved' && !Number.isFinite(event.buttons)) params.buttons = 0;
-          } else if (Number.isFinite(params.x) && Number.isFinite(params.y)) {
-            this.inputState.cursor = { x: params.x, y: params.y };
+    // One dispatch pass over the batch; the caller may run it twice (delivery retry).
+    const dispatchAll = async () => {
+      for (const item of prepared) {
+        const { event } = item;
+        const params = item.prepared.params;
+        if (item.prepared.kind === 'key') {
+          const type = String(params.type || '').toLowerCase();
+          const identity = inputKeyIdentity(event);
+          const modifier = inputKeyModifier(event);
+          const synthesize = event.synthesizeModifiers !== false;
+          // A keyUp still reports the modifier it is releasing; a press reports the state *before*
+          // it lands (same order a real OS produces).
+          params.modifiers = (Number(params.modifiers) || 0) | (synthesize ? this.#heldModifierBits() : 0);
+          if (identity) {
+            if (inputPressesKey(type)) this.inputState.keys.set(identity, modifier);
+            else if (type === 'keyup') this.inputState.keys.delete(identity);
+          }
+        } else if (item.prepared.kind === 'mouse' || item.prepared.kind === 'wheel') {
+          if (event.synthesizeModifiers !== false) {
+            params.modifiers = (Number(params.modifiers) || 0) | this.#heldModifierBits();
+          }
+          if (item.prepared.kind === 'mouse') {
+            const hasDelta = Number.isFinite(event.deltaX) || Number.isFinite(event.deltaY);
+            if (hasDelta) {
+              if (!params.type) params.type = 'mouseMoved';
+              const base = this.inputState.cursor
+                || { x: Math.round(viewport.width / 2), y: Math.round(viewport.height / 2) };
+              const next = {
+                x: Math.min(Math.max(0, base.x + (Number.isFinite(event.deltaX) ? event.deltaX : 0)), Math.max(0, viewport.width - 1)),
+                y: Math.min(Math.max(0, base.y + (Number.isFinite(event.deltaY) ? event.deltaY : 0)), Math.max(0, viewport.height - 1)),
+              };
+              params.x = next.x;
+              params.y = next.y;
+              this.inputState.cursor = { ...next };
+              if (params.type === 'mouseMoved' && !Number.isFinite(event.buttons)) params.buttons = 0;
+            } else if (Number.isFinite(params.x) && Number.isFinite(params.y)) {
+              this.inputState.cursor = { x: params.x, y: params.y };
+            }
           }
         }
+        if (item.prepared.kind === 'mouse' || item.prepared.kind === 'wheel') {
+          await this.send('Input.dispatchMouseEvent', params, signal);
+        } else if (item.prepared.kind === 'key') {
+          await this.send('Input.dispatchKeyEvent', params, signal);
+        } else if (item.prepared.kind === 'text') {
+          await this.send('Input.insertText', params, signal);
+        }
       }
-      if (item.prepared.kind === 'mouse' || item.prepared.kind === 'wheel') {
-        await this.send('Input.dispatchMouseEvent', params, signal);
-      } else if (item.prepared.kind === 'key') {
-        await this.send('Input.dispatchKeyEvent', params, signal);
-      } else if (item.prepared.kind === 'text') {
-        await this.send('Input.insertText', params, signal);
+    };
+    // A batch that carries a press/release, a key or a wheel is something the page must observe;
+    // a text-only batch is not (insertText without focus legitimately produces no DOM event), so
+    // only the former is verified (docs/web/input-delivery.md).
+    const mustBeObserved = events.some((event) => {
+      if (event.kind === 'wheel') return true;
+      if (event.kind === 'key') return true;
+      if (event.kind !== 'mouse') return false;
+      const type = String(event.type || '').toLowerCase();
+      return type !== '' && type !== 'mousemoved';
+    });
+    // What the page must have observed for *this* batch: the same press/release rule when the batch
+    // carries a button gesture, a key pair for key batches, and at least one event otherwise.
+    const requiredGroups = (() => {
+      // CDP dispatch types -> the DOM events the page must observe for each of them.
+      const DOM_EVENTS = {
+        mousepressed: ['mousedown', 'pointerdown'],
+        mousereleased: ['mouseup', 'pointerup'],
+        mousemoved: ['mousemove', 'pointermove'],
+        mousewheel: ['wheel'],
+        keydown: ['keydown'],
+        rawkeydown: ['keydown'],
+        keyup: ['keyup'],
+      };
+      const groups = [];
+      for (const item of prepared) {
+        const type = String(item.prepared.params.type || '').toLowerCase();
+        const group = DOM_EVENTS[type];
+        if (!group) continue;
+        if (!groups.some((existing) => existing.join('|') === group.join('|'))) groups.push(group);
       }
+      if (!groups.length) groups.push(['mousemove', 'wheel', 'pointermove', 'scroll', 'keydown', 'keyup', 'input']);
+      return groups;
+    })();
+    let delivery = { verified: false, delivered: null, attempts: 0, seen: [] };
+    if (mustBeObserved && await this.#installInputProbe(signal)) {
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        await dispatchAll();
+        const probe = await this.#readInputProbe(signal);
+        if (!probe || probe.present === false) break;
+        const verdict = inputDeliveryVerdict(probe.seen, requiredGroups);
+        const delivered = verdict.delivered;
+        delivery = { verified: true, delivered, attempts: attempt, seen: probe.seen.slice(0, 12), missing: verdict.missing };
+        if (delivered) break;
+        if (attempt === 1) {
+          // Nothing reached the document: re-front the page and give the batch one more pass.
+          await this.activate(signal).catch(() => false);
+          if (!(await this.#installInputProbe(signal))) { delivery = { verified: false, delivered: null, attempts: attempt, seen: [] }; break; }
+        }
+      }
+      if (delivery.verified === true && delivery.delivered === false) {
+        throw new BrowserError('INPUT_NOT_DELIVERED',
+          '输入事件没有送达页面：CDP 已派发但页面未观察到任何事件',
+          {
+            applied: events.length,
+            attempts: delivery.attempts,
+            seen: delivery.seen,
+            hint: '页面可能已被替换、不属于该运行时或被另一个标签抢占前台；先用 browser_state / browser_snapshot 确认目标文档。',
+          });
+      }
+    } else if (mustBeObserved) {
+      await dispatchAll();
     }
     // A wheel/click/drag can move the page (momentum/smooth scroll/snap): two coalesced settling
     // samples, 50ms and 250ms after the dispatch (docs/viewport-control.md).
@@ -8258,6 +8413,7 @@ export class Runtime {
     this.refreshViewObservationSoon({ delayMs: 250 });
     return {
       applied: events.length,
+      delivery,
       modifiers: this.#heldModifierBits(),
       held: [...this.inputState.keys.keys()],
       cursor: this.inputState.cursor ? { ...this.inputState.cursor } : null,
@@ -13628,6 +13784,9 @@ export class Runtime {
         eventCount: Number.isFinite(draft.dispatch.eventCount) ? draft.dispatch.eventCount : 0,
         completed: draft.dispatch.completed === true,
         eventSource: draft.dispatch.eventSource === undefined ? null : draft.dispatch.eventSource,
+        // What the *page* observed, not what CDP accepted (docs/web/input-delivery.md):
+        // `verified:false` means no probe could be installed, so nothing is claimed either way.
+        delivery: draft.dispatch.delivery === undefined ? { verified: false, delivered: null } : draft.dispatch.delivery,
       },
       networkDelta: this.#t2NetworkDelta(draft.networkFrom),
       escalation: { tier: draft.escalation.tier, reason: draft.escalation.reason },
@@ -13980,17 +14139,67 @@ export class Runtime {
     const mask = T2_MOUSE_BUTTONS[button];
     let modifierMask = 0;
     for (const name of modifiers) modifierMask |= MODIFIER_BITS[name] || 0;
-    await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0, modifiers: modifierMask }, signal);
-    draft.dispatch.started = true;
-    draft.dispatch.eventSource = 'cdp-input';
-    for (let index = 1; index <= clickCount; index += 1) {
-      await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, buttons: mask, clickCount: index, modifiers: modifierMask }, signal);
-      draft.dispatch.eventCount += 1;
-      await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, buttons: mask, clickCount: index, modifiers: modifierMask }, signal);
-      draft.dispatch.eventCount += 1;
+    const gesture = async () => {
+      await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0, modifiers: modifierMask }, signal);
+      draft.dispatch.started = true;
+      draft.dispatch.eventSource = 'cdp-input';
+      for (let index = 1; index <= clickCount; index += 1) {
+        await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, buttons: mask, clickCount: index, modifiers: modifierMask }, signal);
+        draft.dispatch.eventCount += 1;
+        await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, buttons: mask, clickCount: index, modifiers: modifierMask }, signal);
+        draft.dispatch.eventCount += 1;
+      }
+    };
+    // Dispatch, then ask the page what it actually saw. A CDP dispatch that returns is not proof of
+    // delivery; the page is the only witness (docs/web/input-delivery.md).
+    let verdict = { delivered: false, seen: [] };
+    let verified = true;
+    let attempts = 0;
+    for (; attempts < 2 && !verdict.delivered && verified; attempts += 1) {
+      // No probe means no witness: dispatch and say so instead of inventing a verdict (an eval the
+      // page refuses must not turn a working click into a false INPUT_NOT_DELIVERED).
+      if (!(await this.#installInputProbe(signal))) { verified = false; await gesture(); break; }
+      await gesture();
+      const probe = await this.#readInputProbe(signal);
+      if (!probe || probe.present === false) { verified = false; break; }
+      verdict = inputDeliveryVerdict(probe.seen, INPUT_DELIVERY_CLICK_GROUPS);
+      if (!verdict.delivered) {
+        // The page may have been re-fronted or re-attached between resolve and dispatch: front it
+        // again and retry exactly once before reporting the failure.
+        await this.activate(signal).catch(() => false);
+      }
+    }
+    draft.dispatch.delivery = { verified, delivered: verified ? verdict.delivered : null, attempts, seen: verdict.seen };
+    if (verified && !verdict.delivered) {
+      throw new BrowserError('INPUT_NOT_DELIVERED',
+        '点击事件没有送达页面：CDP 已派发但页面未观察到 press/release',
+        {
+          attempts,
+          seen: verdict.seen,
+          button,
+          point: { x, y },
+          hint: '页面可能已被替换、不属于该运行时或被另一个标签抢占前台；先用 browser_state / browser_snapshot 确认目标文档。',
+        });
     }
     draft.dispatch.completed = true;
     return { x, y };
+  }
+
+  /** Install the one-shot delivery probe in the current document (best effort, never throws). */
+  async #installInputProbe(signal) {
+    try {
+      await this.send('Runtime.evaluate', { expression: INPUT_PROBE_INSTALL_FN, returnByValue: true }, signal);
+      return true;
+    } catch { return false; }
+  }
+
+  /** Read and remove the probe: `{ delivered, seen }` from the page's own point of view. */
+  async #readInputProbe(signal) {
+    try {
+      const result = await this.send('Runtime.evaluate', { expression: INPUT_PROBE_READ_FN, returnByValue: true }, signal);
+      const value = result && result.result ? result.result.value : undefined;
+      return value && Array.isArray(value.seen) ? { present: value.present !== false, seen: value.seen } : null;
+    } catch { return null; }
   }
 
   async #t2DeepFocusBackendNodeId(signal) {

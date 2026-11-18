@@ -272,6 +272,8 @@ T2 交互断言失败（`NOT_INTERACTABLE`、点击后业务值未变、`WAIT_TI
 
 **输入真值边界**：`pointerType:'pen'` 按 CDP 要求传字符串并归一到 `mouse|pen`，页面 `PointerEvent.pointerType` 可读回 `"pen"`；焦点仍无专门工具，用 Tab/Shift+Tab 或页面内 JS，并以页面读回为准。
 
+**送达校验**：`browser_click` 的 `evidence.dispatch.delivery` 与 `browser_input` 的 `delivery` 是**页面侧**结论（`verified`/`delivered`/`attempts`/`seen`）。`delivered:true` 表示页面确实收到了 press/release 或按键；`verified:false, delivered:null` 表示拿不到页面证据（不声称送达，也不代表失败）；未送达时工具先自动前置页面重试一次，仍失败抛 `INPUT_NOT_DELIVERED`。看到这个错误不要重试同样的调用——先用 `browser_state`/`browser_snapshot` 确认当前文档（页面可能已被替换或被别的标签抢走），再重新定位目标。纯 `text` 批次不做送达判定。
+
 ## 独立 HTTP 请求（`browser_http_request`）
 
 用于验证接口契约、响应头/状态码、与页面解耦的请求与错误分类。**不要**用 `browser_eval` 里的页面 `fetch`（页面上下文、受 CORS/Cookie/CSP/导航状态影响）或 `browser_network`（只有元数据、无头/正文）冒充它。
