@@ -23,6 +23,9 @@ node --test tests/contracts/panel-address-bar.test.mjs # 地址栏历史：栈�
 node tests/acceptance/panel-address-gui.mjs  # 真实面板：历史下拉顺序/去重/持久化、Esc 关闭与「转到」按钮
 node tests/acceptance/gui-annot-shot.mjs   # 面板「截图」：/screenshot 的 includeAnnotations 合成、旧回复形状与拒绝
 node tests/acceptance/annotation-agent.mjs     # Agent 标注读写：四类动作、样式映射、前台门禁、限额与 revision CAS
+node tests/acceptance/audio-preview.mjs        # 页面声音到达面板：格式/幅度/静音页/导航重置/媒体元素
+node tests/acceptance/audio-panel-player.mjs   # 面板播放器：按包排程、幅度还原、reset、禁用与坏包
+node tests/acceptance/panel-audio-button.mjs    # 声音开关位置：地址栏内侧、历史按钮左侧的实测几何与截图
 node tests/acceptance/t2-structured.mjs        # 结构化 GUI
 node tests/acceptance/t3-vision.mjs            # 静态视觉
 node tests/acceptance/t4-dynamic.mjs           # 动态行为 44 条门槛
@@ -38,6 +41,7 @@ node --test tests/contracts/target-tabs.test.mjs # P0-E 公共管理接口：非
 node --test tests/contracts/panel-tabs.test.mjs # 公共标签栏与环境 provider 隔离
 node tests/acceptance/p0e-multitab.mjs           # P0-E Web Host：per-tab BUSY、browser_tabs、容量、T2 ref
 node tests/acceptance/p0e-multitab-gui.mjs       # P0-E GUI：Agent A/B、active 状态、+、BUSY 提示
+node tests/acceptance/tab-lock.mjs               # 标签保活锁：锁定跳过 idle 回收、解锁后恢复、锁无 Agent 工具
 node --test tests/acceptance/runtime-faults.test.mjs
 node --test tests/dynamic-t4.test.mjs          # T4 纯核心单测
 node --test tests/network-p0.test.mjs          # 网络纯核心单测
@@ -71,6 +75,7 @@ DSH_VIEWPORT_GUI_ONLY=V1b node tests/acceptance/viewport-gui.mjs  # 空白画布
 node tests/acceptance/input-delivery.mjs   # 输入送达校验：页面侧证据、纯文本不判、未送达抛 INPUT_NOT_DELIVERED、activate 合并与重新前置
 node tests/acceptance/canvas-wheel.mjs     # 隔离 DSH + 无头 Chrome 的滚轮消费/命中/A2 瞬态
 node tests/acceptance/popup-tabs.mjs       # 隔离 DSH + 无头 Chrome 的内部标签页/target=_blank/关闭回收
+DSH_UI_TESTING_CHROME=$PWD/tests/acceptance/chrome-wrapper.sh node tests/acceptance/tab-lock.mjs # 保活锁 Host 侧（idle 压到 1s，锁定与解锁对照）
 node tests/acceptance/devtools-gui.mjs     # 隔离 DSH + 无头 Chrome 的 DevTools 弹窗断言
 node tests/acceptance/pick-element-gui.mjs # 隔离 DSH + 无头 Chrome 的选元素模式/悬浮/加入聊天框断言
 node tests/acceptance/verify-3081.mjs      # 隔离宿主 HTTP 集成

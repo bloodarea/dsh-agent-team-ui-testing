@@ -510,7 +510,18 @@ export function createWebRoutes({
         sendJson(res, 200, { ok: true, action: tabAction, tabId: closed.closed });
         return true;
       }
-      throw new BrowserError('INVALID_ARGUMENT', 'tabs.action 只支持 list/open/close', { field: 'action' });
+      if (tabAction === 'lock' || tabAction === 'unlock') {
+        // Human-only keep-alive: this route is the single write surface for the lock. No Agent tool
+        // carries it, so a model can neither pin a page awake nor unpin one the user pinned. A
+        // missing tabId is refused instead of defaulting to primary: a blind lock must never land
+        // on a page the panel is not showing.
+        const tabId = typeof body.tabId === 'string' && body.tabId ? body.tabId : undefined;
+        if (!tabId) throw new BrowserError('INVALID_ARGUMENT', tabAction + '.tabId 不能为空', { field: 'tabId' });
+        const locked = registry.setTabLock(primary, tabId, tabAction === 'lock');
+        sendJson(res, 200, { ok: true, action: tabAction, ...locked });
+        return true;
+      }
+      throw new BrowserError('INVALID_ARGUMENT', 'tabs.action 只支持 list/open/close/lock/unlock', { field: 'action' });
     }
     if (action === '/close') {
       // Close only the state.selected scope. The registry entry stays (cold) so its runtimeId and

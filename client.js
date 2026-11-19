@@ -36,6 +36,169 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Panel-side page audio (docs/web/debug-panel.md).
+     *
+     * The Host forwards the page's PCM packets over the same frame socket; this player turns them
+     * back into scheduled `AudioBufferSourceNode`s. It is deliberately tiny and independent of the
+     * preview:
+     *
+     *   - one shared instance per panel (switching tabs does not re-negotiate the AudioContext);
+     *   - the AudioContext is created on the user's first "turn sound on" click, because browsers
+     *     refuse to start audio without a gesture;
+     *   - packets are scheduled back to back with a small cushion; a player that falls behind
+     *     (tab hidden, main thread busy) drops the backlog instead of drifting further behind;
+     *   - a `reset` packet (navigation / page close) clears the timeline so the new page starts
+     *     clean instead of continuing the old buffer queue.
+     */
+    function createPanelAudioPlayer(win = (typeof window !== 'undefined' ? window : globalThis)) {
+      const listeners = new Set();
+      let ctx = null;
+      let gain = null;
+      let enabled = false;
+      let nextTime = 0;
+      const stats = {
+        enabled: false, packets: 0, played: 0, dropped: 0, decodeErrors: 0, resets: 0,
+        bytes: 0, lastError: null, lastPacketAt: 0, sampleRate: null,
+      };
+
+      function snapshot() {
+        return {
+          enabled,
+          live: stats.lastPacketAt > 0 && (Date.now() - stats.lastPacketAt) <= 1500,
+          packets: stats.packets,
+          played: stats.played,
+          dropped: stats.dropped,
+          decodeErrors: stats.decodeErrors,
+          resets: stats.resets,
+          bytes: stats.bytes,
+          lastError: stats.lastError,
+          sampleRate: stats.sampleRate,
+        };
+      }
+      function emit() {
+        const value = snapshot();
+        for (const listener of listeners) {
+          try { listener(value); } catch { /* ignore */ }
+        }
+      }
+      function subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      }
+
+      function ensureContext() {
+        if (ctx) return ctx;
+        const AudioCtor = win.AudioContext || win.webkitAudioContext;
+        if (!AudioCtor) { stats.lastError = 'AudioContext 不可用'; return null; }
+        try {
+          ctx = new AudioCtor();
+          gain = ctx.createGain();
+          gain.gain.value = 0.9;
+          gain.connect(ctx.destination);
+          stats.sampleRate = ctx.sampleRate;
+        } catch (error) {
+          stats.lastError = String((error && error.message) || error);
+          ctx = null;
+          return null;
+        }
+        return ctx;
+      }
+
+      function decodeBase64(text) {
+        const binary = win.atob(text);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+        return bytes;
+      }
+
+      async function enable() {
+        const context = ensureContext();
+        if (!context) { emit(); return false; }
+        try { await context.resume(); } catch (error) { stats.lastError = String((error && error.message) || error); }
+        enabled = context.state === 'running';
+        nextTime = 0; // a (re)enabled player starts at "now", never at a stale cursor
+        if (win.__UTB_TEST_HOOKS__ === true) win.__UTB_AUDIO_STATS__ = snapshot;
+        emit();
+        return enabled;
+      }
+
+      function disable() {
+        enabled = false;
+        nextTime = 0;
+        try { if (ctx) ctx.suspend(); } catch { /* ignore */ }
+        emit();
+      }
+
+      function reset() {
+        nextTime = 0;
+        emit();
+      }
+
+      /** One `{type:'audio'}` message from the frame socket. */
+      function push(message) {
+        if (!message) return;
+        stats.lastPacketAt = Date.now();
+        if (message.state === 'reset') {
+          stats.resets += 1;
+          reset();
+          return;
+        }
+        stats.packets += 1;
+        if (!enabled) return; // counting still happens so the panel can show "sound available"
+        const context = ensureContext();
+        if (!context) return;
+        if (context.state === 'suspended') { try { context.resume(); } catch { /* ignore */ } }
+        const rate = Number(message.rate) > 0 ? Number(message.rate) : 24000;
+        const channels = Number(message.channels) > 0 ? Math.min(2, Number(message.channels)) : 1;
+        if (typeof message.data !== 'string' || message.data.length === 0) return;
+        let bytes;
+        try { bytes = decodeBase64(message.data); } catch (error) {
+          stats.decodeErrors += 1;
+          stats.lastError = 'base64: ' + String((error && error.message) || error);
+          return;
+        }
+        const samples = Math.floor(bytes.length / 2 / channels);
+        if (samples <= 0) { stats.decodeErrors += 1; return; }
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        let buffer;
+        try {
+          buffer = context.createBuffer(channels, samples, rate);
+          for (let channel = 0; channel < channels; channel += 1) {
+            const target = buffer.getChannelData(channel);
+            for (let index = 0; index < samples; index += 1) {
+              target[index] = view.getInt16((index * channels + channel) * 2, true) / 32768;
+            }
+          }
+        } catch (error) {
+          stats.decodeErrors += 1;
+          stats.lastError = 'buffer: ' + String((error && error.message) || error);
+          return;
+        }
+        const source = context.createBufferSource();
+        source.buffer = buffer;
+        source.connect(gain);
+        const now = context.currentTime;
+        // Start with a cushion; recover (drop the backlog) when the player fell too far behind.
+        if (!(nextTime > now + 0.02) || nextTime > now + 1.2) nextTime = now + 0.1;
+        try { source.start(nextTime); } catch { stats.dropped += 1; return; }
+        nextTime += samples / rate;
+        stats.played += 1;
+        stats.bytes += bytes.length;
+      }
+
+      function close() {
+        enabled = false;
+        nextTime = 0;
+        try { if (ctx) ctx.close(); } catch { /* ignore */ }
+        ctx = null;
+        gain = null;
+        listeners.clear();
+      }
+
+      return { enable, disable, push, reset, close, subscribe, snapshot, get enabled() { return enabled; } };
+    }
+
+    /**
      * Web 视图通道：一个视图实例自己的帧流 + 状态轮询 + 种子截图。
      *
      * 这是「视图自己管理连接与轮询」的边界：外壳只负责在视图出现/消失时 `mount` / `unmount`，
@@ -50,6 +213,7 @@ window.__ModuleLoader__.load({
         scopeRef, visibleRef, writesPausedRef, requestGenerationRef,
         transportRef, frameMetaRef, shotUrlRef,
         setShot, setTransportKind, setSeedStatus,
+        playPageAudio = null,
         win = (typeof window !== 'undefined' ? window : globalThis),
         urlApi = (typeof URL !== 'undefined' ? URL : globalThis.URL),
         // Instance teardown must also release what the page thinks the human is still holding:
@@ -82,6 +246,10 @@ window.__ModuleLoader__.load({
         releaseFrames();
         setShot('');
         const transport = createFrameTransport({
+          onAudio(message) {
+            if (!mounted || typeof playPageAudio !== 'function') return;
+            try { playPageAudio(message); } catch { /* audio must never break the preview */ }
+          },
           onFrame({ blob, meta }) {
             if (!mounted) return;
             const nextUrl = urlApi.createObjectURL(blob);
@@ -1586,13 +1754,17 @@ window.__ModuleLoader__.load({
 .utb-addr { flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 10px; font: inherit; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; }
 .utb-addr::placeholder { color: var(--dsw-alias-label-secondary); }
 .utb-addr[data-invalid="true"] { border-color: var(--dsw-alias-state-error-primary); outline-color: var(--dsw-alias-state-error-primary); }
-.utb-addr:focus-visible, .utb-btn:focus-visible, .utb-menu-item:focus-visible, .utb-num:focus-visible, .utb-addr-hist:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.utb-addr:focus-visible, .utb-btn:focus-visible, .utb-menu-item:focus-visible, .utb-num:focus-visible, .utb-addr-hist:focus-visible, .utb-addr-audio:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .utb-addr-wrap { position: relative; display: flex; align-items: center; flex: 1 1 auto; min-width: 0; }
-.utb-addr-wrap .utb-addr { flex: 1 1 auto; padding-right: 30px; }
-.utb-addr-hist { position: absolute; top: 2px; right: 2px; bottom: 2px; display: inline-flex; align-items: center; justify-content: center; width: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
-.utb-addr-hist:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
-.utb-addr-hist:disabled { opacity: .45; cursor: not-allowed; }
+.utb-addr-wrap .utb-addr { flex: 1 1 auto; padding-right: 56px; }
+/* 地址栏内侧的两个按钮：历史（最右，right:2px）与声音（左邻，right:26px）。 */
+.utb-addr-hist, .utb-addr-audio { position: absolute; top: 2px; bottom: 2px; display: inline-flex; align-items: center; justify-content: center; width: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
+.utb-addr-hist { right: 2px; }
+.utb-addr-audio { right: 26px; }
+.utb-addr-hist:hover, .utb-addr-audio:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.utb-addr-hist:disabled, .utb-addr-audio:disabled { opacity: .45; cursor: not-allowed; }
 .utb-addr-hist[data-utb-history-toggle="open"] { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.utb-addr-audio[aria-pressed="true"], .utb-addr-audio[aria-pressed="true"]:hover { color: var(--dsw-alias-brand-primary); }
 .utb-addr-pop { right: 0; left: auto; min-width: 100%; max-width: 560px; max-height: 264px; overflow: auto; }
 .utb-addr-pop-head { padding: 4px 8px 6px; font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
 .utb-addr-pop-empty { padding: 8px; font-size: 12px; color: var(--dsw-alias-label-secondary); }
@@ -1624,10 +1796,18 @@ window.__ModuleLoader__.load({
 .utb-tab-label { overflow: hidden; text-overflow: ellipsis; }
 .utb-tab-close { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: 14px/18px inherit; cursor: pointer; }
 .utb-tab-close:hover { background: var(--dsw-alias-bg-layer-2); }
+/* 标签保活锁（人力开关，仅面板）：每个标签最左侧，未锁定为弱色描边，锁定为品牌色实心。 */
+.utb-tab-lock { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--dsw-alias-label-tertiary); cursor: pointer; }
+.utb-tab-lock:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.utb-tab-lock[data-utb-tab-locked="true"] { color: var(--dsw-alias-brand-primary); }
+.utb-tab-lock:disabled { opacity: .45; cursor: default; }
 .utb-tab-new { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 24px; height: 22px; padding: 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font: 16px/20px inherit; cursor: pointer; }
 .utb-tab-new:hover { color: var(--dsw-alias-label-primary); }
 .utb-tab-new:disabled { opacity: .45; cursor: default; }
 .utb-tab-note { border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); padding: 4px 8px; color: var(--dsw-alias-label-secondary); font: 12px/1.5 inherit; }
+/* 常驻提示横条（用户 2026-11-19）：固定单行高度，空文本也保留占位与分隔线，视图不随文字出现/消失跳动。 */
+.utb-tab-note { height: 28px; padding-top: 0; padding-bottom: 0; align-items: center; }
+.utb-tab-note-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; line-height: 18px; }
 .utb-agent-note { color: var(--dsw-alias-label-secondary); }
 .utb-tabs-glyph { font-size: 13px; line-height: 1; }
 .utb-size { display: flex; align-items: center; gap: 8px; padding: 6px 8px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 4px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
@@ -1764,6 +1944,42 @@ window.__ModuleLoader__.load({
         h('path', { d: 'M8.6 19.8H5.4a1.2 1.2 0 0 1-1.2-1.2v-3.2' }),
         h('rect', { x: 8.6, y: 8.6, width: 6.8, height: 6.8, rx: 1.4 }));
     }
+    /**
+     * 标签保活锁（人力开关）。
+     *
+     * 形状优先，颜色只作辅助：14px 下颜色差异不够读，所以两种状态的**锁梁几何**必须不同。
+     *   - 已锁：锁梁两端都落到锁体顶面，锁体实心（闭合）；
+     *   - 未锁：锁梁从锁体左上抬起、绕到右上方就断掉，右端悬在锁体上方留出明显缺口，锁体空心。
+     * 缺口在 14px 下仍有约 3px，放大后一眼可分。
+     */
+    function IconTabLock({ locked }) {
+      const common = { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
+      if (locked) {
+        return h('svg', Object.assign({}, common, { strokeWidth: 2.1 }),
+          h('rect', { key: 'body', x: 3.6, y: 12, width: 15.4, height: 8.6, rx: 2.4, fill: 'currentColor', stroke: 'none' }),
+          // 闭合锁梁：左端、右端都落在锁体顶面 (y=12)。
+          h('path', { key: 'shackle', d: 'M7.4 12V7.4a4.6 4.6 0 0 1 9.2 0V12' }));
+      }
+      return h('svg', Object.assign({}, common, { strokeWidth: 2.1 }),
+        // 开锁：锁体只描边；锁梁从左上起，右端停在 y=7.1 悬空，不再落到锁体。
+        h('rect', { key: 'body', x: 3.6, y: 12, width: 15.4, height: 8.6, rx: 2.4 }),
+        h('path', { key: 'shackle', d: 'M12 12V7.1a3.9 3.9 0 0 1 7.8 0' }));
+    }
+    /**
+     * 页面声音开关：喇叭 + 两条声波表示"已开"，斜杠表示"静音"。
+     * 形状优先（14–16px 下颜色差不明显），两种状态靠"有没有斜杠"区分。
+     */
+    function IconSound({ muted }) {
+      const common = { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
+      const body = h('path', { d: 'M4.2 9.4h3.1l4.3-3.3v11.8L7.3 14.6H4.2z' });
+      if (muted) {
+        return h('svg', common, body, h('path', { d: 'm14.6 9.6 5 4.8' }), h('path', { d: 'm19.6 9.6-5 4.8' }));
+      }
+      return h('svg', common, body,
+        h('path', { d: 'M14.8 9.2a4 4 0 0 1 0 5.6' }),
+        h('path', { d: 'M17.6 6.9a7.4 7.4 0 0 1 0 10.2' }));
+    }
+
     /** 标注：画笔（用户 2026-11-02 要求，入口图标）。 */
     function IconAnnot() {
       return h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
@@ -2287,6 +2503,13 @@ window.__ModuleLoader__.load({
               if (message && message.type === 'hello') {
                 kind = 'ws';
                 emitTransport();
+                if (typeof handlers.onHello === 'function') {
+                  try { handlers.onHello(message); } catch { /* UI must not break transport */ }
+                }
+              } else if (message && message.type === 'audio') {
+                // Page audio rides the same socket as the frames but on its own timeline
+                // (docs/web/debug-panel.md). Decoding/playback lives in the panel player.
+                try { handlers.onAudio(message); } catch { /* a bad packet must not break frames */ }
               }
             } catch { /* ignore malformed control message */ }
             return;
@@ -2523,6 +2746,12 @@ window.__ModuleLoader__.load({
       const [room, setRoom] = React.useState({ w: 0, h: 0 });
       const [error, setError] = React.useState('');
       const [menu, setMenu] = React.useState(false);
+      /**
+       * 页面声音（docs/web/debug-panel.md）：一个面板共用一个播放器实例，切标签不必重建
+       * AudioContext；开关状态由用户在工具栏决定，默认静音（浏览器要求显式手势才能出声）。
+       */
+      const pageAudio = React.useMemo(() => createPanelAudioPlayer(), []);
+      const [audioState, setAudioState] = React.useState(() => pageAudio.snapshot());
       // Local, panel-only result of the "open DevTools" click. Never written to Runtime lastError:
       // a blocked popup is a browser decision, not a page failure.
       const [devtoolsNotice, setDevtoolsNotice] = React.useState(null);
@@ -3050,6 +3279,39 @@ window.__ModuleLoader__.load({
         setTabNotice(text);
         window.clearTimeout(tabNoticeTimerRef.current);
         tabNoticeTimerRef.current = window.setTimeout(() => setTabNotice(''), 4000);
+      }
+
+      /**
+       * 标签保活锁开关（仅人力）：Host 是唯一真相，本地不预判结果。
+       * 成功时把锁标记写回缓存的 views（下一轮 /state 会再确认一次）；失败只提示，不改状态。
+       */
+      function toggleTabLock(view) {
+        if (tabsEnvRef.current !== 'web' || !view || typeof view.id !== 'string') return;
+        const nextLocked = !(view.locked === true);
+        const tabId = String(view.id);
+        callHost('tabs', { action: nextLocked ? 'lock' : 'unlock', tabId }, { scope: scopeNowForView(view) })
+          .then((payload) => {
+            const confirmed = payload && typeof payload.locked === 'boolean' ? payload.locked : nextLocked;
+            const current = stableViewsRef.current;
+            if (!current) return;
+            const views = current.views.map((item) => (String(item.id) === tabId ? { ...item, locked: confirmed } : item));
+            stableViewsRef.current = { ...current, views };
+            setTabsTick((value) => value + 1);
+            showTabNotice(confirmed ? '已锁定：该标签不会被自动回收' : '已解除锁定：该标签恢复自动回收');
+          })
+          .catch((error) => {
+            const code = String((error && error.code) || '');
+            showTabNotice(code === 'TAB_NOT_FOUND'
+              ? '标签已经关闭，无法切换保活锁'
+              : '切换保活锁失败，请稍后重试');
+          });
+      }
+
+      /** The lock is addressed by the tab's own runtime binding, exactly like /close. */
+      function scopeNowForView(view) {
+        const runtimeId = String((view && view.runtimeId) || '');
+        if (runtimeId) return scopeSnapshot('recent', '', runtimeId, false);
+        return scopeRef.current;
       }
 
       /** Drop one view from the cached group list the moment the Host confirms its close. */
@@ -3981,6 +4243,19 @@ window.__ModuleLoader__.load({
           clearZoomIntent();
           resetZoomAnchor();
         }
+      }
+
+      /**
+       * 页面声音开关（docs/web/debug-panel.md）。默认静音：Chrome 要求一次用户手势才能让
+       * AudioContext 出声，所以"打开"必须来自这次点击本身，不能由代码自动触发。
+       */
+      function toggleAudio() {
+        if (pageAudio.snapshot().enabled) {
+          pageAudio.disable();
+          setAudioState(pageAudio.snapshot());
+          return;
+        }
+        pageAudio.enable().then(() => setAudioState(pageAudio.snapshot()), () => setAudioState(pageAudio.snapshot()));
       }
 
       /** Closing the size bar must also leave drag mode, otherwise the pointer stays a grab hand. */
@@ -7799,10 +8074,22 @@ window.__ModuleLoader__.load({
           setShot,
           setTransportKind,
           setSeedStatus,
+          playPageAudio: (message) => pageAudio.push(message),
           // Leaving the view must not leave a key held down in the page.
           onBeforeUnmount: () => { try { releasePanelKeys(); } catch { /* ignore */ } },
         });
       }
+      React.useEffect(() => {
+        const unsubscribe = pageAudio.subscribe((next) => setAudioState(next));
+        return () => { try { unsubscribe(); } catch { /* ignore */ } };
+      }, [pageAudio]);
+      // The "live" indicator needs a clock, not a packet: players stay silent while nothing plays.
+      React.useEffect(() => {
+        const timer = window.setInterval(() => setAudioState(pageAudio.snapshot()), 1000);
+        return () => window.clearInterval(timer);
+      }, [pageAudio]);
+      React.useEffect(() => () => { try { pageAudio.close(); } catch { /* ignore */ } }, [pageAudio]);
+
       React.useEffect(() => {
         if (!visible || !ready || !envHasView) return undefined;
         return viewChannelRef.current.mount();
@@ -7966,7 +8253,10 @@ window.__ModuleLoader__.load({
         const owner = error && error.payload && error.payload.details && error.payload.details.owner;
         const text = /BUSY|LEASE|OWNER/i.test(code)
           ? 'Agent 正在操作此标签' + (owner ? '（' + String(owner) + '）' : '') + '，输入暂不可用；可切换到其他标签'
-          : '输入发送失败，请检查连接后重试';
+          : code === 'INPUT_NOT_DELIVERED'
+            // The Host already retried and rebuilt the document; the page really did not receive it.
+            ? '页面没有收到这次输入（已在后台自动重试），请重新加载该页后再试'
+            : (error && error.message ? '输入发送失败：' + String(error.message) : '输入发送失败');
         setInputNotice(text);
         window.clearTimeout(inputNoticeTimerRef.current);
         inputNoticeTimerRef.current = window.setTimeout(() => setInputNotice(''), 3200);
@@ -8991,6 +9281,13 @@ window.__ModuleLoader__.load({
             closeLabel: (view.kind === 'primary' ? '重置标签 ' : '关闭标签 ') + tabText(view),
             closeTitle: view.kind === 'primary' ? '关闭标签（回到空态）' : '关闭标签',
             closeKind: view.kind === 'primary' ? 'primary' : 'popup',
+            locked: view.locked === true,
+            // Human keep-alive lock: `locked` comes from the Host row, never derived locally.
+            onLock: (id) => toggleTabLock(readyViewList.find((item) => String(item.id) === id)),
+            lockLabel: (view.locked ? '解除保活锁 ' : '锁定保活 ') + tabText(view),
+            lockTitle: view.locked
+              ? '已锁定：这个标签不会被自动回收，点一下解除'
+              : '锁定这个标签：阻止 idle/LRU 自动回收，持续保活',
           })),
           activeId: activeView ? String(activeView.id) : '',
           canCreate: true,
@@ -9031,6 +9328,20 @@ h('div', { className: 'utb-bar' },
           h('form', { onSubmit: submit, style: { flex: '1 1 auto', minWidth: 0, display: 'flex', position: 'relative' } },
             h('div', { className: 'utb-addr-wrap' },
               h('input', { className: 'utb-addr', type: 'text', value: draft, spellCheck: false, 'aria-label': '网址', placeholder: '输入网址，例如 https://example.com', 'aria-invalid': error ? 'true' : undefined, 'data-invalid': error ? 'true' : 'false', title: error || undefined, disabled: annotOn, onChange: changeAddress, onFocus: () => { focusedRef.current = true; dirtyRef.current = false; }, onBlur: blurAddress, onKeyDown: keyAddress }),
+              h('button', {
+                type: 'button',
+                className: 'utb-addr-audio',
+                'aria-label': audioState.enabled ? '关闭页面声音' : '打开页面声音',
+                'aria-pressed': audioState.enabled,
+                title: audioState.enabled
+                  ? (audioState.live ? '页面声音：开（正在播放）' : '页面声音：开（页面当前没有声音）')
+                  : '页面声音：静音（点一下开启；浏览器要求由这次点击来允许播放）',
+                'data-utb-audio': audioState.enabled ? 'on' : 'off',
+                'data-utb-audio-live': audioState.live ? 'live' : 'idle',
+                // 保住地址栏的输入焦点与草稿，和「转到」按钮同一处理。
+                onMouseDown: (event) => event.preventDefault(),
+                onClick: toggleAudio,
+              }, h(IconSound, { muted: !audioState.enabled })),
               h('button', {
                 type: 'button',
                 className: 'utb-addr-hist',
@@ -9124,7 +9435,16 @@ h('div', { className: 'utb-bar' },
               openUrl
                 ? h('a', { className: 'utb-menu-item', role: 'menuitem', href: openUrl, target: '_blank', rel: 'noopener noreferrer', style: { textDecoration: 'none' }, onClick: () => setMenu(false) }, '在默认浏览器中打开')
                 : h('button', { type: 'button', className: 'utb-menu-item', role: 'menuitem', disabled: true }, '在默认浏览器中打开')))),
-        tabNotice && h('div', { className: 'utb-sync-note utb-tab-note', role: 'status', 'aria-live': 'polite', 'data-utb-tab-notice': 'true' }, tabNotice),
+        // 提示横条常驻（用户 2026-11-19 要求）：容器与背景始终存在，占位高度固定，
+        // 只有**文字**会按计时自行消失。以前的 `tabNotice && ...` 让整条横条一起消失，
+        // 视图的高度随之跳动；现在横条是稳定的一行，内容为空时保留空行与分隔线。
+        h('div', {
+          className: 'utb-sync-note utb-tab-note',
+          role: 'status',
+          'aria-live': 'polite',
+          'data-utb-tab-notice': 'true',
+          'data-utb-tab-notice-state': tabNotice ? 'text' : 'empty',
+        }, h('span', { className: 'utb-tab-note-text' }, tabNotice || '')),
         selectPop && selectPop.reason && h('div', {
           className: 'utb-sync-note utb-select-note',
           role: 'status',
@@ -9730,9 +10050,10 @@ h('div', { className: 'utb-bar' },
 
       /**
        * 公共标签栏：只消费 provider 的展示模型和意图回调，不解析目标身份或请求 Host。
-       * model = { label, items: [{ id, label, title, closeLabel, closeTitle, closeKind }],
+       * model = { label, items: [{ id, label, title, closeLabel, closeTitle, closeKind,
+       *   locked, lockLabel, lockTitle }],
        *   activeId, canCreate, creating, createLabel, createTitle,
-       *   onSelect(id), onClose(id), onCreate() }; null = 当前环境未提供标签能力。
+       *   onSelect(id), onClose(id), onLock(id), onCreate() }; null = 当前环境未提供标签能力。
        */
       function shellTabsBar(model, visible) {
         if (!model || !visible) return null;
@@ -9753,6 +10074,20 @@ h('div', { className: 'utb-bar' },
           title: item.title || item.label,
           onClick: () => { if (typeof model.onSelect === 'function') model.onSelect(item.id); },
         },
+          // 保活锁在标签最左侧（用户要求）：纯 SVG 图标，只有人类点得动；开启时不改选中。
+          // The capability check must read the ITEM, not the model: `onLock` is per-row intent (a
+          // provider that cannot lock simply omits it), while `model.onSelect/onClose/onCreate`
+          // stay model-level. Checking `model.onLock` made this button render for nobody.
+          typeof item.onLock === 'function' && h('button', {
+            type: 'button',
+            className: 'utb-tab-lock',
+            'aria-label': item.lockLabel,
+            'aria-pressed': item.locked === true,
+            title: item.lockTitle,
+            'data-utb-tab-lock': item.id,
+            'data-utb-tab-locked': item.locked === true ? 'true' : 'false',
+            onClick: (event) => { event.stopPropagation(); item.onLock(item.id); },
+          }, h(IconTabLock, { locked: item.locked === true })),
           h('span', { className: 'utb-tab-label' }, item.label),
           typeof model.onClose === 'function' && h('button', {
             type: 'button',

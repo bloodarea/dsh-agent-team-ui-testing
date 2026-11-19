@@ -27,7 +27,11 @@ function model(overrides = {}) {
     onSelect() {}, onClose() {}, onCreate() {}, ...overrides,
   };
 }
-const render = load('shellTabsBar', { h });
+const render = load('shellTabsBar', {
+  h,
+  // The lock icon is a plain SVG component in client.js; the renderer contract only needs a node.
+  IconTabLock: (props) => h('svg', { 'data-icon-lock': props && props.locked === true ? 'locked' : 'open' }),
+});
 
 test('公共标签栏只消费模型，无 Web 状态、身份或 Host 路由依赖', () => {
   const renderer = functionSource('shellTabsBar');
@@ -73,14 +77,70 @@ test('选择、关闭与新建回调使用中立 id，关闭阻止选择冒泡',
   assert.equal(by(render(model({ onClose: undefined }), true), 'data-utb-tab-close').length, 0);
 });
 
+test('保活锁按钮：只在行提供 onLock 时渲染，位于标签最左，点击不改选中', () => {
+  // A provider without per-row lock intent (any non-Web environment) renders no lock button.
+  assert.equal(by(render(model(), true), 'data-utb-tab-lock').length, 0);
+  // The check must read the ITEM, never the model: that mistake shipped a button nobody saw.
+  const renderer = functionSource('shellTabsBar');
+  assert.ok(renderer.includes("typeof item.onLock === 'function'"), 'capability check must read item.onLock');
+  assert.ok(!renderer.includes("typeof model.onLock === 'function'"), 'model-level onLock is not the contract');
+  const events = [];
+  const tree = render(model({
+    items: [{
+      id: 'one', label: '目标一', title: '目标详情', closeLabel: '关闭目标一', closeTitle: '关闭此目标', closeKind: 'target',
+      locked: true, lockLabel: '解除保活锁 目标一', lockTitle: '已锁定：点一下解除',
+      onLock: (id) => events.push(['lock', id]),
+    }],
+  }), true);
+  const lock = by(tree, 'data-utb-tab-lock')[0];
+  assert.equal(lock.props['aria-label'], '解除保活锁 目标一');
+  assert.equal(lock.props['aria-pressed'], true);
+  assert.equal(lock.props['data-utb-tab-locked'], 'true');
+  assert.equal(lock.props.title, '已锁定：点一下解除');
+  // Leftmost: the lock node precedes the label inside the tab.
+  const tab = by(tree, 'data-utb-tab')[0];
+  assert.equal(tab.children[0].props['data-utb-tab-lock'], 'one');
+  lock.props.onClick({ stopPropagation: () => events.push(['stop']) });
+  assert.deepEqual(events, [['stop'], ['lock', 'one']], 'lock click must not select the tab');
+  const unlocked = by(render(model({
+    items: [{
+      id: 'one', label: '目标一', title: '目标详情', closeLabel: '关闭目标一', closeTitle: '关闭此目标', closeKind: 'target',
+      locked: false, lockLabel: '锁定保活 目标一', lockTitle: '锁定这个标签',
+      onLock: () => {},
+    }],
+  }), true), 'data-utb-tab-lock')[0];
+  assert.equal(unlocked.props['aria-pressed'], false);
+  assert.equal(unlocked.props['data-utb-tab-locked'], 'false');
+});
+
+test('标签提示横条常驻：文字可自行消失，横条本身不随条件消失（视图高度不跳）', () => {
+  // 用户 2026-11-19：横条必须固定在视图上方常驻，只有文字会淡出。回归点是「条件渲染」——
+  // `tabNotice && h(...)` 会让整条横条一起消失，预览区高度随之跳动。
+  assert.ok(!source.includes("tabNotice && h('div'"), 'notice bar must not be conditionally rendered');
+  assert.ok(source.includes("'data-utb-tab-notice': 'true'"), 'the bar must always carry its marker');
+  // 文字与容器分离：定时器只清 state，容器留在 DOM 里。
+  assert.ok(source.includes("'data-utb-tab-notice-state': tabNotice ? 'text' : 'empty'"),
+    'the bar must expose whether it currently holds text');
+  assert.ok(source.includes("h('span', { className: 'utb-tab-note-text' }, tabNotice || '')"),
+    'only the text node is driven by the notice state');
+  // 稳定高度：空文本也保留一行与分隔线，长文本单行省略而不是把视图顶下去。
+  const css = source.slice(source.indexOf('.utb-tab-note {'), source.indexOf('.utb-agent-note {'));
+  // 固定高度：min-height 只管下限，有字时内容会把它撑高 1px（真实实例实测 27 vs 26），
+  // 所以这里要求的是一个写死的 height。
+  assert.ok(/\bheight:\s*\d+px/.test(css), 'notice bar needs a fixed height, not just a min-height');
+  assert.ok(css.includes('border-bottom'), 'notice bar keeps its separator when empty');
+  const textCss = source.slice(source.indexOf('.utb-tab-note-text {'), source.indexOf('.utb-agent-note {'));
+  assert.ok(textCss.includes('nowrap') && textCss.includes('ellipsis'), 'long text must not wrap the bar');
+});
+
 function webProvider(dependencies = {}) {
   const views = [
-    { id: 'primary', kind: 'primary', title: 'Home\u0000', runtimeId: 'runtime-main' },
+    { id: 'primary', kind: 'primary', title: 'Home\u0000', runtimeId: 'runtime-main', locked: true },
     { id: 'child', kind: 'popup', title: '', hostLabel: 'example.test', runtimeId: 'runtime-child' },
   ];
   return load('webTabsProvider', {
     stableViews: { views }, readyViewList: views, activeView: views[1], tabOpening: false,
-    switchView() {}, closeView() {}, newTab() {}, ...dependencies,
+    switchView() {}, closeView() {}, newTab() {}, toggleTabLock() {}, ...dependencies,
   });
 }
 
@@ -95,6 +155,12 @@ test('Web provider 拥有标题清洗、主子标签关闭语义和新建中状�
   assert.deepEqual(state.items.map((item) => item.closeKind), ['primary', 'popup']);
   assert.equal(state.items[0].closeLabel, '重置标签 Home');
   assert.equal(state.items[0].closeTitle, '关闭标签（回到空态）');
+  // 保活锁：状态来自 Host 行，回调挂在每一行上（不是 model 上）。
+  assert.equal(state.items[0].locked, true);
+  assert.equal(state.items[1].locked, false);
+  assert.equal(typeof state.items[0].onLock, 'function');
+  assert.equal(typeof state.items[0].lockLabel, 'string');
+  assert.equal(typeof state.onLock, 'undefined');
   assert.equal(state.items[1].closeLabel, '关闭标签 example.test');
   assert.equal(state.createTitle, '新建空白标签页');
   assert.ok(!JSON.stringify(state.items).includes('runtime-'), 'renderer model must not expose Web binding');

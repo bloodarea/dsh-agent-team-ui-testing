@@ -22,7 +22,13 @@
  *                     pageWidth, pageHeight, scrollX, scrollY, format:"jpeg", scopeId, runtimeId,
  *                     dropped:{coalesced,blocked,stale,rejected}}
  *           (scrollX/scrollY are the capture-time top-level scroll, docs/viewport-control.md)
+ * text  : {"type":"audio","state":"live","seq":N,"rate":24000,"channels":1,"encoding":"s16le",
+ *            "atMs":N,"bytes":N,"samples":N,"data":"<base64 PCM>"}
+ * text  : {"type":"audio","state":"reset","reason":"navigation|page-closed"}
  * Client -> server messages are ignored except close/ping control frames.
+ *
+ * Audio is opt-in per pusher (`options.audio`): the frame format above is unchanged, so a panel
+ * that predates this message keeps working and simply stays silent.
  */
 
 import { createHash } from 'node:crypto';
@@ -102,11 +108,18 @@ export function createFramePusher(source, options = {}) {
   const scopeInfo = typeof options.scopeInfo === 'function' ? options.scopeInfo : () => ({});
   const onOpen = typeof options.onOpen === 'function' ? options.onOpen : () => {};
   const onClose = typeof options.onClose === 'function' ? options.onClose : () => {};
+  /** Optional page-audio source (Web): every connected panel gets each packet once, in order. */
+  const audioSourceOf = typeof options.audio === 'function' ? options.audio : () => null;
 
-  const counters = { pushed: 0, coalesced: 0, blocked: 0, stale: 0, rejected: 0, protocolErrors: 0 };
+  const counters = {
+    pushed: 0, coalesced: 0, blocked: 0, stale: 0, rejected: 0, protocolErrors: 0,
+    audioSent: 0, audioDropped: 0, audioResets: 0,
+  };
   const clients = new Set();
   let disposed = false;
   let lastPushedAt = 0;
+  let audioSource = null;
+  let audioUnsubscribe = null;
 
   function info() {
     try { return scopeInfo() || {}; } catch { return {}; }
@@ -139,12 +152,88 @@ export function createFramePusher(source, options = {}) {
     return Buffer.concat([length, header, frame.bytes]);
   }
 
+  /** Current page-audio facts for the hello message; never starts or stops anything. */
+  function audioInfo() {
+    let source = null;
+    try { source = audioSourceOf(); } catch { source = null; }
+    if (!source || typeof source.metrics !== 'function') return { available: false };
+    let metrics = null;
+    try { metrics = source.metrics(); } catch { metrics = null; }
+    return {
+      available: true,
+      transport: 'ws',
+      // The panel needs no format up front: every packet repeats rate/channels/encoding.
+      format: metrics && metrics.format ? { ...metrics.format } : null,
+      live: Boolean(metrics && metrics.live),
+      fresh: Boolean(metrics && metrics.fresh),
+    };
+  }
+
+  /**
+   * Subscribe while at least one panel is connected. Audio is real-time: a socket that is behind
+   * loses packets instead of growing a queue (a late viewer starts at "now", not at the backlog).
+   */
+  function attachAudio() {
+    if (audioSource !== null || disposed) return;
+    let source = null;
+    try { source = audioSourceOf(); } catch { source = null; }
+    if (!source || typeof source.subscribe !== 'function') return;
+    audioSource = source;
+    audioUnsubscribe = source.subscribe((packet) => {
+      try { broadcastAudio(packet); } catch (error) {
+        counters.protocolErrors += 1;
+        log('audio push: ' + String((error && error.message) || error));
+      }
+    });
+  }
+
+  function detachAudio() {
+    if (audioUnsubscribe !== null) {
+      try { audioUnsubscribe(); } catch { /* ignore */ }
+      audioUnsubscribe = null;
+    }
+    audioSource = null;
+  }
+
+  function broadcastAudio(packet) {
+    if (disposed || clients.size === 0 || !packet) return;
+    if (packet.kind === 'audio-reset' || packet.type === 'reset') {
+      const text = JSON.stringify({ type: 'audio', state: 'reset', reason: String(packet.reason || 'unknown') });
+      for (const client of clients) {
+        if (client.closed || client.socket.destroyed) continue;
+        try { if (sendText(client, text)) counters.audioResets += 1; } catch { /* ignore */ }
+      }
+      return;
+    }
+    const text = JSON.stringify({
+      type: 'audio',
+      state: 'live',
+      seq: packet.seq,
+      rate: packet.rate,
+      channels: packet.channels,
+      encoding: packet.encoding,
+      atMs: packet.atMs,
+      bytes: packet.bytes,
+      samples: packet.samples,
+      data: packet.data,
+    });
+    for (const client of clients) {
+      if (client.closed || client.socket.destroyed) continue;
+      if (client.audioBlocked) { counters.audioDropped += 1; continue; }
+      let writable = true;
+      try { writable = sendText(client, text); } catch { counters.audioDropped += 1; continue; }
+      if (writable) counters.audioSent += 1;
+      else { client.audioBlocked = true; counters.audioDropped += 1; }
+    }
+  }
+
   function closeClient(client, code = 1001) {
     if (client.closed) return;
     // Complete the closing handshake while the socket is still writable, then mark it closed.
     sendClose(client, code);
     client.closed = true;
     const removed = clients.delete(client);
+    if (removed && clients.size === 0) detachAudio();
     if (client.timer !== null) {
       clearTimeout(client.timer);
       client.timer = null;
@@ -289,6 +378,7 @@ export function createFramePusher(source, options = {}) {
       socket,
       closed: false,
       blocked: false,
+      audioBlocked: false,
       timer: null,
       lastSeq: -1,
       lastSentAt: 0,
@@ -298,6 +388,7 @@ export function createFramePusher(source, options = {}) {
     client.unsubscribe = source.subscribe(() => schedule(client));
     socket.on('drain', () => {
       client.blocked = false;
+      client.audioBlocked = false;
       schedule(client);
     });
     // Client control frames (close/ping) and protocol errors must be read, otherwise a
@@ -307,6 +398,7 @@ export function createFramePusher(source, options = {}) {
     socket.on('close', () => closeClient(client, 1001));
     clients.add(client);
     try { onOpen(); } catch { /* ignore */ }
+    attachAudio();
 
     const scope = info();
     sendText(client, JSON.stringify({
@@ -317,6 +409,7 @@ export function createFramePusher(source, options = {}) {
       seq: source.seq,
       scopeId: scope.scopeId === undefined ? null : scope.scopeId,
       runtimeId: scope.runtimeId === undefined ? null : scope.runtimeId,
+      audio: audioInfo(),
     }));
     if (head && head.length > 0) handleClientData(client, head);
     schedule(client);
@@ -332,6 +425,7 @@ export function createFramePusher(source, options = {}) {
     dispose() {
       if (disposed) return;
       disposed = true;
+      detachAudio();
       for (const client of [...clients]) closeClient(client, 1001);
       clients.clear();
     },
@@ -344,6 +438,7 @@ export function createFramePusher(source, options = {}) {
         runtimeId: scope.runtimeId === undefined ? null : scope.runtimeId,
         clients: clients.size,
         lastPushedAt,
+        audio: { ...audioInfo(), attached: audioSource !== null },
         ...counters,
       };
     },
@@ -376,6 +471,11 @@ export function attachFramePush(ctx, options = {}) {
     pusher = createFramePusher(runtime.frames, {
       log,
       path,
+      // Web page audio (docs/web/debug-panel.md): the frame transport carries it, but a host
+      // without an audio source (or an older runtime) simply advertises `available:false`.
+      audio: () => {
+        try { return runtime.audio || null; } catch { return null; }
+      },
       scopeInfo: () => ({ scopeId: runtime.scope ? runtime.scope.id : null, runtimeId: runtime.runtimeId }),
       onOpen: () => {
         try { runtime.addViewer?.(); } catch { /* ignore */ }

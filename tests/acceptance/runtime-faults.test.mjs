@@ -93,12 +93,16 @@ test('lease expires after 15s idle but stays valid throughout a running operatio
   assert.equal(runtime.lease.expiresAt, 16000);
   clock = 15999;
   assert.throws(() => runtime.claim('b'), classified('BUSY', 'concurrency', true));
-  let unblock;
-  const pending = runtime.run(() => new Promise((resolve) => { unblock = resolve; }), { sessionId: 'a', agent: true });
-  await Promise.resolve(); await Promise.resolve();
+  const entered = Promise.withResolvers();
+  const operation = Promise.withResolvers();
+  const pending = runtime.run(() => {
+    entered.resolve();
+    return operation.promise;
+  }, { sessionId: 'a', agent: true });
+  await entered.promise;
   clock = 50000;
   assert.throws(() => runtime.claim('b'), classified('BUSY', 'concurrency', true));
-  unblock('done');
+  operation.resolve('done');
   assert.equal(await pending, 'done');
   assert.equal(runtime.active, 0);
   assert.equal(runtime.lease.expiresAt, 65000);
@@ -141,8 +145,10 @@ test('operation cancellation/timeout closes browser before next queued action', 
 test('cancelled owner retains queued reservation through close and reacquires before queued action', async () => {
   const runtime = new Runtime(() => {});
   const controller = new AbortController();
-  let enteredFirst, cancelFirst, finishSecond;
+  let enteredFirst, cancelFirst;
   const started = new Promise((resolve) => { enteredFirst = resolve; });
+  const enteredSecond = Promise.withResolvers();
+  const secondOperation = Promise.withResolvers();
   const originalClose = runtime.close.bind(runtime);
   let checkedGap = false;
   runtime.close = async () => {
@@ -160,14 +166,15 @@ test('cancelled owner retains queued reservation through close and reacquires be
   const a2 = runtime.run(async () => {
     assert.equal(runtime.lease.sessionId, 'a');
     assert.equal(runtime.activeOwner, 'a');
-    await new Promise((resolve) => { finishSecond = resolve; });
+    enteredSecond.resolve();
+    await secondOperation.promise;
   }, { agent: true, sessionId: 'a' });
   controller.abort(); cancelFirst();
   await rejected;
-  await Promise.resolve(); await Promise.resolve();
+  await Promise.race([enteredSecond.promise, a2]);
   assert.equal(checkedGap, true);
   assert.throws(() => runtime.claim('b'), classified('BUSY', 'concurrency', true));
-  finishSecond(); await a2;
+  secondOperation.resolve(); await a2;
   assert.equal(runtime.active, 0);
   runtime.release('a'); runtime.claim('b');
   assert.equal(runtime.lease.sessionId, 'b');

@@ -14,7 +14,7 @@
  * host-service lookup used by the roster check, and the P0-E tab limits.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { accessSync, constants as fsConstants, statSync } from 'node:fs';
+import { accessSync, constants as fsConstants, mkdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, extname, join, sep, isAbsolute } from 'node:path';
@@ -39,6 +39,8 @@ import {
 
 export const WEB_HOST_MODULE_SPECS = Object.freeze({
   'frame-source': '../../frame-source.js',
+  'audio-source': './audio-source.js',
+  'audio-tap': './audio-tap.js',
   'capture-p0': '../../capture-p0.js',
   'annotation-capture': '../../annotation-capture.js',
   'vision-t3': '../../vision-t3.js',
@@ -269,6 +271,21 @@ export const resolveCapturePath = (...args) => webHostNamespace('capture-p0').re
 
 export const createBaselineStore = (...args) => webHostNamespace('vision-baseline').createBaselineStore(...args);
 /** `new FrameSource()` must refuse instead of returning an inert source. */
+
+/** Page audio tap constants (binding name, sample rate, encoding) for the injected script. */
+export const audioTap = lazyWebNamespace('audio-tap');
+/** `new AudioSource()` must refuse instead of returning an inert store, like FrameSource. */
+export const AudioSource = new Proxy(function AudioSourceLazy() {}, {
+  construct(_target, args, newTarget) {
+    const namespace = webHostNamespace('audio-source');
+    if (!namespace) {
+      throw new BrowserError('ADAPTER_DISABLED', 'Web 音频源尚未加载：当前进程未启用 Web 环境', {
+        module: 'audio-source',
+      });
+    }
+    return Reflect.construct(namespace.AudioSource, args, newTarget === AudioSource ? namespace.AudioSource : newTarget);
+  },
+});
 
 /** `new FrameSource()` must refuse instead of returning an inert source. */
 export const FrameSource = new Proxy(function FrameSourceLazy() {}, {
@@ -2747,7 +2764,12 @@ export class BrowserHost {
       '--no-default-browser-check',
       '--disable-gpu',
       '--hide-scrollbars',
+      // Page output stays off the host speakers (the panel is the listener). The tap in
+      // targets/web/audio-tap.js reads the page's audio graph, which keeps running regardless.
       '--mute-audio',
+      // The tap's private AudioContext has no user gesture in an automated page; without this the
+      // context stays suspended and the preview is silent.
+      '--autoplay-policy=no-user-gesture-required',
       '--disable-background-timer-throttling',
       '--disable-renderer-backgrounding',
       // Keep hidden/occluded page targets compositing: without this, a non-front page stops
@@ -3993,21 +4015,25 @@ export const INPUT_PROBE_INSTALL_FN = `(function () {
   var cleanup = function () {
     for (var i = 0; i < types.length; i += 1) document.removeEventListener(types[i], record, true);
   };
-  var timer = setTimeout(cleanup, 5000);
-  state.cleanup = function () { clearTimeout(timer); cleanup(); };
+  state.cleanup = function () {
+    clearTimeout(timer);
+    cleanup();
+    if (window[KEY] === state) delete window[KEY];
+  };
+  var timer = setTimeout(state.cleanup, 5000);
   window[KEY] = state;
-  return { installed: true, types: types.length };
+  return { installed: window[KEY] === state };
 })()`;
 
-/** Read (and immediately remove) the probe above: `seen` is what the page really observed. */
-export const INPUT_PROBE_READ_FN = `(function () {
+/** Snapshot the probe. Only the final read removes the marker and its listeners. */
+export const INPUT_PROBE_READ_FN = `(function (remove) {
   var KEY = '__utb_input_probe__';
   var state = window[KEY];
   if (!state) return { present: false, seen: [] };
   var seen = state.seen.slice();
-  try { if (typeof state.cleanup === 'function') state.cleanup(); delete window[KEY]; } catch (error) { /* ignore */ }
+  if (remove) state.cleanup();
   return { present: true, seen: seen };
-})()`;
+})`;
 
 /** The two halves a click gesture cannot happen without (a handler may suppress `click` itself). */
 export const INPUT_DELIVERY_CLICK_GROUPS = Object.freeze([
@@ -5162,6 +5188,7 @@ export function inlineImageDelivery(base64, limit = IMAGE_INLINE_BASE64_LIMIT) {
 
 export class Runtime {
   #frames = null;
+  #audio = null;
   #visionStore = null;
   #net = null;
   #netCtl = null;
@@ -5212,6 +5239,7 @@ export class Runtime {
     // still paid for it (and a direct construction outside the plugin's load gate threw). It is
     // created on first use instead; a runtime that never captures never loads it.
     this.#frames = null;
+    this.#audio = null;
     this.frameTransport = undefined;
     this.clientMetrics = undefined;
     this.ackFailures = 0;
@@ -5318,6 +5346,10 @@ export class Runtime {
     this.viewerSockets = 0;
     this.screencastFrames = 0;
     this.screencastAcks = 0;
+    // Page audio tap (docs/web/debug-panel.md): the CDP binding name the injected script calls and
+    // the identifier of the document-start script, both cleared with the page.
+    this.audioBinding = undefined;
+    this.audioScriptId = undefined;
     this.navigationCount = 0;
     // P0 capture evidence: the last successful browser_screenshot facts (browser_capabilities
     // reports them as `capture.observed`; capabilities never starts a browser to get them).
@@ -5437,7 +5469,7 @@ export class Runtime {
    *
    * Chromium only composites (and therefore only emits `Page.screencastFrame` for) the front
    * page target; a background page's preview would silently freeze. The panel's viewer heartbeat
-   * and every page operation call this (throttled), so the workspace being previewed/operated is
+   * and page operations call this (coalescing concurrent requests), so the workspace being previewed/operated is
    * the one producing frames. Known limitation: with several panels open at once the previews
    * alternate instead of updating simultaneously, and the page's `visibilityState` follows.
    */
@@ -5509,6 +5541,17 @@ export class Runtime {
   }
 
   set frames(value) { this.#frames = value; }
+
+  /**
+   * Page audio for the panel preview (docs/web/debug-panel.md). Created on first use for the same
+   * reason as the frame source: a host that never opens a page never loads the Web audio module.
+   */
+  get audio() {
+    if (!this.#audio) this.#audio = new AudioSource({ now: () => Date.now() });
+    return this.#audio;
+  }
+
+  set audio(value) { this.#audio = value; }
 
   hasLease() { return Boolean(this.lease && (this.active || this.lease.expiresAt > Date.now())); }
 
@@ -5586,13 +5629,13 @@ export class Runtime {
         this.activeOwner = sessionId;
         this.active += 1;
       }
-      // The page being operated must be the compositing one, otherwise its preview freezes.
-      // A pure observation opts out (`activate:false`) so looking at somebody's page cannot move
-      // their foreground page or toggle their `visibilityState`.
-      if (activate) await this.activate(signal).catch(() => false);
       await abortable(previous, signal);
       checkAbort(signal);
       if (agent) this.claim(sessionId);
+      // Front the page only when this operation has the queue. A sibling may take the front
+      // while we wait. Pure observations opt out so they cannot interrupt another page's preview.
+      if (activate) await this.activate(signal).catch(() => false);
+      checkAbort(signal);
       entered = true;
       const result = await operation();
       checkAbort(signal);
@@ -5773,6 +5816,52 @@ export class Runtime {
     return this.#initializePage(page, options);
   }
 
+  /**
+   * Arm the page audio tap (docs/web/debug-panel.md): one CDP binding the injected script calls
+   * with each PCM packet, plus the tap source itself for every future document.
+   *
+   * Best effort by design: a browser that refuses the binding, a page that blocks script
+   * injection or a CSP that trips the evaluate must still open normally — the panel then simply
+   * reports "no audio" and stays silent.
+   */
+  async #audioArm(signal) {
+    try {
+      const binding = audioTap.AUDIO_BINDING;
+      const source = audioTap.AUDIO_TAP_SOURCE;
+      if (typeof binding !== 'string' || typeof source !== 'string') return;
+      if (this.audioBinding !== binding) {
+        await this.send('Runtime.addBinding', { name: binding }, signal);
+        this.audioBinding = binding;
+      }
+      try {
+        const added = await this.send('Page.addScriptToEvaluateOnNewDocument', { source }, signal);
+        const identifier = added && typeof added.identifier === 'string' ? added.identifier : undefined;
+        if (identifier) this.audioScriptId = identifier;
+      } catch { /* future documents only: the current-document attempt below still runs */ }
+      // The already-loaded document predates the injection; install the tap into it once.
+      try {
+        await this.send('Runtime.evaluate', { expression: source, silent: true, returnByValue: false }, signal);
+      } catch { /* the next navigation re-installs it at document start */ }
+    } catch { /* audio must never fail page start */ }
+  }
+
+  /** One PCM packet from the injected tap. Never throws into the CDP dispatcher. */
+  #audioAccept(payload) {
+    if (typeof payload !== 'string' || payload.length === 0) return;
+    let parsed;
+    try { parsed = JSON.parse(payload); } catch { this.#audioCountError(); return; }
+    if (!parsed || parsed.t !== 'a') return;
+    try {
+      this.audio.accept(parsed);
+    } catch {
+      this.#audioCountError();
+    }
+  }
+
+  #audioCountError() {
+    try { if (this.#audio) this.#audio.counters.error += 1; } catch { /* ignore */ }
+  }
+
   async #initializePage(page, { signal, resume } = {}) {
     const host = this.host;
     const cdp = page.cdp;
@@ -5812,6 +5901,8 @@ export class Runtime {
           this.net.issues.push('workers-not-attributable');
         }
       }
+      // Page audio for the panel preview: binding + injected tap (best effort, never fatal).
+      await this.#audioArm(signal);
       await this.send('DOM.enable', {}, signal);
       await this.send('CSS.enable', {}, signal);
       // Same-document navigations are only meaningful for the main frame; remember which one it is.
@@ -5855,6 +5946,11 @@ export class Runtime {
   }
 
   #onEvent(message) {
+    if (message.method === 'Runtime.bindingCalled' && this.audioBinding
+      && message.params && message.params.name === this.audioBinding) {
+      this.#audioAccept(message.params.payload);
+      return;
+    }
     if (message.method === 'Page.windowOpen') {
       try { this.host?.noteWindowOpen?.(this, message.params || {}); } catch { /* popup attribution must never break the page */ }
       return;
@@ -6024,6 +6120,9 @@ export class Runtime {
       // refs — the nodes are still there, and identity is re-verified per action.
       this.#t2BumpDocumentEpoch();
       this.frames.markNavigation(redactUrl(this.url));
+      // A committed document starts a new audio timeline: the injected tap re-installs itself and
+      // the packet sequence restarts at 1, so the panel must flush what it still holds.
+      try { if (this.#audio) this.#audio.reset('navigation'); } catch { /* ignore */ }
       const dynamicSession = this.dynamic.session;
       if (dynamicSession && dynamicSession.captureVisual && dynamicSession.state === 'running') {
         this.#dynamicAppendEvent(dynamicSession, {
@@ -8047,7 +8146,17 @@ export class Runtime {
     const push = this.frameTransport && typeof this.frameTransport.metrics === 'function'
       ? this.frameTransport.metrics()
       : null;
-    const host = { ...this.frames.metrics(), ackFailures: this.ackFailures, push, cleanupError: this.cleanupError || null };    if (push) {
+    // Page audio counters (docs/web/debug-panel.md): format + counts only, never PCM payload.
+    const audio = (() => {
+      try { return this.audio.metrics(); } catch { return null; }
+    })();
+    const host = {
+      ...this.frames.metrics(),
+      ackFailures: this.ackFailures,
+      audio,
+      push,
+      cleanupError: this.cleanupError || null,
+    };    if (push) {
       host.clients = push.clients;
       host.pushed = push.pushed;
       host.coalesced = push.coalesced;
@@ -8381,8 +8490,12 @@ export class Runtime {
     if (mustBeObserved && await this.#installInputProbe(signal)) {
       for (let attempt = 1; attempt <= 2; attempt += 1) {
         await dispatchAll();
-        const probe = await this.#readInputProbeSettled(signal);
-        if (!probe || probe.present === false) break;
+        delivery.attempts = attempt;
+        const probe = await this.#readInputProbeSettled(requiredGroups, signal);
+        if (!probe?.present) {
+          delivery = { verified: false, delivered: null, attempts: attempt, seen: [] };
+          break;
+        }
         const verdict = inputDeliveryVerdict(probe.seen, requiredGroups);
         const delivered = verdict.delivered;
         delivery = { verified: true, delivered, attempts: attempt, seen: probe.seen.slice(0, 12), missing: verdict.missing };
@@ -8393,6 +8506,16 @@ export class Runtime {
           if (!(await this.#installInputProbe(signal))) { delivery = { verified: false, delivered: null, attempts: attempt, seen: [] }; break; }
         }
       }
+      if (delivery.verified === true && delivery.delivered === false && delivery.seen.length === 0) {
+        // Self-heal: this document drops synthetic input entirely. Nothing was observed, so the
+        // batch can be replayed once after the document is rebuilt (docs/web/input-delivery.md).
+        const healed = await this.#redispatchAfterRecycle(requiredGroups, dispatchAll, signal);
+        if (healed?.delivered) {
+          delivery = { verified: true, delivered: true, attempts: delivery.attempts + 1, seen: healed.seen.slice(0, 12), recovery: 'document-recycled' };
+        } else if (healed) {
+          delivery = { ...delivery, recovery: 'document-recycled' };
+        }
+      }
       if (delivery.verified === true && delivery.delivered === false) {
         throw new BrowserError('INPUT_NOT_DELIVERED',
           '输入事件没有送达页面：CDP 已派发但页面未观察到任何事件',
@@ -8400,11 +8523,14 @@ export class Runtime {
             applied: events.length,
             attempts: delivery.attempts,
             seen: delivery.seen,
-            hint: '页面可能已被替换、不属于该运行时或被另一个标签抢占前台；先用 browser_state / browser_snapshot 确认目标文档。',
+            hint: (delivery.recovery === 'document-recycled'
+              ? '页面没有收到这次输入；已自动重建文档并重放一次仍未送达，请换新标签操作。'
+              : '页面没有收到这次输入；已重试一次仍未送达，请换新标签或重新加载该页后重试。'),
           });
       }
-    } else if (mustBeObserved) {
+    } else {
       await dispatchAll();
+      delivery.attempts = events.length > 0 ? 1 : 0;
     }
     // A wheel/click/drag can move the page (momentum/smooth scroll/snap): two coalesced settling
     // samples, 50ms and 250ms after the dispatch (docs/viewport-control.md).
@@ -14154,21 +14280,37 @@ export class Runtime {
     let verdict = { delivered: false, seen: [] };
     let verified = true;
     let attempts = 0;
-    for (; attempts < 2 && !verdict.delivered && verified; attempts += 1) {
-      // No probe means no witness: dispatch and say so instead of inventing a verdict (an eval the
-      // page refuses must not turn a working click into a false INPUT_NOT_DELIVERED).
-      if (!(await this.#installInputProbe(signal))) { verified = false; await gesture(); break; }
+    while (attempts < 2 && !verdict.delivered) {
+      // No probe means no witness. Still dispatch and leave delivery unverified.
+      const installed = await this.#installInputProbe(signal);
+      attempts += 1;
       await gesture();
-      const probe = await this.#readInputProbeSettled(signal);
-      if (!probe || probe.present === false) { verified = false; break; }
+      const probe = installed && await this.#readInputProbeSettled(INPUT_DELIVERY_CLICK_GROUPS, signal);
+      if (!probe?.present) { verified = false; break; }
       verdict = inputDeliveryVerdict(probe.seen, INPUT_DELIVERY_CLICK_GROUPS);
-      if (!verdict.delivered) {
+      if (!verdict.delivered && attempts === 1) {
         // The page may have been re-fronted or re-attached between resolve and dispatch: front it
         // again and retry exactly once before reporting the failure.
         await this.activate(signal).catch(() => false);
       }
     }
-    draft.dispatch.delivery = { verified, delivered: verified ? verdict.delivered : null, attempts, seen: verdict.seen };
+    // Nothing reached the document at all: this is the "document drops synthetic input" state, and
+    // rebuilding the document is the one thing that restores delivery. A gesture that landed
+    // partially is never replayed blindly — only a zero-witness failure is retried this way.
+    let recovery = null;
+    if (verified && !verdict.delivered && verdict.seen.length === 0) {
+      const healed = await this.#redispatchAfterRecycle(INPUT_DELIVERY_CLICK_GROUPS, gesture, signal);
+      if (healed) {
+        recovery = 'document-recycled';
+        attempts += 1;
+        verdict = healed;
+        if (healed.delivered) verified = true;
+      }
+    }
+    draft.dispatch.delivery = {
+      verified, delivered: verified ? verdict.delivered : null, attempts, seen: verdict.seen,
+      ...(recovery ? { recovery } : {}),
+    };
     if (verified && !verdict.delivered) {
       throw new BrowserError('INPUT_NOT_DELIVERED',
         '点击事件没有送达页面：CDP 已派发但页面未观察到 press/release',
@@ -14177,7 +14319,9 @@ export class Runtime {
           seen: verdict.seen,
           button,
           point: { x, y },
-          hint: '页面可能已被替换、不属于该运行时或被另一个标签抢占前台；先用 browser_state / browser_snapshot 确认目标文档。',
+          hint: (recovery === 'document-recycled'
+            ? '页面没有收到这次点击；已自动重建文档并重放一次仍未送达，请换新标签操作。'
+            : '页面没有收到这次点击；已重试一次仍未送达，请换新标签或重新加载该页后重试。'),
         });
     }
     draft.dispatch.completed = true;
@@ -14185,32 +14329,114 @@ export class Runtime {
   }
 
   /**
-   * Read the probe, giving a busy renderer one more chance to dispatch the input first.
+   * Rebuild this page's document after a dispatch the page never observed.
    *
-   * A page pinned at a few frames per second can leave events queued for tens of milliseconds; an
-   * immediate read would then libel it as "not delivered". The happy path stays a single read.
+   * Measured on douyin (docs/web/input-delivery.md): a document can keep answering `Runtime.evaluate`,
+   * painting and running at 60 fps while **every** synthetic `Input.*` event is dropped — including
+   * events dispatched straight to that target's own CDP session, with no plugin code involved.
+   * `Page.bringToFront` and `Target.activateTarget` both return success without changing where the
+   * input goes, and `Page.reload` of the same document does not restore it either. Loading a
+   * different document and coming back does, because the renderer/document is rebuilt.
+   *
+   * This is only attempted when the failed gesture produced **no** page event at all: nothing
+   * happened, so nothing can be replayed twice. Returns false when the page has no URL to return to
+   * (about:blank / error page) or the round trip did not commit.
    */
-  async #readInputProbeSettled(signal) {
-    const first = await this.#readInputProbe(signal);
-    if (!first || first.present === false || first.seen.length > 0) return first;
-    await new Promise((resolve) => setTimeout(resolve, 180));
-    return { ...first, late: true };
+  async #recycleDocumentForInput(signal) {
+    const url = this.url;
+    if (!url || url === 'about:blank' || url.startsWith('chrome-error://')) return false;
+    try {
+      await validateTarget(url, { origins: [...this.origins], signal });
+    } catch { return false; }
+    const waitCommit = async (navigate, expectUrl) => {
+      const waiter = this.#commitWaiter(
+        (message) => message.method === 'Page.frameNavigated'
+          && message.params.frame.parentId === undefined
+          // Match the *expected* document, not merely "some main frame": a late commit from the
+          // about:blank hop would otherwise satisfy the wait and we would replay the gesture into
+          // the document that is about to be replaced (measured: the handler ran, then the reload
+          // erased its effect, so the click looked delivered but did nothing).
+          && (expectUrl === 'about:blank'
+            ? String(message.params.frame.url || '') === 'about:blank'
+            : String(message.params.frame.url || '').startsWith(expectUrl)),
+        { signal },
+      );
+      try {
+        await navigate();
+        await waiter.promise;
+        return true;
+      } catch {
+        return false;
+      } finally {
+        waiter.dispose();
+      }
+    };
+    const away = await waitCommit(() => this.send('Page.navigate', { url: 'about:blank' }, signal), 'about:blank');
+    if (!away) return false;
+    const back = await waitCommit(() => this.send('Page.navigate', { url }, signal), url);
+    if (!back) return false;
+    // A replayed gesture must land on a document that is actually ready: clicking at commit time
+    // hits elements whose own listeners are not attached yet (measured: the page observed the
+    // press/release but its click handler never ran). Bounded wait, never longer than the retry.
+    const readyDeadline = Date.now() + 2500;
+    while (Date.now() < readyDeadline) {
+      const state = await this.send('Runtime.evaluate', {
+        expression: 'document.readyState', returnByValue: true,
+      }, signal).catch(() => null);
+      if (state?.result?.value === 'complete') break;
+      await abortable(delay(100), this.#effectiveSignal(signal));
+    }
+    await this.refreshMetadata(signal).catch(() => {});
+    // Only claim a heal when the browser really came back to the same document.
+    return !this.url.startsWith('chrome-error://') && this.url.startsWith(url);
   }
 
-  /** Install the one-shot delivery probe in the current document (best effort, never throws). */
+  /**
+   * One extra dispatch after rebuilding the document, only for a gesture that never landed.
+   * Returns the new verdict, or null when the document could not be rebuilt (then the caller keeps
+   * the original "not delivered" answer instead of inventing a success).
+   */
+  async #redispatchAfterRecycle(groups, dispatch, signal) {
+    if (!(await this.#recycleDocumentForInput(signal))) return null;
+    if (!(await this.#installInputProbe(signal))) return null;
+    await dispatch();
+    const probe = await this.#readInputProbeSettled(groups, signal);
+    if (!probe?.present) return null;
+    return inputDeliveryVerdict(probe.seen, groups);
+  }
+
+  /**
+   * Read the probe, giving a busy renderer one more chance to dispatch the input first.
+   *
+   * A busy renderer may have processed only part of the gesture when the first snapshot arrives.
+   * Keep recording until the bounded follow-up read, or clean up immediately if all groups matched.
+   */
+  async #readInputProbeSettled(groups, signal) {
+    const first = await this.#readInputProbe(false, signal);
+    if (!first?.present) return first;
+    if (!inputDeliveryVerdict(first.seen, groups).delivered) {
+      await abortable(delay(180), this.#effectiveSignal(signal));
+      return this.#readInputProbe(true, signal);
+    }
+    await this.#readInputProbe(true, signal);
+    return first;
+  }
+
+  /** Install the one-shot delivery probe in the current document (best effort). */
   async #installInputProbe(signal) {
     try {
-      await this.send('Runtime.evaluate', { expression: INPUT_PROBE_INSTALL_FN, returnByValue: true }, signal);
-      return true;
+      const result = await this.send('Runtime.evaluate', { expression: INPUT_PROBE_INSTALL_FN, returnByValue: true }, signal);
+      return result?.result?.value?.installed === true;
     } catch { return false; }
   }
 
-  /** Read and remove the probe: `{ delivered, seen }` from the page's own point of view. */
-  async #readInputProbe(signal) {
+  async #readInputProbe(remove, signal) {
     try {
-      const result = await this.send('Runtime.evaluate', { expression: INPUT_PROBE_READ_FN, returnByValue: true }, signal);
-      const value = result && result.result ? result.result.value : undefined;
-      return value && Array.isArray(value.seen) ? { present: value.present !== false, seen: value.seen } : null;
+      const result = await this.send('Runtime.evaluate', {
+        expression: `${INPUT_PROBE_READ_FN}(${remove})`, returnByValue: true,
+      }, signal);
+      const value = result?.result?.value;
+      return value && Array.isArray(value.seen) ? { present: value.present === true, seen: value.seen } : null;
     } catch { return null; }
   }
 
@@ -15157,6 +15383,7 @@ export class Runtime {
     } catch { /* evidence only */ }
     // Teardown must never construct the lazily loaded Web chain (A14): stop only what exists.
     if (this.#frames) this.#frames.stop();
+    if (this.#audio) this.#audio.reset('page-closed');
     // Network collector teardown: release held requests (never leave a paused request behind),
     // stop collecting, drop child-session bookkeeping. Exported evidence files stay on disk.
     try { await this.#netReleaseAllHeld(); } catch { /* ignore */ }
@@ -15415,7 +15642,7 @@ export class RuntimeRegistry {
       viewId: 'primary', primaryKey: key, rootSessionId,
       ownership: access.ownership, control: access.control,
       parentRuntimeId: null, parentTabId: null, openEventId: null, createdBy: 'host',
-      tabId: 'primary', createdAt: Date.now(), lastUsedAt: Date.now() };
+      locked: false, tabId: 'primary', createdAt: Date.now(), lastUsedAt: Date.now() };
     this.entries.set(key, entry);
     this.providerByBaseKey.set(providerIndexKey(baseKey, rootSessionId), provider);
     return entry;
@@ -15809,6 +16036,7 @@ export class RuntimeRegistry {
       parentTabId: parentEntry.tabId || (parentEntry.kind === 'primary' ? 'primary' : parentEntry.viewId),
       openEventId: openEventId || null, sourcePanelId: sourcePanelId || null,
       createdBy: runtime.createdBy || 'gui',
+      locked: false,
       status: 'initializing', createdAt: Date.now(), lastUsedAt: Date.now(),
     };
     this.entries.set(key, entry);
@@ -15893,6 +16121,7 @@ export class RuntimeRegistry {
         parentRuntimeId: item.kind === 'popup' ? item.parentRuntimeId : null,
         title, hostLabel, status, openEventId: item.openEventId || null,
         sourcePanelId: item.sourcePanelId || null,
+        locked: Boolean(item.locked),
         createdBy: item.runtime.createdBy || (item.kind === 'popup' ? 'gui' : 'host'),
       });
     }
@@ -16130,7 +16359,11 @@ export class RuntimeRegistry {
       openEventId: entry.openEventId || null,
       createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : null,
       lastUsedAt,
-      idleRemainingMs: Number.isFinite(this.idleMs) && Number.isFinite(lastUsedAt)
+      // Human keep-alive lock (panel-only). `idleRemainingMs` stays the real clock: a locked row
+      // reports null remaining because the sweep no longer applies to it.
+      locked: Boolean(entry.locked),
+      idleMs: Number.isFinite(this.idleMs) ? this.idleMs : null,
+      idleRemainingMs: entry.locked ? null : Number.isFinite(this.idleMs) && Number.isFinite(lastUsedAt)
         ? Math.max(0, this.idleMs - Math.max(0, now - lastUsedAt)) : null,
       // `manageable` = this Agent session may act on the tab now (not another session's lease).
       // Kept ONLY as the legacy short-lease projection (ruling §5): it never expressed an ACL, and
@@ -16410,6 +16643,31 @@ export class RuntimeRegistry {
   touch(entry) { if (entry) entry.lastUsedAt = Date.now(); }
 
   /**
+   * Human keep-alive lock: the only write surface is the panel route, never an Agent tool.
+   * `locked` is Host memory (an entry, not a runtime), so a reopened primary keeps the lock only
+   * as long as this entry object lives. Locking is idempotent; unlocking restarts the idle window
+   * from "now" so a page unlocked after a long lock is not immediately swept.
+   */
+  setTabLock(primaryEntry, tabId, locked) {
+    const target = this.tabEntry(primaryEntry, tabId);
+    if (!target) throw new BrowserError('TAB_NOT_FOUND', '标签不存在或不属于当前 workspace', { tabId });
+    const next = Boolean(locked);
+    const changed = Boolean(target.locked) !== next;
+    target.locked = next;
+    if (changed) {
+      // A lock/unlock is a lifecycle change the panel renders, so the group view must republish;
+      // unlocking also restarts the idle window (see the note above).
+      if (!next) target.lastUsedAt = Date.now();
+      // The lock does not own the page queue or the lease: nothing in flight is disturbed.
+      try { this.bumpViews(target.primaryKey || target.key); } catch { /* projection only */ }
+    }
+    return { tabId: target.tabId || (target.kind === 'primary' ? 'primary' : target.viewId), locked: next, changed };
+  }
+
+  /** Read-only projection of one entry's lock (list rows report it; no page, no lease, no CDP). */
+  isLocked(entry) { return Boolean(entry && entry.locked); }
+
+  /**
    * Reserve one page slot. The reservation is visible to `pageCount + reservations` before the
    * first await, so nine concurrent cold ensures cannot all pass the cap.
    */
@@ -16450,6 +16708,9 @@ export class RuntimeRegistry {
     for (const entry of this.entries.values()) {
       const runtime = entry.runtime;
       if (runtime === exceptRuntime) continue;
+      // A human-locked tab is never a capacity victim: making room must cost an idle page, never
+      // the one the user pinned. RUNTIME_LIMIT is the honest answer when nothing else is free.
+      if (entry.locked) continue;
       if (!runtime.page) continue;
       if (!runtime.evictable()) continue;
       if (!best || entry.lastUsedAt < best.lastUsedAt) best = entry;
@@ -16460,6 +16721,8 @@ export class RuntimeRegistry {
   #evictColdEntry() {
     let best;
     for (const entry of this.entries.values()) {
+      // Same rule for cold entries: a locked slot keeps its entry (and its runtimeId binding).
+      if (entry.locked) continue;
       if (entry.runtime.page) continue;
       if (!best || entry.lastUsedAt < best.lastUsedAt) best = entry;
     }
@@ -16496,6 +16759,10 @@ export class RuntimeRegistry {
         const runtime = entry.runtime;
         const idleFor = now - entry.lastUsedAt;
         if (idleFor < this.idleMs) continue;
+        // Human keep-alive lock: a pinned tab is exempt from the idle sweep until it is unlocked
+        // (or closed). It keeps its idle clock reading, so the untouched page still reports the
+        // real elapsed idle time to the panel.
+        if (entry.locked) continue;
         if (runtime.page) {
           if (!runtime.evictable()) continue;
           // Restart the idle window before the (possibly slow) close: a concurrent/next sweep

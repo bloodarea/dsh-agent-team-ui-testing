@@ -1203,7 +1203,7 @@ function importSpecifiers(source) {
 
 test('targets/web sources import only node builtins and core modules', () => {
   const files = readdirSync(WEB_DIR).filter((name) => name.endsWith('.js'));
-  assert.deepEqual(files.sort(), ['adapter.js', 'environment.js', 'frame-transport.js', 'host.js', 'invoke.js', 'provider.js', 'routes.js', 'scope-target.js', 'tabs.js', 'tools.js', 'transition.js']);
+  assert.deepEqual(files.sort(), ['adapter.js', 'audio-source.js', 'audio-tap.js', 'environment.js', 'frame-transport.js', 'host.js', 'invoke.js', 'provider.js', 'routes.js', 'scope-target.js', 'tabs.js', 'tools.js', 'transition.js']);
 
   // A platform implementation may import `core/`, the neutral platform helpers that are not
   // environment-specific (`browser-safety.js` error/CDP types, `select-control.js` projections) and

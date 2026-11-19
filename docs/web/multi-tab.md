@@ -65,7 +65,8 @@ Web 当前的 P0-E 管理工具；其他 Web 工具调用默认走当前会话�
 | `parentTabId` | popup 的 opener 标签 id（`primary` 或来源 child）；primary 为 `null` |
 | `openEventId` | 真人 popup 的 open 事件 id；`agent-open`/GUI `+`/primary 为 `null` |
 | `createdAt` / `lastUsedAt` | 入口创建与最近使用的时间戳（epoch ms）；页面工具调用会刷新 `lastUsedAt` |
-| `idleRemainingMs` | 距 idle 回收剩余的毫秒数，按 `registry.idleMs` 计算（下限 0） |
+| `idleRemainingMs` | 距 idle 回收剩余的毫秒数，按 `registry.idleMs` 计算（下限 0）；该标签被面板保活锁定时为 `null` |
+| `locked` | 是否被面板保活锁锁定（仅人力开关可改，见下文「生命周期与可观察性」） |
 | `manageable` | **兼容字段**：当前 Agent 会话是否未被其他会话的短租约占用。它不表达 ACL，不要用它推导权限——看 `permissions` |
 | `accessVersion` | 访问投影版本（当前 `1`） |
 | `rootSessionId` / `creatorSessionId` / `ownerSessionId` / `controllerSessionId` | 长期归属与控制权；`creator` 是审计字段，转交后保留 |
@@ -119,6 +120,7 @@ Web 当前的 P0-E 管理工具；其他 Web 工具调用默认走当前会话�
 - child 关闭被 Agent lease 挡住时（GUI 与 Agent 同时操作），面板会提示「标签正被 Agent 操作；稍后再关闭」；其他拒绝（绑定失效、Host 找不到该运行时）提示「关闭标签失败，请稍后重试」，关闭请求不再静默成功。
 - **面板按 runtime id 寻址当前标签**：active 标签是 child 时，`/state`、`/frame`、`/close`、`/tabs` 都带 `scope-binding` = 该标签的 runtimeId（primary 同理），Host 用这个 id 解析到**该标签自己的** entry（primary 或 child），不借用 Agent session 的 selectedTab，也不把 child 的 binding 当成 primary 的 workspace key。`scope=recent` 与 binding 都直接命中已存在的 entry，不会为同一 workspace 再造一个 Runtime。绑定必须命中真实 entry：`/close` 命中不到返回 404 `SCOPE_NOT_FOUND`（不返回假成功）；`/tabs.open` 解析不到所属 primary 也报 `SCOPE_NOT_FOUND`，只有真的到容量上限才是 `TAB_LIMIT`。
 - 4/8 容量与 per-tab lease 同样约束 GUI：第 5 个标签/tab 返回 `TAB_LIMIT` 并在本地提示。
+- 标签操作提示是**常驻横条**（`data-utb-tab-notice`，固定单行高度、始终显示分隔线）：只有提示文字会在约 4 秒后自行消失，横条本身不消失，因此视图高度不会随提示出现/消失而跳动。`data-utb-tab-notice-state` 为 `text`（有字）或 `empty`（空行）。
 
 ### 容量与来源
 
@@ -129,7 +131,7 @@ Web 当前的 P0-E 管理工具；其他 Web 工具调用默认走当前会话�
 | 每 workspace 的乘积预算 | (workspace, provider) 4 页；当前实现强制的是上面两条 child/primary 规则 + 全局 8，完整的预留与合计算法在后续容量切片重写（`browser_capabilities.tabs.maxTabsPerWorkspace:4` 报的是该预算值） |
 | 全局同时 live pages + 创建预留 | 8（沿用原 profile 上限，跨 provider、跨 root 一个数） |
 | Agent lease idle | 15s（活动操作继续续期） |
-| 标签 idle 回收（child 与 primary 页） | 600000ms（10 分钟）；可用环境变量 `DSH_UI_TESTING_IDLE_MS` 覆盖，当前值见 `browser_capabilities.tabs.idleMs` |
+| 标签 idle 回收（child 与 primary 页） | 600000ms（10 分钟）；可用环境变量 `DSH_UI_TESTING_IDLE_MS` 覆盖，当前值见 `browser_capabilities.tabs.idleMs`；面板保活锁定的标签不受此限 |
 | blocked popup notices / 关闭审计 | 各最多 8 条/workspace |
 
 标签来源：真人 `target=_blank` / `window.open` 的受控接管、GUI `+`、Agent `browser_tabs.open`。自动/未授权/无真人来源/非法目标/超容量 popup 仍阻断（见 [网络调试](network-p0.md) 的准入边界）；显式 `browser_tabs.open` 创建常量 about:blank，不需要先制造 popup。
@@ -140,6 +142,8 @@ Web 当前的 P0-E 管理工具；其他 Web 工具调用默认走当前会话�
 
 - 每个标签的 idle 计时按最近一次页面工具/页面写操作刷新（`keepalive.refreshOnPageTools`）；`browser_tabs.list`、`browser_tabs.wait`、`browser_capabilities` 不刷新也不启动 Chromium。
 - 关闭分三类并记入 `recentClosed`：显式/外部关闭 `closed`、idle 回收 `idle`、全局容量 LRU 淘汰 `evicted`。被回收 tab 上的 Agent selection 仍按 pendingReset 语义处理（下一次页面工具零派发报 `TARGET_NOT_FOUND`，需 `browser_tabs.current` 或 `select` 确认）。
+- **保活锁（人力开关）**：每个标签最左侧有一个纯 SVG 锁按钮（`data-utb-tab-lock`，`aria-pressed` 反映状态）。两种状态靠**锁梁几何**区分，颜色只作辅助——14px 下纯换色读不出状态：已锁＝锁梁两端都落在锁体顶面、锁体实心；未锁＝锁梁从左上方抬起、右端悬空在锁体上方留出缺口、锁体空心。锁定后该标签跳过 idle 回收、全局容量 LRU 淘汰与冷条目退休，持续保活；解锁立即从当前时刻重新开始 idle 计时。锁只存在于 Host 内存：插件重载/DSH 重启后全部消失，显式关闭标签仍立即生效。锁定状态由 Host 下发（`ui.views[].locked`、`browser_tabs.list` 行的 `locked`），锁定时该行 `idleRemainingMs` 为 `null`。
+- 保活锁**没有对应的 Agent 工具**：唯一的写入口是面板 `POST /tabs {action:"lock"|"unlock", tabId}`，且 `tabId` 必填（不会默认作用到 primary），因此模型既不能替用户锁住页面，也不能解除用户锁住的页面。
 - 被策略阻断的 popup 只进入 `notices`（按 workspace 隔离，不跨 workspace 聚合），不创建 tab；`openEventId` 用于把 notice 与具体点击/新页事件对上。
 - `wait` 可在不启动浏览器的前提下等待 GUI 真人弹窗或另一会话新建的标签，`source:'gui-popup'` 可区分真人 popup 与 `agent-open`。
 

@@ -5224,7 +5224,8 @@ export function createWebToolSurface({
     name: 'browser_tabs',
     description: 'P0-E 多标签页的 Web 实现：list/current 只读诊断；wait 纯内存等待调用开始后新出现的标签（0–30000ms，不启动 Chromium、不取 lease），命中返回 matched/matchedTab/elapsedMs/polls，超时抛 WAIT_TIMEOUT；'
       + 'select 选择当前 Agent 会话的 tab（不启动页面）；open 新建 about:blank 并选中；close 按页面访问权限关闭标签（primary 只变 cold）。'
-      + 'list 每项含 source/parentTabId/openEventId/createdAt/lastUsedAt/idleRemainingMs/manageable，并返回本 workspace 最近 8 条 blocked popup notices 与最近 8 条 recentClosed（reason closed|idle|evicted）。'
+      + 'list 每项含 source/parentTabId/openEventId/createdAt/lastUsedAt/idleRemainingMs/locked/manageable，并返回本 workspace 最近 8 条 blocked popup notices 与最近 8 条 recentClosed（reason closed|idle|evicted）。'
+      + 'locked 是面板人力保活锁（只读投影）：锁定为 true 时该标签不被 idle/LRU 回收，此时 idleRemainingMs 为 null；该锁没有 Agent 工具，只有面板能开关。'
       + 'select 的 mode=work（默认）设置写目标、observe 设置只读观察目标；select 不再 claim 15 秒写租约，被拒绝的 select 不改变调用者已有选择。'
       + '页面按 (workspace, provider, root) 分组：跨会话/跨 root 的标签根本不在同一组，因此 tabId 只会解析到本 root 的页。'
       + '每行新增 accessVersion/rootSessionId/ownerSessionId/controllerSessionId/ownershipRevision/controlRevision/accessState/permissions；busy/owner/manageable 仍表示原短租约含义（不作为 ACL）。',

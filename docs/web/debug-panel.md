@@ -29,6 +29,29 @@ Web 通过 CDP screencast 提供页面帧。`createFrameTransport(handlers, scop
 
 浏览器原生的 alert/confirm、文件选择器不在页面画面中。单选 `<select>` 使用面板浮层；多选、列表框和不支持的情况会提示改用键盘，详见[选元素与原生下拉（element-picker.md）](element-picker.md)。页面右键菜单的优先级和默认操作见[页面右键菜单（panel-context-menu.md）](panel-context-menu.md)。
 
+## 页面声音
+
+预览默认静音。**地址栏内侧、历史记录按钮左边的「声音」按钮**（从右往左第二个，`right:26px`，历史按钮 `right:2px`）开关当前页面的音频；地址输入右侧留出 56px，文字不会压到这两个按钮下面。按钮上的斜杠表示静音，两条声波表示已开启，开启时用品牌色；`title` 会说明「正在播放」或「页面当前没有声音」。点它不会抢走地址栏焦点，也不会提交地址栏表单。
+
+| 环节 | 行为 |
+| --- | --- |
+| 采集 | 页面内注入的 tap 挂钩 Web Audio（节点连到 `destination` 时同时接到静音混音器）和 `<audio>`/`<video>`（`captureStream()` 的音轨），由 `ScriptProcessorNode` 输出 |
+| 传输 | Host 用 CDP binding 收包（24 kHz、单声道、s16le，约每 85 ms 一包），再作为 `{"type":"audio"}` 文本消息走同一条 `/plugins/ui-testing/frames` WebSocket；帧的二进制格式不变 |
+| 播放 | 面板把每包解码成 `AudioBuffer` 依次排程；落后超过 1.2 s 时丢弃积压而不是继续延后 |
+| 导航 | 主文档提交时 Host 发 `{"type":"audio","state":"reset"}`，面板清空时间线，新页面从「现在」重新开始 |
+| 静音页 | 数字静音（RMS < 4e-4）不发送，空闲页面不占用带宽 |
+| 统计 | `GET /plugins/ui-testing/metrics` 的 `host.audio` 给出格式与计数，从不包含 PCM 数据 |
+
+边界：
+
+- 面板必须在**用户点击**「声音」后才能出声——浏览器不允许脚本自行启动音频。开关状态不持久化，重载面板后回到静音。
+- 「声音」按钮只在 Web 视图出现，挂在地址栏容器内：`data-utb-audio`（`on`/`off`）与 `data-utb-audio-live`（`live`/`idle`）供验收读取；`aria-pressed` 同时反映开关状态。
+- 只采集**主文档**：子帧内置的播放器不进入这条链路（两路序列号会互相覆盖）。
+- 只覆盖 Web Audio 图与媒体元素；`srcObject` 直连的 `MediaStream`、闭合 shadow DOM 隔离的播放路径不采集。
+- 浏览器由插件启动时固定带 `--mute-audio`：页面声音**不会**从宿主音箱外放，只有面板里的「声音」开关会让它可听。无头与有头模式都一样。
+- 无头环境还要靠 `--autoplay-policy=no-user-gesture-required`（插件启动参数已带），否则页面和采集 `AudioContext` 都会停在 `suspended`，页面自己也不会开始播放。
+- 声音开关只影响本地面板播放，不改变页面、不写入证据，也不进入 T1–T4 断言。
+
 ## 标签页、标注与尺寸
 
 | 操作 | 环境专有与公共部分 | 详细入口 |

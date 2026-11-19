@@ -160,3 +160,36 @@ test('历史来自已接受的地址：失败导航不记录，重定向记录�
   assert.ok(clientSource.includes('setHistoryOpen(false); }, [scopeEpoch, annotOn])'),
     '切换作用域或进入标注模式要收起下拉');
 });
+
+test('声音开关在地址栏内侧、历史按钮左侧（右往左第二个按钮）', () => {
+  // CSS: both buttons are absolutely positioned inside `.utb-addr-wrap`; history is the rightmost
+  // (2px), the audio toggle sits immediately left of it (2 + 24 = 26px), and the input reserves
+  // room for both (56px) so the address text never runs underneath them.
+  assert.match(clientSource, /\.utb-addr-hist \{ right: 2px; \}/, '历史按钮应贴右边界 2px');
+  assert.match(clientSource, /\.utb-addr-audio \{ right: 26px; \}/, '声音按钮应在历史按钮左侧（right:26px）');
+  assert.match(clientSource, /\.utb-addr-wrap \.utb-addr \{ flex: 1 1 auto; padding-right: 56px; \}/,
+    '地址输入应为两个内侧按钮留出 56px');
+
+  // DOM order inside the wrapper: input → audio → history (so Tab order matches left→right).
+  const wrap = clientSource.indexOf("className: 'utb-addr-wrap'");
+  const audio = clientSource.indexOf("className: 'utb-addr-audio'");
+  const history = clientSource.indexOf("className: 'utb-addr-hist',");
+  assert.ok(wrap > 0, '缺少地址栏容器');
+  assert.ok(audio > wrap, '声音按钮必须在地址栏容器内');
+  assert.ok(history > audio, '声音按钮必须在历史按钮之前');
+
+  // Exactly one copy of the control, and it is not a toolbar icon button (the old `utb-btn` form
+  // that sat between 尺寸调整 and 更多 must be gone).
+  assert.equal(clientSource.split("className: 'utb-addr-audio'").length - 1, 1, '声音按钮只应有一处');
+  assert.equal(clientSource.includes("button(audioState.enabled ? '关闭页面声音'"), false,
+    '工具栏里不应再有声音按钮');
+
+  // Wiring of the in-address-bar button.
+  const block = clientSource.slice(audio, history);
+  for (const marker of ["'aria-pressed': audioState.enabled", 'onClick: toggleAudio',
+    "'data-utb-audio'", "'data-utb-audio-live'", "type: 'button'"]) {
+    assert.ok(block.includes(marker), '声音按钮缺少 ' + marker);
+  }
+  assert.ok(block.includes('onMouseDown: (event) => event.preventDefault()'),
+    '声音按钮不应打断地址栏的输入焦点与草稿');
+});

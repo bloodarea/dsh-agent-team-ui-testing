@@ -55,6 +55,14 @@ Web 视图可切换无头与有头模式。切换会关闭当前浏览器进程�
 
 默认 profile 按 provider 分开。同一 profile 内的 Cookie、存储和缓存共享，不构成登录态隔离。
 
+## 声音与自动播放
+
+插件启动浏览器时固定带 `--mute-audio` 与 `--autoplay-policy=no-user-gesture-required`：
+
+- `--mute-audio` 让页面声音**不出宿主音箱**（无头和有头都一样），页面音频另走调试面板的「声音」开关，见[调试面板 · 页面声音](debug-panel.md#页面声音)。
+- `--autoplay-policy=no-user-gesture-required` 让页面和自己的采集 `AudioContext` 在没有用户手势时也能运行；没有它，无头页面会停在 `suspended`，既不自动播放也采集不到。
+- 这两项是固定行为，不提供单独开关；需要页面在真实自动播放策略下表现不同时，用独立 Chrome 手动复核。
+
 ## 目标访问与数据
 
 只接受 HTTP(S) 目标，拒绝带凭据的 URL 和 DSH 自身 origin。loopback 可访问；私网目标需在启动 DSH 前设置 `DSH_UI_TESTING_ALLOW_PRIVATE=1`。DNS、重定向与弹窗会再次校验目标。

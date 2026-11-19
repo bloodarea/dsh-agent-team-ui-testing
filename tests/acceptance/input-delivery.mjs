@@ -20,10 +20,10 @@
  * Exit: 0 all checks pass; 1 assertion failure.
  */
 import { createServer } from 'node:http';
+import { INPUT_PROBE_READ_FN } from '../../targets/web/host.js';
 import { createHarness, createFakeConnectionService } from './harness.mjs';
 
 const log = (...args) => console.log(...args);
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const results = [];
 function check(label, pass, expected, actual) {
   results.push({ label, pass: Boolean(pass) });
@@ -39,7 +39,7 @@ function pageHtml({ swallowProbe = false } = {}) {
 <input id="field" style="position:absolute;left:40px;top:200px;width:220px;height:40px">
 <script>
   window.__seen = [];
-  for (const type of ['pointerdown','mousedown','pointerup','mouseup','click','keydown','keyup','input']) {
+  for (const type of ['pointerdown','mousedown','pointerup','mouseup','click','keydown','keyup','input','mousemove']) {
     window.addEventListener(type, (event) => { window.__seen.push(type); }, true);
   }
   ${swallowProbe ? `
@@ -103,10 +103,66 @@ try {
   check('D06 a key batch reports verified delivery',
     keys.ok && keys.value?.delivery?.verified === true && keys.value.delivery.delivered === true,
     { verified: true, delivered: true }, keys.value?.delivery ?? keys.error?.message);
+  await call('browser_eval', { expression: 'document.querySelector("#field").focus()' });
   const textOnly = await call('browser_input', { events: [{ kind: 'text', text: 'hi' }] });
   check('D07 a text-only batch never claims a delivery verdict',
     textOnly.ok && textOnly.value?.delivery?.verified === false && textOnly.value.delivery.delivered === null,
     { verified: false, delivered: null }, textOnly.value?.delivery ?? textOnly.error?.message);
+  const fieldValue = (await call('browser_eval', { expression: 'document.querySelector("#field").value' })).value?.value;
+  check('D17 a text-only batch actually inserts text into the focused field',
+    textOnly.value?.applied === 1 && fieldValue === 'hi', 'hi', fieldValue);
+
+  await call('browser_eval', { expression: 'window.__seen.length = 0' });
+  const moveOnly = await call('browser_input', { events: [{ kind: 'mouse', type: 'mouseMoved', x: 160, y: 100 }] });
+  const seenAfterMove = await pageSeen();
+  check('D18 a move-only batch reaches the page and updates the virtual cursor',
+    moveOnly.value?.cursor?.x === 160 && moveOnly.value?.cursor?.y === 100 && seenAfterMove.includes('mousemove'),
+    { cursor: { x: 160, y: 100 }, event: 'mousemove' }, { cursor: moveOnly.value?.cursor, seen: seenAfterMove });
+
+  // Defer the first release until after the first probe read. Chromium still dispatches a real
+  // release, just after the page has already reported the press. No timing guess in the fixture.
+  const registry = harness.ctx.__internal.plugin.registry;
+  const primary = [...registry.entries.values()].find((entry) => entry.runtime.running && entry.runtime.kind !== 'popup')?.runtime || null;
+  if (primary) {
+    const cdp = primary.cdp;
+    const realSend = cdp.send;
+    for (const [label, invoke] of [
+      ['D19 a structured click observes a late release without replaying the press', () => call('browser_click', { selector: '#btn' })],
+      ['D20 a raw input batch observes a late release without replaying the press', () => call('browser_input', {
+        events: [{ kind: 'mouse', type: 'mousePressed', x: 100, y: 80, button: 'left', buttons: 1, clickCount: 1 }, { kind: 'mouse', type: 'mouseReleased', x: 100, y: 80, button: 'left', buttons: 0, clickCount: 1 }],
+      })],
+    ]) {
+      await call('browser_eval', { expression: 'window.__seen.length = 0' });
+      let release;
+      let presses = 0;
+      let firstRead;
+      cdp.send = async function (method, params, options) {
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') presses += 1;
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased' && !firstRead) {
+          release = [method, params, options];
+          return {};
+        }
+        const response = await realSend.call(this, method, params, options);
+        if (method === 'Runtime.evaluate' && params.expression?.startsWith(INPUT_PROBE_READ_FN) && release && !firstRead) {
+          firstRead = response.result?.value?.seen || [];
+          await realSend.call(this, ...release);
+        }
+        return response;
+      };
+      try {
+        const result = await invoke();
+        const delivery = result.value?.evidence?.dispatch?.delivery ?? result.value?.delivery;
+        const seen = await pageSeen();
+        check(label, firstRead?.includes('mousedown') && !firstRead.includes('mouseup') && seen.includes('mouseup')
+          && result.ok && delivery?.delivered === true && delivery?.attempts === 1 && presses === 1,
+        { attempts: 1, presses: 1 }, { firstRead, seen, delivery, presses });
+      } finally {
+        cdp.send = realSend;
+      }
+    }
+    const probeRemoved = (await call('browser_eval', { expression: '!("__utb_input_probe__" in window)' })).value?.value;
+    check('D21 the settled read cleans up the page probe', probeRemoved === true, true, probeRemoved);
+  }
 
   // 3. The silent-failure shape: the page really receives events but never records them for the
   //    verdict. The tool must fail loudly, once, after exactly one retry.
@@ -131,9 +187,67 @@ try {
   check('D11 the trap page did receive the events (so the failure is about reporting, not routing)',
     /mousedown/.test(trapSeen), 'mousedown present', trapSeen);
 
+  // 3b. Self-heal: a document that drops synthetic input entirely. The Host must rebuild the
+  //     document (about:blank → back), replay the gesture once — safe because the page observed
+  //     nothing, so nothing can happen twice — and report that it did.
+  if (primary) {
+    await call('browser_navigate', { url: plain });
+    await call('browser_eval', { expression: 'window.__count = 0; document.getElementById("btn").textContent = "click me"' });
+    const cdp = primary.cdp;
+    const realSend = cdp.send.bind(cdp);
+    let swallow = true;
+    let navigations = [];
+    cdp.send = async function (method, params, options) {
+      // Exactly the measured failure shape: the CDP command succeeds, the page sees nothing.
+      if (swallow && method === 'Input.dispatchMouseEvent') return {};
+      if (method === 'Page.navigate') {
+        navigations.push(String(params?.url || ''));
+        const response = await realSend(method, params, options);
+        if (navigations.length === 2) swallow = false; // document rebuilt: stop swallowing
+        return response;
+      }
+      return realSend(method, params, options);
+    };
+    try {
+      const healed = await call('browser_click', { selector: '#btn' });
+      const healedDelivery = healed.value?.evidence?.dispatch?.delivery || null;
+      check('D24 a zero-witness click is healed by rebuilding the document',
+        healed.ok === true && healedDelivery?.delivered === true && healedDelivery?.recovery === 'document-recycled',
+        { delivered: true, recovery: 'document-recycled' },
+        { ok: healed.ok, delivery: healedDelivery, error: healed.error?.message });
+      check('D25 the recovery is a real round trip: detectably-non-working document, then back',
+        navigations.length === 2 && navigations[0] === 'about:blank' && navigations[1] === plain,
+        { roundTrip: ['about:blank', plain] }, navigations);
+      // The rebuilt document's own recorder must have seen the replay: this is what proves the
+      // gesture landed in the *new* document instead of the one that was about to be replaced.
+      const healedSeen = await pageSeen();
+      const healedHref = (await call('browser_eval', { expression: 'location.href' })).value?.value;
+      check('D26 the healed click landed in the rebuilt document, not the replaced one',
+        /mousedown/.test(healedSeen) && /mouseup/.test(healedSeen) && /click/.test(healedSeen) && healedHref === plain,
+        { events: 'mousedown, mouseup, click', href: plain }, { events: healedSeen, href: healedHref });
+
+      // Same ladder for a raw mouse batch (`browser_input`), which shares the helper.
+      await call('browser_eval', { expression: 'window.__seen.length = 0' });
+      swallow = true;
+      navigations = [];
+      const healedInput = await call('browser_input', {
+        events: [
+          { kind: 'mouse', type: 'mousePressed', x: 100, y: 80, button: 'left', buttons: 1, clickCount: 1 },
+          { kind: 'mouse', type: 'mouseReleased', x: 100, y: 80, button: 'left', buttons: 0, clickCount: 1 },
+        ],
+      });
+      const healedInputDelivery = healedInput.value?.delivery || null;
+      check('D27 a zero-witness raw batch is healed the same way',
+        healedInput.ok === true && healedInputDelivery?.delivered === true
+        && healedInputDelivery?.recovery === 'document-recycled' && navigations.length === 2,
+        { delivered: true, recovery: 'document-recycled', navigations: 2 },
+        { ok: healedInput.ok, delivery: healedInputDelivery, navigations });
+    } finally {
+      cdp.send = realSend;
+    }
+  }
+
   // 4. activate(): coalesced, and re-fronted after a sibling took the front.
-  const registry = harness.ctx.__internal.plugin.registry;
-  const primary = [...registry.entries.values()].find((entry) => entry.runtime.running && entry.runtime.kind !== 'popup')?.runtime || null;
   check('D12 the primary runtime is reachable for the activation checks', Boolean(primary), 'runtime', Boolean(primary));
   if (primary) {
     const host = primary.host;
@@ -164,6 +278,61 @@ try {
         primary.runtimeId, host.frontRuntimeId);
     } finally {
       primary.cdp.send = realSend;
+    }
+  }
+
+  // Exercise the primary again after Chromium has created a sibling tab. A queued write must
+  // front its own page when it gets its turn, even if the sibling was activated while it waited.
+  if (primary) {
+    await call('browser_navigate', { url: plain });
+    const opened = await call('browser_tabs', { action: 'open' });
+    const selected = await call('browser_tabs', { action: 'select', tabId: 'primary' });
+    const listed = await call('browser_tabs', { action: 'list' });
+    const selectedRow = listed.value?.tabs?.find((tab) => tab.selected);
+    const evaluated = await call('browser_eval', { expression: 'location.href' });
+    const sibling = [...registry.entries.values()].find((entry) => entry.tabId === opened.value?.tabId)?.runtime;
+    check('D22 select returns to the original primary after opening a sibling',
+      opened.ok && sibling?.cdp && sibling !== primary && selected.value?.tabId === 'primary'
+      && selectedRow?.runtimeId === primary.runtimeId && selectedRow.url === plain && evaluated.value?.value === plain,
+      plain, { selected: selected.value?.tabId, listedUrl: selectedRow?.url, location: evaluated.value?.value });
+    if (sibling?.cdp && sibling !== primary) {
+      let enter;
+      let unblock;
+      const entered = new Promise((resolve) => { enter = resolve; });
+      const hold = new Promise((resolve) => { unblock = resolve; });
+      const blocking = primary.run(() => { enter(); return hold; }, { activate: false });
+      await entered;
+      const cdp = primary.cdp;
+      const realSend = cdp.send;
+      const order = [];
+      cdp.send = function (method, params, options) {
+        if (method === 'Page.bringToFront') order.push('primary activation');
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') order.push('primary press');
+        return realSend.call(this, method, params, options);
+      };
+      const queued = primary.run(() => primary.input([
+        { kind: 'mouse', type: 'mousePressed', x: 100, y: 80, button: 'left', buttons: 1, clickCount: 1 },
+        { kind: 'mouse', type: 'mouseReleased', x: 100, y: 80, button: 'left', buttons: 0, clickCount: 1 },
+      ]));
+      queued.catch(() => {});
+      try {
+        await sibling.activate();
+        order.push('sibling activated');
+      } finally {
+        unblock();
+        await blocking;
+        try {
+          const result = await queued;
+          const orderBeforeReadback = order.slice();
+          const seen = await pageSeen();
+          const expected = ['sibling activated', 'primary activation', 'primary press'];
+          check('D23 a queued input activates primary after the sibling, then reaches primary',
+            JSON.stringify(orderBeforeReadback) === JSON.stringify(expected) && result.delivery.delivered && seen.includes('click'),
+            expected, { order: orderBeforeReadback, seen, delivery: result.delivery });
+        } finally {
+          cdp.send = realSend;
+        }
+      }
     }
   }
 } finally {
