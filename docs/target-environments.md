@@ -17,9 +17,20 @@
 
 ## 各目标环境的配置
 
-| 目标环境 | 实现状态 | 配置文档 |
-| --- | --- | --- |
-| Web | 已接入真实适配器，目标为浏览器页面 | [Web 文档入口](web/index.md) · [运行配置](web/browser-runtime.md) |
-| Linux、Windows、macOS、Android、TUI、HarmonyOS、小程序、游戏、3D | 真实适配器待接入 | 暂无可执行的运行时配置 |
+| 目标环境 | 环境 id | 实现状态 | 配置文档 |
+| --- | --- | --- | --- |
+| Web | `web` | 已接入真实适配器，目标为浏览器页面 | [Web 文档入口](web/index.md) · [运行配置](web/browser-runtime.md) |
+| 测试夹具 | `fake` | 已登记的确定性夹具，仅供测试 | [适配器契约](adapters.md) |
+| Linux 桌面 | `linux-desktop` | 已登记为 planned：可启用、可切换空白视图，无适配器 | 暂无可执行的运行时配置 |
+| Windows | `windows` | 同上 | 暂无 |
+| macOS | `macos` | 同上 | 暂无 |
+| Android | `android` | 同上 | 暂无 |
+| TUI | `tui` | 同上 | 暂无 |
+| HarmonyOS | `harmonyos` | 同上 | 暂无 |
+| 小程序 | `mini-program` | 同上 | 暂无 |
+| 游戏 | `game` | 同上 | 暂无 |
+| 3D | `three-d` | 同上 | 暂无 |
+
+环境 id 与显示名以 Host 目录为唯一来源：`core/config.js` 的 `environmentCatalog()`，经 `GET /config` 的 `catalog` 字段提供给面板与设置页。新增环境时先登记目录，再实现适配器；只在客户端加一个视图 id 不算接入。
 
 各环境的能力范围见[能力分层与接口](capability-tiers.md#3-目标环境实现)。新增真实适配器时，在 `docs/<环境 id>/` 为该环境编写配置文档，说明它的目标类型、可用执行端、依赖与启动条件、配置生效方式和验证入口，并在此处和[公开文档索引](index.md)登记。

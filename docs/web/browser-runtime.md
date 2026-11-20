@@ -47,13 +47,30 @@ Web 视图可切换无头与有头模式。切换会关闭当前浏览器进程�
 | --- | --- |
 | 默认模式 | 无头；每次启动使用临时 profile |
 | 有头的显示依赖 | POSIX 需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，缺失时报 `DISPLAY_UNAVAILABLE` 并保持无头；Windows 不需要这两个变量 |
-| 有头窗口 | 默认放在屏幕外；`DSH_UI_TESTING_HEADED_VISIBLE=1` 显示窗口 |
-| Linux/X11 隐藏 | 使用 `xdotool` 隐藏窗口和任务栏条目；缺失时保留离屏位置 |
+| 有头窗口 | 默认请求屏外位置。设置 `DSH_UI_TESTING_HEADED_VISIBLE=1` 可显示窗口 |
+| Linux/X11 隐藏 | 插件随包安装的 JavaScript X11 客户端将 Chrome 窗口设为透明，裁空绘制与鼠标命中区域，保留映射，并请求窗口管理器跳过任务栏和工作区列表。无需安装 Xvfb、Xephyr 或 xdotool |
 | Windows 隐藏 | 使用系统 `powershell.exe` 设置 `WS_EX_TOOLWINDOW`；不可用时保留离屏位置，任务栏条目可能可见 |
 | 有头持久 profile | Chrome 默认 `${DSH_HOME}/ui-testing/headed-profile`，Edge 为 `headed-profile-edge`；未设 `DSH_HOME` 时使用 `~/.dsh` |
 | profile 路径覆盖 | `DSH_UI_TESTING_PROFILE_DIR`；使用不同 provider 时应分别指定目录 |
 
+Linux 隐藏有头模式在后台创建首个窗口和后续受管标签。X11 窗口采用 ICCCM 的无输入焦点提示，Chromium 可以切换内部标签，同时由窗口管理器保留当前桌面的键盘焦点。Host 读回窗口映射、零透明度、空绘制与鼠标命中区域、任务栏与工作区列表跳过标记及拒绝焦点提示后，报告 `ui.display.hidden=true` 并允许面板心跳与输入路径选中内部标签。合成器支持 `_NET_WM_WINDOW_OPACITY` 时，即使浏览器重设绘制形状也可保持透明。
+
+此路径要求本地 X11、SHAPE 扩展及兼容的窗口管理器。Wayland 原生窗口、显示不可访问或无法确认隐藏时，`hidden=false`，Host 保留屏外位置请求并跳过内部标签前置，后台标签的预览和输入可能受限。网站自行打开原生弹窗时，Chromium 可能在插件隐藏弹窗前将其显示或激活一次。
+
 默认 profile 按 provider 分开。同一 profile 内的 Cookie、存储和缓存共享，不构成登录态隔离。
+
+### 免安装外部工具与系统库
+
+四层链路都不依赖程序化工具或原生库：
+
+| 环节 | 通道 |
+| --- | --- |
+| 浏览器控制、输入、截图与预览 | Chrome DevTools Protocol（`Input.dispatchMouseEvent`、`Page.captureScreenshot`、`Page.startScreencast`），WebSocket 使用 Node 原生实现 |
+| 桌面窗口隐藏 | X11 二进制协议：Host 用 `node:net` 连接本地 `/tmp/.X11-unix/X<display>`，通过 `x11` 包构造 `InternAtom`、`GetProperty`、`ChangeProperty`、`QueryTree`、`GetWindowAttributes`、`SendEvent` 与 SHAPE 请求 |
+
+`x11` 是随包安装的纯 JavaScript 依赖（无原生模块、无安装脚本），因此不需要编译工具链，也不需要 `xdotool`、`wmctrl`、`xprop`、`xwd`、ImageMagick 或 Xvfb。运行期唯一的进程调用是启动被控浏览器本身；Windows 隐藏分支另用系统自带的 `powershell.exe`。
+
+这条通道也划定了边界：X11 协议按显示号寻址，因此只作用于 Host 所在主机的本地显示；Wayland 原生窗口没有等价的客户端自改窗口属性模型，本实现不覆盖。
 
 ## 声音与自动播放
 

@@ -7,6 +7,7 @@
   "keywords": ["deepseek-harness", "dsh-plugin", "ui-testing", "gui-testing", "test-automation", "browser-automation", "visual-regression", "network-debugging"],
   "repository": { "type": "git", "url": "https://github.com/bloodarea/dsh-agent-team-ui-testing.git" },
   "engines": { "node": ">=22" },
+  "dependencies": { "x11": "4.4.0" },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

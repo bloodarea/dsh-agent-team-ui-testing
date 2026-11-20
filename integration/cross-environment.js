@@ -32,6 +32,7 @@ import {
   SUPPORT,
   axis,
   createReadinessReport,
+  environmentCatalog,
   isPlannedEnvironment,
   resolveSnapshot,
 } from '../core/index.js';
@@ -927,6 +928,11 @@ export function createCrossEnvironment({
       config,
       resolved: resolvedBlock(snapshot),
       readiness: await readinessFor(snapshot),
+      // Read-only metadata, never a write target: ids, display names and implementation status for
+      // every environment this Host knows. Clients derive their selector/settings groups from it
+      // instead of keeping a list of their own (that is how a panel ends up announcing ids the Host
+      // rejects). Filtered by nothing: `testOnly` is flagged so each surface can decide.
+      catalog: environmentCatalog(),
     };
   }
 

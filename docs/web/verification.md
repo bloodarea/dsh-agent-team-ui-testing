@@ -72,7 +72,8 @@ node tests/acceptance/audit-a11-scope.mjs               # 会话级环境选择�
 node tests/acceptance/viewport-gui.mjs     # 隔离 DSH + 无头 Chrome 的面板断言
 DSH_VIEWPORT_GUI_ONLY=V16c node tests/acceptance/viewport-gui.mjs # 选择手感：实时框选、组合键、拖动/取消、键盘与缩放命中
 DSH_VIEWPORT_GUI_ONLY=V1b node tests/acceptance/viewport-gui.mjs  # 空白画布隔离：切到无视图环境后零视口写入/零截图/零状态轮询/零标注同步
-node tests/acceptance/input-delivery.mjs   # 输入送达校验：页面侧证据、纯文本不判、未送达抛 INPUT_NOT_DELIVERED、activate 合并与重新前置
+node tests/acceptance/input-delivery.mjs   # 输入送达、部分手势保护和无头滚轮失败不重载
+node tests/acceptance/headed-input-x11.mjs # Linux/X11 有头窗口、面板输入路由及故障注入
 node tests/acceptance/canvas-wheel.mjs     # 隔离 DSH + 无头 Chrome 的滚轮消费/命中/A2 瞬态
 node tests/acceptance/popup-tabs.mjs       # 隔离 DSH + 无头 Chrome 的内部标签页/target=_blank/关闭回收
 DSH_UI_TESTING_CHROME=$PWD/tests/acceptance/chrome-wrapper.sh node tests/acceptance/tab-lock.mjs # 保活锁 Host 侧（idle 压到 1s，锁定与解锁对照）
@@ -91,7 +92,9 @@ node tests/acceptance/verify-3081.mjs      # 隔离宿主 HTTP 集成
 
 下拉浮层可单独验收：`node tests/acceptance/pick-element-gui.mjs --select-only`。默认仍使用隔离 Host；显式设置 `DSH_SELECT_GUI_URL` 可连接已有 Host，`DSH_SELECT_GUI_LOG` 指向其启动日志，`DSH_SELECT_GUI_SESSION` 选择会话标题，`DSH_SELECT_GUI_RETURN_URL` 可在验收后恢复页面地址。已有 Host 模式会导航选定会话的内嵌页面，不重启或关闭该 Host；认证仅保留在内存。检查覆盖真实 `/element` 响应、面板选项、重复 value、禁用项/组、键盘兜底、焦点转移、200 项上限、导航后旧目标拒绝，以及 Ctrl+A 和字符输入；同一次运行还会用 `/panel-context.html` 验证页面自绘菜单与默认面板菜单、实际刷新/复制、Esc/离图释放和预览内外的宿主菜单隔离；加 `--context-only` 可单独运行右键 GUI 分支。浮层来自面板 DOM，不能用目标页面截图代替面板截图。
 
-`popup-tabs.mjs` 额外覆盖 Web 视图的 无头/有头 切换（默认无头、切到有头后 Host `ui.display.mode=headed`、离屏窗口已隐藏 `display.hidden=true`、有头能打开页面、持久 profile 存在、切回无头可继续打开页面）。有头模式默认离屏并尝试从窗口管理器隐藏，但测试仍可能影响桌面环境，默认记 `NOT_RUN`；设 `DSH_UI_TESTING_HEADED_TEST=1` 才实际运行。
+`headed-input-x11.mjs` 使用本地 X11 和临时 Chrome profile。运行前让另一个桌面窗口获得焦点。套件检查冷启动、面板心跳、切页、可信点击和文本输入前后的活跃窗口与键盘焦点，同时读回原生窗口的零透明度和空绘制形状，并检查预览出帧、模式切换及丢输入时的文档保留。有条件时在独立的图形显示环境中运行，避免启动时的原生窗口影响日常桌面。原生弹窗在初次激活后单独检查再次前置的焦点行为。`xprop`、`xwininfo` 与 `xdotool` 仅用于验收，插件运行不依赖它们。
+
+`popup-tabs.mjs` 额外覆盖 Web 视图的无头和有头切换。验证有头页面能打开、`display.hidden=true`、持久 profile 存在，并在真实预览里点击和滚动，读回可信事件、点击计数、滚动位置及文档身份。切回无头后再次验证可以打开页面。此分支可能影响桌面环境，默认记 `NOT_RUN`，设 `DSH_UI_TESTING_HEADED_TEST=1` 才运行。
 
 `canvas-wheel.mjs` 也自启私有隔离 DSH：用 3000px 长页、O=0/±、内容/blank wheel 和真实点击，断言宿主/舞台滚动链不变、内容 wheel 恰派发一次、`p=q+O` 误差 ≤1px、点击只增目标按钮、A2 瞬态 `maxDeviation`/`extraBlank` 为 0；实时帧 barrier/seed 与 BUSY 注入等无法稳定复现的项按 `NOT_RUN` 报告，不能用“收到 wheel/显示提示”冒充通过。
 

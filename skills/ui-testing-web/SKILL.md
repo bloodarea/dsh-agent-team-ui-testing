@@ -273,9 +273,9 @@ T2 交互断言失败（`NOT_INTERACTABLE`、点击后业务值未变、`WAIT_TI
 
 **输入真值边界**：`pointerType:'pen'` 按 CDP 要求传字符串并归一到 `mouse|pen`，页面 `PointerEvent.pointerType` 可读回 `"pen"`；焦点仍无专门工具，用 Tab/Shift+Tab 或页面内 JS，并以页面读回为准。
 
-**送达校验**：`browser_click` 的 `evidence.dispatch.delivery` 与 `browser_input` 的 `delivery` 是**页面侧**结论（`verified`/`delivered`/`attempts`/`seen`）。`delivered:true` 表示页面确实收到了 press/release 或按键；`verified:false, delivered:null` 表示拿不到页面证据（不声称送达，也不代表失败）；未送达时工具先自动前置页面重试一次，仍失败抛 `INPUT_NOT_DELIVERED`。看到这个错误不要重试同样的调用——先用 `browser_state`/`browser_snapshot` 确认当前文档（页面可能已被替换或被别的标签抢走），再重新定位目标。纯 `text` 和纯鼠标移动批次正常派发，送达标记为未验证。
+**送达校验**：`browser_click` 的 `evidence.dispatch.delivery` 与 `browser_input` 的 `delivery` 是页面侧结论（`verified`、`delivered`、`attempts`、`seen`）。`delivered:true` 表示探针观察到了全部预期事件。`verified:false, delivered:null` 表示没有足够的页面证据，纯 `text` 和纯鼠标移动批次也用这个标记。部分送达或批次包含文本事件时不重放。符合条件的零观察手势可在同一文档重新前置并重试一次。
 
-`seen` 为空表示页面的确没收到，不是工具少报了证据。`Page.bringToFront` 成功也不保证输入会落到该页：实测有页面 target 的 DOM、截图、`elementFromPoint` 都正常，`visibilityState` 自报 `visible`，而绕过插件的原始 CDP `Input.*` 同样收不到。零观察时工具会**自动重建该页文档并重放一次**（`delivery.recovery:'document-recycled'`，代价是页面重新加载、旧 ref 失效）。看到 `INPUT_NOT_DELIVERED` 说明自动重放也失败：不要再重试同一调用，先 `browser_tabs` 核对选择，再 `browser_tabs open` 换新标签操作。不要用 `visibilityState` 或 `hasFocus()` 判断输入是否可达。
+有头模式及含滚轮的批次保留当前文档。无头模式的非滚轮手势两次零观察后，符合条件时仍可自动重建文档再派发一次（`delivery.recovery:'document-recycled'`，页面状态及旧 ref 会失效）。收到 `INPUT_NOT_DELIVERED` 时查看 `details.attempts`、`details.seen` 和 `details.missing`，用 `browser_tabs`、`browser_state` 或 `browser_snapshot` 核对目标和当前文档。输入可达性以页面侧事件和操作结果为准。完整规则见[输入送达校验](../../docs/web/input-delivery.md)。
 
 ## 独立 HTTP 请求（`browser_http_request`）
 

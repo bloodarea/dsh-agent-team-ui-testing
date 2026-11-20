@@ -58,41 +58,57 @@ export function isImplementedWebProvider(provider) {
 }
 
 /**
- * Known environment metadata. `planned` environments are placeholders: they may be displayed but
- * never enabled or selected in v1.
+ * Known environment metadata. `planned` environments are placeholders: they may be displayed and
+ * switched on, but never selected for execution in v1.
+ *
+ * `label` / `short` are the display names the settings page and the panel selector render. They
+ * live here — next to the ids — because a display catalog that a client keeps on its own drifts
+ * from the ids (a client once announced six environments the Host had never registered). Order
+ * matters: it is the catalog order both surfaces use.
  */
-export const KNOWN_ENVIRONMENTS = Object.freeze({
-  [ENVIRONMENTS.WEB]: Object.freeze({
-    environment: ENVIRONMENTS.WEB,
-    status: 'supported',
-    testOnly: false,
-    planned: false,
+const ENVIRONMENT_META = [
+  { id: ENVIRONMENTS.WEB, label: 'Web 视图', short: 'Web', status: 'supported' },
+  { id: ENVIRONMENTS.LINUX, label: 'Linux 视图', short: 'Linux', status: 'planned' },
+  { id: ENVIRONMENTS.WINDOWS, label: 'Windows 视图', short: 'Windows', status: 'planned' },
+  { id: ENVIRONMENTS.MACOS, label: 'macOS 视图', short: 'macOS', status: 'planned' },
+  { id: ENVIRONMENTS.ANDROID, label: 'Android 视图', short: 'Android', status: 'planned' },
+  { id: ENVIRONMENTS.TUI, label: 'TUI 视图', short: 'TUI', status: 'planned' },
+  { id: ENVIRONMENTS.HARMONYOS, label: 'HarmonyOS 视图', short: 'HarmonyOS', status: 'planned' },
+  { id: ENVIRONMENTS.GAME, label: '游戏视图', short: '游戏', status: 'planned' },
+  { id: ENVIRONMENTS.THREE_D, label: '3D 视图', short: '3D', status: 'planned' },
+  { id: ENVIRONMENTS.MINIPROGRAM, label: '小程序视图', short: '小程序', status: 'planned' },
+  { id: ENVIRONMENTS.FAKE, label: '测试夹具环境', short: 'Fake', status: 'supported', testOnly: true },
+];
+
+export const KNOWN_ENVIRONMENTS = Object.freeze(Object.fromEntries(ENVIRONMENT_META.map((meta) => [
+  meta.id,
+  Object.freeze({
+    environment: meta.id,
+    label: meta.label,
+    short: meta.short,
+    status: meta.status,
+    testOnly: meta.testOnly === true,
+    planned: meta.status === 'planned',
   }),
-  [ENVIRONMENTS.FAKE]: Object.freeze({
-    environment: ENVIRONMENTS.FAKE,
-    status: 'supported',
-    testOnly: true,
-    planned: false,
-  }),
-  [ENVIRONMENTS.LINUX]: Object.freeze({
-    environment: ENVIRONMENTS.LINUX,
-    status: 'planned',
-    testOnly: false,
-    planned: true,
-  }),
-  [ENVIRONMENTS.ANDROID]: Object.freeze({
-    environment: ENVIRONMENTS.ANDROID,
-    status: 'planned',
-    testOnly: false,
-    planned: true,
-  }),
-  [ENVIRONMENTS.MINIPROGRAM]: Object.freeze({
-    environment: ENVIRONMENTS.MINIPROGRAM,
-    status: 'planned',
-    testOnly: false,
-    planned: true,
-  }),
-});
+])));
+
+/**
+ * Read-only catalog of the environments this Host knows, in display order.
+ *
+ * Consumers (panel selector, settings page, diagnostics) take ids *and* labels from here rather
+ * than keeping a list of their own. `testOnly` entries are included but flagged: test surfaces
+ * decide whether to show them, production surfaces filter them out.
+ */
+export function environmentCatalog() {
+  return ENVIRONMENT_META.map((meta) => Object.freeze({
+    id: meta.id,
+    label: meta.label,
+    short: meta.short,
+    status: meta.status,
+    planned: meta.status === 'planned',
+    testOnly: meta.testOnly === true,
+  }));
+}
 
 const PLANNED_ENVIRONMENTS = new Set(
   Object.values(KNOWN_ENVIRONMENTS).filter((meta) => meta.planned).map((meta) => meta.environment),

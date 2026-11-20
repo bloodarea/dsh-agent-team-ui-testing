@@ -8,3 +8,6 @@
 
 # Local reference material
 /reference/
+
+# Local package dependencies
+/node_modules/

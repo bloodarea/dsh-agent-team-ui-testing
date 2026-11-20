@@ -2391,7 +2391,7 @@ export class BrowserHost {
     this.displayMode = 'headless';
     /** True while the current profile must survive close (headed mode). */
     this.profilePersistent = false;
-    /** Best-effort X11 unmap result: headed window is offscreen and not in WM/taskbar. */
+    /** Result of the most recent hide attempt for the current browser process. */
     this.windowHidden = false;
     /**
      * Which runtime last brought its page to the front of this browser.
@@ -2415,22 +2415,27 @@ export class BrowserHost {
     return process.env.DSH_UI_TESTING_HEADED_VISIBLE === '1' ? 'visible' : 'offscreen';
   }
 
-  /** Best-effort hide: offscreen alone still leaves a taskbar/Alt-Tab entry on X11 and win32. */
-  #hideHeadedWindows(pid) {
-    if (this.displayMode !== 'headed' || this.displayWindow === 'visible' || !pid) return;
+  /** Hidden Linux browsers create their native windows without requesting desktop focus. */
+  get backgroundHeaded() {
+    return process.platform === 'linux' && this.displayWindow === 'offscreen';
+  }
+
+  /** Hide the native window while keeping it mapped for Chromium's compositor and input. */
+  async #hideHeadedWindows(proc) {
+    if (this.displayMode !== 'headed' || this.displayWindow === 'visible' || !proc?.pid) return;
     if (process.platform === 'win32') {
       // Restyling keeps the window "visible" to Chromium; see hideHeadedWindowWin32.
-      if (hideHeadedWindowWin32(pid)) this.windowHidden = true;
+      if (hideHeadedWindowWin32(proc.pid)) this.windowHidden = true;
       return;
     }
     if (process.platform !== 'linux' || !process.env.DISPLAY) return;
+    let hidden = false;
     try {
-      const ids = execFileSync('xdotool', ['search', '--pid', String(pid)], { encoding: 'utf8', timeout: 2000 })
-        .trim().split('\n').filter(Boolean);
-      for (const id of ids) {
-        try { execFileSync('xdotool', ['windowunmap', id], { timeout: 1000 }); this.windowHidden = true; } catch { /* ignore */ }
-      }
-    } catch { /* xdotool missing or window not created yet: keep the offscreen placement */ }
+      const { hideHeadedWindowsX11 } = await import('./headed-x11.js');
+      if (this.proc !== proc) return;
+      hidden = await hideHeadedWindowsX11(proc.pid, process.env.DISPLAY);
+    } catch { /* retain offscreen placement if the local X11 client is unavailable */ }
+    if (this.proc === proc) this.windowHidden = hidden;
   }
 
   /**
@@ -2474,8 +2479,8 @@ export class BrowserHost {
   async ensureBrowser(signal) {
     for (;;) {
       if (this.closing) { try { await this.closing; } catch { /* closed */ } continue; }
-      if (this.browserCdp && !this.browserCdp.closed) return this.browserCdp;
       if (this.starting) return abortable(this.starting, signal);
+      if (this.browserCdp && !this.browserCdp.closed) return this.browserCdp;
       if (this.proc || this.profileDir) { await this.close(); continue; }
       break;
     }
@@ -2505,7 +2510,9 @@ export class BrowserHost {
       } else {
         // The Host owns this command's lifetime: a caller abort must not drop a target that
         // createTarget may still create (that would leak a paused, unknown target).
-        const created = await browserCdp.send('Target.createTarget', { url: 'about:blank' }, { timeoutMs: PAGE_CREATE_TIMEOUT_MS });
+        const created = await browserCdp.send('Target.createTarget', {
+          url: 'about:blank', ...(this.backgroundHeaded ? { background: true } : {}),
+        }, { timeoutMs: PAGE_CREATE_TIMEOUT_MS });
         targetId = created && created.targetId;
         if (!targetId) throw new BrowserError('CDP_DISCONNECTED', 'Chromium 未返回新的 page target');
         if (signal?.aborted) {
@@ -2533,8 +2540,12 @@ export class BrowserHost {
         try { cdp.close(); } catch { /* ignore */ }
         throw new BrowserError('CDP_DISCONNECTED', '浏览器在创建页面时被关闭');
       }
-      // The X11 window may exist only after the page target is created; hide it once more here.
-      this.#hideHeadedWindows(this.proc && this.proc.pid);
+      // A new target can create a native window after browser startup.
+      await this.#hideHeadedWindows(this.proc);
+      if (this.closing || this.browserCdp !== browserCdp || this.generation !== generation) {
+        cdp.close();
+        throw new BrowserError('CDP_DISCONNECTED', '浏览器在创建页面时被关闭');
+      }
       return { targetId, cdp, generation };
     } catch (error) {
       if (targetId) { try { await this.#closeOwnedTarget(targetId); } catch { /* ignore */ } }
@@ -2658,6 +2669,7 @@ export class BrowserHost {
           this.proc = undefined;
           this.browserCdp = undefined;
           this.port = 0;
+          this.windowHidden = false;
         });
         const ready = await this.#awaitDevtoolsReady({
           chromeBin, proc, stderr, port: candidate.port, deadline: attemptDeadline, signal, generation,
@@ -2674,7 +2686,7 @@ export class BrowserHost {
         this.browserCdp = browserCdp;
         // Internal only: the public DevTools URL is built from uiState and needs a live page too.
         this.port = candidate.port;
-        this.#hideHeadedWindows(proc.pid);
+        this.#assertSpawnGeneration(generation);
         browserCdp.on((message) => {
           if (this.browserCdp !== browserCdp) return;
           this.#onBrowserEvent(browserCdp, message);
@@ -2713,6 +2725,14 @@ export class BrowserHost {
           }
         }
         this.initialTargetId = await this.#findInitialPage(signal);
+        if (this.backgroundHeaded && !this.initialTargetId) {
+          const initial = await browserCdp.send('Target.createTarget', {
+            url: 'about:blank', newWindow: true, background: true,
+          }, { signal, timeoutMs: PAGE_CREATE_TIMEOUT_MS });
+          this.initialTargetId = initial.targetId;
+        }
+        await this.#hideHeadedWindows(proc);
+        this.#assertSpawnGeneration(generation);
         await browserCdp.send('Target.setAutoAttach', {
           autoAttach: true, waitForDebuggerOnStart: true, flatten: true,
           filter: [{ type: 'page', exclude: false }],
@@ -2782,7 +2802,7 @@ export class BrowserHost {
           ? ['--start-maximized']
           : ['--window-position=-10000,-10000'])
         : []),
-      'about:blank',
+      this.backgroundHeaded ? '--no-startup-window' : 'about:blank',
     ];
     return spawn(chromeBin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   }
@@ -3159,6 +3179,7 @@ export class BrowserHost {
       const wsUrl = await this.#resolveTargetWsUrl(browserCdp, targetId, AbortSignal.timeout(6000));
       const cdp = new Cdp(wsUrl);
       await cdp.connect({ signal: AbortSignal.timeout(6000) });
+      if (this.backgroundHeaded) await this.#hideHeadedWindows(this.proc);
       const resume = async () => {
         await browserCdp.send('Runtime.runIfWaitingForDebugger', {}, { sessionId, timeoutMs: 5000 });
         await browserCdp.send('Target.detachFromTarget', { sessionId }, { timeoutMs: 5000 });
@@ -3184,10 +3205,14 @@ export class BrowserHost {
         reason = 'target-forbidden';
         throw new BrowserError('POPUP_UNSUPPORTED', 'popup 的首个文档不在允许范围');
       }
+      await this.#hideHeadedWindows(this.proc);
+      if (this.closing || this.browserCdp !== browserCdp || this.generation !== generation) {
+        throw new BrowserError('CDP_DISCONNECTED', '浏览器在接管弹窗时被关闭');
+      }
       const owned = this.ownedTargets.get(targetId);
       if (owned) owned.initializing = false;
       entry.status = 'ready';
-      this.#hideHeadedWindows(this.proc && this.proc.pid);
+      if (this.backgroundHeaded) child.activate().catch(() => false);
       parent.registry.bumpViews(entry.primaryKey);
       this.log('adopted popup target ' + targetId + ' as view ' + viewId + ' (parent ' + parent.runtimeId + ')');
     } catch (error) {
@@ -4008,9 +4033,9 @@ export const INPUT_PROBE_INSTALL_FN = `(function () {
     var previous = window[KEY];
     if (previous && typeof previous.cleanup === 'function') previous.cleanup();
   } catch (error) { /* a broken previous probe must not block this one */ }
-  var types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'keydown', 'keyup', 'input', 'wheel', 'mousemove'];
+  var types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'keydown', 'keyup', 'input', 'wheel', 'mousemove', 'pointermove'];
   var state = { seen: [], started: Date.now() };
-  var record = function (event) { state.seen.push(event.type); };
+  var record = function (event) { if (event.isTrusted && !state.seen.includes(event.type)) state.seen.push(event.type); };
   for (var index = 0; index < types.length; index += 1) document.addEventListener(types[index], record, true);
   var cleanup = function () {
     for (var i = 0; i < types.length; i += 1) document.removeEventListener(types[i], record, true);
@@ -5477,7 +5502,12 @@ export class Runtime {
     const cdp = this.cdp;
     if (!cdp || cdp.closed) return Promise.resolve(false);
     const host = this.host;
-    // Never skip the bringToFront: front-ness also changes *outside* this runtime (Chromium fronts a
+    // On Linux an offscreen mapped window can still take desktop focus. Only ask Chrome to
+    // select its internal tab after the X11 helper has confirmed hiding and no-input hints.
+    if (host?.backgroundHeaded && (!host.windowHidden || host.ownedTargets.get(this.page?.targetId)?.initializing)) {
+      return Promise.resolve(false);
+    }
+    // Do not use a front-tab cache: front-ness also changes *outside* this runtime (Chromium fronts a
     // freshly created tab, the user clicks another tab, a popup opens), so any "already front" cache
     // goes stale and the one call an input dispatch depends on is exactly the one that gets skipped —
     // measured on douyin: with a stale cache the tab stayed background and every press/key was
@@ -8404,11 +8434,17 @@ export class Runtime {
     const prepared = events.map((event) => ({ event, prepared: prepareInputEvent(event) }));
     await this.ensure(signal);
     const viewport = this.viewport;
-    // One dispatch pass over the batch; the caller may run it twice (delivery retry).
+    const epoch = this.documentEpoch();
+    const initialKeys = new Map(this.inputState.keys);
+    const initialCursor = this.inputState.cursor;
+    const restoreInputState = () => {
+      this.inputState.keys = new Map(initialKeys);
+      this.inputState.cursor = initialCursor;
+    };
     const dispatchAll = async () => {
       for (const item of prepared) {
         const { event } = item;
-        const params = item.prepared.params;
+        const params = { ...item.prepared.params };
         if (item.prepared.kind === 'key') {
           const type = String(params.type || '').toLowerCase();
           const identity = inputKeyIdentity(event);
@@ -8486,6 +8522,9 @@ export class Runtime {
       if (!groups.length) groups.push(['mousemove', 'wheel', 'pointermove', 'scroll', 'keydown', 'keyup', 'input']);
       return groups;
     })();
+    // Text and char events can have effects without matching the gesture's delivery probe.
+    const canRetry = prepared.every(({ prepared: { kind, params } }) => kind !== 'text' && params.type !== 'char');
+    const canRecycle = this.host?.display === 'headless' && !events.some((event) => event.kind === 'wheel');
     let delivery = { verified: false, delivered: null, attempts: 0, seen: [] };
     if (mustBeObserved && await this.#installInputProbe(signal)) {
       for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -8499,33 +8538,28 @@ export class Runtime {
         const verdict = inputDeliveryVerdict(probe.seen, requiredGroups);
         const delivered = verdict.delivered;
         delivery = { verified: true, delivered, attempts: attempt, seen: probe.seen.slice(0, 12), missing: verdict.missing };
-        if (delivered) break;
-        if (attempt === 1) {
-          // Nothing reached the document: re-front the page and give the batch one more pass.
-          await this.activate(signal).catch(() => false);
-          if (!(await this.#installInputProbe(signal))) { delivery = { verified: false, delivered: null, attempts: attempt, seen: [] }; break; }
-        }
+        if (delivered || probe.seen.length || !canRetry || attempt === 2) break;
+        await this.activate(signal).catch(() => false);
+        if (this.documentEpoch() !== epoch || !(await this.#installInputProbe(signal)) || this.documentEpoch() !== epoch) break;
+        restoreInputState();
       }
-      if (delivery.verified === true && delivery.delivered === false && delivery.seen.length === 0) {
-        // Self-heal: this document drops synthetic input entirely. Nothing was observed, so the
-        // batch can be replayed once after the document is rebuilt (docs/web/input-delivery.md).
+      if (canRecycle && this.documentEpoch() === epoch && delivery.attempts === 2 && delivery.delivered === false && delivery.seen.length === 0) {
         const healed = await this.#redispatchAfterRecycle(requiredGroups, dispatchAll, signal);
-        if (healed?.delivered) {
-          delivery = { verified: true, delivered: true, attempts: delivery.attempts + 1, seen: healed.seen.slice(0, 12), recovery: 'document-recycled' };
-        } else if (healed) {
-          delivery = { ...delivery, recovery: 'document-recycled' };
+        if (healed) {
+          delivery = { verified: true, ...healed, attempts: delivery.attempts + 1, recovery: 'document-recycled' };
         }
       }
-      if (delivery.verified === true && delivery.delivered === false) {
+      if (delivery.delivered === false) {
         throw new BrowserError('INPUT_NOT_DELIVERED',
-          '输入事件没有送达页面：CDP 已派发但页面未观察到任何事件',
+          '输入事件未完整送达页面：页面未观察到全部预期事件',
           {
             applied: events.length,
             attempts: delivery.attempts,
             seen: delivery.seen,
+            missing: delivery.missing,
             hint: (delivery.recovery === 'document-recycled'
-              ? '页面没有收到这次输入；已自动重建文档并重放一次仍未送达，请换新标签操作。'
-              : '页面没有收到这次输入；已重试一次仍未送达，请换新标签或重新加载该页后重试。'),
+              ? '自动重建文档后仍未确认输入完整送达，请检查页面状态。'
+              : '页面未确认收到完整输入，请检查当前标签的状态。'),
           });
       }
     } else {
@@ -14277,34 +14311,33 @@ export class Runtime {
     };
     // Dispatch, then ask the page what it actually saw. A CDP dispatch that returns is not proof of
     // delivery; the page is the only witness (docs/web/input-delivery.md).
+    const epoch = this.documentEpoch();
     let verdict = { delivered: false, seen: [] };
     let verified = true;
     let attempts = 0;
-    while (attempts < 2 && !verdict.delivered) {
-      // No probe means no witness. Still dispatch and leave delivery unverified.
+    while (attempts < 2) {
+      // The initial dispatch can be unverified. A retry needs a new witness in the same document.
+      if (attempts > 0 && this.documentEpoch() !== epoch) break;
       const installed = await this.#installInputProbe(signal);
+      if (attempts > 0 && (!installed || this.documentEpoch() !== epoch)) break;
       attempts += 1;
       await gesture();
       const probe = installed && await this.#readInputProbeSettled(INPUT_DELIVERY_CLICK_GROUPS, signal);
       if (!probe?.present) { verified = false; break; }
       verdict = inputDeliveryVerdict(probe.seen, INPUT_DELIVERY_CLICK_GROUPS);
-      if (!verdict.delivered && attempts === 1) {
-        // The page may have been re-fronted or re-attached between resolve and dispatch: front it
-        // again and retry exactly once before reporting the failure.
-        await this.activate(signal).catch(() => false);
-      }
+      // T2 moves the pointer before clicking. Movement alone is not a partial button gesture.
+      const sawGesture = probe.seen.some((type) => type !== 'mousemove' && type !== 'pointermove');
+      if (verdict.delivered || sawGesture || attempts === 2) break;
+      await this.activate(signal).catch(() => false);
     }
-    // Nothing reached the document at all: this is the "document drops synthetic input" state, and
-    // rebuilding the document is the one thing that restores delivery. A gesture that landed
-    // partially is never replayed blindly — only a zero-witness failure is retried this way.
     let recovery = null;
-    if (verified && !verdict.delivered && verdict.seen.length === 0) {
+    if (this.host?.display === 'headless' && this.documentEpoch() === epoch
+      && verified && attempts === 2 && !verdict.delivered && verdict.seen.length === 0) {
       const healed = await this.#redispatchAfterRecycle(INPUT_DELIVERY_CLICK_GROUPS, gesture, signal);
       if (healed) {
         recovery = 'document-recycled';
         attempts += 1;
         verdict = healed;
-        if (healed.delivered) verified = true;
       }
     }
     draft.dispatch.delivery = {
@@ -14313,15 +14346,16 @@ export class Runtime {
     };
     if (verified && !verdict.delivered) {
       throw new BrowserError('INPUT_NOT_DELIVERED',
-        '点击事件没有送达页面：CDP 已派发但页面未观察到 press/release',
+        '点击事件未完整送达页面：页面未观察到全部按下和释放事件',
         {
           attempts,
           seen: verdict.seen,
+          missing: verdict.missing,
           button,
           point: { x, y },
           hint: (recovery === 'document-recycled'
-            ? '页面没有收到这次点击；已自动重建文档并重放一次仍未送达，请换新标签操作。'
-            : '页面没有收到这次点击；已重试一次仍未送达，请换新标签或重新加载该页后重试。'),
+            ? '自动重建文档后仍未确认点击完整送达，请检查页面状态。'
+            : '页面未确认收到完整点击，请检查当前标签的状态。'),
         });
     }
     draft.dispatch.completed = true;

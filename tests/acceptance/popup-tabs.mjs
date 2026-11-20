@@ -691,7 +691,10 @@ async function main() {
         await pageHostFetch('/close', { method: 'POST', headers: { 'x-ui-testing-scope-version': '1', 'x-ui-testing-scope-binding': view.runtimeId }, body: {} });
       }
       await sleep(800);
-      t = await tabState();
+      // Close is asynchronous per view; wait for the settled state instead of sampling once, so a
+      // slow headed close cannot be mistaken for a tab that never left.
+      t = await waitFor(async () => { const value = await tabState(); return Number(value.views) === 1 ? value : undefined; },
+        { timeoutMs: 8000, label: 'all children closed' }).catch(() => tabState());
       check('tabs: closing all children returns to primary only', t.count === 1 && t.visible === 'true' && Number(t.views) === 1, { count: 1, visible: 'true', views: 1 }, t);
       // Automatic timer popup.
       await pageHostFetch('/navigate', { method: 'POST', headers: state.scope, body: { url: fixtureUrl + '?auto=1' } });
@@ -872,6 +875,27 @@ async function main() {
           && hiddenState.ui?.display?.hidden === true,
         { mode: 'headed', window: 'offscreen', hidden: true },
         { mode: hiddenState.ui?.display?.mode, window: hiddenState.ui?.display?.window, hidden: hiddenState.ui?.display?.hidden });
+
+      await setStageScroll(0);
+      const geom = await waitFor(boxGeom, { timeoutMs: 5000, label: 'headed preview frame' });
+      const target = await targetEval(`(() => {
+        const rect = document.getElementById('btn-100-l').getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2,
+          width: innerWidth, height: innerHeight, origin: performance.timeOrigin, scrollY };
+      })()`);
+      const point = screenOf(geom, target.width, target.height, target.x, target.y);
+      if (!inStage(geom, point)) throw new Error('headed input fixture point is outside the preview stage');
+      await clickAt(point.x, point.y);
+      const click = await targetEval(`({ count: window.__counts['btn-100-l'] || 0,
+        trusted: window.__clicks.some((event) => event.id === 'btn-100-l' && event.trusted) })`);
+      check('display: the headed panel forwards a trusted click to the fixture', click.count === 1 && click.trusted,
+        { count: 1, trusted: true }, click);
+      await wheelAt(point.x, point.y, 180);
+      const afterWheel = await targetEval(`({ scrollY, origin: performance.timeOrigin,
+        trusted: window.__wheels.some((event) => event.trusted && event.dy > 0) })`);
+      check('display: the headed panel scrolls the same document with a trusted wheel',
+        afterWheel.trusted && afterWheel.scrollY > target.scrollY && afterWheel.origin === target.origin,
+        { scrollY: `>${target.scrollY}`, origin: target.origin, trusted: true }, afterWheel);
       await evaluate(`(() => { const b=document.querySelector('[data-utb-display="headless"]'); if (b) b.click(); return !!b; })()`);
       let back = null;
       const backDeadline = Date.now() + 20000;

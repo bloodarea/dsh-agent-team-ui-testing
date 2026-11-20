@@ -10,9 +10,8 @@
  *   - a normal click/input batch reports `delivery.verified && delivery.delivered`, and an
  *     independent page-side recorder (installed by the fixture, not by the probe) agrees;
  *   - a text-only `browser_input` batch says `verified:false, delivered:null` — no claim either way;
- *   - a page that swallows the probe (adversarial: clears the marker on the very events under test)
- *     makes both `browser_input` and `browser_click` fail loudly with `INPUT_NOT_DELIVERED`
- *     after exactly one retry, instead of the historical silent success;
+ *   - a page that suppresses part of the probe evidence makes both input paths report
+ *     `INPUT_NOT_DELIVERED` without replaying a partially observed gesture;
  *   - `Runtime.activate()` coalesces concurrent callers into one `Page.bringToFront`, and re-fronts
  *     after a sibling runtime took the front (the old per-runtime 300 ms throttle skipped it).
  *
@@ -164,19 +163,17 @@ try {
     check('D21 the settled read cleans up the page probe', probeRemoved === true, true, probeRemoved);
   }
 
-  // 3. The silent-failure shape: the page really receives events but never records them for the
-  //    verdict. The tool must fail loudly, once, after exactly one retry.
+  // 3. The page really receives events but suppresses part of the probe evidence.
   const trap = await fixture({ swallowProbe: true });
   await call('browser_navigate', { url: trap });
   const silentClick = await call('browser_click', { selector: '#btn' });
   check('D08 a click the page never recorded fails with INPUT_NOT_DELIVERED',
     silentClick.ok === false && silentClick.error?.code === 'INPUT_NOT_DELIVERED',
     'INPUT_NOT_DELIVERED', { ok: silentClick.ok, code: silentClick.error?.code, message: silentClick.error?.message });
-  check('D09 the failure carries the retry count and the page-side witness',
-    silentClick.error?.details?.attempts === 2
-      && Array.isArray(silentClick.error?.details?.seen)
-      && silentClick.error.details.seen.every((type) => !['mousedown', 'pointerdown', 'mouseup', 'pointerup'].includes(type)),
-    { attempts: 2, 'seen without press/release': true }, silentClick.error?.details?.attempts);
+  check('D09 a partially observed click reports its witness without replaying',
+    silentClick.error?.details?.attempts === 1 && silentClick.error?.details?.seen?.includes('click')
+      && silentClick.error?.details?.missing?.length > 0,
+    { attempts: 1, seen: ['click'], missing: 'one or more required events' }, silentClick.error?.details);
   const silentInput = await call('browser_input', {
     events: [{ kind: 'mouse', type: 'mousePressed', x: 100, y: 80, button: 'left', buttons: 1, clickCount: 1 }, { kind: 'mouse', type: 'mouseReleased', x: 100, y: 80, button: 'left', buttons: 0, clickCount: 1 }],
   });
@@ -242,6 +239,15 @@ try {
         && healedInputDelivery?.recovery === 'document-recycled' && navigations.length === 2,
         { delivered: true, recovery: 'document-recycled', navigations: 2 },
         { ok: healedInput.ok, delivery: healedInputDelivery, navigations });
+      swallow = true;
+      navigations = [];
+      const beforeWheel = (await call('browser_eval', { expression: 'performance.timeOrigin' })).value?.value;
+      const droppedWheel = await call('browser_input', { events: [{ kind: 'wheel', x: 100, y: 100, deltaY: 180 }] });
+      const afterWheel = (await call('browser_eval', { expression: 'performance.timeOrigin' })).value?.value;
+      check('D28 even a headless wheel failure preserves the document',
+        droppedWheel.error?.code === 'INPUT_NOT_DELIVERED' && droppedWheel.error.details?.attempts === 2
+        && typeof beforeWheel === 'number' && beforeWheel === afterWheel && navigations.length === 0,
+        { attempts: 2, navigations: 0, documentPreserved: true }, { error: droppedWheel.error, navigations, beforeWheel, afterWheel });
     } finally {
       cdp.send = realSend;
     }

@@ -23,17 +23,19 @@ function cssBlock(name) {
 
 const TARGET_ENVS = ['web', 'windows', 'android', 'linux', 'macos', 'tui', 'harmonyos', 'game', 'three-d', 'miniprogram'];
 
-test('目标环境清单是 10 个，且每个都有短名（标题用）', () => {
-  const block = clientSource.slice(
-    clientSource.indexOf('    const ENVIRONMENTS = ['),
-    clientSource.indexOf('    ];', clientSource.indexOf('    const ENVIRONMENTS = [')),
-  );
-  const ids = [...block.matchAll(/\{ id: '([a-z0-9-]+)'/gu)].map((m) => m[1]);
-  assert.deepEqual(ids, TARGET_ENVS, '目标环境清单变了，视图注册表要同步');
-  for (const id of TARGET_ENVS) {
-    assert.ok(new RegExp("\\{ id: '" + id + "', label: '[^']+', short: '[^']+', ready: (true|false) \\}").test(block),
-      id + ' 缺少 short 短名（标题按它派生）');
-  }
+test('目标环境清单来自 Host catalog，面板不再维护静态表', () => {
+  // 面板自带的静态环境表曾与 Host 的注册表漂移（面板宣告 linux，Host 注册 linux-desktop；
+  // 面板还宣告了六个 Host 压根没登记的环境）。id 与显示名只能来自 GET /config 的 catalog。
+  assert.equal(/const ENVIRONMENTS = \[\s*\{ id: '/u.test(clientSource), false,
+    '面板又出现静态环境数组：id 必须来自 Host catalog');
+  const block = /const ENVIRONMENTS = React\.useMemo\(\(\) => \{([\s\S]*?)\}, \[hostConfig\.state\.catalog\]\);/u.exec(clientSource);
+  assert.ok(block, '缺少按 catalog 派生的 ENVIRONMENTS');
+  assert.ok(block[1].includes('hostConfig.state.catalog'), '没有读主机目录');
+  assert.ok(block[1].includes('item.testOnly !== true'), 'testOnly 环境不能进普通下拉框');
+  assert.ok(block[1].includes("ready: item.status === 'supported'"),
+    'ready 必须由 Host 的实现状态决定，面板不得自行判断');
+  assert.ok(block[1].includes('item.label') && block[1].includes('item.short'),
+    '标签与短名也要来自目录，否则又是一份本地词表');
 });
 
 test('视图注册表按环境查表，只有 web 有实现', () => {
@@ -82,16 +84,23 @@ test('占位样式必须在面板自己的样式表里（放错表就不会生�
     '占位样式被写进了设置页样式表（面板不会加载它）');
 });
 
-test('无头/有头切换属于 Web 视图：仅在 web 且视图存在时出现', () => {
-  assert.ok(clientSource.includes("env === 'web' && envViewSupported && h('div', {"),
-    '运行模式切换没有跟随 Web 视图');
+test('无头/有头切换与 DevTools 由环境能力表决定，外壳不写环境 id', () => {
+  assert.ok(clientSource.includes('const ENV_FEATURES = { web: { devtools: true, displayMode: true } };'),
+    '缺少环境能力表');
+  assert.ok(clientSource.includes("envHasFeature(env, 'displayMode') && envViewSupported && h('div', {"),
+    '运行模式切换没有跟随环境能力');
+  assert.ok(clientSource.includes("if (!envHasFeature(env, 'devtools') || !running || devtools.available !== true) {"),
+    'DevTools 门禁没有跟随环境能力');
+  // 外壳里不得再有环境 id 比较：新增环境时不应改外壳。
+  assert.equal(/env === 'web'|env !== 'web'|tabsEnvRef\.current !== 'web'/u.test(clientSource), false,
+    '外壳里还残留环境 id 比较');
 });
 
 test('组合框只列开关已打开的目标环境（没开的根本不出现）', () => {
   // 选项 = 开关为 true 的环境过滤后的结果，不是全体 10 个
   assert.ok(clientSource.includes('const fromConfig = enabledFromConfig(hostConfig.state.config, option.id);'),
     '组合框没有读每个环境的总开关');
-  assert.ok(clientSource.includes('.filter((option) => option.enabled), [hostConfig.state.config, allowedEnvironments]);'),
+  assert.ok(clientSource.includes('.filter((option) => option.enabled), [ENVIRONMENTS, hostConfig.state.config, allowedEnvironments]);'),
     '组合框没有把未启用的环境过滤掉');
   assert.ok(!clientSource.includes("option.label + '（未启用）'"),
     '还在用「（未启用）」占位，而不是直接不列出来');

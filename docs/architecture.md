@@ -58,6 +58,7 @@ flowchart LR
 
 ## 配置驱动执行与上下文
 
+- **环境词表单源**：id、显示名与实现状态只在 `core/config.js` 的 `environmentCatalog()` 定义，经 `GET /config` 的 `catalog` 字段提供给面板与设置页。客户端不得维护自己的环境清单——面板曾因此宣告了 Host 从未登记的环境 id（`tests/contracts/environment-catalog.test.mjs` 是这条的门禁）。
 - **配置真值在 Host**：设置页只提交意图，Host 校验、CAS 写入并返回权威 `revision`。默认文件为 `${DSH_HOME}/ui-testing/config.json`，可用 `DSH_UI_TESTING_CONFIG_DIR` 覆盖；原子写、0600、跨进程锁与损坏回退。
 - **作用域全序**：session 自身 > 继承父的有效快照（`parentSession`，≤8）> workspace > global；只暴露当前环境的专用 schema/Skill，`enabledEnvironments` 只决定“允许启用”。
 - **工具准入**：`ctx.tools.register(definition, { when })` 在 step 组装时排除非当前环境/未启用能力的工具；执行入口与 GUI 页面写路由再次校验，旧调用与面板旁路不能绕过。

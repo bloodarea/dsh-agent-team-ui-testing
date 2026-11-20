@@ -119,13 +119,25 @@ export const WEB_PROVIDER_VENDOR = Object.freeze({
  */
 export const WEB_PROVIDER_PROFILE_SUFFIX = Object.freeze({ chrome: 'chrome', edge: 'edge', firefox: 'firefox' });
 
-/** Known environments. Only web/fake have implementations in this milestone. */
+/**
+ * Known environments. Only web/fake have implementations in this milestone; the rest are
+ * registered as planned so that a planned environment is *announced* by the Host instead of
+ * being invented by a client. This object is the single vocabulary: the config catalog, the
+ * settings page and the panel selector all derive their ids from it (a panel-local list is a
+ * defect — see tests/contracts/environment-catalog.test.mjs).
+ */
 export const ENVIRONMENTS = Object.freeze({
   WEB: 'web',
   FAKE: 'fake',
   LINUX: 'linux-desktop',
   ANDROID: 'android',
   MINIPROGRAM: 'mini-program',
+  WINDOWS: 'windows',
+  MACOS: 'macos',
+  TUI: 'tui',
+  HARMONYOS: 'harmonyos',
+  GAME: 'game',
+  THREE_D: 'three-d',
 });
 
 /**

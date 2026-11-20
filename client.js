@@ -335,22 +335,13 @@ window.__ModuleLoader__.load({
 
     const ID = 'ui-testing-browser';
     /** 面板构建标识：刷新后用它确认浏览器里跑的是哪一份 client.js（排查「改了没生效」）。 */
-    const CLIENT_BUILD = '2026-11-11T18:50+08:00·address-history-per-workspace';
+    const CLIENT_BUILD = '2026-11-19T22:20+08:00·env-catalog-derived';
     const KIND = 'debug-view';
     const TITLE = '调试视图';
-    /** 可选运行环境；本期只有 Web 视图可用，其余置灰。 */
-    const ENVIRONMENTS = [
-      { id: 'web', label: 'Web 视图', short: 'Web', ready: true },
-      { id: 'windows', label: 'Windows 视图', short: 'Windows', ready: false },
-      { id: 'android', label: 'Android 视图', short: 'Android', ready: false },
-      { id: 'linux', label: 'Linux 视图', short: 'Linux', ready: false },
-      { id: 'macos', label: 'macOS 视图', short: 'macOS', ready: false },
-      { id: 'tui', label: 'TUI 视图', short: 'TUI', ready: false },
-      { id: 'harmonyos', label: 'HarmonyOS 视图', short: 'HarmonyOS', ready: false },
-      { id: 'game', label: '游戏视图', short: '游戏', ready: false },
-      { id: 'three-d', label: '3D 视图', short: '3D', ready: false },
-      { id: 'miniprogram', label: '小程序视图', short: '小程序', ready: false },
-    ];
+    // 目标环境清单**不在这里**：id 与显示名都来自 Host 的 `GET /config` 响应里的 `catalog`
+    // （`core/config.js` 的 `environmentCatalog()`）。面板维护自己的静态表曾经导致两套对不上的词表
+    // （面板宣告 `linux`，Host 注册的是 `linux-desktop`；面板还宣告了六个 Host 根本没登记的环境）。
+    // 组件内按 catalog 派生 `ENVIRONMENTS`，见 `DebugViewBody` 开头。
     /** 与 Host 半边的运行时通信（同源，走应用自身的鉴权）。 */
     const HOST_BASE = '/plugins/ui-testing';
     const SCOPE_VERSION = '1';
@@ -689,14 +680,14 @@ window.__ModuleLoader__.load({
     const ENV_DEFAULTS = Object.freeze({
       web: { preset: 'landscape', fit: true },
       windows: { preset: 'landscape', fit: true },
-      linux: { preset: 'landscape', fit: true },
+      'linux-desktop': { preset: 'landscape', fit: true },
       macos: { preset: 'landscape', fit: true },
       tui: { preset: 'landscape', fit: true },
       android: { preset: 'phone', fit: true },
       harmonyos: { preset: 'phone', fit: true },
       game: { preset: 'wide', fit: true },
       'three-d': { preset: 'wide', fit: true },
-      miniprogram: { preset: 'phone', fit: true },
+      'mini-program': { preset: 'phone', fit: true },
     });
     function envDefaultSize(id) {
       const def = ENV_DEFAULTS[id] || ENV_DEFAULTS.web;
@@ -2795,6 +2786,17 @@ window.__ModuleLoader__.load({
        */
       const ENV_VIEWS = { web: webViewBody };
       /**
+       * 环境能力表：外壳只查表，不再按环境 id 写条件分支。
+       *
+       * 新增一个环境时，外壳不需要任何条件分支——有视图就登记 `ENV_VIEWS`，有标签栏就登记
+       * `ENV_TABS`，有外壳级控件（运行模式、DevTools）就在 `ENV_FEATURES` 里声明。三张表都在
+       * 组件顶部提前声明（函数声明会提升，`webTabsProvider` 可以在这里被引用）。
+       */
+      const ENV_TABS = { web: webTabsProvider };
+      const ENV_FEATURES = { web: { devtools: true, displayMode: true } };
+      const envHasTabs = (id) => typeof ENV_TABS[id] === 'function';
+      const envHasFeature = (id, name) => Boolean(ENV_FEATURES[id] && ENV_FEATURES[id][name] === true);
+      /**
        * 视图接点（公共外壳 ↔ 环境视图的唯一接口）。
        *
        * 外壳只问三件事：这个环境有没有视图（`has`）、把它的正文渲染出来（`render`）、以及在没有
@@ -3126,6 +3128,26 @@ window.__ModuleLoader__.load({
       const allowedEnvironments = hostResolved && Array.isArray(hostResolved.enabledEnvironments)
         ? hostResolved.enabledEnvironments.map(String) : null;
       /**
+       * 可选目标环境：**id、显示名、实现状态全部来自 Host catalog**，面板不再有本地静态表。
+       *
+       * - `ready` 由 Host 的 `status` 决定（`supported` 才允许提交 `config/select`）；planned 环境
+       *   仍可选择本地视图，走空白画布分支。
+       * - `testOnly` 行不进普通用户的下拉框（夹具环境由测试面自己渲染）。
+       * - catalog 还没读到时只保留 web，不凭本地表猜有哪些环境（读到后再展开）。
+       */
+      const ENVIRONMENTS = React.useMemo(() => {
+        const catalog = Array.isArray(hostConfig.state.catalog) ? hostConfig.state.catalog : [];
+        const rows = catalog
+          .filter((item) => item && typeof item.id === 'string' && item.id && item.testOnly !== true)
+          .map((item) => ({
+            id: item.id,
+            label: typeof item.label === 'string' && item.label ? item.label : item.id,
+            short: typeof item.short === 'string' && item.short ? item.short : item.id,
+            ready: item.status === 'supported',
+          }));
+        return rows.length ? rows : [{ id: 'web', label: 'Web 视图', short: 'Web', ready: true }];
+      }, [hostConfig.state.catalog]);
+      /**
        * 组合框**只列开关已打开的目标环境**（`environments.<id>.enabled`）：
        * 开了 web + android，就只出现这两个选项。打开的但视图层没实现 → 选中后渲染空态
        * （执行环境不变）。宿主配置还没读到（`config` 为 null）时按可执行集合 + web 兜底，
@@ -3139,11 +3161,11 @@ window.__ModuleLoader__.load({
             : fromConfig;
           return Object.assign({}, option, { enabled });
         })
-        .filter((option) => option.enabled), [hostConfig.state.config, allowedEnvironments]);
+        .filter((option) => option.enabled), [ENVIRONMENTS, hostConfig.state.config, allowedEnvironments]);
       const envOptions = React.useMemo(() => (envEnabledList.length
         ? envEnabledList
         : ENVIRONMENTS.filter((option) => option.id === 'web').map((option) => Object.assign({}, option, { enabled: true }))),
-      [envEnabledList]);
+      [envEnabledList, ENVIRONMENTS]);
 
       // 当前选中的环境被关掉时（用户在设置页关开关），退回宿主当前执行环境，避免组合框空值。
       React.useEffect(() => {
@@ -3236,7 +3258,7 @@ window.__ModuleLoader__.load({
       }, [binding, childBinding]);
 
       function switchView(viewId) {
-        if (tabsEnvRef.current !== 'web') return;
+        if (!envHasTabs(tabsEnvRef.current)) return;
         if (!viewId || viewId === activeViewId) return;
         if (annotRef.current.on) toggleAnnotMode();
         if (panModeRef.current) {
@@ -3251,7 +3273,7 @@ window.__ModuleLoader__.load({
       }
 
       function newTab() {
-        if (tabsEnvRef.current !== 'web' || !stableViews || tabOpening) return;
+        if (!envHasTabs(tabsEnvRef.current) || !stableViews || tabOpening) return;
         if (annotRef.current.on) toggleAnnotMode();
         if (panModeRef.current) {
           panModeRef.current = false;
@@ -3286,7 +3308,7 @@ window.__ModuleLoader__.load({
        * 成功时把锁标记写回缓存的 views（下一轮 /state 会再确认一次）；失败只提示，不改状态。
        */
       function toggleTabLock(view) {
-        if (tabsEnvRef.current !== 'web' || !view || typeof view.id !== 'string') return;
+        if (!envHasTabs(tabsEnvRef.current) || !view || typeof view.id !== 'string') return;
         const nextLocked = !(view.locked === true);
         const tabId = String(view.id);
         callHost('tabs', { action: nextLocked ? 'lock' : 'unlock', tabId }, { scope: scopeNowForView(view) })
@@ -3325,7 +3347,7 @@ window.__ModuleLoader__.load({
       }
 
       function closeView(view) {
-        if (tabsEnvRef.current !== 'web' || !view) return;
+        if (!envHasTabs(tabsEnvRef.current) || !view) return;
         if (view.kind === 'primary') {
           // Close the last (primary) tab into the EMPTY state: the fixed primary slot goes cold,
           // so the strip renders no tabs at all and keeps only the `+` entry. Target it by runtime
@@ -3424,7 +3446,7 @@ window.__ModuleLoader__.load({
         if (!guiHostIsLoopback()) {
           return { enabled: false, url: '', title: '调试工具仅支持浏览器与 DSH 同机访问；远程 GUI 暂不支持' };
         }
-        if (env !== 'web' || !running || devtools.available !== true) {
+        if (!envHasFeature(env, 'devtools') || !running || devtools.available !== true) {
           return { enabled: false, url: '', title: '请先在调试视图中打开页面' };
         }
         const validated = validateDevtoolsUrl(devtools.url);
@@ -8254,8 +8276,7 @@ window.__ModuleLoader__.load({
         const text = /BUSY|LEASE|OWNER/i.test(code)
           ? 'Agent 正在操作此标签' + (owner ? '（' + String(owner) + '）' : '') + '，输入暂不可用；可切换到其他标签'
           : code === 'INPUT_NOT_DELIVERED'
-            // The Host already retried and rebuilt the document; the page really did not receive it.
-            ? '页面没有收到这次输入（已在后台自动重试），请重新加载该页后再试'
+            ? '页面未收到完整输入，请检查当前标签的状态'
             : (error && error.message ? '输入发送失败：' + String(error.message) : '输入发送失败');
         setInputNotice(text);
         window.clearTimeout(inputNoticeTimerRef.current);
@@ -9258,7 +9279,6 @@ window.__ModuleLoader__.load({
        * Component-local tabs providers, separate from environment body/annotation registration.
        * Missing providers (or null models) expose no targets or actions; never fall back to Web.
        */
-      const ENV_TABS = { web: webTabsProvider };
       const tabsProvider = ENV_TABS[env];
       const envTabs = typeof tabsProvider === 'function' ? tabsProvider() : null;
       const tabsSupported = Boolean(envTabs);
@@ -10358,7 +10378,7 @@ h('div', { className: 'utb-bar' },
             h('span', { className: 'utb-env-title', 'data-utb-env-title': env }, envViewTitle)),
           h('span', { className: 'utb-gap' }),
           // Web-view-only run-mode switch: headless (default) vs headed (visible window + profile).
-          env === 'web' && envViewSupported && h('div', {
+          envHasFeature(env, 'displayMode') && envViewSupported && h('div', {
             className: 'utb-seg utb-display-seg',
             role: 'group',
             'aria-label': '运行模式',
@@ -10467,7 +10487,7 @@ h('div', { className: 'utb-bar' },
         ],
       },
       {
-        id: 'linux', title: 'Linux 视图',
+        id: 'linux-desktop', title: 'Linux 视图',
         targets: [
           plannedTarget('linux-native', 'Linux 原生桌面应用', 'GTK / Qt / Flutter 等原生窗口', TARGET_CHAINS.linux),
           plannedTarget('electron', 'Electron 应用', 'Chromium 页面与原生应用窗口', TARGET_CHAINS.electron),
@@ -10561,7 +10581,7 @@ h('div', { className: 'utb-bar' },
         ],
       },
       {
-        id: 'miniprogram', title: '小程序视图',
+        id: 'mini-program', title: '小程序视图',
         targets: [
           miniProgramTarget('wechat', '微信'),
           miniProgramTarget('alipay', '支付宝'),
@@ -11594,10 +11614,35 @@ h('div', { className: 'utb-bar' },
 
     const EMPTY_HOST_CONFIG = Object.freeze({
       loading: true, error: '', revision: null, config: null, resolved: null, readiness: {}, checkedAt: '',
+      // Host-declared environment catalog (id / label / short / status). The panel's selector and
+      // settings groups derive from it; an empty catalog means "the Host has not answered yet".
+      catalog: Object.freeze([]),
       // Local observation time of the last *successful* read (ms). `checkedAt` is the Host's probe
       // time; this one answers "how long ago did this page last hear from the Host".
       lastReadAt: 0,
     });
+
+    /**
+     * Normalize one catalog row from the Host.
+     *
+     * Only well-formed rows survive; an unknown `status` is reported as `planned`, never as
+     * `supported`, so a newer Host cannot make this panel treat an unimplemented environment as
+     * executable. `testOnly` rows are kept (flagged) and filtered by the surface that renders them.
+     */
+    function normalizeCatalogRow(row) {
+      if (!row || typeof row !== 'object') return null;
+      const id = typeof row.id === 'string' ? row.id.trim() : '';
+      if (!id) return null;
+      const status = row.status === 'supported' ? 'supported' : 'planned';
+      return {
+        id,
+        label: typeof row.label === 'string' && row.label ? row.label : id,
+        short: typeof row.short === 'string' && row.short ? row.short : id,
+        status,
+        planned: status === 'planned',
+        testOnly: row.testOnly === true,
+      };
+    }
 
     /** Adopt one Host config payload; a payload without a numeric revision is a failed read. */
     function mergeHostConfig(previous, payload) {
@@ -11612,6 +11657,9 @@ h('div', { className: 'utb-bar' },
       const checkedAt = payload.readiness && payload.readiness.checkedAt
         ? String(payload.readiness.checkedAt)
         : previous.checkedAt;
+      const catalog = Array.isArray(payload.catalog)
+        ? payload.catalog.map(normalizeCatalogRow).filter(Boolean)
+        : previous.catalog;
       return {
         loading: false,
         error: '',
@@ -11620,6 +11668,7 @@ h('div', { className: 'utb-bar' },
         resolved: payload.resolved !== undefined ? payload.resolved : previous.resolved,
         readiness,
         checkedAt,
+        catalog,
         lastReadAt: previous.lastReadAt || 0,
       };
     }

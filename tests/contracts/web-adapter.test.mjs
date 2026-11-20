@@ -1201,9 +1201,9 @@ function importSpecifiers(source) {
   return specs;
 }
 
-test('targets/web sources import only node builtins and core modules', () => {
+test('targets/web sources keep platform dependencies inside the runtime', () => {
   const files = readdirSync(WEB_DIR).filter((name) => name.endsWith('.js'));
-  assert.deepEqual(files.sort(), ['adapter.js', 'audio-source.js', 'audio-tap.js', 'environment.js', 'frame-transport.js', 'host.js', 'invoke.js', 'provider.js', 'routes.js', 'scope-target.js', 'tabs.js', 'tools.js', 'transition.js']);
+  assert.deepEqual(files.sort(), ['adapter.js', 'audio-source.js', 'audio-tap.js', 'environment.js', 'frame-transport.js', 'headed-x11.js', 'host.js', 'invoke.js', 'provider.js', 'routes.js', 'scope-target.js', 'tabs.js', 'tools.js', 'transition.js']);
 
   // A platform implementation may import `core/`, the neutral platform helpers that are not
   // environment-specific (`browser-safety.js` error/CDP types, `select-control.js` projections) and
@@ -1239,7 +1239,8 @@ test('targets/web sources import only node builtins and core modules', () => {
     if (specs.length === 0) continue;
     for (const spec of specs) {
       const isNodeBuiltin = spec.startsWith('node:');
-      assert.ok(isNodeBuiltin || allowed.has(spec), `${file} imports ${spec}`);
+      const isX11Helper = file === 'headed-x11.js' && spec === 'x11';
+      assert.ok(isNodeBuiltin || allowed.has(spec) || isX11Helper, `${file} imports ${spec}`);
       if (!runtimeLayerFiles.has(file) || !spec.endsWith('frame-push.js')) {
         assert.equal(forbiddenModules.some((name) => spec.endsWith(name)), false, `${file} imports ${spec}`);
       }

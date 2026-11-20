@@ -3,6 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
+import { ENVIRONMENTS } from '../../core/contracts.js';
+
 const source = fs.readFileSync(new URL('../../client.js', import.meta.url), 'utf8');
 function functionSource(name) {
   const start = source.indexOf('      function ' + name + '(');
@@ -168,10 +170,16 @@ test('Web provider 拥有标题清洗、主子标签关闭语义和新建中状�
 });
 
 test('无 provider 的环境不继承 Web 缓存，公共标签开关禁用且无处理器', () => {
-  const registryStart = source.indexOf('      const ENV_TABS =');
-  const registryEnd = source.indexOf('\n\n      /** Web adapter:', registryStart);
-  const resolve = new Function('env', 'tabsVisible', 'webTabsProvider', source.slice(registryStart, registryEnd) + '\nreturn {envTabs, tabsSupported, showTabs};');
-  for (const env of ['linux', 'windows', 'macos', 'android', 'tui', 'harmonyos', 'miniprogram', 'game', 'three-d']) {
+  // The table is declared once, early (next to ENV_VIEWS, so the shell can answer "does this
+  // environment have tabs?" before rendering); the resolution stays with the Web adapter.
+  const table = /const ENV_TABS = \{([^}]*)\};/u.exec(source);
+  assert.ok(table, 'missing ENV_TABS table');
+  const resolution = /const tabsProvider = ENV_TABS\[env\];[\s\S]*?const showTabs = tabsSupported && tabsVisible;/u.exec(source);
+  assert.ok(resolution, 'missing tabs resolution block');
+  const resolve = new Function('env', 'tabsVisible', 'webTabsProvider',
+    'const ENV_TABS = {' + table[1] + '};\n' + resolution[0] + '\nreturn {envTabs, tabsSupported, showTabs};');
+  // Every announced environment except web, plus an id no Host has registered.
+  for (const env of [...Object.values(ENVIRONMENTS).filter((id) => id !== 'web'), 'not-an-environment']) {
     const state = resolve(env, true, () => { throw new Error('non-Web must not invoke Web provider'); });
     assert.deepEqual(state, { envTabs: null, tabsSupported: false, showTabs: false });
     const toolbar = load('shellBarPublic', {
@@ -192,12 +200,14 @@ test('无 provider 的环境不继承 Web 缓存，公共标签开关禁用且�
 test('切离 Web 后，旧标签行所有回调在任何 Web 状态读取或请求之前退出', () => {
   const tabsEnvRef = { current: 'web' };
   // Other dependencies intentionally absent: touching Web state after the switch fails this test.
+  const envHasTabs = (id) => id === 'web';
   const callbacks = {
-    switchView: load('switchView', { tabsEnvRef }), newTab: load('newTab', { tabsEnvRef }), closeView: load('closeView', { tabsEnvRef }),
+    switchView: load('switchView', { tabsEnvRef, envHasTabs }), newTab: load('newTab', { tabsEnvRef, envHasTabs }),
+    closeView: load('closeView', { tabsEnvRef, envHasTabs }),
   };
   const state = webProvider(callbacks)();
   const staleTree = render(state, true);
-  tabsEnvRef.current = 'linux';
+  tabsEnvRef.current = 'android';
   assert.doesNotThrow(() => by(staleTree, 'data-utb-tab')[0].props.onClick());
   assert.doesNotThrow(() => by(staleTree, 'data-utb-tab-close')[0].props.onClick({ stopPropagation() {} }));
   assert.doesNotThrow(() => by(staleTree, 'data-utb-tab-new')[0].props.onClick());
