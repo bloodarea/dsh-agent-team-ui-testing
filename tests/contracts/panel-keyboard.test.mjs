@@ -3,7 +3,12 @@
  *
  * 旧实现的三处漏（用户下一个要报的就是"快捷键没传进去"）：
  *   ① `Ctrl/Cmd/Alt` 组合直接 return；② 只认 7 个键；③ 可打印字符走 kind:'text'（没有 keydown）。
- * 这里把纯函数 `panelKeyEvents` 抽出来逐条验，避免再退回。
+ * 这里把纯函数 `panelKeyEvents` / `panelKeyReleaseEvents` 抽出来逐条验，避免再退回。
+ *
+ * 按下与松开是**两个函数、两个方向**：`panelKeyEvents` 只发 keyDown，`panelKeyReleaseEvents`
+ * 只发 keyUp。早期这里预期一次调用返回「按下 + 松开」一对，于是页面永远看不到"按住"——游戏
+ * 里 W+A 斜向移动、按住方向键连续走全部失效。修复把它们拆开后断言没跟上，本文件一直是红的；
+ * 现在按真实契约断言，并补上松开方向此前完全缺失的覆盖。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,14 +23,21 @@ const codesSource = /const PANEL_KEY_CODES = \{[\s\S]*?\n      \};/u.exec(client
 assert.ok(codesSource, '缺少 PANEL_KEY_CODES');
 const fnSource = /function panelKeyEvents\(event\) \{[\s\S]*?\n      \}/u.exec(clientSource);
 assert.ok(fnSource, '缺少 panelKeyEvents');
-const panelKeyEvents = new Function(codesSource[0] + '\n' + fnSource[0] + '\nreturn panelKeyEvents;')();
+const releaseSource = /function panelKeyReleaseEvents\(event\) \{[\s\S]*?\n      \}/u.exec(clientSource);
+assert.ok(releaseSource, '缺少 panelKeyReleaseEvents（keyup 必须单独转发，不能并进按下）');
+const { panelKeyEvents, panelKeyReleaseEvents } = new Function(
+  codesSource[0] + '\n' + fnSource[0] + '\n' + releaseSource[0]
+    + '\nreturn { panelKeyEvents, panelKeyReleaseEvents };',
+)();
 
 const key = (over) => Object.assign({
   key: 'a', code: 'KeyA', keyCode: 65, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, repeat: false,
 }, over);
 
-test('普通字符：keyDown + keyUp，带文本、物理 keyCode 与 code', () => {
-  const [down, up] = panelKeyEvents(key({}));
+test('普通字符：按下带文本、物理 keyCode 与 code；松开单独发且不带文本', () => {
+  const events = panelKeyEvents(key({}));
+  assert.equal(events.length, 1, '按下只发 keyDown，keyUp 由 panelKeyReleaseEvents 负责');
+  const [down] = events;
   assert.equal(down.type, 'keyDown');
   assert.equal(down.key, 'a');
   assert.equal(down.text, 'a');
@@ -33,13 +45,22 @@ test('普通字符：keyDown + keyUp，带文本、物理 keyCode 与 code', () 
   assert.equal(down.virtualKeyCode, 65);
   assert.equal(down.code, 'KeyA');
   assert.equal(down.modifiers, 0);
+
+  const release = panelKeyReleaseEvents(key({}));
+  assert.equal(release.length, 1);
+  const [up] = release;
   assert.equal(up.type, 'keyUp');
+  assert.equal(up.key, 'a');
+  assert.equal(up.code, 'KeyA');
+  assert.equal(up.virtualKeyCode, 65);
   assert.equal(up.text, undefined, 'keyUp 不该带文本');
+  assert.equal(up.unmodifiedText, undefined, 'keyUp 不该带 unmodifiedText');
+  assert.equal(up.autoRepeat, undefined, '松开不标记长按');
 });
 
 test('快捷键：Ctrl/Cmd/Shift 组合不再被丢掉，modifiers 位掩码正确', () => {
   const ctrlZ = panelKeyEvents(key({ key: 'z', code: 'KeyZ', keyCode: 90, ctrlKey: true }));
-  assert.equal(ctrlZ.length, 2, 'Ctrl+Z 必须转发（旧实现直接 return）');
+  assert.equal(ctrlZ.length, 1, '按下只发一个事件');
   assert.equal(ctrlZ[0].modifiers, 2, 'Ctrl = bit 2');
   assert.equal(ctrlZ[0].key, 'z');
   assert.equal(ctrlZ[0].type, 'rawKeyDown', '快捷键走 rawKeyDown');
@@ -84,18 +105,38 @@ test('非字符键：Home/End/PgUp/PgDn/Delete/Insert/F1-F12 都要转发', () =
   ];
   for (const [name, code] of cases) {
     const events = panelKeyEvents(key({ key: name, code: name, keyCode: 0 }));
-    assert.equal(events.length, 2, name + ' 必须被转发（旧实现丢掉了大部分）');
+    assert.equal(events.length, 1, name + ' 必须被转发（旧实现丢掉了大部分）');
     assert.equal(events[0].virtualKeyCode, code, name + ' 的 virtualKeyCode 不对');
     assert.equal(events[0].text, undefined, name + ' 不该带文本');
+    const release = panelKeyReleaseEvents(key({ key: name, code: name, keyCode: 0 }));
+    assert.equal(release.length, 1, name + ' 的松开也必须转发');
+    assert.equal(release[0].type, 'keyUp');
+    assert.equal(release[0].virtualKeyCode, code, name + ' 松开的 virtualKeyCode 应与按下一致');
   }
 });
 
-test('长按：autoRepeat 透传，且不吞掉重复事件', () => {
+test('长按：autoRepeat 透传，按下与松开相互独立', () => {
   const held = panelKeyEvents(key({ key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, repeat: true }));
   assert.equal(held[0].autoRepeat, true);
-  assert.equal(held.length, 2);
+  assert.equal(held.length, 1, '一次 keydown 只发一个事件；长按由浏览器连续触发 keydown');
   const fresh = panelKeyEvents(key({ key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 }));
   assert.equal(fresh[0].autoRepeat, undefined, '非重复键不要带 autoRepeat');
+  // 按住期间页面必须真的收到 keyup，否则按住语义（W+A 斜向移动）无法结束
+  const release = panelKeyReleaseEvents(key({ key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 }));
+  assert.equal(release.length, 1);
+  assert.equal(release[0].type, 'keyUp');
+  assert.equal(release[0].autoRepeat, undefined, 'keyUp 不携带 autoRepeat');
+});
+
+test('松开：无效键不转发，修饰键位掩码与按下保持一致', () => {
+  assert.deepEqual(panelKeyReleaseEvents({ key: 'Dead', keyCode: 0 }), []);
+  assert.deepEqual(panelKeyReleaseEvents({ key: 'Unidentified', keyCode: 0 }), []);
+  assert.deepEqual(panelKeyReleaseEvents({ key: '', keyCode: 0 }), []);
+  assert.deepEqual(panelKeyReleaseEvents(null), []);
+  const ctrlZ = panelKeyReleaseEvents(key({ key: 'z', code: 'KeyZ', keyCode: 90, ctrlKey: true }));
+  assert.equal(ctrlZ.length, 1);
+  assert.equal(ctrlZ[0].type, 'keyUp', '快捷键的松开同样是 keyUp，不是 rawKeyDown');
+  assert.equal(ctrlZ[0].modifiers, 2, 'Ctrl = bit 2');
 });
 
 test('无效键不转发：Dead / Unidentified / 空按键', () => {
