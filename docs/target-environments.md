@@ -29,7 +29,7 @@
 | HarmonyOS | `harmonyos` | 同上 | 暂无 |
 | 小程序 | `mini-program` | 同上 | 暂无 |
 | 游戏 | `game` | 同上 | 暂无 |
-| 3D | `three-d` | 同上 | 暂无 |
+| 3D | `three-d` | 已登记为 planned：可启用、可切换空白视图，无适配器 | 运行时安装与配置见 [3D 文档入口](three-d/index.md) |
 
 环境 id 与显示名以 Host 目录为唯一来源：`core/config.js` 的 `environmentCatalog()`，经 `GET /config` 的 `catalog` 字段提供给面板与设置页。新增环境时先登记目录，再实现适配器；只在客户端加一个视图 id 不算接入。
 
