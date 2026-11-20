@@ -38,11 +38,12 @@ test('目标环境清单来自 Host catalog，面板不再维护静态表', () =
     '标签与短名也要来自目录，否则又是一份本地词表');
 });
 
-test('视图注册表按环境查表，只有 web 有实现', () => {
+test('视图注册表按环境查表，Web 与 3D 各有正文', () => {
   const registry = /const ENV_VIEWS = \{([^}]*)\};/u.exec(clientSource);
   assert.ok(registry, '缺少 ENV_VIEWS 注册表');
-  const keys = [...registry[1].matchAll(/([a-z0-9-]+):\s*[A-Za-z]/gu)].map((m) => m[1]);
-  assert.deepEqual(keys, ['web'], '当前只应实现 web 视图；新增环境时同步这条断言');
+  const keys = [...registry[1].matchAll(/['"]?([a-z0-9-]+)['"]?:\s*[A-Za-z]/gu)].map((m) => m[1]);
+  assert.deepEqual(keys, ['web', 'three-d']);
+  assert.ok(clientSource.includes("const VIEW_ONLY = new Set(['three-d']);"));
   assert.ok(clientSource.includes('function webViewBody()'),
     'Web 视图应当是一个可注册的函数，而不是写死在树里');
 });
@@ -110,10 +111,10 @@ test('组合框只列开关已打开的目标环境（没开的根本不出现�
   // 没有视图但已启用：切视图、显示空态，不写宿主配置
   // The branch is a pure view switch (no Host config write); it also rotates the panel instance
   // generation so in-flight writes of the previous view are dropped.
-  assert.ok(/if \(typeof ENV_VIEWS\[next\] !== 'function'\) \{[\s\S]{0,400}setEnv\(next\);/.test(clientSource),
+  assert.ok(/if \(!hasExecutionView\(next\)\) \{[\s\S]{0,400}setEnv\(next\);/.test(clientSource),
     'changeEnv 没有把“没有视图”走成纯视图切换');
   assert.equal(/selectHostEnvironment\(next[\s\S]{0,120}\}\s*\n/.test(clientSource.slice(
-    clientSource.indexOf("if (typeof ENV_VIEWS[next] !== 'function') {"),
+    clientSource.indexOf("if (!hasExecutionView(next)) {"),
     clientSource.indexOf("if (!option.ready) return;"))), false,
   '无视图分支不得提交宿主配置');
   assert.ok(clientSource.includes("执行环境仍然是 ' + hostEnvLabel + '，这里只切换视图。"),
@@ -148,13 +149,13 @@ test('宿主英文原因走中文对照，不直接上屏', () => {
  * ---------------------------------------------------------------------------------------------- */
 
 test('视图表提前声明，外壳用单一判断回答"这个环境有没有视图"', () => {
-  const tableAt = clientSource.indexOf('const ENV_VIEWS = { web: webViewBody };');
+  const tableAt = clientSource.indexOf('const ENV_VIEWS = {');
   const helperAt = clientSource.indexOf('const hasEnvironmentView = (id) =>');
   // 通道的挂载点在使用视图表判断之后（工厂本身可以在别处定义，它不读视图表）。
   const transportAt = clientSource.indexOf('viewChannelRef.current.mount()');
   assert.ok(tableAt > 0 && helperAt > tableAt, '缺少视图表或其判断函数');
   assert.ok(helperAt < transportAt, '视图表必须先于使用它的传输/轮询接线声明');
-  assert.ok(/const envHasView = hasEnvironmentView\(env\);/u.test(clientSource));
+  assert.ok(/const envHasView = hasExecutionView\(env\);/u.test(clientSource));
   assert.ok(/envHasViewRef\.current = envHasView;/u.test(clientSource), '回调里读的是当前渲染的环境');
 });
 
@@ -177,7 +178,7 @@ test('视口写入只有一个闸口，且无视图环境直接丢弃补丁', ()
 test('切换环境的默认尺寸：无视图环境只改本地布局', () => {
   const fn = /function applyEnvDefaultSize\(next\) \{[\s\S]*?\n      \}/u.exec(clientSource);
   assert.ok(fn, '缺少 applyEnvDefaultSize');
-  assert.ok(/if \(hasEnvironmentView\(next\)\) queueViewPatch\(/u.test(fn[0]),
+  assert.ok(/if \(hasExecutionView\(next\)\) queueViewPatch\(/u.test(fn[0]),
     '默认尺寸必须按"该环境有没有视图"决定是否发布');
 });
 

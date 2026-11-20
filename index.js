@@ -25,6 +25,7 @@ import { resolveProviderExecutable, verifyProviderProduct } from './targets/web/
 import { createWebToolSurface } from './targets/web/tools.js';
 import { createWebInvoker } from './targets/web/invoke.js';
 import { createWebRoutes } from './targets/web/routes.js';
+import { createBlenderViewport, parseViewportRequest } from './targets/three-d/runtime.js';
 import { createWebFramePush } from './targets/web/frame-transport.js';
 import { createWebTransition } from './targets/web/transition.js';
 import { BrowserError, Cdp, asBrowserError, checkAbort, abortable, redactUrl, redactText, validateTarget } from './browser-safety.js';
@@ -681,6 +682,8 @@ export function apply(ctx) {
   // Panel page routes: the Web environment answers them; the Host keeps authentication, the
   // control plane and the error→status mapping.
   const webRoutes = createWebRoutes({ log, registry, BrowserError, asBrowserError });
+  const blenderViewport = createBlenderViewport();
+  ctx.effect(() => () => blenderViewport.dispose(), 'ui-testing: Blender viewport');
   ctx.effect(() => () => { httpClient.dispose(); }, 'ui-testing: http client');
   /**
    * P0 capture staging root: one per plugin instance, created on first non-persistent capture and
@@ -899,6 +902,31 @@ export function apply(ctx) {
       if (scoped) {
         const status = scopeAuthorization(req);
         if (status) { scopeAuthError(res, status); return; }
+      }
+      if (action === '/blender/frame' && req.method === 'POST') {
+        if (!scoped) { scopeAuthError(res, 401); return; }
+        parseHttpScope(req);
+        if (!crossEnvironment.isViewEnabled('three-d')) {
+          sendJson(res, 409, { ok: false, code: 'ADAPTER_DISABLED', error: '请先在设置中启用 3D 视图。' });
+          return;
+        }
+        const controller = new AbortController();
+        const onClose = () => controller.abort();
+        res.once('close', onClose);
+        try {
+          const frameRequest = parseViewportRequest(await readJson(req));
+          const png = await blenderViewport.frame(frameRequest, controller.signal);
+          if (res.destroyed) return;
+          res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': 'no-store' });
+          res.end(png);
+        } catch (error) {
+          if (res.destroyed) return;
+          if (!error.status) throw error;
+          sendJson(res, error.status, { ok: false, code: error.code, error: error.message });
+        } finally {
+          res.off('close', onClose);
+        }
+        return;
       }
       // Host-side provider diagnostics. Handled before the page-route dispatch so it never creates
       // a Runtime or starts Chromium just by being routed (observe must stay cheap).

@@ -1276,6 +1276,7 @@ export function createCrossEnvironment({
     allowTestEnvironments,
     snapshotForAgent,
     snapshotForScope,
+    isViewEnabled: (id) => configStore.getConfig().global.environments[id]?.enabled === true,
     toolAdmitted,
     assertToolAllowed,
     executionClassFor,

@@ -186,7 +186,8 @@ test('无 provider 的环境不继承 Web 缓存，公共标签开关禁用且�
       h, button: (label, children, onClick, disabled, extra) => h('button', { 'aria-label': label, onClick, disabled, ...extra }, children),
       tabsSupported: state.tabsSupported, tabsVisible: true, setTabsVisible() { throw new Error('unsupported toggle'); },
       IconAnnot: 'annot', IconSize: 'size', IconMore: 'more', toggleAnnotMode() {}, annotReady: true, sizing: false, pickOn: false,
-      annotOn: false, annotPanelId: 'annot', toggleSizing() {}, menu: false, setMenu() {},
+      annotOn: false, annotPanelId: 'annot', annotButtonRef: {}, toggleSizing() {},
+      blenderView: env === 'three-d', menu: false, setMenu() {},
     })();
     const toggle = by(toolbar, 'data-utb-tabs-toggle')[0];
     assert.equal(toggle.props.disabled, true);

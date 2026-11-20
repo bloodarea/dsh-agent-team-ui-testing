@@ -335,7 +335,7 @@ window.__ModuleLoader__.load({
 
     const ID = 'ui-testing-browser';
     /** 面板构建标识：刷新后用它确认浏览器里跑的是哪一份 client.js（排查「改了没生效」）。 */
-    const CLIENT_BUILD = '2026-11-19T22:20+08:00·env-catalog-derived';
+    const CLIENT_BUILD = '2026-11-20·blender-panel-controls';
     const KIND = 'debug-view';
     const TITLE = '调试视图';
     // 目标环境清单**不在这里**：id 与显示名都来自 Host 的 `GET /config` 响应里的 `catalog`
@@ -1904,6 +1904,13 @@ window.__ModuleLoader__.load({
   box-shadow: 0 0 0 1px var(--dsw-alias-border-l2), 0 8px 24px rgba(0, 0, 0, .32);
 }
 .utb-blank-hint { max-width: calc(100% - 16px); padding: 12px; text-align: center; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.utb-stage.utb-blender-stage { position: relative; display: flex; min-height: 0; overflow: auto; }
+.utb-blender-box { position: relative; flex: none; margin: auto; }
+.utb-blender-box img { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; cursor: grab; }
+.utb-blender-box img:active { cursor: grabbing; }
+.utb-blender-stage > .utb-blank-hint { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: max-content; z-index: 3; background: var(--dsw-alias-bg-shell); }
+.utb-blender-stage > .utb-blank-hint .utb-btn { padding-inline: 6px; width: auto; white-space: nowrap; }
+.utb-blender-hint { font-size: 12px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .utb-noview { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; }
 .utb-noview-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: var(--dsw-alias-label-tertiary); background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent); }
@@ -2720,6 +2727,132 @@ window.__ModuleLoader__.load({
       return h(DebugViewBody, Object.assign({}, props, { seatSessionId: '', visible, capture }));
     }
 
+    function BlenderViewport({ scope, visible, stage, box, imageRef, size, display, annotating, onStatus, children }) {
+      const [frame, setFrame] = React.useState(null);
+      const [failure, setFailure] = React.useState('');
+      const requestSize = React.useRef(size);
+      requestSize.current = size;
+      const annotationMode = React.useRef(annotating);
+      annotationMode.current = annotating;
+      const camera = React.useRef([0, 0, 1]);
+      const drag = React.useRef(null);
+      const redraw = React.useRef(() => {});
+      const [url, setUrl] = React.useState('');
+
+      React.useEffect(() => {
+        if (!frame) return undefined;
+        const nextUrl = URL.createObjectURL(frame.image);
+        setUrl(nextUrl);
+        return () => URL.revokeObjectURL(nextUrl);
+      }, [frame]);
+
+      React.useEffect(() => {
+        if (!visible) return undefined;
+        const controller = new AbortController();
+        let busy = false;
+        let dirty = false;
+        let retry;
+        async function refresh() {
+          dirty = true;
+          if (busy || retry || controller.signal.aborted) return;
+          dirty = false;
+          busy = true;
+          const started = performance.now();
+          const requested = requestSize.current;
+          onStatus((current) => ({ ...current, phase: 'rendering' }));
+          try {
+            const response = await fetch(HOST_BASE + '/blender/frame', {
+              method: 'POST', credentials: 'same-origin', signal: controller.signal,
+              headers: Object.assign({ 'content-type': 'application/json' }, scopeHeaders(scope)),
+              body: JSON.stringify({ camera: camera.current, size: [requested.width, requested.height] }),
+            });
+            if (response.status === 409) {
+              const payload = await response.json();
+              if (payload.code === 'BLENDER_BUSY') {
+                retry = setTimeout(() => { retry = undefined; void refresh(); }, 300);
+                return;
+              }
+              throw new Error(payload.error || 'Blender 视口不可用。');
+            }
+            if (!response.ok || response.headers.get('Content-Type') !== 'image/png') {
+              const payload = await response.json().catch(() => ({}));
+              throw new Error(payload.error || 'Blender 视口连接失败。');
+            }
+            const image = await response.blob();
+            if (!controller.signal.aborted) {
+              setFrame({ image, started });
+              setFailure('');
+            }
+          } catch (error) {
+            if (!controller.signal.aborted) {
+              setFailure(error.message || 'Blender 视口连接失败。');
+              onStatus((current) => ({ ...current, phase: 'error' }));
+            }
+          } finally {
+            busy = false;
+            if (dirty && !retry && !controller.signal.aborted) void refresh();
+          }
+        }
+        function wheel(event) {
+          const direction = Math.sign(event.deltaY);
+          if (!direction || annotationMode.current || event.target !== imageRef.current) return;
+          event.preventDefault();
+          const [yaw, pitch, zoom] = camera.current;
+          camera.current = [yaw, pitch, Math.max(0.15, Math.min(6, zoom * (direction > 0 ? 1.12 : 1 / 1.12)))];
+          void refresh();
+        }
+        const element = stage.current;
+        element.addEventListener('wheel', wheel, { passive: false });
+        redraw.current = refresh;
+        return () => {
+          controller.abort();
+          clearTimeout(retry);
+          element.removeEventListener('wheel', wheel);
+          drag.current = null;
+          redraw.current = () => {};
+        };
+      }, [scope, visible, stage, imageRef, onStatus]);
+      React.useEffect(() => { void redraw.current(); }, [scope, size, visible]);
+
+      return h('div', {
+        className: 'utb-stage utb-blender-stage', ref: stage, 'data-utb-blender-viewport': '',
+        onPointerDown: (event) => {
+          if (annotating || event.button !== 0 || event.target !== imageRef.current || drag.current) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
+        },
+        onPointerMove: (event) => {
+          const from = drag.current;
+          if (annotating || from?.id !== event.pointerId) return;
+          const [yaw, pitch, zoom] = camera.current;
+          const nextYaw = yaw - (event.clientX - from.x) * 0.5;
+          camera.current = [((nextYaw % 360 + 540) % 360) - 180,
+            Math.max(-85, Math.min(85, pitch - (event.clientY - from.y) * 0.5)), zoom];
+          from.x = event.clientX;
+          from.y = event.clientY;
+          void redraw.current();
+        },
+        onLostPointerCapture: () => { drag.current = null; },
+      }, h('div', { className: 'utb-blender-box', ref: box, style: display },
+        url && h('img', {
+          ref: imageRef, src: url, alt: 'Blender 3D 视口', title: '拖动旋转 · 滚轮缩放', draggable: false,
+          onLoad: (event) => {
+            const { naturalWidth, naturalHeight } = event.currentTarget;
+            onStatus({ phase: 'ready', width: naturalWidth, height: naturalHeight,
+              ms: Math.round(performance.now() - frame.started) });
+          },
+          onError: () => {
+            setFailure('无法显示 Blender 视口图像。');
+            onStatus((current) => ({ ...current, phase: 'error' }));
+          },
+        }), children),
+      failure ? h('div', { role: 'alert', className: 'utb-blank-hint' }, failure + ' ',
+        h('button', { type: 'button', className: 'utb-btn', onClick: () => {
+          setFailure('');
+          void redraw.current();
+        } }, '重试')) : !url && h('div', { role: 'status', className: 'utb-blank-hint' }, '正在连接 Blender…'));
+    }
+
     /** The debug view body, shared by the main column and the right sidebar. */
     function DebugViewBody(props) {
       // `draft` is only the address-bar edit buffer: the navigation truth lives in `remote.ui`.
@@ -2784,7 +2917,18 @@ window.__ModuleLoader__.load({
        * 无视图环境（空白画布）对外壳的语义是：**不对仍在运行的目标做任何宿主写入**——
        * 视口不发布、不取页面截图、不轮询 Host 状态、不同步标注，只铺一张本地画布。
        */
-      const ENV_VIEWS = { web: webViewBody };
+      const ENV_VIEWS = { web: webViewBody, 'three-d': blenderViewBody };
+      const VIEW_ONLY = new Set(['three-d']);
+      const blenderView = VIEW_ONLY.has(env);
+      const [blenderSize, setBlenderSize] = React.useState(() => envDefaultSize('three-d'));
+      const [blenderDraft, setBlenderDraft] = React.useState({});
+      const [blenderFit, setBlenderFit] = React.useState(true);
+      const [blenderZoom, setBlenderZoom] = React.useState(100);
+      const [blenderSizeError, setBlenderSizeError] = React.useState('');
+      const [blenderStatus, setBlenderStatus] = React.useState({ phase: 'idle' });
+      const blenderBoxRef = React.useRef(null);
+      const blenderImageRef = React.useRef(null);
+      const captureGenerationRef = React.useRef(0);
       /**
        * 环境能力表：外壳只查表，不再按环境 id 写条件分支。
        *
@@ -2805,8 +2949,9 @@ window.__ModuleLoader__.load({
        */
       const viewRegistry = createViewRegistry(ENV_VIEWS);
       const hasEnvironmentView = (id) => viewRegistry.has(id);
-      const envHasView = hasEnvironmentView(env);
-      // 回调与订阅里读的是"当前渲染的环境"，渲染期间同步刷新。
+      // Only execution-backed views share the existing Web transport and viewport controls.
+      const hasExecutionView = (id) => hasEnvironmentView(id) && !VIEW_ONLY.has(id);
+      const envHasView = hasExecutionView(env);
       const envHasViewRef = React.useRef(envHasView);
       envHasViewRef.current = envHasView;
       // Host-backed environment selection: busy while the POST /config/select is in flight, and a
@@ -2962,7 +3107,9 @@ window.__ModuleLoader__.load({
         fill: ANNOT_DEFAULT.fill,
         stroke: ANNOT_DEFAULT.stroke,
       });
-      const annotShapesRef = React.useRef([]);
+      const webAnnotShapesRef = React.useRef([]);
+      const blenderAnnotShapesRef = React.useRef([]);
+      const annotShapesRef = blenderView ? blenderAnnotShapesRef : webAnnotShapesRef;
       const annotNextIdRef = React.useRef(0);
       const annotGestureRef = React.useRef({
         active: false, pointerId: -1, map: null, tool: '', style: null,
@@ -2998,8 +3145,12 @@ window.__ModuleLoader__.load({
       // Identity gate: no old shape is rendered or published before the new scope's first trusted
       // state. `epoch` is the scope generation the gate belongs to; `key` is the D key.
       const annotGateRef = React.useRef({ epoch: -1, open: false, key: '', revision: -1, context: null, d: null, scope: null, view: null });
-      const annotContentSeqRef = React.useRef(0);
-      const annotDirtyRef = React.useRef(false);
+      const webAnnotContentSeqRef = React.useRef(0);
+      const webAnnotDirtyRef = React.useRef(false);
+      const blenderAnnotContentSeqRef = React.useRef(0);
+      const blenderAnnotDirtyRef = React.useRef(false);
+      const annotContentSeqRef = blenderView ? blenderAnnotContentSeqRef : webAnnotContentSeqRef;
+      const annotDirtyRef = blenderView ? blenderAnnotDirtyRef : webAnnotDirtyRef;
       const annotCandidateRef = React.useRef(null);
       const annotStaleRef = React.useRef({ stale: false, staleReason: null });
       const annotShownRevisionRef = React.useRef(0);
@@ -3100,6 +3251,9 @@ window.__ModuleLoader__.load({
         () => scopeSnapshot(childBinding ? 'recent' : identity.kind, childBinding ? '' : identity.sessionId, activeBinding, childBinding ? false : legacyHost),
         [identity.kind, identity.sessionId, activeBinding, legacyHost, childBinding],
       );
+      const blenderRecentScope = React.useMemo(() => scopeSnapshot('recent', '', '', false), []);
+      const blenderSessionScope = React.useMemo(
+        () => scopeSnapshot('session', identity.sessionId, '', false), [identity.sessionId]);
       const scopeKey = scope.kind + ':' + scope.sessionId + '|' + scope.binding + (scope.legacy ? '|legacy' : '');
       // Every scope/binding transition (including a discarded binding that re-resolves to the
       // same runtime id) must rebuild the transport/pollers even when the scope values repeat.
@@ -3114,6 +3268,14 @@ window.__ModuleLoader__.load({
         if (typeof bumpPanelGeneration === 'function') bumpPanelGeneration();
       }
       const scopeEpoch = scopeEpochRef.current;
+      React.useLayoutEffect(() => {
+        captureGenerationRef.current += 1;
+        blenderAnnotShapesRef.current = [];
+        blenderAnnotDirtyRef.current = false;
+        blenderAnnotContentSeqRef.current = 0;
+        setBlenderStatus({ phase: 'idle' });
+      }, [identityKey]);
+      React.useLayoutEffect(() => { captureGenerationRef.current += 1; }, [env]);
       const scopeRef = React.useRef(scope);
       scopeRef.current = scope;
       // Host config for this panel scope: the selector's allowed environments and current
@@ -4323,6 +4485,7 @@ window.__ModuleLoader__.load({
        */
       const ENV_ANNOT_MAP = {
         web: () => (canvasOn && shot ? annotMap() : null),
+        'three-d': annotBlenderMap,
       };
 
       function resolveAnnotMap() {
@@ -4392,6 +4555,7 @@ window.__ModuleLoader__.load({
 
       /** Accepted Host annotation context (`ui.annotationContext`); null on an old Host. */
       function annotContextNow() {
+        if (blenderView) return null;
         const ui = annotUiNow();
         const context = ui && ui.annotationContext;
         return context && typeof context === 'object' ? context : null;
@@ -4703,6 +4867,7 @@ window.__ModuleLoader__.load({
 
       /** The current publishing identity; null until the new scope's first trusted state opens the gate. */
       function annotIdentityNow(options) {
+        if (blenderView) return null;
         const anyEpoch = Boolean(options && options.anyEpoch);
         const gate = annotGateRef.current;
         if (!gate.open || !gate.key) return null;
@@ -4792,6 +4957,7 @@ window.__ModuleLoader__.load({
        * (capability temporarily unavailable). It is never converted into an empty document.
        */
       function annotRetainDirty(flush) {
+        if (blenderView) return;
         // Retained content is committed content; a scope/runtime change cancels a held move first.
         cancelAnnotMove();
         if (!annotDirtyRef.current) return;
@@ -5028,6 +5194,7 @@ window.__ModuleLoader__.load({
 
       /** Pick up a newer candidate once a gesture/edit/cancel or ACK made the panel clean again. */
       function annotResumeAfterTransient() {
+        if (blenderView) return;
         window.setTimeout(() => {
           annotMaybeAdoptCandidate();
           if (annotChannelRef.current && annotDirtyRef.current && annotGateRef.current.open) annotPublishSchedule();
@@ -5658,6 +5825,38 @@ window.__ModuleLoader__.load({
         return { ok: true, sid, conversation, face };
       }
 
+      async function captureBlenderAnnotationShot() {
+        const image = blenderImageRef.current;
+        const layer = annotSvgRef.current;
+        if (!image?.complete || !image.naturalWidth || !layer) throw new Error('Blender 视口还未就绪');
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('画布不可用');
+        context.drawImage(image, 0, 0);
+        const svg = document.createElementNS(SVG_NS, 'svg');
+        svg.setAttribute('width', String(canvas.width));
+        svg.setAttribute('height', String(canvas.height));
+        svg.setAttribute('viewBox', layer.getAttribute('viewBox'));
+        svg.setAttribute('preserveAspectRatio', 'none');
+        for (const shape of layer.querySelectorAll('[data-utb-annot-state="committed"]')) {
+          svg.appendChild(shape.cloneNode(true));
+        }
+        const source = new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(source);
+        try {
+          const overlay = new Image();
+          overlay.src = url;
+          await overlay.decode();
+          context.drawImage(overlay, 0, 0);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+        return await new Promise((resolve, reject) => canvas.toBlob(
+          (blob) => blob ? resolve(blob) : reject(new Error('无法生成标注截图')), 'image/png'));
+      }
+
       async function captureAnnotationShot() {
         if (annotShotBusy) return;
         setAnnotShotNotice('');
@@ -5667,26 +5866,33 @@ window.__ModuleLoader__.load({
           return;
         }
         setAnnotShotBusy(true);
+        const generation = captureGenerationRef.current;
         try {
-          // 先让「已接受」的文档追上最新笔画：截图取的是 Host 侧文档，pending 时不等待就会少一笔。
-          if (annotDirtyRef.current || annotSyncRef.current.state === 'pending') {
-            try { annotFlushPending(); } catch { /* best effort */ }
-            await new Promise((resolve) => { window.setTimeout(resolve, 260); });
+          let bytes;
+          if (blenderView) {
+            bytes = await captureBlenderAnnotationShot();
+          } else {
+            // 先让「已接受」的文档追上最新笔画：截图取的是 Host 侧文档，pending 时不等待就会少一笔。
+            if (annotDirtyRef.current || annotSyncRef.current.state === 'pending') {
+              try { annotFlushPending(); } catch { /* best effort */ }
+              await new Promise((resolve) => { window.setTimeout(resolve, 260); });
+            }
+            const scopeNow = scopeRef.current;
+            const response = await fetch(HOST_BASE + '/screenshot', {
+              method: 'POST',
+              headers: Object.assign({ 'content-type': 'application/json' }, scopeHeaders(scopeNow)),
+              credentials: 'same-origin',
+              body: JSON.stringify({ includeAnnotations: true }),
+            });
+            const payload = await response.json().catch(() => null);
+            if (!response.ok || !payload || payload.ok !== true || !payload.image) {
+              throw new Error((payload && (payload.error || payload.reason)) || ('HTTP ' + response.status));
+            }
+            const binary = atob(payload.image);
+            bytes = new Uint8Array(binary.length);
+            for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
           }
-          const scopeNow = scopeRef.current;
-          const response = await fetch(HOST_BASE + '/screenshot', {
-            method: 'POST',
-            headers: Object.assign({ 'content-type': 'application/json' }, scopeHeaders(scopeNow)),
-            credentials: 'same-origin',
-            body: JSON.stringify({ includeAnnotations: true }),
-          });
-          const payload = await response.json().catch(() => null);
-          if (!response.ok || !payload || payload.ok !== true || !payload.image) {
-            throw new Error((payload && (payload.error || payload.reason)) || ('HTTP ' + response.status));
-          }
-          const binary = atob(payload.image);
-          const bytes = new Uint8Array(binary.length);
-          for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+          if (generation !== captureGenerationRef.current) return;
           const stamp = new Date().toISOString().replace(/[:.]/g, '-');
           const file = new File([bytes], 'annotation-' + stamp + '.png', { type: 'image/png' });
           const drafts = target.conversation.createDrafts(target.sid, [file], false);
@@ -6240,6 +6446,7 @@ window.__ModuleLoader__.load({
         if (pickRef.current.on) return;
         // 无视图环境没有页面，但仍有可画的空白画布：不要求视口同步 / 画布模式。
         if (annotRef.current.on) return;
+        if (blenderView && blenderStatus.phase !== 'ready') return;
         if (envHasView && (!viewSync || !canvasOn)) return;
         // Finish any page drag (release its button) *before* the mode gate is raised.
         if (dragRef.current.active) releaseFrameDrag();
@@ -6879,6 +7086,16 @@ window.__ModuleLoader__.load({
         const alt = Boolean(event && event.altKey);
         const shift = Boolean(event && event.shiftKey) && !alt;
         const step = alt ? steps.alt : shift ? steps.shift : steps.normal;
+        if (blenderView) {
+          if (field === 'scale') {
+            const base = blenderFit ? Math.round(blenderFitScale(blenderSize.width, blenderSize.height) * 100) : blenderZoom;
+            setBlenderFit(false);
+            setBlenderZoom(clampNumber(base + direction * step, ...VIEW_LIMITS.scalePercent));
+          } else if (field === 'width' || field === 'height') {
+            commitBlenderSize({ ...blenderSize, [field]: clampNumber(blenderSize[field] + direction * step, ...VIEW_LIMITS[field]) });
+          }
+          return;
+        }
         let base;
         if (field === 'scale' && fitRef.current) {
           base = Math.round(fitScaleValue() * 100);
@@ -8851,7 +9068,8 @@ window.__ModuleLoader__.load({
       // P0-D annotation render facts. The SVG covers the *untranslated* painted rect; the viewBox is
       // the accepted canvas window. Committed geometry stays in canvas CSS px, so C/scale changes
       // move the drawing with the content instead of re-basing it.
-      const annotReady = envHasView ? (viewSync && canvasOn) : true;
+      const annotReady = blenderView ? (blenderStatus.phase === 'ready' || annotOn)
+        : envHasView ? (viewSync && canvasOn) : true;
       // 选元素入口状态（数据属性供 GUI 验收读取）：on/ready/annot/sizing/unsupported/cold。
       const pickReadyNow = Boolean(pickRunning && ready && viewSync && canvasOn && !annotOn && !sizing);
       const pickEntryState = pickOn ? 'on'
@@ -8900,22 +9118,23 @@ window.__ModuleLoader__.load({
       // v3 同步状态（§12.5）：SVG 属性 + 状态栏 aria-live 提示。旧 Host 没有 annotationContext
       // 时明确 unsupported 并保留绘制能力，绝不声称 Agent 已可见。The identity gate hides the
       // previous scope's list until the new scope's first trusted state arrives.
-      const annotGateOpen = annotGateRef.current.open && annotGateRef.current.epoch === scopeEpoch;
+      const annotGateOpen = blenderView ? Boolean(blenderStatus.width)
+        : annotGateRef.current.open && annotGateRef.current.epoch === scopeEpoch;
       const annotChannel = Boolean(annotContextNow());
       annotChannelRef.current = annotChannel;
-      const annotSyncState = !annotChannel ? 'unsupported' : (annotGateOpen ? annotSync.state : 'idle');
+      const annotSyncState = blenderView ? 'local' : !annotChannel ? 'unsupported' : (annotGateOpen ? annotSync.state : 'idle');
       const annotSyncRevision = annotGateOpen && Number.isFinite(Number(annotSync.revision))
         ? Math.max(0, Math.round(Number(annotSync.revision))) : 0;
       const annotStale = annotStaleState;
       const annotNavHint = '标注按工作区保留，导航/刷新会清除当前页面标注';
-      const annotSyncText = annotSyncState === 'unsupported'
+      const annotSyncText = blenderView ? (annotOn ? '面板标注' : '') : annotSyncState === 'unsupported'
         ? '标注未同步（宿主无标注通道）'
         : annotSyncState === 'error'
           ? '标注未同步'
           : annotSyncState === 'pending'
             ? '标注同步中…'
             : '';
-      const annotSyncTitle = (annotSyncState === 'unsupported'
+      const annotSyncTitle = blenderView ? 'Blender 标注在本面板内保存，可随画面截图。' : (annotSyncState === 'unsupported'
         ? '标注未同步：当前宿主没有标注上报通道，标注只在本面板可见，Agent 看不到'
         : annotSyncState === 'error'
           ? '标注未同步：最近一次上报失败，Agent 看到的内容可能已过期'
@@ -8950,14 +9169,14 @@ window.__ModuleLoader__.load({
       }, [annotMapSignatureNow, annotOn]);
 
       React.useEffect(() => {
-        if (!annotOn) return;
+        if (!annotOn || blenderView) return;
         // Running/runtime loss or a vanished canvas capability retracts the local view and exits;
         // unconfirmed content is remembered (not flushed into a capability that is gone).
         if (!running || !canvasOn) {
           annotRetainDirty(false);
           annotDropLocalView({ exit: true });
         }
-      }, [annotOn, running, canvasOn]);
+      }, [annotOn, running, canvasOn, blenderView]);
       React.useEffect(() => {
         // v3 §12.1/§12.4: a scope/binding transition only retracts this panel's local view. The
         // unconfirmed content was already handed to the module queue by the reset effect; here the
@@ -9147,7 +9366,7 @@ window.__ModuleLoader__.load({
         setWidth(String(target.width));
         setHeight(String(target.height));
         // 无视图环境只改本地布局：选择空白画布不得改写仍在运行的目标的视口。
-        if (hasEnvironmentView(next)) queueViewPatch({ width: target.width, height: target.height });
+        if (hasExecutionView(next)) queueViewPatch({ width: target.width, height: target.height });
         changePanMode(false);
         changeFit(target.fit);
       }
@@ -9166,16 +9385,24 @@ window.__ModuleLoader__.load({
           setEnvNotice('该目标环境还没有启用：请先在设置页打开它的开关');
           return;
         }
-        // 视图层没有这个环境：只切换“看哪个视图”（渲染空态），**不写宿主配置**——
-        // v1 宿主不接受 planned 环境，提交只会被拒并回滚，没有任何好处。
-        if (typeof ENV_VIEWS[next] !== 'function') {
+        // Preview-only and placeholder environments do not change the agent execution environment.
+        if (!hasExecutionView(next)) {
           setEnvNotice('');
           // A new view instance: anything still in flight for the previous view must not be adopted.
           bumpPanelGeneration();
           setEnv(next);
           // 无视图环境同样按该环境的默认分辨率（Android = 手机 393×852）铺视图窗，
           // 否则会沿用 web 的 1024×768，窗口比预览区还大，看起来像直接画在底板上。
-          applyEnvDefaultSize(next);
+          setMenu(false);
+          setAnnotShotNotice('');
+          if (!VIEW_ONLY.has(next)) {
+            applyEnvDefaultSize(next);
+          } else {
+            annotRetainDirty(true);
+            annotUnsubscribePublisher();
+            annotCandidateRef.current = null;
+            setBlenderStatus({ phase: 'idle' });
+          }
           return;
         }
         if (!option.ready) return;
@@ -9193,7 +9420,9 @@ window.__ModuleLoader__.load({
           setEnvBusy(false);
           bumpPanelGeneration();
           setEnv(next);
-          applyEnvDefaultSize(next);
+          setMenu(false);
+          setAnnotShotNotice('');
+          if (!blenderView || next !== resolvedEnvironment) applyEnvDefaultSize(next);
         }).catch((error) => {
           setEnvBusy(false);
           if (error && error.code === 'CONFIG_CONFLICT') {
@@ -9231,9 +9460,6 @@ window.__ModuleLoader__.load({
       }
       function changeZoom(value) {
         changeScaleField(value);
-      }
-      function commitZoom() {
-        commitViewField('scale');
       }
       stageWheelRef.current = onStageWheel;
       sizeWheelRef.current = onSizeWheel;
@@ -9757,29 +9983,7 @@ h('div', { className: 'utb-bar' },
                 // canvas window. Committed shapes are React nodes; the live draft is one imperative
                 // <g> updated by rAF (never re-rendered per pointer move).
                 shellAnnotLayer(),
-                annotText ? h('input', {
-                  key: 'annot-text-input-' + annotText.id,
-                  className: 'utb-annot-text-input',
-                  ref: annotInputRef,
-                  type: 'text',
-                  maxLength: 200,
-                  defaultValue: '',
-                  'aria-label': '标注文字',
-                  autoFocus: true,
-                  style: {
-                    left: annotText.left,
-                    top: annotText.top,
-                    width: 220,
-                    height: Math.max(18, annotText.fontSize * 1.4),
-                    fontSize: annotText.fontSize,
-                    color: annotText.color,
-                    borderColor: annotText.color,
-                  },
-                  onKeyDown: annotTextKey,
-                  onBlur: () => commitAnnotText(),
-                  onCompositionStart: () => { annotComposingRef.current = true; },
-                  onCompositionEnd: () => { annotComposingRef.current = false; },
-                }) : null,
+                shellAnnotTextInput(),
                 // 选元素悬浮框：纯面板 DOM，pointer-events:none，被 .utb-box 裁剪，不进 Host 截图。
                 pickOn ? h('div', {
                   className: 'utb-pick-layer',
@@ -9906,7 +10110,7 @@ h('div', { className: 'utb-bar' },
             type: 'button',
             className: 'utb-btn utb-annot-shot',
             'aria-label': '截图（含标注）',
-            title: '把当前页面连同标注一起截图，加入聊天框附件',
+            title: '把当前画面连同标注一起截图，加入聊天框附件',
             'data-utb-annot-action': 'capture',
             'data-utb-annot-shot': annotShotBusy ? 'busy' : (annotReady ? 'ready' : 'unsupported'),
             disabled: !annotReady || annotShotBusy,
@@ -9942,6 +10146,32 @@ h('div', { className: 'utb-bar' },
 
       /** 公共区：状态栏。控制权 / 实测帧率与延迟 / 已选标注 / 同步状态 / 活动摘要。 */
       /** 公共区：标注图层（跨环境共用）。无页面环境下由合成映射覆盖空白画布。 */
+      function shellAnnotTextInput() {
+        return annotText ? h('input', {
+         key: 'annot-text-input-' + annotText.id,
+         className: 'utb-annot-text-input',
+         ref: annotInputRef,
+         type: 'text',
+         maxLength: 200,
+         defaultValue: '',
+         'aria-label': '标注文字',
+         autoFocus: true,
+         style: {
+           left: annotText.left,
+           top: annotText.top,
+           width: 220,
+           height: Math.max(18, annotText.fontSize * 1.4),
+           fontSize: annotText.fontSize,
+           color: annotText.color,
+           borderColor: annotText.color,
+         },
+         onKeyDown: annotTextKey,
+         onBlur: () => commitAnnotText(),
+         onCompositionStart: () => { annotComposingRef.current = true; },
+         onCompositionEnd: () => { annotComposingRef.current = false; },
+        }) : null;
+      }
+
       function shellAnnotLayer() {
         return h('svg', {
                   className: 'utb-annot-layer',
@@ -9963,8 +10193,8 @@ h('div', { className: 'utb-bar' },
                     position: 'absolute',
                     left: annotMapNow ? annotMapNow.painted.left - annotMapNow.boxRect.left : 0,
                     top: annotMapNow ? annotMapNow.painted.top - annotMapNow.boxRect.top : 0,
-                    width: annotMapNow ? annotMapNow.painted.width : 1,
-                    height: annotMapNow ? annotMapNow.painted.height : 1,
+                    width: blenderView ? '100%' : annotMapNow ? annotMapNow.painted.width : 1,
+                    height: blenderView ? '100%' : annotMapNow ? annotMapNow.painted.height : 1,
                     overflow: 'hidden',
                     zIndex: 2,
                     display: annotMapNow ? 'block' : 'none',
@@ -10026,6 +10256,15 @@ h('div', { className: 'utb-bar' },
       }
 
       /** 公共区：无页面环境的合成标注映射——画布即视图尺寸，painted 覆盖整块。 */
+      function annotBlenderMap() {
+        const box = blenderBoxRef.current;
+        if (!box || !blenderStatus.width) return null;
+        const boxRect = box.getBoundingClientRect();
+        if (!(boxRect.width > 0) || !(boxRect.height > 0)) return null;
+        const { width: w, height: h } = envDefaultSize('three-d');
+        return { painted: boxRect, boxRect, cx: 0, cy: 0, w, h, sx: boxRect.width / w, sy: boxRect.height / h };
+      }
+
       function annotBlankMap() {
         const box = document.querySelector('.utb-box[data-utb-shell="blank-box"]');
         if (!box) return null;
@@ -10042,9 +10281,12 @@ h('div', { className: 'utb-bar' },
         return h('div', { className: 'utb-status' },
           h('span', { className: 'utb-mode', 'data-mode': mode, title: '当前控制权归属' },
             h('span', { className: 'utb-dot', 'aria-hidden': true }),
-            MODE_LABEL[remote.mode === 'agent' ? 'agent' : mode]),
+            blenderView ? (annotOn ? '标注中' : '预览') : MODE_LABEL[remote.mode === 'agent' ? 'agent' : mode]),
           h('span', { className: 'utb-sep', 'aria-hidden': true }),
-          h('span', { className: 'utb-perf', title: `实际显示帧率与端到端显示延迟（测量值）；传输：${transportKind === 'ws' ? 'WebSocket 推送' : 'HTTP 轮询'}` }, `${fps} FPS ${frameMs} ms`),
+          blenderView
+            ? h('span', { className: 'utb-perf', title: '实际图像分辨率与最近一帧请求到图像加载的耗时' },
+              blenderStatus.width ? `${blenderStatus.width} × ${blenderStatus.height} ${blenderStatus.ms} ms` : '')
+            : h('span', { className: 'utb-perf', title: `实际显示帧率与端到端显示延迟（测量值）；传输：${transportKind === 'ws' ? 'WebSocket 推送' : 'HTTP 轮询'}` }, `${fps} FPS ${frameMs} ms`),
           // 选中数量是状态信息：放在底部延迟之后，而不是标注栏里的按钮/胶囊。
           annotSelectionCount() > 0 && h('span', {
             className: 'utb-annot-selected-status',
@@ -10064,8 +10306,11 @@ h('div', { className: 'utb-bar' },
             style: { display: annotSyncText ? 'inline' : 'none' },
           }, annotSyncText),
           h('span', { className: 'utb-gap' }),
-          h('span', { className: 'utb-activity', title: remote.activity ? `运行时：${remote.activity}` : '视图状态' },
-            remote.activity || activity));
+          h('span', { className: 'utb-activity', role: blenderView ? 'status' : undefined,
+            'data-utb-blender-state': blenderView ? blenderStatus.phase : undefined,
+            title: !blenderView && remote.activity ? `运行时：${remote.activity}` : '视图状态' },
+            blenderView ? ({ idle: 'Blender · 连接中', rendering: blenderStatus.width ? 'Blender · 更新中' : 'Blender · 连接中',
+              ready: 'Blender · 视口就绪', error: 'Blender · 视口不可用' })[blenderStatus.phase] : remote.activity || activity));
       }
 
       /**
@@ -10130,9 +10375,10 @@ h('div', { className: 'utb-bar' },
       }
 
       /** 公共区：无视图环境的工具栏。未提供标签能力时显示禁用开关。 */
-      function shellBarPublic() {
+      function shellBarPublic(hint) {
         // 与 web 工具栏一致：动作按钮组靠右（左侧留弹性空隙），不占左侧导航位。
         return h('div', { className: 'utb-bar', 'data-utb-shell': 'public' },
+          hint && h('span', { className: 'utb-blender-hint', role: 'status', title: hint }, hint),
           h('span', { className: 'utb-gap' }),
           button('标签页', h('span', { className: 'utb-tabs-glyph', 'aria-hidden': true }, '▤'), tabsSupported ? () => setTabsVisible((value) => !value) : undefined, !tabsSupported, {
             'aria-pressed': tabsSupported && tabsVisible,
@@ -10141,11 +10387,12 @@ h('div', { className: 'utb-bar' },
           }),
           button('标注', h(IconAnnot, null), toggleAnnotMode, !annotReady || sizing || pickOn, {
             'aria-pressed': annotOn,
+            ref: annotButtonRef,
             'aria-controls': annotPanelId,
             'data-utb-annot-entry': annotOn ? 'on' : annotReady ? 'ready' : 'unsupported',
           }),
           button('尺寸调整', h(IconSize, null), toggleSizing, annotOn || pickOn, { 'aria-pressed': sizing }),
-          h('div', { className: 'utb-more' },
+          !blenderView && h('div', { className: 'utb-more' },
             button('更多', h(IconMore, null), () => setMenu((v) => !v), false, { 'aria-expanded': menu, 'aria-haspopup': 'menu' }),
             menu && h('div', { className: 'utb-pop', role: 'menu' },
               h('button', { type: 'button', className: 'utb-menu-item', role: 'menuitem', onClick: () => setMenu(false) },
@@ -10153,7 +10400,51 @@ h('div', { className: 'utb-bar' },
       }
 
       /** 公共区：尺寸栏（跨环境共享）。预设 / 宽高 / 坐标 / 缩放；无视图环境同样渲染。 */
+      function blenderFitScale(width, height) {
+        return Math.min(1, (room.w || width) / width, (room.h || height) / height);
+      }
+
+      function commitBlenderSize(next) {
+        if (next.width * next.height > 8 * 1024 * 1024) {
+          setBlenderSizeError('分辨率总面积不能超过 8,388,608 像素');
+          return;
+        }
+        setBlenderSizeError('');
+        setBlenderSize((current) => next.width === current.width && next.height === current.height ? current : next);
+      }
+
+      function commitBlenderField(field) {
+        if (blenderDraft[field] === undefined) return;
+        const value = fieldLegal(field, blenderDraft[field]);
+        setBlenderDraft((draft) => ({ ...draft, [field]: undefined }));
+        if (value === null) return;
+        if (field === 'scale') {
+          setBlenderFit(false);
+          setBlenderZoom(value);
+        } else {
+          commitBlenderSize({ ...blenderSize, [field]: value });
+        }
+      }
+
       function shellSizeBar() {
+        const inputValue = (field, fallback) => blenderView ? blenderDraft[field] ?? fallback : fallback;
+        const setSizeDraft = (field, value) => blenderView
+          ? setBlenderDraft((draft) => ({ ...draft, [field]: value }))
+          : field === 'scale' ? changeZoom(value) : changeSizeField(field, value);
+        const commitSize = (field) => blenderView ? commitBlenderField(field) : commitViewField(field);
+        const sizeKey = (event, field) => {
+          if (!blenderView) { sizeFieldKey(event, field); return; }
+          if (event.key === 'Enter') { event.preventDefault(); commitBlenderField(field); }
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            setBlenderDraft((draft) => ({ ...draft, [field]: undefined }));
+          }
+        };
+        const displayFit = blenderView ? blenderFit : fit;
+        const displayPan = !blenderView && panMode;
+        const displayPercent = blenderView
+          ? String(blenderFit ? Math.round(blenderFitScale(blenderSize.width, blenderSize.height) * 100) : blenderZoom)
+          : fit ? String(Math.round(fitScale * 100)) : zoom;
         return sizing && h('div', { className: 'utb-size', ref: sizeBarRef },
           h('div', { className: 'utb-size-left' },
             // 用户 2026-11-03 第 2 轮：左侧四个分辨率预设改为与「填充|外框」「拖拽|适应窗口|默认」
@@ -10166,7 +10457,8 @@ h('div', { className: 'utb-bar' },
               'data-utb-preset': '',
             },
               PRESETS.map((preset) => {
-                const selected = !panMode && w === preset.w && ht === preset.h;
+                const selected = !displayPan && (blenderView ? blenderSize.width : w) === preset.w
+                  && (blenderView ? blenderSize.height : ht) === preset.h;
                 return h('button', {
                   key: preset.id,
                   type: 'button',
@@ -10176,13 +10468,13 @@ h('div', { className: 'utb-bar' },
                   'aria-label': preset.label,
                   'aria-pressed': selected,
                   disabled: annotOn,
-                  onClick: () => applySizePreset(preset),
+                  onClick: () => blenderView ? commitBlenderSize({ width: preset.w, height: preset.h }) : applySizePreset(preset),
                 }, segDot(selected, 'preset'), preset.label);
               }))),
           h('span', { className: 'utb-gap' }),
           h('div', { className: 'utb-size-right' },
-            h('span', { className: 'utb-pos-label', 'aria-hidden': true }, 'X'),
-            h('input', {
+            !blenderView && h('span', { className: 'utb-pos-label', 'aria-hidden': true }, 'X'),
+            !blenderView && h('input', {
               className: 'utb-num utb-pos',
               type: 'number',
               min: posRange[0],
@@ -10202,8 +10494,8 @@ h('div', { className: 'utb-bar' },
               onBlur: () => { viewFocusRef.current = ''; commitViewField('x'); },
               onKeyDown: (e) => sizeFieldKey(e, 'x'),
             }),
-            h('span', { className: 'utb-pos-label', 'aria-hidden': true }, 'Y'),
-            h('input', {
+            !blenderView && h('span', { className: 'utb-pos-label', 'aria-hidden': true }, 'Y'),
+            !blenderView && h('input', {
               className: 'utb-num utb-pos',
               type: 'number',
               min: posRange[0],
@@ -10228,15 +10520,15 @@ h('div', { className: 'utb-bar' },
               type: 'number',
               min: VIEW_LIMITS.width[0],
               max: VIEW_LIMITS.width[1],
-              value: width,
+              value: inputValue('width', blenderView ? String(blenderSize.width) : width),
               'data-utb-field': 'width',
               'aria-label': '视口宽度（像素）',
               title: '视口宽度（200–4096 px）；滚轮调整（Shift ×10，Alt ×1）',
               disabled: annotOn,
-              onChange: (e) => changeSizeField('width', e.target.value),
+              onChange: (e) => setSizeDraft('width', e.target.value),
               onFocus: () => { viewFocusRef.current = 'width'; },
-              onBlur: () => { viewFocusRef.current = ''; commitViewField('width'); },
-              onKeyDown: (e) => sizeFieldKey(e, 'width'),
+              onBlur: () => { viewFocusRef.current = ''; commitSize('width'); },
+              onKeyDown: (e) => sizeKey(e, 'width'),
             }),
             h('span', { 'aria-hidden': true }, '×'),
             h('input', {
@@ -10244,15 +10536,15 @@ h('div', { className: 'utb-bar' },
               type: 'number',
               min: VIEW_LIMITS.height[0],
               max: VIEW_LIMITS.height[1],
-              value: height,
+              value: inputValue('height', blenderView ? String(blenderSize.height) : height),
               'data-utb-field': 'height',
               'aria-label': '视口高度（像素）',
               title: '视口高度（200–4096 px）；滚轮调整（Shift ×10，Alt ×1）',
               disabled: annotOn,
-              onChange: (e) => changeSizeField('height', e.target.value),
+              onChange: (e) => setSizeDraft('height', e.target.value),
               onFocus: () => { viewFocusRef.current = 'height'; },
-              onBlur: () => { viewFocusRef.current = ''; commitViewField('height'); },
-              onKeyDown: (e) => sizeFieldKey(e, 'height'),
+              onBlur: () => { viewFocusRef.current = ''; commitSize('height'); },
+              onKeyDown: (e) => sizeKey(e, 'height'),
             }),
             h('span', null, 'px'),
             h('div', {
@@ -10260,9 +10552,9 @@ h('div', { className: 'utb-bar' },
               role: 'group',
               'aria-label': '拖拽与适应',
               'data-utb-panfit': '',
-              'data-utb-panfit-state': panfitState,
+              'data-utb-panfit-state': blenderView ? (displayFit ? 'fit' : 'default') : panfitState,
             },
-              h('button', {
+              !blenderView && h('button', {
                 type: 'button',
                 className: 'utb-seg-btn',
                 'data-utb-panfit-opt': 'pan',
@@ -10280,37 +10572,37 @@ h('div', { className: 'utb-bar' },
                 'data-utb-panfit-opt': 'fit',
                 'aria-label': '适应窗口',
                 title: '适应窗口仅本地显示，不改变共享比例/Agent 截图比例',
-                'aria-pressed': fit,
+                'aria-pressed': displayFit,
                 disabled: annotOn,
-                onClick: pressFitMode,
-              }, segDot(fit, 'panfit'), '适应窗口'),
+                onClick: blenderView ? () => setBlenderFit(true) : pressFitMode,
+              }, segDot(displayFit, 'panfit'), '适应窗口'),
               h('button', {
                 type: 'button',
                 className: 'utb-seg-btn',
                 'data-utb-panfit-opt': 'default',
                 'aria-label': '默认',
                 title: '默认：不拖拽、不自动适应，按共享比例显示（不发布视口）',
-                'aria-pressed': !panMode && !fit,
+                'aria-pressed': !displayPan && !displayFit,
                 disabled: annotOn,
-                onClick: pressPanFitDefault,
-              }, segDot(!panMode && !fit, 'panfit'), '默认')),
+                onClick: blenderView ? () => { setBlenderFit(false); setBlenderZoom(100); } : pressPanFitDefault,
+              }, segDot(!displayPan && !displayFit, 'panfit'), '默认')),
             h('input', {
               className: 'utb-num utb-zoom',
               type: 'number',
               min: VIEW_LIMITS.scalePercent[0],
               max: VIEW_LIMITS.scalePercent[1],
               step: 5,
-              value: fit ? String(Math.round(fitScale * 100)) : zoom,
+              value: inputValue('scale', displayPercent),
               'data-utb-field': 'scale',
               'aria-label': '预览缩放比例（百分比）',
               title: fit
                 ? '适应窗口仅本地显示，不改变共享比例/Agent 截图比例'
                 : '预览缩放比例（10–200%）；手动修改会关闭适应窗口，并作为共享比例（Agent 截图默认密度）',
               disabled: annotOn,
-              onChange: (e) => changeZoom(e.target.value),
+              onChange: (e) => setSizeDraft('scale', e.target.value),
               onFocus: () => { viewFocusRef.current = 'scale'; },
-              onBlur: () => { viewFocusRef.current = ''; commitZoom(); },
-              onKeyDown: (e) => sizeFieldKey(e, 'scale'),
+              onBlur: () => { viewFocusRef.current = ''; commitSize('scale'); },
+              onKeyDown: (e) => sizeKey(e, 'scale'),
             }),
             h('span', { className: 'utb-dim', 'aria-hidden': true }, '%')))
       }
@@ -10345,6 +10637,23 @@ h('div', { className: 'utb-bar' },
           shellAnnotBar(),
           shellSizeBar(),
           shellBlankStage(),
+        ];
+      }
+
+      function blenderViewBody() {
+        const viewportScope = identity.kind === 'session' ? blenderSessionScope : blenderRecentScope;
+        const frameWidth = blenderStatus.width || blenderSize.width;
+        const frameHeight = blenderStatus.height || blenderSize.height;
+        const displayScale = blenderFit ? blenderFitScale(frameWidth, frameHeight) : blenderZoom / 100;
+        return [
+          shellBarPublic(blenderSizeError || (annotOn ? '在 Blender 画面上标注' : 'Blender · 拖动旋转，滚轮缩放')),
+          shellAnnotBar(),
+          shellSizeBar(),
+          h(BlenderViewport, {
+            key: identityKey, scope: viewportScope, visible, stage, box: blenderBoxRef, imageRef: blenderImageRef,
+            size: blenderSize, display: { width: frameWidth * displayScale, height: frameHeight * displayScale },
+            annotating: annotOn, onStatus: setBlenderStatus,
+          }, shellAnnotLayer(), shellAnnotTextInput()),
         ];
       }
 
@@ -10564,11 +10873,8 @@ h('div', { className: 'utb-bar' },
           plannedTarget('three-unity', 'Unity 三维应用', 'Unity Player 中的交互式三维场景', {
             communication: 'RPC / IPC', backend: 'Unity 调试辅助程序（待选）',
           }),
-          // 用户 2026-11-10 要求：3D 场景补上建模/动画工具。它们都是原生桌面程序，
-          // 没有现成调试协议，先按 native3d 链路登记为 planned，避免"3D 只有引擎"的误解。
-          plannedTarget('blender', 'Blender', 'Blender 场景、模型与渲染设置界面', {
-            communication: 'Python / RPC（bpy 待评估）', backend: 'Blender 内置 Python 控制台（待实现）',
-          }),
+          { id: 'blender', name: 'Blender', note: '启用 3D 视图后，在调试视图中打开 Blender 纯视口。',
+            chain: { communication: 'Blender Python / PNG', backend: 'Blender 3D 视口' }, state: 'preview' },
           plannedTarget('3dsmax', '3ds Max', '3ds Max 场景、模型与材质编辑器', {
             communication: 'RPC / IPC（MAXScript 待评估）', backend: '3ds Max 脚本与辅助程序（待实现）',
           }),
@@ -11886,7 +12192,7 @@ h('div', { className: 'utb-bar' },
       const busy = props.busy === true;
       const providerSupported = target.state === 'supported';
       // 未实现卡片左槽位的灰色占位：工程未支持 vs 还没接入，措辞不混用。
-      const stateText = target.state === 'unsupported' ? '未支持' : '未接入';
+      const stateText = target.state === 'preview' ? '纯视口' : target.state === 'unsupported' ? '未支持' : '未接入';
       // 总闸（目标环境）与分开关（运行环境）是两层：分开关只在总闸打开时才可操作，
       // 但关闭总闸不会改写各 provider 已保存的值。
       const masterEnabled = props.masterEnabled === true;
@@ -12475,7 +12781,7 @@ h('div', { className: 'utb-bar' },
       const target = (group.targets || []).find((item) => item.id === overlay.providerId)
         || { id: overlay.providerId, name: overlay.providerId, state: 'planned' };
       const titleText = (target.name || target.id) + ' 诊断';
-      const tag = target.state === 'supported' ? '已实现' : target.state === 'unsupported' ? '未支持' : '未接入';
+      const tag = target.state === 'preview' ? '纯视口' : target.state === 'supported' ? '已实现' : target.state === 'unsupported' ? '未支持' : '未接入';
       const tree = h('div', {
         className: 'uts-diag-modal-overlay',
         'data-uts-diag-modal-overlay': 'true',

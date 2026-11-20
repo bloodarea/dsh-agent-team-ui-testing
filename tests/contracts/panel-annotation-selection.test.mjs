@@ -68,7 +68,7 @@ function panel(shapes = committed()) {
   const identity = { entry, dKey: 'document-A', context: { documentKey: 'A' },
     scope: { id: 'scope-A' }, view: { canvasX: 100, canvasY: 200, scale: 2 } };
   const context = vm.createContext({
-    TextEncoder, ANNOT_DEFAULT: { color: '#ff3b30' },
+    TextEncoder, blenderView: false, ANNOT_DEFAULT: { color: '#ff3b30' },
     window: {
       setTimeout: (fn) => { const id = ++serial; timers.set(id, fn); return id; },
       clearTimeout: (id) => timers.delete(id),

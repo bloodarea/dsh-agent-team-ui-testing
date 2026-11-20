@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 公共外壳 | 会话入口、视图标题、环境选择、共享状态、公共组件组合 | `DebugViewBody` 仍集中持有状态、事件处理器与副作用 |
 | 公共视图组件 | 标注栏、尺寸栏、标注图层、状态栏和无视图回退 | 渲染已复用；部分处理器仍依赖现有 Web Host 状态与路由 |
-| 环境视图 | 环境自己的工具栏、目标画面与输入方式 | 当前仅 `webViewBody()` 有具体目标实现 |
+| 环境视图 | 环境自己的正文、目标画面与输入方式 | Web 调试正文和 Blender 纯视口 |
 | 环境坐标映射 | 将共享标注画布映射到该环境的显示区域 | 当前 Web 有专用映射，其他环境回退到空白画布映射 |
 | Host 适配器 | 目标生命周期、能力准入、采集与实际操作 | 使用 `TargetAdapter`、`CapabilityAdapter`、`P0Provider`；与前端视图注册表是不同接口 |
 
@@ -46,11 +46,11 @@ DebugView(props)
 | 接点 | 返回与职责 | 当前调用方 |
 | --- | --- | --- |
 | `shellTabsBar(model, visible)` | 根据中立展示模型渲染标签、选中项、创建与关闭操作；不解析 URL 或调用 Web 路由 | 根外壳统一调用，模型来自当前环境的 `ENV_TABS` provider |
-| `shellAnnotBar()` | 标注模式下返回工具栏：绘制、选择／框选、样式、截图、删除与清除 | Web 与无视图分支 |
-| `shellSizeBar()` | 尺寸模式下返回预设、宽高、坐标、缩放和拖拽／适应／默认控制 | Web 与无视图分支 |
-| `shellAnnotLayer()` | 返回共享 SVG 标注图层，绘制图形、选择状态与手势草稿 | Web 预览区与公共空白画布 |
-| `shellStatusBar()` | 返回控制权、显示帧率／延迟、已选标注数、同步状态和活动摘要 | 外壳根部统一调用 |
-| `shellBarPublic()` | 返回无视图分支的标签入口、标注、尺寸与更多工具栏；标签无 provider 时禁用 | `shellNoViewRows()` |
+| `shellAnnotBar()` | 标注模式下返回绘制、选择／框选、样式、截图、删除与清除控件 | Web、Blender 与无视图分支 |
+| `shellSizeBar()` | 按当前环境显示分辨率、显示缩放及可用的坐标和适应选项 | Web、Blender 与无视图分支 |
+| `shellAnnotLayer()` | 返回共享 SVG 标注图层，绘制图形、选择状态与手势草稿 | Web、Blender 与公共空白画布 |
+| `shellStatusBar()` | 显示当前环境的视图状态和测得的数据，以及标注相关状态 | 外壳根部统一调用 |
+| `shellBarPublic(hint)` | 返回公共提示、标注和尺寸入口；标签无 provider 时禁用 | Blender 与 `shellNoViewRows()` |
 | `shellBlankStage()` | 返回按当前尺寸与显示比例铺设的空白画布 | `shellNoViewRows()` |
 | `shellNoViewRows()` | 返回公共工具栏、标注栏、尺寸栏与空白画布的行集合 | 环境无视图实现时的根分支 |
 
@@ -90,7 +90,7 @@ provider 返回映射对象或 `null`：
 
 ### 2.5 配置、状态与操作接线
 
-环境下拉框只列出已启用的环境。对已有视图的环境，`changeEnv(next)` 提交带配置 revision 的 Host 选择，成功后才更新；对没有视图的环境，仅更新本地视图 id，不提交执行环境选择。完整配置规则见[环境设置（settings.md）](settings.md#启用与选择)。
+环境下拉框只列出已启用的环境。切换到 Web 时，`changeEnv(next)` 提交带配置 revision 的 Host 执行环境选择，成功后更新显示。切换到 Blender 纯视口或其他环境的空白画布时，只更新面板选中的视图。配置规则见[环境设置](settings.md#启用与选择)。
 
 公共组件复用 Host 状态与操作处理器。现有传输与路由接线见 [Web 调试面板](web/debug-panel.md#面板状态与操作接线)。
 
@@ -99,6 +99,7 @@ provider 返回映射对象或 `null`：
 ## 3. 具体目标环境实现
 
 - [Web 调试面板](web/debug-panel.md)
+- [Blender 纯视口](three-d/debug-panel.md)
 
 ### 3.2 其他目标环境与公共空白画布
 
@@ -114,7 +115,6 @@ provider 返回映射对象或 `null`：
 | HarmonyOS | `harmonyos` | 同上 |
 | 小程序 | `mini-program` | 同上 |
 | 游戏 | `game` | 同上 |
-| 3D | `three-d` | 同上 |
 
 这些环境启用后可出现在下拉框；选中时根分支调用 `shellNoViewRows()`，显示公共工具栏、尺寸与标注入口以及空白视图窗，不显示 Web 地址栏和标签栏。视图能力同样按表判断：`ENV_VIEWS` 决定有没有正文，`ENV_TABS` 决定有没有标签栏，`ENV_FEATURES` 决定外壳级控件（运行模式、DevTools）——外壳里没有按环境 id 写的条件分支。
 
