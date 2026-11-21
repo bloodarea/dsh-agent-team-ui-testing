@@ -52,6 +52,26 @@ tests/acceptance/evidence/   人工留存的证据与截图（运行时生成）
 output/                      插件运行输出（运行时生成）
 ```
 
+## 换行符与文本编码
+
+仓库以 LF 作为唯一的文本换行符，以 UTF-8 无 BOM 作为唯一的文本编码。规则写在 `.gitattributes` 与 `.editorconfig`，两端（Windows 与 Linux）检出后都应得到 LF。
+
+| 约定 | 落地方式 |
+| --- | --- |
+| 文本一律 LF | `.gitattributes` 的 `* text=auto eol=lf` 与逐扩展名声明 |
+| 二进制不做转换 | `.gitattributes` 中的 `binary` 清单 |
+| 编辑器保存行为 | `.editorconfig`：`charset=utf-8`、`end_of_line=lf`、2 空格 |
+| 本机不二次转换 | 仓库级 `core.autocrlf=false` |
+
+新克隆或换机器后执行一次：
+
+```bash
+git config core.autocrlf false
+git add --renormalize .
+```
+
+第二条只在提示有换行符差异时运行；确认 `git diff --cached` 里没有语义改动后再提交。仅换行符不同的大面积 `modified` 属于工作区状态问题，按 `.gitattributes` 规范化即可，不要当作真实改动提交。
+
 ## 提交前检查
 
 1. 改动范围与需求一致，不做顺手重构。

@@ -1,0 +1,29 @@
+# EditorConfig：统一编辑器保存行为，与 .gitattributes 的 LF 规范保持一致。
+# Windows 与 Linux 两端都应安装 EditorConfig 支持（VS Code 内置，多数 JetBrains IDE 内置）。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Markdown 的行尾双空格是有语义的硬换行，不能自动裁剪；表格与列表也不便强制缩进。
+[*.md]
+trim_trailing_whitespace = false
+indent_size = 2
+
+# 补丁文件对空白敏感。
+[*.{patch,diff}]
+trim_trailing_whitespace = false
+insert_final_newline = true
+
+# JSON 清单与 CI 配置沿用 2 空格。
+[*.{json,yml,yaml,toml}]
+indent_size = 2
+
+# Shell 与 Python 使用 4 空格。
+[*.{sh,py}]
+indent_size = 4

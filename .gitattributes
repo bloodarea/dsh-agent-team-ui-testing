@@ -1,0 +1,53 @@
+# 统一换行符与文本判定：仓库内一律存 LF，检出也一律 LF。
+# 目的是让 Windows 11 与 Ubuntu 24.04 交替开发时不再产生大面积"仅换行符不同"的噪声 diff。
+* text=auto eol=lf
+
+# 明确声明为文本的源码与配置（避免自动判定把含中文的文件误判为二进制）
+*.js      text eol=lf
+*.mjs     text eol=lf
+*.cjs     text eol=lf
+*.json    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.md      text eol=lf
+*.html    text eol=lf
+*.htm     text eol=lf
+*.css     text eol=lf
+*.txt     text eol=lf
+*.sh      text eol=lf
+*.py      text eol=lf
+*.toml    text eol=lf
+*.patch   text eol=lf
+.gitignore  text eol=lf
+.gitattributes text eol=lf
+.editorconfig  text eol=lf
+LICENSE   text eol=lf
+
+# 二进制资产：不做任何换行符转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.bmp   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.7z    binary
+*.webm  binary
+*.mp4   binary
+*.mp3   binary
+*.wav   binary
+*.ogg   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.eot   binary
+*.exe   binary
+*.dll   binary
+*.so    binary
+*.node  binary
+*.wasm  binary
+*.blend binary
