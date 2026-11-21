@@ -28,9 +28,10 @@
  * Reports: tests/acceptance/runs/tab-lock-<stamp>/.
  */
 import { createServer } from 'node:http';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { createHarness, createFakeConnectionService } from './harness.mjs';
 
 const log = (...a) => console.log(...a);
@@ -182,6 +183,109 @@ try {
   check('the panel route answers exactly list/open/close/lock/unlock',
     String(badAction.json && badAction.json.error || '').includes('list/open/close/lock/unlock'), true,
     badAction.json && badAction.json.error);
+
+  /* ------------------------------------------------------------------------------------------------
+   * Regression: the lock must work over the scope the button actually sends.
+   *
+   * The rendered lock button does not send a session id: `toggleTabLock` addresses the tab's own
+   * runtime (`scopeNowForView` → binding). Every check above uses a session scope, so this suite
+   * stayed green while the real button was refused ADAPTER_DISABLED on any host whose global view
+   * was not `web` — the environment gate used to read the *global* snapshot for every non-session
+   * request, which also broke navigate/input/reload/viewport on a healthy Web page.
+   *
+   * The three cases below are the ones that failed before the fix:
+   *   - a legacy config (`global.environment` only, no `global.view`) — every existing user;
+   *   - a host whose default view is 3D;
+   *   - a host whose default view is the empty view.
+   * Each runs in its own harness because the global view is read at admission time.
+   * ---------------------------------------------------------------------------------------------- */
+  const scopeCases = [
+    { label: 'legacy config with no global.view', global: { environment: 'web' } },
+    { label: 'host default view is 3d', global: { environment: 'web', view: 'three-d' } },
+    { label: 'host default view is the empty view', global: { environment: 'web', view: 'default' } },
+  ];
+  for (const scopeCase of scopeCases) {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-tab-lock-scope-'));
+    await writeFile(join(dir, 'config.json'), JSON.stringify({
+      version: 1, revision: 0,
+      global: {
+        enabledEnvironments: ['web', 'three-d'],
+        environments: { web: { enabled: true }, 'three-d': { enabled: true } },
+        ...scopeCase.global,
+      },
+      // The session itself selects web: the page is legitimately Web even when the host default
+      // view is not, which is exactly the case the old gate got wrong.
+      sessions: { 'lock-agent': { view: 'web' } },
+    }));
+    let scopeHarness;
+    try {
+      scopeHarness = await createHarness({
+        connection: createFakeConnectionService({ rejection: undefined, admit: () => ({ peer: { id: 'owner' } }), browserPeer: { id: 'owner' } }),
+        configDir: dir,
+      });
+      const call2 = (name, args) => scopeHarness.invoke(name, args, execA);
+      await scopeHarness.request({ method: 'POST', path: '/plugins/ui-testing/ensure', headers: panelHeaders(), body: { url: fixture } });
+      const listed = await call2('browser_tabs', { action: 'list' });
+      const row = ((listed.value && listed.value.tabs) || []).find((tab) => tab.kind === 'primary');
+      if (!row) {
+        check(`binding lock regression (${scopeCase.label}): a primary row exists`, false, 'primary row', listed.value);
+        continue;
+      }
+      const bindHeaders = { 'x-ui-testing-scope-version': '1', 'x-ui-testing-scope-binding': String(row.runtimeId) };
+      const lockByBinding = await scopeHarness.request({ method: 'POST', path: '/plugins/ui-testing/tabs', headers: bindHeaders, body: { action: 'lock', tabId: 'primary' } });
+      check(`binding lock regression (${scopeCase.label}): lock over a binding scope succeeds`,
+        lockByBinding.statusCode === 200 && lockByBinding.json && lockByBinding.json.locked === true,
+        { status: 200, locked: true },
+        { status: lockByBinding.statusCode, body: lockByBinding.json });
+      const unlockByBinding = await scopeHarness.request({ method: 'POST', path: '/plugins/ui-testing/tabs', headers: bindHeaders, body: { action: 'unlock', tabId: 'primary' } });
+      check(`binding lock regression (${scopeCase.label}): unlock over a binding scope succeeds`,
+        unlockByBinding.statusCode === 200 && unlockByBinding.json && unlockByBinding.json.locked === false,
+        { status: 200, locked: false },
+        { status: unlockByBinding.statusCode, body: unlockByBinding.json });
+      const recentHeaders = { 'x-ui-testing-scope-version': '1', 'x-ui-testing-scope': 'recent' };
+      const lockByRecent = await scopeHarness.request({ method: 'POST', path: '/plugins/ui-testing/tabs', headers: recentHeaders, body: { action: 'lock', tabId: 'primary' } });
+      check(`binding lock regression (${scopeCase.label}): lock over a recent scope succeeds`,
+        lockByRecent.statusCode === 200 && lockByRecent.json && lockByRecent.json.locked === true,
+        { status: 200, locked: true },
+        { status: lockByRecent.statusCode, body: lockByRecent.json });
+    } catch (error) {
+      check(`binding lock regression (${scopeCase.label}): fixture ran`, false, 'no exception', String((error && error.message) || error));
+    } finally {
+      try { await scopeHarness?.closeBrowser(); } catch { /* ignore */ }
+      try { await scopeHarness?.dispose(); } catch { /* ignore */ }
+    }
+  }
+
+  /* ------------------------------------------------------------------------------------------------
+   * Negative control: the widened admission must not become a bypass.
+   *
+   * A session that selected 3D has no Web execution surface, so its Web page writes stay refused.
+   * Without this, "the page belongs to a session" could be mistaken for "any session may write".
+   * ---------------------------------------------------------------------------------------------- */
+  {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-tab-lock-denied-'));
+    await writeFile(join(dir, 'config.json'), JSON.stringify({
+      version: 1, revision: 0,
+      global: { view: 'web', environment: 'web', enabledEnvironments: ['web', 'three-d'], environments: { web: { enabled: true }, 'three-d': { enabled: true } } },
+      sessions: { 'lock-agent': { view: 'three-d' } },
+    }));
+    let deniedHarness;
+    try {
+      deniedHarness = await createHarness({
+        connection: createFakeConnectionService({ rejection: undefined, admit: () => ({ peer: { id: 'owner' } }), browserPeer: { id: 'owner' } }),
+        configDir: dir,
+      });
+      const denied = await deniedHarness.request({ method: 'POST', path: '/plugins/ui-testing/ensure', headers: panelHeaders(), body: { url: fixture } });
+      check('negative control: a session that selected 3D still cannot drive a Web page (ADAPTER_DISABLED)',
+        denied.statusCode >= 400 && denied.json && denied.json.code === 'ADAPTER_DISABLED',
+        { code: 'ADAPTER_DISABLED' }, { status: denied.statusCode, body: denied.json });
+    } catch (error) {
+      check('negative control fixture ran', false, 'no exception', String((error && error.message) || error));
+    } finally {
+      try { await deniedHarness?.closeBrowser(); } catch { /* ignore */ }
+      try { await deniedHarness?.dispose(); } catch { /* ignore */ }
+    }
+  }
 } catch (error) {
   check('tab-lock fixture completed', false, 'no exception', String(error && (error.stack || error.message) || error));
 } finally {

@@ -111,12 +111,14 @@ provider 返回映射对象或 `null`：
 | 3 | 父会话的有效选择 | 跟随 `parentSession`，深度 ≤ 8，防环 |
 | 4 | `workspaces.<key>.view` | 所属工作区最后一次选择 |
 | 5 | `workspaces.<key>.environment` | 旧字段，读兼容 |
-| 6 | `global.view` | 宿主默认视图（可选，缺省即空态） |
+| 6 | `global.view` | 宿主默认视图（可选，缺省即空态；旧配置的 `global.environment` 在读取时迁移成它） |
 | 7 | 默认视图 | 空态 |
 
 - **没有"回退到 Web"这一步。** 没存过选择就是空态，不会因为 Web 碰巧启用就把它当成默认。
 - 选择不可用（环境在设置页被关掉，或该环境仍是 `planned`）时同样落到默认视图，并把用户选过的值保留在 `snapshot.view` 与 `source.rejectedEnvironment` 里；重新打开开关后选择自己回来，不需要再点一次。
 - `global.view` 是给"整机默认视图"用的：写 `{"view":"web"}` 就让没存过选择的会话都落在 Web。
+- **老配置迁移**：升级前写入的配置文件只有 `global.environment`、没有 `global.view`。读取时会把它迁移成 `global.view`（`ConfigStore` 读盘处，幂等、不落盘、不推进 revision），所以升级后仍停在原来的环境，不会被扔进空态。全新安装没有配置文件，从默认配置出发，仍落在空态——两者语义不同，靠"配置文件是否存在"区分。
+- 由本插件写入 `global.environment` 时，同一次写入会一并记下 `global.view`，因此磁盘上的配置与重新加载后的解析结果始终一致。
 
 ### 3.2 按会话持久化、按工作区隔离
 

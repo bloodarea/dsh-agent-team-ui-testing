@@ -39,6 +39,30 @@ function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * 把旧配置里的 `global.environment` 迁移成 `global.view`（只对**已存在的配置文件**生效）。
+ *
+ * 为什么只能在这里做：`normalizeGlobal` 会把缺失的 `environment` 补成 `web`，归一化之后
+ * 「从没写过」和「写了 `environment:"web"`」就分不出来了。而两者的正确语义相反——
+ *
+ *   - 全新安装（文件不存在）→ 空态，这是 `view-selection.mjs` V1 的契约；
+ *   - 已经存过配置的老用户 → 他上次用的就是 Web，升级后不该被扔进空态。
+ *
+ * 所以迁移必须发生在**读到文件之后、归一化之前**，用「文件存在」这个事实当信号，并且不能挪进
+ * `normalizeConfig`：那会让 `normalizeConfig(DEFAULT_CONFIG)` 也带上 view，直接破坏
+ * `deepEqual(normalized, structuredClone(DEFAULT_CONFIG))`。
+ *
+ * 迁移是幂等的：已有 `view` 的配置原样返回，不做二次推断，也不落盘（落盘会平白推进 revision）。
+ */
+export function migrateLegacyGlobalView(raw) {
+  if (!isPlainObject(raw) || !isPlainObject(raw.global)) return raw;
+  const global = raw.global;
+  if (global.view !== undefined) return raw;
+  // 没有 `environment` 就没得迁移：那是真正"没存过选择"的配置，交给默认视图。
+  if (typeof global.environment !== 'string' || global.environment.length === 0) return raw;
+  return { ...raw, global: { ...global, view: global.environment } };
+}
+
 function requireString(value, field) {
   if (typeof value !== 'string' || value.length === 0) {
     throw new AdapterError(ERROR_CODES.INVALID_ARGUMENT, `${field} must be a non-empty string`, {
@@ -85,7 +109,14 @@ function mergeEnvironmentEntry(environment, existing, patchEntry) {
 
 function applyGlobalPatch(config, patch) {
   if (patch.view !== undefined) config.global.view = patch.view;
-  if (patch.environment !== undefined) config.global.environment = patch.environment;
+  if (patch.environment !== undefined) {
+    config.global.environment = patch.environment;
+    // Keep the invariant `load()` relies on: a written global selection records the view too.
+    // Writing only `environment` used to produce a file that reads back with a *migrated* `view`,
+    // so the on-disk config and the reloaded one disagreed (and the next load would silently
+    // reinterpret the selection). `select()` already mirrors the two.
+    if (patch.view === undefined) config.global.view = patch.environment;
+  }
   if (patch.enabledEnvironments !== undefined) {
     config.global.enabledEnvironments = [...patch.enabledEnvironments];
   }
@@ -243,7 +274,9 @@ export class ConfigStore {
     }
 
     try {
-      this._config = normalizeConfig(JSON.parse(text));
+      // 已存在的配置文件才迁移 legacy 视图（见 `migrateLegacyGlobalView`）：全新安装走上面的
+      // ENOENT 分支拿到 `DEFAULT_CONFIG`，仍然是空态。
+      this._config = normalizeConfig(migrateLegacyGlobalView(JSON.parse(text)));
     } catch (error) {
       this._config = clone(DEFAULT_CONFIG);
       this._recoverCorrupt(error);
@@ -289,7 +322,10 @@ export class ConfigStore {
   _refreshFromDisk() {
     if (!this._writable) return;
     try {
-      const disk = normalizeConfig(JSON.parse(readFileSync(this.path, 'utf8')));
+      // Same legacy migration as `load()`: a file written by an older build (still carrying only
+      // `global.environment`) must not read as the empty view just because another process owns
+      // the write path.
+      const disk = normalizeConfig(migrateLegacyGlobalView(JSON.parse(readFileSync(this.path, 'utf8'))));
       if (disk.revision !== this._config.revision) this._config = disk;
     } catch {
       // Keep the in-memory config; the next successful write persists a fresh revision.

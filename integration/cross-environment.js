@@ -774,6 +774,52 @@ export function createCrossEnvironment({
   }
 
   /**
+   * 一个**已绑定到具体页面**的请求（binding / recent）属于哪个会话。
+   *
+   * 面板的多数写请求都不带会话身份：锁/关闭/导航按标签自己的 runtimeId 发 binding，新建与切换
+   * 按 recent 发。这类请求指向的是**一个已经存在的页面**，所以它的环境归属应当看"这个页面属于谁"
+   * ——entry 的 `rootSessionId`——而不是"整机当前的默认视图"。
+   *
+   * 读不到就直接返回 null：调用方退回全局快照，绝不猜一个会话来放行。
+   */
+  function sessionIdForBoundEntry(scopeRequest) {
+    if (!scopeRequest) return null;
+    try {
+      if (scopeRequest.mode === 'binding') {
+        const entry = typeof registry?.findByRuntimeId === 'function'
+          ? registry.findByRuntimeId(scopeRequest.runtimeId)
+          : null;
+        return entry && typeof entry.rootSessionId === 'string' && entry.rootSessionId ? entry.rootSessionId : null;
+      }
+      if (scopeRequest.mode === 'recent') {
+        const entry = typeof registry?.recentEntry === 'function'
+          ? registry.recentEntry(scopeRequest.rootSessionId)
+          : null;
+        return entry && typeof entry.rootSessionId === 'string' && entry.rootSessionId ? entry.rootSessionId : null;
+      }
+    } catch {
+      // A registry lookup fault is not evidence of permission: fall back to the global snapshot.
+    }
+    return null;
+  }
+
+  /**
+   * The scope a GUI write is admitted against.
+   *
+   *   session                 → that session's view chain (unchanged);
+   *   binding / recent        → the owning session of the bound page, so a Web page stays writable
+   *                             even when the *host* default view is 3D or the empty view;
+   *   legacy / unresolved      → the global snapshot (historical behaviour, fail-closed on doubt).
+   */
+  function admissionScopeFor(scopeRequest) {
+    if (!scopeRequest) return null;
+    if (scopeRequest.mode === 'session') return resolveRequestScope(scopeRequest);
+    const owner = sessionIdForBoundEntry(scopeRequest);
+    if (owner) return { id: owner, kind: 'session', workspaceId: null, cwd: scopeRequest.cwd };
+    return null;
+  }
+
+  /**
    * Rebuild the agent shape `resolveSnapshot` expects from an HTTP/Skill scope request, so a
    * scope-scoped caller gets the same admission answer a model step would get (A08 / A11).
    */
@@ -1110,10 +1156,19 @@ export function createCrossEnvironment({
     }
   }
 
-  /** GUI/legacy page-write guard: diagnostics stay readable, writes follow the same config. */
+  /**
+   * GUI/legacy page-write guard: diagnostics stay readable, writes follow the same config.
+   *
+   * The scope matters. A binding/recent request names an *existing page*, so it is admitted against
+   * the view chain of the session that owns that page (`admissionScopeFor`). Reading the global
+   * snapshot instead made every panel write that does not carry a session id -- the 保活锁 lock,
+   * navigate, input, reload, viewport -- depend on the host's default view, so a host whose default
+   * view was 3D or the empty view refused writes on a perfectly healthy Web page.
+   */
   function assertGuiAllowed(scopeRequest) {
-    const snapshot = scopeRequest?.mode === 'session'
-      ? configStore.resolveForScope(resolveRequestScope(scopeRequest))
+    const admissionScope = admissionScopeFor(scopeRequest);
+    const snapshot = admissionScope
+      ? configStore.resolveForScope(admissionScope)
       : resolveSnapshot(configStore.getConfig(), {}, { allowTestEnvironments });
     if (snapshot.environment !== ENVIRONMENTS.WEB || !snapshot.enabledEnvironments.includes(ENVIRONMENTS.WEB)) {
       throw new BrowserError(ERROR_CODES.ADAPTER_DISABLED, '当前环境未启用 Web 页面操作', {
