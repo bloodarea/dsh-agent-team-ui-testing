@@ -1,7 +1,7 @@
 /** Web TargetTabs dispatch and real browser_tabs registration, all without launching a browser. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BrowserError, asBrowserError } from '../../browser-safety.js';
@@ -166,6 +166,10 @@ test('platform permission, CAS, busy and wait failures pass through with origina
 
 test('composition root sends admitted browser_tabs through TargetAdapter.tabs and keeps P0-E projection', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'target-tabs-root-'));
+  // 宿主默认视图显式设成 web：本用例验证的是 browser_tabs 装配，不是空态。
+  await writeFile(join(dir, 'config.json'), JSON.stringify({
+    version: 1, revision: 0, global: { view: 'web', environment: 'web' },
+  }));
   const f = fixture();
   // The composition root no longer hardwires the Web assembly: the caller registers the entry.
   const environments = createEnvironmentDirectory({});

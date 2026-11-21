@@ -68,16 +68,25 @@ test('每行都带显示名、短名与实现状态，且 planned 与 isPlannedE
   for (const row of environmentCatalog()) {
     assert.ok(row.label && typeof row.label === 'string', row.id + ' 缺少 label');
     assert.ok(row.short && typeof row.short === 'string', row.id + ' 缺少 short');
-    assert.ok(row.status === 'supported' || row.status === 'planned', row.id + ' 的 status 非法');
+    // 状态词表：supported（有执行适配器）/ view（只有视图）/ planned（未实现）/ empty（默认视图）。
+    assert.ok(['supported', 'view', 'planned', 'empty'].includes(row.status), row.id + ' 的 status 非法');
+    assert.ok(row.kind === 'environment' || row.kind === 'view', row.id + ' 的 kind 非法');
+    assert.equal(row.kind === 'view', row.status === 'empty', row.id + '：kind/status 必须一致');
     assert.equal(row.planned, isPlannedEnvironment(row.id),
       row.id + '：catalog 的 planned 与 isPlannedEnvironment 不一致');
     assert.equal(row.planned, row.status === 'planned', row.id + '：planned 与 status 互相矛盾');
   }
   // 只有夹具环境是 testOnly；普通下拉框据此过滤。
   assert.deepEqual(environmentCatalog().filter((row) => row.testOnly).map((row) => row.id), [ENVIRONMENTS.FAKE]);
-  // 已实现环境今天只有 web。
+  // 有执行适配器的环境。
   assert.deepEqual(environmentCatalog().filter((row) => row.status === 'supported').map((row) => row.id).sort(),
     [ENVIRONMENTS.FAKE, ENVIRONMENTS.WEB].sort());
+  // 只有视图的环境：3D 的 Blender 纯视口。
+  assert.deepEqual(environmentCatalog().filter((row) => row.status === 'view').map((row) => row.id),
+    [ENVIRONMENTS.THREE_D]);
+  // 空态视图是目录的第一行，且只有它一个。
+  assert.deepEqual(environmentCatalog().filter((row) => row.kind === 'view').map((row) => row.id),
+    [ENVIRONMENTS.DEFAULT]);
 });
 
 test('catalog 是冻结的只读数据：调用方改不动它', () => {
@@ -155,7 +164,10 @@ test('面板表（视图 / 标签 / 能力 / 默认尺寸 / 设置页分组 / �
   }
   // 设置页必须覆盖所有非 testOnly 环境（少了就没有开关）。
   const groupIds = [...groupsBlock.matchAll(/\n        id: '([\w-]+)', title:/gu)].map((match) => match[1]);
-  const expectedGroups = environmentCatalog().filter((row) => !row.testOnly).map((row) => row.id);
+  // 视图行（默认视图）不是目标环境，不参加设置页分组。
+  const expectedGroups = environmentCatalog()
+    .filter((row) => !row.testOnly && row.kind !== 'view')
+    .map((row) => row.id);
   assert.deepEqual([...groupIds].sort(), [...expectedGroups].sort(),
     '设置页环境分组必须与 catalog 的非 testOnly 集合一致');
 });
@@ -195,8 +207,33 @@ test('面板确实按 catalog 派生选项：testOnly 过滤、未知状态降�
   assert.equal(options[2].ready, false, '未知状态必须降级为不可执行，不能猜成 supported');
   assert.equal(options[1].label, 'Android 视图');
   assert.equal(options[1].short, 'Android');
-  // No catalog yet (first paint / old Host): only web, never a local list.
-  assert.deepEqual(derive({ state: { catalog: [] } }).map((row) => row.id), ['web']);
+  // No catalog yet (first paint / old Host): 只有空态视图，不凭本地表猜环境。
+  assert.deepEqual(derive({ state: { catalog: [] } }).map((row) => row.id), ['default']);
+});
+
+test('面板必须原样保留 catalog 的 kind/status：丢字段会让默认视图被过滤掉', () => {
+  const normalizer = /function normalizeCatalogRow\(row\) \{([\s\S]*?)\n    \}/u.exec(clientSource);
+  assert.ok(normalizer, '找不到 normalizeCatalogRow');
+  const normalize = (row) => new Function('row', 'return (() => {' + normalizer[1] + '\n    })();')(row);
+
+  // 真实 Host catalog 行经面板归一化后，视图行仍然是 view/empty。
+  const viewRow = normalize(environmentCatalog().find((row) => row.id === ENVIRONMENTS.DEFAULT));
+  assert.equal(viewRow.kind, 'view', '默认视图的 kind 被丢掉了');
+  assert.equal(viewRow.status, 'empty', '默认视图的 status 被降级了');
+  const threeDRow = normalize(environmentCatalog().find((row) => row.id === ENVIRONMENTS.THREE_D));
+  assert.equal(threeDRow.status, 'view', '3D 的 view 状态被降级了');
+
+  // 未知状态仍然降级为 planned（不猜成 supported）。
+  assert.equal(normalize({ id: 'future', status: 'experimental' }).status, 'planned');
+
+  // 用归一化后的行跑一遍组合框派生：默认视图必须出现在选项里，且排在与 catalog 一致的位置。
+  const memo = /const ENVIRONMENTS = React\.useMemo\(\(\) => \{([\s\S]*?)\n      \}, \[hostConfig\.state\.catalog\]\);/u.exec(clientSource);
+  assert.ok(memo, '找不到组合框的选项派生');
+  const derive = (rows) => new Function('hostConfig', 'return (() => {' + memo[1] + '\n      });')({ state: { catalog: rows } })();
+  const options = derive(environmentCatalog().map((row) => normalize(row)));
+  assert.equal(options[0].id, ENVIRONMENTS.DEFAULT, '默认视图必须是第一项');
+  assert.equal(options[0].kind, 'view');
+  assert.ok(options.some((option) => option.id === ENVIRONMENTS.WEB), 'Web 视图仍在选项里');
 });
 
 test('面板不再维护静态环境数组', () => {

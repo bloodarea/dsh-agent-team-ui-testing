@@ -120,6 +120,25 @@ export const WEB_PROVIDER_VENDOR = Object.freeze({
 export const WEB_PROVIDER_PROFILE_SUFFIX = Object.freeze({ chrome: 'chrome', edge: 'edge', firefox: 'firefox' });
 
 /**
+ * Web 运行环境的 id 词表（谁在真正执行页面）。这里只放 id；工程支持度在 `WEB_PROVIDER_SUPPORT`，
+ * 而 `core/config.js` 从这个词表派生出 `WEB_PROVIDERS` / `WEB_PROVIDER_IDS`，因此两者永不各写一份。
+ */
+export const WEB_RUNTIME_PROVIDERS = Object.freeze({ CHROME: 'chrome', EDGE: 'edge', FIREFOX: 'firefox' });
+
+/** Known web runtime provider ids, in report order. Anything else is not a provider name. */
+export const WEB_RUNTIME_PROVIDER_IDS = Object.freeze([
+  WEB_RUNTIME_PROVIDERS.CHROME,
+  WEB_RUNTIME_PROVIDERS.EDGE,
+  WEB_RUNTIME_PROVIDERS.FIREFOX,
+]);
+
+/** 3D 视图的运行环境（纯视口执行端）。第一个也是当前唯一一个：Blender。 */
+export const THREE_D_PROVIDERS = Object.freeze({ BLENDER: 'blender' });
+
+/** Known 3D provider ids, in report order. Anything else is not a provider name. */
+export const THREE_D_PROVIDER_IDS = Object.freeze([THREE_D_PROVIDERS.BLENDER]);
+
+/**
  * Known environments. Only web/fake have implementations in this milestone; the rest are
  * registered as planned so that a planned environment is *announced* by the Host instead of
  * being invented by a client. This object is the single vocabulary: the config catalog, the
@@ -128,6 +147,14 @@ export const WEB_PROVIDER_PROFILE_SUFFIX = Object.freeze({ chrome: 'chrome', edg
  */
 export const ENVIRONMENTS = Object.freeze({
   WEB: 'web',
+  /**
+   * 空态视图：没有目标环境时的面板落点（docs/debug-panel.md §默认视图）。
+   *
+   * 它是一个**视图**，不是一个能启用/执行的目标环境：设置页不为它渲染分组，它不进
+   * `enabledEnvironments`，也没有适配器。会话/工作区可以把它存成自己的选择，这样"没有目标"
+   * 本身也是可持久化的事实，而不是各处各写一个 `null` 判断。
+   */
+  DEFAULT: 'default',
   FAKE: 'fake',
   LINUX: 'linux-desktop',
   ANDROID: 'android',
@@ -139,6 +166,67 @@ export const ENVIRONMENTS = Object.freeze({
   GAME: 'game',
   THREE_D: 'three-d',
 });
+
+/**
+ * Per-environment **provider catalogue**: which runtime providers an environment declares, and how
+ * far each one is implemented. This is the single vocabulary the config layer, the settings page
+ * and the Host gates share — a provider id is valid for an environment only when it appears here.
+ *
+ * `web` declares its browser runtime providers (see `WEB_PROVIDER_SUPPORT`); `three-d` declares the
+ * Blender viewport. An environment that appears in neither table simply has no provider axis: its
+ * entry carries only `enabled` / `targetId` / `connection`.
+ */
+export const ENVIRONMENT_PROVIDER_IDS = Object.freeze({
+  [ENVIRONMENTS.WEB]: WEB_RUNTIME_PROVIDER_IDS,
+  [ENVIRONMENTS.THREE_D]: THREE_D_PROVIDER_IDS,
+});
+
+/**
+ * Engineering support per environment + provider id.
+ *
+ * - `supported`: 有执行适配器，能驱动目标。
+ * - `pending`: 用户可保存启用意图，但还没有驱动（web 的边早期状态）。
+ * - `preview`: **只接了纯视口**——能看画面、能标注、能截图，但没有 Agent 执行适配器。
+ *   Blender 今天就是这一类：3D 视图的 `/blender/frame` 放行它，工具面不声明它。
+ * - `unsupported`: 没有驱动，本阶段也没有计划。
+ *
+ * 这张表是"这个 provider 到哪一步了"的唯一真值：面板卡片的可点判定、Host 的配置校验与
+ * 纯视口门禁都从它派生，不得各自再写一份判断。
+ */
+export const ENVIRONMENT_PROVIDER_SUPPORT = Object.freeze({
+  [ENVIRONMENTS.WEB]: WEB_PROVIDER_SUPPORT,
+  [ENVIRONMENTS.THREE_D]: Object.freeze({
+    [THREE_D_PROVIDERS.BLENDER]: 'preview',
+  }),
+});
+
+/** Provider ids declared by one environment, in report order. Unknown / provider-less → `[]`. */
+export function environmentProviderIds(environment) {
+  const list = ENVIRONMENT_PROVIDER_IDS[environment];
+  return Array.isArray(list) ? [...list] : [];
+}
+
+/** True when `environment` declares a provider axis at all (and may therefore store `providers`). */
+export function environmentDeclaresProviders(environment) {
+  return environmentProviderIds(environment).length > 0;
+}
+
+/** Engineering support for one provider id (`supported|pending|preview|unsupported`), or null. */
+export function environmentProviderSupport(environment, provider) {
+  const table = ENVIRONMENT_PROVIDER_SUPPORT[environment];
+  return table && Object.hasOwn(table, provider) ? table[provider] : null;
+}
+
+/** True when the provider can actually be driven by the Agent (a real execution adapter exists). */
+export function isExecutingProvider(environment, provider) {
+  return environmentProviderSupport(environment, provider) === 'supported';
+}
+
+/** True when the provider has at least a read-only viewport surface (`preview` or `supported`). */
+export function isViewableProvider(environment, provider) {
+  const support = environmentProviderSupport(environment, provider);
+  return support === 'supported' || support === 'preview';
+}
 
 /**
  * Canonical capability ids per environment. This is the adapter catalog: it is intentionally

@@ -335,7 +335,7 @@ window.__ModuleLoader__.load({
 
     const ID = 'ui-testing-browser';
     /** 面板构建标识：刷新后用它确认浏览器里跑的是哪一份 client.js（排查「改了没生效」）。 */
-    const CLIENT_BUILD = '2026-11-20·blender-panel-controls';
+    const CLIENT_BUILD = '2026-11-20·view-selection';
     const KIND = 'debug-view';
     const TITLE = '调试视图';
     // 目标环境清单**不在这里**：id 与显示名都来自 Host 的 `GET /config` 响应里的 `catalog`
@@ -589,9 +589,14 @@ window.__ModuleLoader__.load({
       return requestHostConfig('PUT', '/config', { expectedRevision, scope: 'global', patch }, { scope });
     }
 
-    /** POST /config/select — session environment selection for this panel scope. */
-    function selectHostEnvironment(environment, expectedRevision, scope) {
-      return requestHostConfig('POST', '/config/select', { scope: 'session', environment, expectedRevision }, { scope });
+    /**
+     * POST /config/select —— 把面板选择（环境 id 或默认视图）提交为**本会话的视图选择**。
+     *
+     * 写的是 `view` 而不是 `environment`：`environment` 是旧字段，仍被读取但不再是新写入的入口。
+     * Host 会把这个值同时记进会话与所属工作区（见 `docs/debug-panel.md`）。
+     */
+    function selectHostEnvironment(view, expectedRevision, scope) {
+      return requestHostConfig('POST', '/config/select', { scope: 'session', view, expectedRevision }, { scope });
     }
 
     /** The Host's cold/recent binding (ui.runtimeId) for a scope-bearing response. */
@@ -678,6 +683,8 @@ window.__ModuleLoader__.load({
      * 非 ready 环境只占位（选项 disabled，handler 仍判 ready）。
      */
     const ENV_DEFAULTS = Object.freeze({
+      // 默认视图是空态画布，用横屏比例铺满，好让公共视图组件按真实尺寸展示。
+      default: { preset: 'landscape', fit: true },
       web: { preset: 'landscape', fit: true },
       windows: { preset: 'landscape', fit: true },
       'linux-desktop': { preset: 'landscape', fit: true },
@@ -2909,7 +2916,9 @@ window.__ModuleLoader__.load({
       const [pending, setPending] = React.useState(false);
       const [navBusy, setNavBusy] = React.useState(false);
       const [mode, setMode] = React.useState('idle');
-      const [env, setEnv] = React.useState('web');
+      // 初始值就是空态：新会话/没有选择时落在默认视图（真正的选择由 Host 解析后回填，见下方
+      // adopt 效果）。写死 'web' 会让"没选过"看起来像"选了 Web"。
+      const [env, setEnv] = React.useState('default');
       /**
        * 环境视图注册表（提前声明）：外壳按它决定「这个环境有没有自己的视图」。
        *
@@ -3305,18 +3314,24 @@ window.__ModuleLoader__.load({
             id: item.id,
             label: typeof item.label === 'string' && item.label ? item.label : item.id,
             short: typeof item.short === 'string' && item.short ? item.short : item.id,
+            // `ready` 只表示"有 Agent 执行适配器"。视图能不能显示由 kind/视图表决定，两者不混。
             ready: item.status === 'supported',
+            // `view` 行（默认视图）不是目标环境：它没有开关，永远可选。
+            kind: item.kind === 'view' ? 'view' : 'environment',
+            status: typeof item.status === 'string' ? item.status : 'planned',
           }));
-        return rows.length ? rows : [{ id: 'web', label: 'Web 视图', short: 'Web', ready: true }];
+        return rows.length ? rows : [{ id: 'default', label: '默认视图', short: '默认', ready: false, kind: 'view', status: 'empty' }];
       }, [hostConfig.state.catalog]);
       /**
-       * 组合框**只列开关已打开的目标环境**（`environments.<id>.enabled`）：
-       * 开了 web + android，就只出现这两个选项。打开的但视图层没实现 → 选中后渲染空态
-       * （执行环境不变）。宿主配置还没读到（`config` 为 null）时按可执行集合 + web 兜底，
-       * 免得一上来列表是空的。
+       * 组合框列出**空态视图 + 开关已打开的目标环境**（`environments.<id>.enabled`）。
+       *
+       * - 默认视图永远在：它是"没有目标"的合法落点，也是所有环境都关闭时唯一的选项。
+       * - 其他环境只看自己的开关，不再看"是否实现"：3D 这类只有视图的环境同样可以被选中并持久化。
+       * - 宿主配置还没读到时按可执行集合 + 默认视图兜底，免得一上来列表是空的。
        */
       const envEnabledList = React.useMemo(() => ENVIRONMENTS
         .map((option) => {
+          if (option.kind === 'view') return Object.assign({}, option, { enabled: true });
           const fromConfig = enabledFromConfig(hostConfig.state.config, option.id);
           const enabled = fromConfig === null
             ? (option.id === 'web' || (allowedEnvironments ? allowedEnvironments.indexOf(option.id) !== -1 : false))
@@ -3326,23 +3341,31 @@ window.__ModuleLoader__.load({
         .filter((option) => option.enabled), [ENVIRONMENTS, hostConfig.state.config, allowedEnvironments]);
       const envOptions = React.useMemo(() => (envEnabledList.length
         ? envEnabledList
-        : ENVIRONMENTS.filter((option) => option.id === 'web').map((option) => Object.assign({}, option, { enabled: true }))),
+        : ENVIRONMENTS.filter((option) => option.kind === 'view')
+          .map((option) => Object.assign({}, option, { enabled: true }))),
       [envEnabledList, ENVIRONMENTS]);
 
-      // 当前选中的环境被关掉时（用户在设置页关开关），退回宿主当前执行环境，避免组合框空值。
+      /**
+       * 宿主解析出来的选择是唯一真值：会话/工作区存过什么就显示什么。
+       *
+       * 这里**不再**把面板往"宿主当前执行环境"拽——切到另一个工作区的会话时，那一边自己存着
+       * 自己的选择，面板跟着它走即可，而不是被强制切到某个目标环境（docs/debug-panel.md）。
+       */
+      const resolvedView = (hostResolved && typeof hostResolved.view === 'string' && hostResolved.view)
+        || resolvedEnvironment;
+      React.useEffect(() => {
+        if (!resolvedView) return;
+        setEnv((current) => (current === resolvedView ? current : resolvedView));
+      }, [resolvedView]);
+      // 已存的选择被设置页关掉开关后，Host 会解析成默认视图：本地跟着落回空态，避免组合框里
+      // 显示一个已经不存在的选项。env 仍在选项表里时不动它（不打断用户正在看的东西）。
       React.useEffect(() => {
         if (envOptions.some((option) => option.id === env)) return;
-        const fallback = envOptions.some((option) => option.id === resolvedEnvironment)
-          ? resolvedEnvironment
-          : ((envOptions[0] && envOptions[0].id) || 'web');
+        const fallback = envOptions.some((option) => option.id === resolvedView)
+          ? resolvedView
+          : ((envOptions.find((option) => option.kind === 'view') || envOptions[0] || {}).id || 'default');
         setEnv(fallback);
-      }, [envOptions, env, resolvedEnvironment]);
-      React.useEffect(() => {
-        if (!resolvedEnvironment) return;
-        const option = ENVIRONMENTS.find((item) => item.id === resolvedEnvironment);
-        if (!option || !option.ready) return; // an unimplemented environment never becomes current
-        setEnv((current) => (current === resolvedEnvironment ? current : resolvedEnvironment));
-      }, [resolvedEnvironment]);
+      }, [envOptions, env, resolvedView]);
       const visibleRef = React.useRef(true);
       visibleRef.current = visible;
       const readyRef = React.useRef(false);
@@ -9381,56 +9404,47 @@ window.__ModuleLoader__.load({
         const option = ENVIRONMENTS.find((item) => item.id === next);
         if (!option) return;
         if (next === env) return;
-        if (enabledFromConfig(hostConfig.state.config, next) === false) {
+        // 默认视图没有开关，永远可选；其他环境必须已在设置页启用。
+        if (option.kind !== 'view' && enabledFromConfig(hostConfig.state.config, next) === false) {
           setEnvNotice('该目标环境还没有启用：请先在设置页打开它的开关');
           return;
         }
-        // Preview-only and placeholder environments do not change the agent execution environment.
-        if (!hasExecutionView(next)) {
-          setEnvNotice('');
-          // A new view instance: anything still in flight for the previous view must not be adopted.
-          bumpPanelGeneration();
-          setEnv(next);
-          // 无视图环境同样按该环境的默认分辨率（Android = 手机 393×852）铺视图窗，
-          // 否则会沿用 web 的 1024×768，窗口比预览区还大，看起来像直接画在底板上。
-          setMenu(false);
-          setAnnotShotNotice('');
-          if (!VIEW_ONLY.has(next)) {
-            applyEnvDefaultSize(next);
-          } else {
-            annotRetainDirty(true);
-            annotUnsubscribePublisher();
-            annotCandidateRef.current = null;
-            setBlenderStatus({ phase: 'idle' });
-          }
-          return;
-        }
-        if (!option.ready) return;
         const config = hostConfig.state;
         if (config.revision === null) {
           setEnvNotice(config.loading
             ? '正在读取宿主配置，请稍后重试'
-            : (config.error || '宿主未提供配置接口，无法切换运行环境'));
+            : (config.error || '宿主未提供配置接口，无法保存视图选择'));
           return;
         }
         setEnvBusy(true);
         setEnvNotice('');
+        // 选择先落到 Host（会话 + 所属工作区），成功后才改本地视图：换工作区/换会话时读到的
+        // 就是各自存下的那一个，不会被"当前执行环境"重新拉走。
         selectHostEnvironment(next, config.revision, scopeRef.current).then((payload) => {
           hostConfig.adopt(payload);
           setEnvBusy(false);
+          // A new view instance: anything still in flight for the previous view must not be adopted.
           bumpPanelGeneration();
           setEnv(next);
           setMenu(false);
           setAnnotShotNotice('');
-          if (!blenderView || next !== resolvedEnvironment) applyEnvDefaultSize(next);
+          if (VIEW_ONLY.has(next)) {
+            annotRetainDirty(true);
+            annotUnsubscribePublisher();
+            annotCandidateRef.current = null;
+            setBlenderStatus({ phase: 'idle' });
+          } else {
+            // 有视图的环境与空态都按各自默认分辨率铺视图窗，公共视图组件才有真实尺寸可用。
+            applyEnvDefaultSize(next);
+          }
         }).catch((error) => {
           setEnvBusy(false);
           if (error && error.code === 'CONFIG_CONFLICT') {
             adoptHostConflict(hostConfig, error);
-            setEnvNotice('配置已被其他窗口修改（CONFIG_CONFLICT），已刷新；本次切换未生效');
+            setEnvNotice('配置已被其他窗口修改（CONFIG_CONFLICT）；已按最新 revision 重新读取，本次切换未保存');
             return;
           }
-          setEnvNotice('切换运行环境失败：' + (configErrorText(error && error.message) || '未知错误'));
+          setEnvNotice('保存视图选择失败：' + (configErrorText(error && error.message) || '未知错误'));
         });
       }
       /**
@@ -10023,10 +10037,27 @@ h('div', { className: 'utb-bar' },
       const envViewTitle = (envOption.short || envOption.label || env) + ' · 调试视图';
       const envViewSupported = hasEnvironmentView(env);
 
-      /** 视图层没有该环境时占位：问号图标 + 一句人话，不留空白面板。 */
+      /**
+       * 空态与"没有视图"的占位。
+       *
+       * - 默认视图（`env === 'default'`）是**正常状态**，不是缺陷：没有目标环境时面板落在这里，
+       *   公共视图组件（尺寸栏 / 标注栏 / 状态栏）照常可用。
+       * - 其他环境走到这里只剩"宿主登记了、视图层还没接"这一种情况，措辞不当成异常。
+       */
       function noEnvView() {
-        const hostEnvOption = ENVIRONMENTS.find((item) => item.id === (resolvedEnvironment || 'web'));
-        const hostEnvLabel = (hostEnvOption && (hostEnvOption.label || hostEnvOption.id)) || (resolvedEnvironment || 'Web 视图');
+        if (env === 'default') {
+          return h('div', { className: 'utb-noview', 'data-utb-noview': 'default', 'data-utb-default-view': 'true' },
+            h('span', { className: 'utb-noview-icon', 'aria-hidden': true },
+              h('svg', { viewBox: '0 0 24 24', width: 28, height: 28, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' },
+                h('rect', { x: 3.5, y: 5, width: 17, height: 14, rx: 2.5 }),
+                h('path', { d: 'M3.5 10h17' }),
+                h('circle', { cx: 6.6, cy: 7.5, r: .8, fill: 'currentColor', stroke: 'none' }))),
+            h('div', { className: 'utb-noview-text' },
+              h('strong', null, '默认视图'),
+              h('p', null, '当前没有选择目标环境，这里是公共视图组件的空态画布。'),
+              h('p', { className: 'utb-noview-hint' }, '在右上角的组合框里选一个已启用的目标环境即可开始调试。'),
+              h('p', { className: 'utb-noview-hint' }, '新会话、以及还没有存过选择的会话会落在这里；选择会按会话保存。')));
+        }
         return h('div', { className: 'utb-noview', 'data-utb-noview': env },
           h('span', { className: 'utb-noview-icon', 'aria-hidden': true },
             h('svg', { viewBox: '0 0 24 24', width: 28, height: 28, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' },
@@ -10036,8 +10067,7 @@ h('div', { className: 'utb-bar' },
           h('div', { className: 'utb-noview-text' },
             h('strong', null, '视图层暂不支持'),
             h('p', null, (envOption.label || env) + ' 的调试视图还没有实现（适配器未接入）。'),
-            h('p', { className: 'utb-noview-hint' }, '执行环境仍然是 ' + hostEnvLabel + '，这里只切换视图。'),
-            h('p', { className: 'utb-noview-hint' }, '可以在设置页查看该环境的适配器与依赖状态。')));
+            h('p', { className: 'utb-noview-hint' }, '可以在设置页查看该环境的适配器与依赖状态，或换成默认视图。')));
       }
 
       /* =====================================================================================
@@ -11339,7 +11369,9 @@ h('div', { className: 'utb-bar' },
       'identity-mismatch': '启动起来的浏览器不是所选的那一个',
       'identity-unverified': '拿不到浏览器版本信息，无法确认身份',
       'blocked-by-provider-mismatch': '上游运行环境不一致，这一段没执行',
-      'blocked-by-stage-1': '第 1 段失败，这一段没执行',
+      'blocked-by-stage-1': '第 1 段未通过，这一段没执行',
+      'blocked-by-stage-2': '第 2 段未通过，这一段没执行',
+      'environment-has-no-execution-adapter': '该环境只有视图（如 3D 纯视口），没有 Agent 执行适配器',
       'blocked-by-stage-3': '第 3 段未通过，这一段没执行',
       'stage-timeout': '这一段超时，没拿到结果',
       'target-list-failed': '读取标签页列表失败',
@@ -11491,7 +11523,7 @@ h('div', { className: 'utb-bar' },
      * asks for it. The caller owns the AbortController: leaving the page aborts the stream (the
      * Host then stops the run — it does not keep executing behind a closed page).
      */
-    async function startDiagnoseRun({ provider, mode, signal, onEvent }) {
+    async function startDiagnoseRun({ provider, environment, mode, signal, onEvent }) {
       const response = await fetch(HOST_BASE + '/diagnose', {
         method: 'POST',
         credentials: 'same-origin',
@@ -11504,7 +11536,14 @@ h('div', { className: 'utb-bar' },
           'X-UI-Testing-Scope-Version': SCOPE_VERSION,
           'X-UI-Testing-Scope': 'unassigned',
         },
-        body: JSON.stringify({ provider: provider || undefined, mode: mode || 'observe', requestId: diagRequestId() }),
+        // `environment` 是"要诊断哪个目标环境"：诊断不该被面板当前的视图选择影响
+        // （没有选项时快照会解析成空态视图，那会让阶段 2 报 adapter-unresolved）。
+        body: JSON.stringify({
+          provider: provider || undefined,
+          environment: environment || undefined,
+          mode: mode || 'observe',
+          requestId: diagRequestId(),
+        }),
         signal,
       });
       if (!response.ok) {
@@ -11939,12 +11978,18 @@ h('div', { className: 'utb-bar' },
       if (!row || typeof row !== 'object') return null;
       const id = typeof row.id === 'string' ? row.id.trim() : '';
       if (!id) return null;
-      const status = row.status === 'supported' ? 'supported' : 'planned';
+      // 状态词表必须原样保留：`empty`（默认视图）与 `view`（只有视图的环境）都不是 planned，
+      // 也不能被降级成 supported。未知值仍然按 planned 处理（宁可不执行，也不猜成可用）。
+      const status = ['supported', 'view', 'planned', 'empty'].includes(row.status) ? row.status : 'planned';
+      // `kind: 'view'` 的行是空态视图，不是目标环境：它没有开关，永远可选。丢掉这个字段会让
+      // 默认视图在组合框里被"未启用"过滤掉——这正是它一开始不出现的原因。
+      const kind = row.kind === 'view' ? 'view' : 'environment';
       return {
         id,
         label: typeof row.label === 'string' && row.label ? row.label : id,
         short: typeof row.short === 'string' && row.short ? row.short : id,
         status,
+        kind,
         planned: status === 'planned',
         testOnly: row.testOnly === true,
       };
@@ -12191,25 +12236,30 @@ h('div', { className: 'utb-bar' },
       const configReady = props.configReady === true;
       const busy = props.busy === true;
       const providerSupported = target.state === 'supported';
+      // 可启用 ≠ 已能执行：`preview`（纯视口已接入、无 Agent 执行适配器）也允许用户单独启用/停用这个
+      // 运行环境——Host 的纯视口门禁（如 /blender/frame）读的正是这个开关值。
+      const providerSwitchable = providerSupported || target.state === 'preview';
       // 未实现卡片左槽位的灰色占位：工程未支持 vs 还没接入，措辞不混用。
       const stateText = target.state === 'preview' ? '纯视口' : target.state === 'unsupported' ? '未支持' : '未接入';
       // 总闸（目标环境）与分开关（运行环境）是两层：分开关只在总闸打开时才可操作，
       // 但关闭总闸不会改写各 provider 已保存的值。
       const masterEnabled = props.masterEnabled === true;
       const providerCurrent = props.providerCurrent === true;
-      const switchDisabled = !providerSupported || !configReady || busy || !masterEnabled;
-      const switchTitle = !providerSupported
+      const switchDisabled = !providerSwitchable || !configReady || busy || !masterEnabled;
+      const switchTitle = !providerSwitchable
         ? '当前运行环境未实现，不能启用'
         : !configReady
           ? (props.configError || '宿主配置不可用，无法提交启用状态')
           : busy ? '正在提交到宿主…'
             : !masterEnabled ? '目标环境总开关已关闭：已保存的开关值保留，重新打开后恢复'
-              : '提交到宿主（按宿主版本号保存）';
+              : target.state === 'preview'
+                ? '提交到宿主（纯视口：可读画面、可标注截图；同一目标环境只启用一种运行环境）'
+                : '提交到宿主（同一目标环境只启用一种运行环境，打开这个会自动关闭其它）';
       return h('div', {
         className: 'uts-item',
         'data-uts-target': target.id,
         'data-uts-provider': target.id,
-        'data-uts-provider-state': providerSupported ? 'supported' : 'disabled',
+        'data-uts-provider-state': providerSupported ? 'supported' : providerSwitchable ? 'preview' : 'disabled',
         'data-uts-provider-current': providerCurrent ? 'true' : 'false',
         'data-uts-state': target.state,
         'data-uts-node': 'target',
@@ -12387,6 +12437,7 @@ h('div', { className: 'utb-bar' },
         applyRun(current);
         startDiagnoseRun({
           provider: target.id,
+          environment: group.id,
           mode,
           signal: controller ? controller.signal : undefined,
           onEvent: (event) => {

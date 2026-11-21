@@ -9,7 +9,12 @@ import {
   ENVIRONMENTS,
   ENVIRONMENT_CAPABILITIES,
   ERROR_CODES,
+  THREE_D_PROVIDERS,
   WEB_PROVIDER_SUPPORT,
+  WEB_RUNTIME_PROVIDERS,
+  WEB_RUNTIME_PROVIDER_IDS,
+  environmentDeclaresProviders,
+  environmentProviderIds,
 } from './contracts.js';
 import { AdapterError } from './errors.js';
 import { workspaceKeyOf } from './identity.js';
@@ -21,19 +26,14 @@ export const CONFIG_VERSION = 1;
  * Web *runtime providers* (the browser that actually executes): one target environment (`web`),
  * one provider per selection. This is a different axis from `environment` and from the P0
  * `P0Provider` class — never conflate the names (see docs/internal/web-runtime-provider-contract.md §4.2).
+ *
+ * The ids live in `contracts.js` (`WEB_RUNTIME_PROVIDERS`) because the per-environment provider
+ * catalogue there is the single vocabulary; these aliases keep every existing importer working.
  */
-export const WEB_PROVIDERS = Object.freeze({
-  CHROME: 'chrome',
-  EDGE: 'edge',
-  FIREFOX: 'firefox',
-});
+export const WEB_PROVIDERS = WEB_RUNTIME_PROVIDERS;
 
 /** Known provider ids, in report order. Anything else is not a provider name. */
-export const WEB_PROVIDER_IDS = Object.freeze([
-  WEB_PROVIDERS.CHROME,
-  WEB_PROVIDERS.EDGE,
-  WEB_PROVIDERS.FIREFOX,
-]);
+export const WEB_PROVIDER_IDS = WEB_RUNTIME_PROVIDER_IDS;
 
 /** Provider used when a legacy config has no `provider` field at all (config v1 compatibility). */
 export const DEFAULT_WEB_PROVIDER = WEB_PROVIDERS.CHROME;
@@ -58,15 +58,26 @@ export function isImplementedWebProvider(provider) {
 }
 
 /**
- * Known environment metadata. `planned` environments are placeholders: they may be displayed and
- * switched on, but never selected for execution in v1.
+ * Known environments metadata — the single vocabulary for the settings page, the panel selector and
+ * the diagnostics surface (see `environmentCatalog()`).
  *
- * `label` / `short` are the display names the settings page and the panel selector render. They
- * live here — next to the ids — because a display catalog that a client keeps on its own drifts
- * from the ids (a client once announced six environments the Host had never registered). Order
- * matters: it is the catalog order both surfaces use.
+ * `status` answers "how far is this environment implemented", and it is the *only* place that
+ * answer lives:
+ *
+ * - `supported` —— 有执行适配器，Agent 能驱动；可启用、可选中。
+ * - `view`      —— 只有视图（纯视口或空态画布），没有执行适配器；可启用、可选中，选中后
+ *                  Agent 工具面为空。3D 的 Blender 纯视口属于这一类。
+ * - `planned`   —— 未实现：可启用（表达意图），**不可选中**。
+ * - `empty`     —— 默认视图（空态）：不可启用，可选中，任何 Host 都提供。
+ *
+ * `kind` 区分"目标环境"和"视图"：`environment` 会出现在设置页分组里，`view` 只出现在面板的
+ * 环境组合框里（默认视图就是这样一行）。
+ *
+ * `label` / `short` 是设置页与面板组合框的显示名，跟 id 放在一起：客户端的显示目录一旦自己
+ * 维护就会漂移（曾经宣告过 Host 根本没登记的环境）。顺序也是两个界面共用的目录顺序。
  */
 const ENVIRONMENT_META = [
+  { id: ENVIRONMENTS.DEFAULT, label: '默认视图', short: '默认', status: 'empty', kind: 'view' },
   { id: ENVIRONMENTS.WEB, label: 'Web 视图', short: 'Web', status: 'supported' },
   { id: ENVIRONMENTS.LINUX, label: 'Linux 视图', short: 'Linux', status: 'planned' },
   { id: ENVIRONMENTS.WINDOWS, label: 'Windows 视图', short: 'Windows', status: 'planned' },
@@ -75,29 +86,40 @@ const ENVIRONMENT_META = [
   { id: ENVIRONMENTS.TUI, label: 'TUI 视图', short: 'TUI', status: 'planned' },
   { id: ENVIRONMENTS.HARMONYOS, label: 'HarmonyOS 视图', short: 'HarmonyOS', status: 'planned' },
   { id: ENVIRONMENTS.GAME, label: '游戏视图', short: '游戏', status: 'planned' },
-  { id: ENVIRONMENTS.THREE_D, label: '3D 视图', short: '3D', status: 'planned' },
+  { id: ENVIRONMENTS.THREE_D, label: '3D 视图', short: '3D', status: 'view' },
   { id: ENVIRONMENTS.MINIPROGRAM, label: '小程序视图', short: '小程序', status: 'planned' },
   { id: ENVIRONMENTS.FAKE, label: '测试夹具环境', short: 'Fake', status: 'supported', testOnly: true },
 ];
 
-export const KNOWN_ENVIRONMENTS = Object.freeze(Object.fromEntries(ENVIRONMENT_META.map((meta) => [
-  meta.id,
-  Object.freeze({
+const ENVIRONMENT_STATUSES = new Set(['supported', 'view', 'planned', 'empty']);
+
+export const KNOWN_ENVIRONMENTS = Object.freeze(Object.fromEntries(ENVIRONMENT_META.map((meta) => {
+  if (!ENVIRONMENT_STATUSES.has(meta.status)) throw new TypeError(`unknown environment status: ${meta.status}`);
+  const kind = meta.kind === 'view' ? 'view' : 'environment';
+  return [meta.id, Object.freeze({
     environment: meta.id,
     label: meta.label,
     short: meta.short,
     status: meta.status,
+    kind,
     testOnly: meta.testOnly === true,
     planned: meta.status === 'planned',
-  }),
-])));
+    // 可选中 = 有东西可看（执行适配器或视图）。planned 只能说"启用过"，不能被选中。
+    selectable: meta.status !== 'planned',
+    // 可执行 = 有 Agent 执行适配器。
+    executable: meta.status === 'supported',
+    // 可启用 = 设置页有开关。默认视图是空态，不是一个开关能打开的"环境"。
+    enableable: meta.status !== 'empty',
+  })];
+})));
 
 /**
  * Read-only catalog of the environments this Host knows, in display order.
  *
  * Consumers (panel selector, settings page, diagnostics) take ids *and* labels from here rather
  * than keeping a list of their own. `testOnly` entries are included but flagged: test surfaces
- * decide whether to show them, production surfaces filter them out.
+ * decide whether to show them, production surfaces filter them out; `kind: 'view'` rows are offered
+ * by the panel selector but never get a settings group.
  */
 export function environmentCatalog() {
   return ENVIRONMENT_META.map((meta) => Object.freeze({
@@ -105,6 +127,7 @@ export function environmentCatalog() {
     label: meta.label,
     short: meta.short,
     status: meta.status,
+    kind: meta.kind === 'view' ? 'view' : 'environment',
     planned: meta.status === 'planned',
     testOnly: meta.testOnly === true,
   }));
@@ -117,6 +140,17 @@ const PLANNED_ENVIRONMENTS = new Set(
 /** 该目标环境是否仍是"规划中"（v1 没有适配器，可启用但不可执行）。 */
 export function isPlannedEnvironment(environment) {
   return PLANNED_ENVIRONMENTS.has(environment);
+}
+
+/** 该 id 是不是空态视图（默认视图）。 */
+export function isDefaultView(environment) {
+  return environment === ENVIRONMENTS.DEFAULT;
+}
+
+/** 该 id 能否被设为"当前选择"（执行环境或面板视图）。 */
+export function isSelectableEnvironment(environment) {
+  const meta = KNOWN_ENVIRONMENTS[environment];
+  return Boolean(meta && meta.selectable);
 }
 
 function deepFreeze(value) {
@@ -163,6 +197,17 @@ function defaultWebProviders() {
   };
 }
 
+/**
+ * Per-provider switches for a fresh environment entry. Web 沿用 chrome 单开；3D 的 Blender 纯视口
+ * 默认开启，这样"打开 3D 视图总开关即可读画面"与接入纯视口之前的行为一致（那时门禁只看环境开关）。
+ * 只有宣告了 provider 轴的环境才有这一层。
+ */
+function defaultProviders(environment) {
+  if (environment === ENVIRONMENTS.WEB) return defaultWebProviders();
+  if (environment === ENVIRONMENTS.THREE_D) return { [THREE_D_PROVIDERS.BLENDER]: { enabled: true } };
+  return null;
+}
+
 /** Default config: web is the only enabled environment, chrome the only enabled provider. */
 export const DEFAULT_CONFIG = deepFreeze({
   version: CONFIG_VERSION,
@@ -182,6 +227,13 @@ export const DEFAULT_CONFIG = deepFreeze({
         },
       },
       [ENVIRONMENTS.FAKE]: { enabled: false, targetId: null },
+      // 3D 视图带上它的 provider 轴：关闭状态 + Blender 纯视口默认开启。缺这一条会让设置页
+      // 读不到 provider 清单，卡片开关只能显示"未知"。
+      [ENVIRONMENTS.THREE_D]: {
+        enabled: false,
+        targetId: null,
+        providers: { [THREE_D_PROVIDERS.BLENDER]: { enabled: true } },
+      },
     },
   },
   workspaces: {},
@@ -195,8 +247,9 @@ function defaultEnvironmentEntry(environment) {
   };
   if (environment === ENVIRONMENTS.WEB) {
     entry.provider = DEFAULT_WEB_PROVIDER;
-    entry.providers = defaultWebProviders();
   }
+  const providers = defaultProviders(environment);
+  if (providers !== null) entry.providers = providers;
   return entry;
 }
 
@@ -239,6 +292,12 @@ function normalizeEnabledEnvironments(list, field, options) {
   const out = [];
   for (const item of list) {
     const environment = normalizeEnvironmentName(item, field, options);
+    // 默认视图是空态，不是能"启用"的环境：把它写进可启用集合是配置错误，不是可忽略的噪声。
+    if (KNOWN_ENVIRONMENTS[environment]?.enableable === false) {
+      throw invalid(`environment ${environment} is a view, not an enableable environment`, {
+        field, environment,
+      });
+    }
     if (!out.includes(environment)) out.push(environment);
   }
   return out;
@@ -313,17 +372,22 @@ function normalizeProviderEntry(raw, field, { partial = false, strict = false } 
   return out;
 }
 
-/** Provider sub-map: per-provider deep shape, unknown ids dropped (load) or rejected (patch). */
-function normalizeProvidersMap(raw, field, { partial = false, strict = false } = {}) {
+/**
+ * Provider sub-map: per-provider deep shape. `environment` decides the legal ids — an id the
+ * environment does not declare is dropped (load) or rejected (patch), never silently accepted.
+ */
+function normalizeProvidersMap(raw, field, { partial = false, strict = false, environment } = {}) {
   const source = assertPlainObject(raw, field);
+  const allowed = environmentProviderIds(environment);
   const out = {};
   for (const [provider, entry] of Object.entries(source)) {
-    if (!WEB_PROVIDER_IDS.includes(provider)) {
+    if (!allowed.includes(provider)) {
       if (strict) {
-        throw invalid(`unknown web provider: ${provider}`, {
+        throw invalid(`unknown provider for environment ${environment}: ${provider}`, {
           field: `${field}.${provider}`,
           provider,
-          allowed: [...WEB_PROVIDER_IDS],
+          environment,
+          allowed: [...allowed],
         });
       }
       continue;
@@ -341,6 +405,13 @@ function normalizeEnvironmentEntry(raw, environment, { partial = false, strict =
   if (source.enabled !== undefined) {
     if (typeof source.enabled !== 'boolean') {
       throw invalid(`${field}.enabled must be a boolean`, { field: `${field}.enabled` });
+    }
+    // 默认视图是空态，不是一个能启停的环境：给它写开关是配置错误，不是可忽略的噪声。
+    if (KNOWN_ENVIRONMENTS[environment]?.enableable === false) {
+      throw invalid(`environment ${environment} is a view, not an enableable environment`, {
+        field: `${field}.enabled`,
+        environment,
+      });
     }
     out.enabled = source.enabled;
   }
@@ -363,15 +434,66 @@ function normalizeEnvironmentEntry(raw, environment, { partial = false, strict =
     out.provider = normalizeWebProviderName(source.provider, `${field}.provider`, { strict });
   }
   if (source.providers !== undefined) {
-    if (!webOnly) {
-      throw invalid(`${field}.providers is only supported for the web environment`, {
+    // 每个环境只在它自己的 provider 目录里存开关；没有 provider 轴的环境（如 game）拒绝这一层，
+    // 不猜一个 provider 出来。
+    if (!environmentDeclaresProviders(environment)) {
+      throw invalid(`${field}.providers is not supported for the ${environment} environment`, {
         field: `${field}.providers`,
+        environment,
       });
     }
-    const provided = normalizeProvidersMap(source.providers, `${field}.providers`, { partial, strict });
+    const provided = normalizeProvidersMap(source.providers, `${field}.providers`, { partial, strict, environment });
     out.providers = mergeProviderMaps(out.providers, provided);
+    // 互斥：**写补丁**时"本次打开的那个"就是唯一启用的那个；**加载整份配置**时按已选中的
+    // `provider` 收敛（旧文件里可能同时开着好几个）。
+    const justEnabled = Object.entries(provided)
+      .filter(([, value]) => value && value.enabled === true)
+      .map(([id]) => id);
+    const preferred = partial
+      ? (justEnabled[justEnabled.length - 1] ?? null)
+      : (typeof source.provider === 'string' ? source.provider : null);
+    return enforceSingleProvider(environment, out, { preferred });
   }
-  return out;
+  // 选择型写入（`provider`）同样要保持"开关只有一个启用"。
+  return enforceSingleProvider(environment, out, { preferred: source.provider ?? null });
+}
+
+/**
+ * 同一目标环境同一时刻只跑**一种**运行环境（调试视图只对着一个目标）。
+ *
+ * 规则（`preferred` 是本次被打开的那个）：
+ *  1. 本次被启用且有开 → 保留它；
+ *  2. 否则保留已选中的 `provider`；
+ *  3. 否则保留目录里第一个处于启用状态的；
+ *  4. 都没有 → 全部关闭（该环境没有可用运行环境，执行侧会如实报 provider-disabled）。
+ *
+ * 返回新对象，不改入参。`web` 的 `provider`（单选执行端）跟着开关一起走，避免"开关说 edge、
+ * 选择说 chrome"两套事实。
+ */
+export function enforceSingleProvider(environment, entry, { preferred = null } = {}) {
+  const ids = environmentProviderIds(environment);
+  if (!entry || typeof entry !== 'object' || !ids.length) return entry;
+  const providers = entry.providers;
+  if (!providers || typeof providers !== 'object') return entry;
+  const enabledIds = ids.filter((id) => providers[id] && providers[id].enabled === true);
+  const keep = (typeof preferred === 'string' && preferred && providers[preferred]?.enabled === true)
+    ? preferred
+    : (typeof entry.provider === 'string' && enabledIds.includes(entry.provider)
+      ? entry.provider
+      : (enabledIds[0] ?? null));
+  const next = { ...entry, providers: {} };
+  for (const id of Object.keys(providers)) {
+    const providerEntry = providers[id];
+    next.providers[id] = providerEntry && typeof providerEntry === 'object'
+      ? { ...providerEntry, enabled: id === keep }
+      : providerEntry;
+  }
+  // 只有"还没有选择"时才用唯一启用的那个补上选择；已有选择（哪怕是未知名字）绝不改写——
+  // "不静默换浏览器"是既有契约，`rejectedProviderReason` 负责把它报出来。
+  if (environment === ENVIRONMENTS.WEB && keep && (next.provider === undefined || next.provider === null)) {
+    next.provider = keep;
+  }
+  return next;
 }
 
 function normalizeEnvironmentMap(raw, field, { partial = false, strict = false } = {}) {
@@ -389,15 +511,23 @@ function normalizeEnvironmentMap(raw, field, { partial = false, strict = false }
 
 function normalizeGlobal(raw) {
   const source = assertPlainObject(raw, 'global');
+  // 有 provider 轴的环境必须有条目：设置页从 `environments.<id>.providers` 读各运行环境的开关，
+  // 缺条目只能显示"未知"，不开关也存不下。其余环境按需出现（它们是 planned，只有总开关）。
   const environments = {
     [ENVIRONMENTS.WEB]: { ...defaultEnvironmentEntry(ENVIRONMENTS.WEB) },
     [ENVIRONMENTS.FAKE]: { ...defaultEnvironmentEntry(ENVIRONMENTS.FAKE) },
+    [ENVIRONMENTS.THREE_D]: { ...defaultEnvironmentEntry(ENVIRONMENTS.THREE_D) },
   };
   const provided = normalizeEnvironmentMap(source.environments ?? {}, 'global.environments');
   for (const [environment, entry] of Object.entries(provided)) {
     environments[environment] = { ...environments[environment], ...entry };
   }
+  const globalView = source.view === undefined
+    ? undefined
+    : normalizeEnvironmentName(source.view, 'global.view');
   return {
+    ...(globalView === undefined ? {} : { view: globalView }),
+    // 旧字段：只保留读兼容，不再参与视图解析（见 `resolveSnapshot` 的选择链）。
     environment: source.environment === undefined
       ? ENVIRONMENTS.WEB
       : normalizeEnvironmentName(source.environment, 'global.environment'),
@@ -411,6 +541,11 @@ function normalizeGlobal(raw) {
 function normalizeWorkspaceEntry(raw, key) {
   const source = assertPlainObject(raw, `workspaces.${key}`);
   const out = {};
+  // `view` 是该工作区最后选中的**视图**（环境 id 或默认视图），会话从它继承；`environment` 是
+  // 旧字段，仍然接受并作为兜底，读路径见 `resolveSnapshot`。
+  if (source.view !== undefined) {
+    out.view = normalizeEnvironmentName(source.view, `workspaces.${key}.view`);
+  }
   if (source.environment !== undefined) {
     out.environment = normalizeEnvironmentName(source.environment, `workspaces.${key}.environment`);
   }
@@ -441,6 +576,10 @@ function normalizeWorkspaceEntry(raw, key) {
 function normalizeSessionEntry(raw, key) {
   const source = assertPlainObject(raw, `sessions.${key}`);
   const out = {};
+  // 当前会话选中的视图。优先级高于旧的 `environment`（见 `resolveSnapshot` 的解析链）。
+  if (source.view !== undefined) {
+    out.view = normalizeEnvironmentName(source.view, `sessions.${key}.view`);
+  }
   if (source.environment !== undefined) {
     out.environment = normalizeEnvironmentName(source.environment, `sessions.${key}.environment`);
   }
@@ -512,9 +651,9 @@ export function normalizeConfig(raw) {
   };
 }
 
-const GLOBAL_PATCH_KEYS = new Set(['environment', 'enabledEnvironments', 'environments', 'targetId']);
-const WORKSPACE_PATCH_KEYS = new Set(['environment', 'enabledEnvironments', 'environments', 'targetId']);
-const SESSION_PATCH_KEYS = new Set(['environment', 'targetId', 'webProvider']);
+const GLOBAL_PATCH_KEYS = new Set(['environment', 'view', 'enabledEnvironments', 'environments', 'targetId']);
+const WORKSPACE_PATCH_KEYS = new Set(['environment', 'view', 'enabledEnvironments', 'environments', 'targetId']);
+const SESSION_PATCH_KEYS = new Set(['environment', 'view', 'targetId', 'webProvider']);
 const ENVIRONMENT_ENTRY_KEYS = new Set(['enabled', 'targetId', 'connection', 'provider', 'providers']);
 
 function normalizePatchEnvironments(raw, field, options) {
@@ -560,6 +699,9 @@ export function validatePatch({ scope, patch } = {}, { allowTestEnvironments = f
   const out = {};
   if (source.environment !== undefined) {
     out.environment = normalizeEnvironmentName(source.environment, `${scope}.environment`, options);
+  }
+  if (source.view !== undefined) {
+    out.view = normalizeEnvironmentName(source.view, `${scope}.view`, options);
   }
   if (source.enabledEnvironments !== undefined) {
     out.enabledEnvironments = normalizeEnabledEnvironments(
@@ -612,8 +754,11 @@ function agentSessionId(agent) {
  * contributes its *effective* environment/target (already filtered by enabledEnvironments), not
  * its raw config entry.
  *
- * A selection outside `enabledEnvironments` is rejected and falls back to `global.environment`;
- * the rejected value is reported in `source.rejectedEnvironment` (never silently allowed).
+ * 视图选择链（见 `docs/debug-panel.md`）：`session.view` > 旧字段 `session.environment` > 父会话的
+ * 有效选择 > `workspace.view` > 旧字段 `workspace.environment` > 默认视图。没有选择不是"回退到
+ * web"：空态就是 `ENVIRONMENTS.DEFAULT`，所以第一次打开会话/新会话落在默认视图。
+ * 选择不可用（planned 或环境开关关着）时落到默认视图，并把被拒的值写进
+ * `source.rejectedEnvironment`（绝不静默顶替）。
  *
  * Web *provider* selection is an independent chain over the same scopes:
  * `session.webProvider > parent's effective provider > workspace.environments.web.provider >
@@ -635,12 +780,12 @@ function agentSessionId(agent) {
  * @returns {{revision:number, environment:string, adapterId:string, provider:string|null,
  *   executionAdapterId:string, enabledProviders:string[], providerConfig:object|null,
  *   enabledEnvironments:string[], capabilities:string[], environmentConfig:object,
- *   targetId:string|null, source:{globalRevision:number, workspaceKey:string|null,
+ *   view:string, targetId:string|null, source:{globalRevision:number, workspaceKey:string|null,
  *   sessionId:string|null, inheritedFrom:string|null, rejectedEnvironment:string|null,
  *   providerSource:string, inheritedProviderFrom:string|null, rejectedProvider:string|null,
  *   rejectedProviderReason:string|null, degraded:boolean, degradedReason:string|null}}}
  */
-export function resolveSnapshot(config, { agent = null, workspaceKey = null } = {}, { allowTestEnvironments = false } = {}) {
+export function resolveSnapshot(config, { agent = null, workspaceKey = null, environmentOverride = null } = {}, { allowTestEnvironments = false } = {}) {
   let normalized;
   let degraded = false;
   let degradedReason = null;
@@ -651,6 +796,18 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
     degradedReason = error instanceof AdapterError ? error.message : String(error?.message ?? error);
     normalized = normalizeConfig(DEFAULT_CONFIG);
   }
+
+  /**
+   * 显式环境覆盖（只给诊断这类"我要看这个环境"的调用方用）：给出一个可选中的环境 id 时，
+   * 直接把它当作本次选择，不再走会话/工作区的视图链——诊断问的是"这个环境本身好不好"，
+   * 不是"面板现在显示什么"。空态视图不接受覆盖。
+   */
+  const overrideEnvironment = (() => {
+    if (typeof environmentOverride !== 'string' || !environmentOverride) return null;
+    const meta = KNOWN_ENVIRONMENTS[environmentOverride];
+    if (!meta || !meta.selectable || meta.testOnly && !allowTestEnvironments) return null;
+    return environmentOverride;
+  })();
 
   const sessionId = agentSessionId(agent);
   const key = typeof workspaceKey === 'string' && workspaceKey.length > 0 ? workspaceKey : null;
@@ -663,7 +820,6 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
     if (meta.testOnly && !allowTestEnvironments) return false;
     return true;
   });
-  const enabledSet = new Set(enabledEnvironments);
 
   const selectable = (environment) => {
     const meta = KNOWN_ENVIRONMENTS[environment];
@@ -672,15 +828,29 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
     return true;
   };
 
-  const applyEnabled = (environment) => {
-    if (selectable(environment) && enabledSet.has(environment)) {
-      return { environment, rejected: null };
+  /** 该环境在当前作用域的开关是否打开（工作区级覆盖全局级）。 */
+  const enabledSet = new Set(enabledEnvironments);
+  const environmentSwitchEnabled = (environment) => {
+    const entry = workspace?.environments?.[environment] ?? normalized.global.environments?.[environment];
+    return Boolean(entry && entry.enabled === true);
+  };
+
+  /**
+   * 把一个**视图选择**落到真正可用的目标上。
+   *
+   * - 默认视图本身就是空态：没有目标也是合法状态，永远可用；
+   * - 其他 id 必须可选中（不是 planned）且环境开关是打开的；
+   * - 否则退回默认视图，并把被拒的值如实写进 `source.rejectedEnvironment`——绝不静默顶替成 web，
+   *   也不去挑"另一个碰巧启用的环境"，因为那会把用户明确选的东西换成他没选的东西。
+   */
+  const applyView = (view) => {
+    if (view === undefined || view === null || view === ENVIRONMENTS.DEFAULT) {
+      return { environment: ENVIRONMENTS.DEFAULT, rejected: null };
     }
-    let fallback;
-    if (enabledSet.has(normalized.global.environment)) fallback = normalized.global.environment;
-    else if (enabledEnvironments.length > 0) fallback = enabledEnvironments[0];
-    else fallback = ENVIRONMENTS.WEB;
-    return { environment: fallback, rejected: environment };
+    // 开关和 allow-list 都表达"这个环境可用"：设置页写开关（并由 Host 同步 allow-list），
+    // 手工维护的配置可能只写其中一个，所以两者其一成立即可，任一都不成立才算被拒。
+    const ok = selectable(view) && (environmentSwitchEnabled(view) || enabledSet.has(view));
+    return ok ? { environment: view, rejected: null } : { environment: ENVIRONMENTS.DEFAULT, rejected: view };
   };
 
   const workspaceTarget = (environment) => {
@@ -712,20 +882,35 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
       parent = selectForSession(parentId, null, depth + 1, nextSeen);
     }
 
-    let environment;
+    // 视图选择链：本会话的 view > 旧字段 environment > 父会话的有效选择 > 工作区 view >
+    // 工作区旧字段 > 默认视图。**没有全局兜底**：新会话/没有选择时就是空态，而不是"碰巧启用
+    // 的 Web"——这正是用户要的"第一次打开会话落在默认视图"。
+    let view;
     let environmentSource;
-    if (isPlainObject(own) && own.environment !== undefined) {
-      environment = own.environment;
+    if (overrideEnvironment !== null) {
+      view = overrideEnvironment;
+      environmentSource = 'override';
+    } else if (isPlainObject(own) && own.view !== undefined) {
+      view = own.view;
+      environmentSource = currentId;
+    } else if (isPlainObject(own) && own.environment !== undefined) {
+      view = own.environment;
       environmentSource = currentId;
     } else if (parent !== null) {
-      environment = parent.environment;
+      view = parent.environment;
       environmentSource = parent.environmentSource;
-    } else if (workspace?.environment !== undefined) {
-      environment = workspace.environment;
+    } else if (workspace?.view !== undefined) {
+      view = workspace.view;
       environmentSource = 'workspace';
-    } else {
-      environment = normalized.global.environment;
+    } else if (workspace?.environment !== undefined) {
+      view = workspace.environment;
+      environmentSource = 'workspace';
+    } else if (normalized.global.view !== undefined) {
+      view = normalized.global.view;
       environmentSource = 'global';
+    } else {
+      view = ENVIRONMENTS.DEFAULT;
+      environmentSource = 'default';
     }
 
     // Independent provider chain: own webProvider > parent's effective provider > workspace >
@@ -750,10 +935,12 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
       providerSource = 'default';
     }
 
-    const effective = applyEnabled(environment);
+    const effective = applyView(view);
     const rejectedEnvironment = effective.rejected !== null
       ? effective.rejected
-      : (isPlainObject(own) && own.environment !== undefined ? null : (parent?.rejectedEnvironment ?? null));
+      : (isPlainObject(own) && (own.view !== undefined || own.environment !== undefined)
+        ? null
+        : (parent?.rejectedEnvironment ?? null));
 
     let targetId;
     const ownEnvironmentApplied = !(isPlainObject(own) && own.environment !== undefined)
@@ -774,6 +961,7 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
 
     return {
       environment: effective.environment,
+      view,
       environmentSource,
       rejectedEnvironment,
       provider,
@@ -790,8 +978,10 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
       : null;
     selection = selectForSession(sessionId, agentParent, 0, new Set([sessionId]));
   } else {
-    const environment = workspace?.environment ?? normalized.global.environment;
-    const effective = applyEnabled(environment);
+    const requestedView = overrideEnvironment
+      ?? workspace?.view ?? workspace?.environment
+      ?? normalized.global.view ?? ENVIRONMENTS.DEFAULT;
+    const effective = applyView(requestedView);
     const workspaceValue = workspaceTarget(effective.environment);
     const globalValue = globalTarget(effective.environment);
     let provider;
@@ -808,7 +998,10 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
     }
     selection = {
       environment: effective.environment,
-      environmentSource: workspace?.environment !== undefined ? 'workspace' : 'global',
+      view: requestedView,
+      environmentSource: overrideEnvironment !== null
+        ? 'override'
+        : (workspace?.view !== undefined || workspace?.environment !== undefined ? 'workspace' : 'default'),
       rejectedEnvironment: effective.rejected,
       provider,
       providerSource,
@@ -841,7 +1034,8 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
     : selection.providerSource;
 
   // Web provider facts. `enabledProviders` is always derived from `providers.*.enabled` (no second
-  // stored list); `provider` / `executionAdapterId` / `providerConfig` only exist for web.
+  // stored list); `provider` / `executionAdapterId` / `providerConfig` only exist for web. A planned
+  // environment that declares providers (3D/Blender) is not selectable, so it never reaches here.
   const enabledProviders = WEB_PROVIDER_IDS.filter(
     (id) => environmentConfig.providers?.[id]?.enabled === true,
   );
@@ -879,6 +1073,9 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null } = 
   return deepFreeze({
     revision: normalized.revision,
     environment,
+    // 面板组合框要显示的**视图**（环境 id 或默认视图）。它通常等于 environment，区别只在
+    // environment 被拒后回落到默认视图时：view 记下用户真正选过的值，便于提示与回填。
+    view: selection.view ?? environment,
     adapterId: environment,
     provider,
     executionAdapterId: isWeb ? `${environment}-${provider}` : environment,

@@ -29,6 +29,9 @@
 ## 目标环境验收
 
 - [Web 验证环境、主机侧套件与真实 GUI 验收](web/verification.md)
+- 运行环境互斥：`tests/acceptance/provider-exclusive-gui.mjs` 在真实设置页里点 Web 的 Edge / Chrome 开关，断言另一个自动关闭、一次点击只涨一个 revision；契约层 `tests/contracts/provider-exclusivity.test.mjs` 覆盖补丁、加载收敛与 3D 单 provider。语义见 [运行环境（provider）开关](target-environments.md#运行环境provider开关)。
+- 视图选择：`tests/acceptance/view-selection.mjs` 在同样的隔离实例上走已认证的同源 HTTP，断言默认视图（新会话、无能力）、`POST /config/select` 的 `view` 持久化、按会话隔离、3D 可选中但无执行能力、以及显式选回默认视图。契约层另有 `tests/contracts/view-selection.test.mjs` 覆盖工作区继承与 A/B 工作区隔离。语义见 [调试面板公共视图 · 视图选择](debug-panel.md#3-视图选择与默认视图)。
+- 3D：`tests/acceptance/three-d-provider-switch.mjs` 在本机起一个私有隔离 DSH 实例（随机端口、临时 `DSH_HOME`、`--no-open`），用独立 headless Chromium 走真实 GUI 登录令牌操作设置页，断言 Blender 卡片开关的可点性、`PUT /config` 的写入字段、revision 递增，以及 `/blender/frame` 在 provider 关闭时 409、开启时返回 PNG。不触碰运行中的实例；报告写在 `tests/acceptance/runs/three-d-provider-switch-*`。门禁语义见 [Blender 纯视口 · 启用条件](three-d/debug-panel.md#启用条件)。
 
 ## 改动如何生效
 

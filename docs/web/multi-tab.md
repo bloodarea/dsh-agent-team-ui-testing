@@ -119,6 +119,7 @@ Web 当前的 P0-E 管理工具；其他 Web 工具调用默认走当前会话�
 - **空态会跨刷新/面板重挂载保持**：面板挂载时的 seed 截图（`/screenshot`）只读取已运行页面，不会为冷态 primary 启动页面；只有用户显式导航或点 `+` 才会重新产生页面。
 - child 关闭被 Agent lease 挡住时（GUI 与 Agent 同时操作），面板会提示「标签正被 Agent 操作；稍后再关闭」；其他拒绝（绑定失效、Host 找不到该运行时）提示「关闭标签失败，请稍后重试」，关闭请求不再静默成功。
 - **面板按 runtime id 寻址当前标签**：active 标签是 child 时，`/state`、`/frame`、`/close`、`/tabs` 都带 `scope-binding` = 该标签的 runtimeId（primary 同理），Host 用这个 id 解析到**该标签自己的** entry（primary 或 child），不借用 Agent session 的 selectedTab，也不把 child 的 binding 当成 primary 的 workspace key。`scope=recent` 与 binding 都直接命中已存在的 entry，不会为同一 workspace 再造一个 Runtime。绑定必须命中真实 entry：`/close` 命中不到返回 404 `SCOPE_NOT_FOUND`（不返回假成功）；`/tabs.open` 解析不到所属 primary 也报 `SCOPE_NOT_FOUND`，只有真的到容量上限才是 `TAB_LIMIT`。
+- **写入口的环境门禁按"页面属于谁"判定**：binding/recent 请求指向的是一个已存在的页面，因此它的 Web 准入看该页面所属会话（entry 的 `rootSessionId`）的视图解析，而不是整机默认视图。否则当宿主默认视图不是 Web（3D 或空态）时，一个会话明明选了 Web、页面也确实在运行，面板的锁/关闭/导航/输入却会被判成"当前环境未启用 Web 页面操作"。取不到所属会话时退回全局快照并按拒绝处理，不猜会话放行；会话自己选的是 3D 这一类情况仍然拒绝。
 - 4/8 容量与 per-tab lease 同样约束 GUI：第 5 个标签/tab 返回 `TAB_LIMIT` 并在本地提示。
 - 标签操作提示是**常驻横条**（`data-utb-tab-notice`，固定单行高度、始终显示分隔线）：只有提示文字会在约 4 秒后自行消失，横条本身不消失，因此视图高度不会随提示出现/消失而跳动。`data-utb-tab-notice-state` 为 `text`（有字）或 `empty`（空行）。
 

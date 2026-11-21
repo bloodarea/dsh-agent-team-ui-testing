@@ -19,11 +19,13 @@
 
 import { createHash } from 'node:crypto';
 
+import { ENVIRONMENTS, KNOWN_ENVIRONMENTS } from '../core/index.js';
+
 const NDJSON = 'application/x-ndjson; charset=utf-8';
 const STAGE_BUDGET_MS = { 1: 3000, 2: 2000, 3: 3000, 4: 2000, 5: 5000 };
 const RUN_BUDGET_MS = 30000;
 const START_BUDGET_MS = 15000;
-const BODY_KEYS = new Set(['provider', 'mode', 'requestId']);
+const BODY_KEYS = new Set(['provider', 'mode', 'requestId', 'environment']);
 /**
  * Hard ceilings for the read-only capability probes. They are exported so the acceptance suite can
  * assert the rejection paths directly: `POST /diagnose` takes no probe arguments, so an out-of-range
@@ -119,6 +121,9 @@ const DISPATCHER_ALLOWED = new Map([
 
 /** The environment this diagnostic run is about (the snapshot is authoritative). */
 function environmentIdFor(ctx) {
+  // 诊断针对的是"要诊断的那个环境"，不是面板当前的视图：设置页会显式给出 environment。
+  const target = ctx?.targetEnvironment;
+  if (typeof target === 'string' && target) return target;
   const id = ctx?.snapshot?.environment;
   return typeof id === 'string' && id ? id : 'web';
 }
@@ -323,7 +328,20 @@ export function createDiagnose(deps) {
 
     const config = crossEnvironment.configStore.getConfig();
     const configRevision = typeof config.revision === 'number' ? config.revision : null;
-    const snapshot = crossEnvironment.snapshotForScope(scope);
+    // 目标环境：设置页给的 environment > 快照里的环境（除非它是空态视图）> web。
+    // 视图选择只决定面板显示什么，它不该让"诊断 web / 诊断 3D"变成一个无环境的运行。
+    const requestedEnvironment = typeof body.environment === 'string' ? body.environment : null;
+    const scopedSnapshot = crossEnvironment.snapshotForScope(scope);
+    const targetEnvironment = (() => {
+      if (requestedEnvironment && KNOWN_ENVIRONMENTS[requestedEnvironment]
+        && KNOWN_ENVIRONMENTS[requestedEnvironment].selectable) return requestedEnvironment;
+      const current = scopedSnapshot.environment;
+      return current && current !== ENVIRONMENTS.DEFAULT ? current : ENVIRONMENTS.WEB;
+    })();
+    // 用目标环境重建快照：阶段 2 的适配器解析、阶段 5 的只读探针都按它判定。
+    const snapshot = targetEnvironment === scopedSnapshot.environment
+      ? scopedSnapshot
+      : crossEnvironment.snapshotForScope({ ...scope, environment: targetEnvironment });
     const provider = body.provider || snapshot.provider || 'chrome';
     const agent = crossEnvironment.agentForScope(scopeRequest, resolved)
       || { id: scope?.id ?? null, session: { header: { cwd: scope?.cwd ?? null } } };
@@ -335,7 +353,7 @@ export function createDiagnose(deps) {
     });
 
     const ctx = {
-      provider, mode, agent, configRevision, snapshot, scope, resolved,
+      provider, mode, agent, configRevision, snapshot, scope, resolved, targetEnvironment,
       runtime: null, entry: null, actualCalls: [], sideEffects: [],
       stage3: null, stage4: null, cancelled: () => cancelled,
     };
@@ -429,7 +447,9 @@ export function createDiagnose(deps) {
       {
         const stage = stageStart('3');
         if (stages['1'] && stages['1'].status === 'FAIL') stage.skip('blocked-by-stage-1', '1');
-        else if (cancelled) stage.finish('UNKNOWN', 'cancelled');
+        else if (stages['2'] && stages['2'].reason === 'environment-has-no-execution-adapter') {
+          stage.skip('blocked-by-stage-2', '2', stages['2'].checks || []);
+        } else if (cancelled) stage.finish('UNKNOWN', 'cancelled');
         else {
           const result = await budget('3', () => stageThree(ctx, runAbort.signal));
           if (result.timeout) stage.finish('UNKNOWN', 'stage-timeout');
@@ -440,7 +460,9 @@ export function createDiagnose(deps) {
       {
         const stage = stageStart('4');
         if (stages['1'] && stages['1'].status === 'FAIL') stage.skip('blocked-by-stage-1', '1');
-        else if (cancelled) stage.finish('UNKNOWN', 'cancelled');
+        else if (stages['2'] && stages['2'].reason === 'environment-has-no-execution-adapter') {
+          stage.skip('blocked-by-stage-2', '2', stages['2'].checks || []);
+        } else if (cancelled) stage.finish('UNKNOWN', 'cancelled');
         else {
           const result = await budget('4', () => stageFour(ctx, resolveProviderExecutable, webProviderSupport, runAbort.signal));
           if (result.timeout) stage.finish('UNKNOWN', 'stage-timeout');
@@ -451,7 +473,9 @@ export function createDiagnose(deps) {
       {
         const stage = stageStart('5');
         if (stages['1'] && stages['1'].status === 'FAIL') stage.skip('blocked-by-stage-1', '1');
-        else if (stages['3'] && stages['3'].status === 'SKIPPED') stage.skip('blocked-by-stage-3', '3');
+        else if (stages['2'] && stages['2'].reason === 'environment-has-no-execution-adapter') {
+          stage.skip('blocked-by-stage-2', '2', stages['2'].checks || []);
+        } else if (stages['3'] && stages['3'].status === 'SKIPPED') stage.skip('blocked-by-stage-3', '3');
         // A provider mismatch leaves `ctx.runtime` present (the *other* provider's runtime), so the
         // "no cdp" guard below does not catch it: the run would happily list that runtime's targets
         // and answer "the page works" for a provider that has no page at all. No object to inspect
@@ -515,13 +539,19 @@ export function createDiagnose(deps) {
       status: missing.length ? 'fail' : 'pass',
       detail: missing.length ? '未注册的定义：' + missing.slice(0, 6).join(',') : '声明集合与已注册定义一致（' + declarable.length + ' 个）',
     });
+    // 只有视图的环境本来就没有 Agent 工具面：这是事实，不是"工具被拒"。
+    const targetMeta = KNOWN_ENVIRONMENTS[environmentIdFor(ctx)] || null;
+    const viewOnly = Boolean(targetMeta && targetMeta.executable === false);
     let admissible = [];
-    try { admissible = [...crossEnvironment.admissibleToolNames(ctx.agent)].sort(); } catch { admissible = []; }
+    // 准入投影按本次诊断冻结的快照算：这次问的是"目标环境能不能用"，不是"面板当前视图能不能用"。
+    try { admissible = [...crossEnvironment.admissibleToolNames(ctx.agent, ctx.snapshot)].sort(); } catch { admissible = []; }
     const notAdmitted = declarable.filter((name) => !admissible.includes(name));
     checks.push({
       id: 'tool-admission',
-      status: notAdmitted.length ? 'warn' : 'pass',
-      detail: notAdmitted.length ? '未准入：' + notAdmitted.slice(0, 6).join(',') : '当前作用域准入通过（' + admissible.length + ' 个）',
+      status: viewOnly ? 'skip' : (notAdmitted.length ? 'warn' : 'pass'),
+      detail: viewOnly
+        ? '该环境只有视图（status=' + String(targetMeta.status) + '），没有 Agent 工具面'
+        : (notAdmitted.length ? '未准入：' + notAdmitted.slice(0, 6).join(',') : '当前作用域准入通过（' + admissible.length + ' 个）'),
     });
 
     let callStatus = 'warn';
@@ -538,6 +568,7 @@ export function createDiagnose(deps) {
       checks.push({ id: 'tool-call', status: 'warn', detail: String((error && error.message) || error).slice(0, 200), code: code || null });
     }
     if (missing.length) return { status: 'FAIL', reason: 'registration-broken', checks };
+    if (viewOnly) return { status: 'SKIPPED', reason: 'environment-has-no-execution-adapter', checks };
     if (callStatus !== 'pass') return { status: 'WARN', reason: callReason, checks };
     if (notAdmitted.length) return { status: 'WARN', reason: 'tool-not-admitted', checks };
     return { status: 'PASS', reason: null, checks };
@@ -545,6 +576,17 @@ export function createDiagnose(deps) {
 
   async function stageTwo(ctx, crossEnvironment, registry, signal) {
     const checks = [];
+    // 只有视图的环境（例如 3D 的 Blender 纯视口）没有 Agent 执行适配器：这不是缺陷，
+    // 也不该被报成 FAIL——跳过执行侧检查，把"纯视口"这个事实写进 checks。
+    const targetMeta = KNOWN_ENVIRONMENTS[environmentIdFor(ctx)] || null;
+    if (targetMeta && targetMeta.executable === false) {
+      checks.push({
+        id: 'adapter-resolve',
+        status: 'skip',
+        detail: '该环境只有视图（status=' + String(targetMeta.status) + '），没有 Agent 执行适配器，不解析执行适配器',
+      });
+      return { status: 'SKIPPED', reason: 'environment-has-no-execution-adapter', checks };
+    }
     const revision = ctx.configRevision;
     const configValid = typeof revision === 'number';
     checks.push({ id: 'config-revision', status: configValid ? 'pass' : 'fail', detail: configValid ? 'revision ' + revision : '缺少合法 revision' });

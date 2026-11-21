@@ -65,6 +65,7 @@ test('legacy web config without provider fields normalizes to chrome and keeps v
     version: 1,
     revision: 4,
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: { web: { enabled: true, targetId: null } },
@@ -114,7 +115,7 @@ test('an unknown provider name is preserved on load and blocks instead of swappi
   const kept = normalizeConfig({
     version: 1,
     revision: 2,
-    global: { environment: 'web', enabledEnvironments: ['web'], environments: { web: { provider: 'safari' } } },
+    global: { view: 'web', environment: 'web', enabledEnvironments: ['web'], environments: { web: { provider: 'safari' } } },
     sessions: { s1: { webProvider: 'safari' } },
   });
   assert.equal(kept.global.environments.web.provider, 'safari', 'unknown name is kept verbatim');
@@ -132,7 +133,7 @@ test('an unknown provider name is preserved on load and blocks instead of swappi
   assert.equal(snapshot.source.rejectedProviderReason, 'unknown-provider');
 
   const sessionSnapshot = resolveSnapshot(
-    normalizeConfig({ sessions: { s1: { webProvider: 'safari' } } }),
+    normalizeConfig({ sessions: { s1: { view: 'web', webProvider: 'safari' } } }),
     { agent: { id: 's1' } },
   );
   assert.equal(sessionSnapshot.provider, 'safari');
@@ -144,6 +145,7 @@ test('an unknown provider name is preserved on load and blocks instead of swappi
     version: 1,
     revision: 5,
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: { web: { enabled: true, targetId: null, provider: 'safari', providers: { chrome: { enabled: true } } } },
@@ -167,7 +169,8 @@ test('an unknown provider name is preserved on load and blocks instead of swappi
   });
   assert.equal(written.revision, 6);
   const onDisk = JSON.parse(await readFile(join(dir, 'config.json'), 'utf8'));
-  assert.equal(onDisk.global.environments.web.provider, 'safari', 'the unusable selection is not rewritten');
+  // 显式打开 edge 就是"我要用 edge"：这时改写选择是用户意图，不是静默换浏览器。
+  assert.equal(onDisk.global.environments.web.provider, 'edge', 'an explicit provider switch is a choice');
   assert.equal(onDisk.global.environments.web.providers.edge.enabled, true);
   assert.equal(onDisk.version, 1);
 
@@ -190,7 +193,7 @@ test('an unknown provider name is preserved on load and blocks instead of swappi
 
 test('a workspace-scoped unknown provider is preserved and blocks', () => {
   const config = normalizeConfig({
-    global: { environment: 'web', enabledEnvironments: ['web'], environments: { web: { provider: 'chrome' } } },
+    global: { view: 'web', environment: 'web', enabledEnvironments: ['web'], environments: { web: { provider: 'chrome' } } },
     workspaces: { '/w': { environments: { web: { provider: 'safari' } } } },
   });
   assert.equal(config.workspaces['/w'].environments.web.provider, 'safari', 'workspace value is kept verbatim');
@@ -216,6 +219,7 @@ test('a workspace-scoped unknown provider is preserved and blocks', () => {
 test('blocking precedence: the web total gate outranks an unknown provider name', () => {
   const off = normalizeConfig({
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: { web: { enabled: false, provider: 'safari' } },
@@ -233,6 +237,7 @@ test('blocking precedence: the web total gate outranks an unknown provider name'
   // Gate on -> the unknown name becomes the reported cause.
   const on = normalizeConfig({
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: { web: { enabled: true, provider: 'safari' } },
@@ -243,6 +248,7 @@ test('blocking precedence: the web total gate outranks an unknown provider name'
   // Known-but-disabled stays distinct from unknown.
   const disabled = normalizeConfig({
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: { web: { enabled: true, provider: 'edge' } },
@@ -252,7 +258,10 @@ test('blocking precedence: the web total gate outranks an unknown provider name'
 });
 
 test('web snapshot exposes provider, executionAdapterId, enabledProviders and providerConfig', () => {
-  const snapshot = resolveSnapshot(DEFAULT_CONFIG, {});
+  // 默认配置现在是空态视图，所以要断言 web 快照必须显式选 web。
+  const snapshot = resolveSnapshot(normalizeConfig({
+    global: { view: 'web', environment: 'web' },
+  }), {});
   assert.equal(snapshot.environment, 'web', 'environment must stay "web"');
   assert.equal(snapshot.adapterId, 'web', 'adapterId must stay "web" for the facade identity');
   assert.equal(snapshot.provider, 'chrome');
@@ -273,7 +282,7 @@ test('web snapshot exposes provider, executionAdapterId, enabledProviders and pr
 
 test('non-web snapshots carry no provider facts', () => {
   const config = normalizeConfig({
-    global: { environment: 'fake', enabledEnvironments: ['web', 'fake'] },
+    global: { view: 'fake', environment: 'fake', enabledEnvironments: ['web', 'fake'] },
   });
   const snapshot = resolveSnapshot(config, {}, { allowTestEnvironments: true });
   assert.equal(snapshot.environment, 'fake');
@@ -287,6 +296,7 @@ test('non-web snapshots carry no provider facts', () => {
 test('provider selection chain: session > parent > workspace > global', () => {
   const config = normalizeConfig({
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: { web: { provider: 'edge', providers: { edge: { enabled: true } } } },
@@ -305,7 +315,7 @@ test('provider selection chain: session > parent > workspace > global', () => {
   assert.equal(own.provider, 'chrome');
   assert.equal(own.source.providerSource, 'own');
   assert.equal(own.source.inheritedProviderFrom, null);
-  assert.deepEqual(own.enabledProviders, ['chrome', 'edge'], 'workspace only overrides the provider');
+  assert.deepEqual(own.enabledProviders, ['edge'], '全局只启用 edge（互斥），会话只是选了 chrome 这个名字');
 
   const inherited = resolveSnapshot(config, { agent: { id: 'child' }, workspaceKey: '/w' });
   assert.equal(inherited.provider, 'edge', "parent's effective provider wins over workspace");
@@ -338,6 +348,7 @@ test('provider selection chain: session > parent > workspace > global', () => {
 test('a disabled provider is kept in the snapshot and reported, never swapped', () => {
   const config = normalizeConfig({
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: { web: { provider: 'edge', targetId: 'g' } },
@@ -355,6 +366,7 @@ test('a disabled provider is kept in the snapshot and reported, never swapped', 
   // Enabling the provider resumes the same selection: no rewrite happened in between.
   const enabled = normalizeConfig({
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: {
@@ -367,13 +379,14 @@ test('a disabled provider is kept in the snapshot and reported, never swapped', 
   assert.equal(resumed.providerConfig.enabled, true);
   assert.equal(resumed.source.rejectedProvider, null);
   assert.equal(resumed.source.rejectedProviderReason, null);
-  assert.deepEqual(resumed.enabledProviders, ['chrome', 'edge']);
+  assert.deepEqual(resumed.enabledProviders, ['edge']);
   assert.equal(resumed.targetId, null, 'legacy targetId stays a chrome-only field');
 });
 
 test('the web total switch off blocks every provider but keeps stored switches', () => {
   const off = normalizeConfig({
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: { web: { enabled: false, provider: 'chrome' } },
@@ -388,6 +401,7 @@ test('the web total switch off blocks every provider but keeps stored switches',
 
   const back = normalizeConfig({
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: { web: { enabled: true, provider: 'chrome' } },
@@ -399,13 +413,14 @@ test('the web total switch off blocks every provider but keeps stored switches',
 test('firefox may be enabled in config; the missing driver is reported, not faked', () => {
   const config = normalizeConfig({
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: { web: { provider: 'firefox', providers: { firefox: { enabled: true } } } },
     },
   });
   const snapshot = resolveSnapshot(config, {});
-  assert.deepEqual(snapshot.enabledProviders, ['chrome', 'firefox']);
+  assert.deepEqual(snapshot.enabledProviders, ['firefox']);
   assert.equal(snapshot.provider, 'firefox');
   assert.equal(snapshot.providerConfig.enabled, true);
   assert.equal(snapshot.providerConfig.implemented, false, 'execution layer must answer ADAPTER_UNSUPPORTED');
@@ -415,6 +430,7 @@ test('firefox may be enabled in config; the missing driver is reported, not fake
 test('per-provider executable/connection never leak to another provider', () => {
   const configFor = (provider) => normalizeConfig({
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: {
@@ -440,7 +456,7 @@ test('per-provider executable/connection never leak to another provider', () => 
   assert.equal(edge.providerConfig.connection, null, "chrome's legacy connection must not be inherited");
 });
 
-test('global provider patches deep-merge sibling provider switches', async (t) => {
+test('global provider patches keep exactly one runtime enabled per environment', async (t) => {
   const dir = await tempDir(t);
   const store = new ConfigStore({ dir });
   store.load();
@@ -448,13 +464,14 @@ test('global provider patches deep-merge sibling provider switches', async (t) =
   store.write({
     expectedRevision: 0,
     scope: 'global',
-    patch: { environments: { web: { provider: 'edge', providers: { edge: { enabled: true } } } } },
+    patch: { view: 'web', environments: { web: { provider: 'edge', providers: { edge: { enabled: true } } } } },
   });
   assert.deepEqual(store.getConfig().global.environments.web, {
     enabled: true,
     targetId: null,
     provider: 'edge',
-    providers: { chrome: { enabled: true }, edge: { enabled: true }, firefox: { enabled: false } },
+    // 打开 edge 就关掉 chrome（互斥），选择的执行端也跟着变成 edge。
+    providers: { chrome: { enabled: false }, edge: { enabled: true }, firefox: { enabled: false } },
   });
 
   store.write({
@@ -464,16 +481,17 @@ test('global provider patches deep-merge sibling provider switches', async (t) =
   });
   const web = store.getConfig().global.environments.web;
   assert.deepEqual(web.providers, {
-    chrome: { enabled: true },
-    edge: { enabled: true },
+    chrome: { enabled: false },
+    edge: { enabled: false },
     firefox: { enabled: true },
   });
-  assert.equal(web.provider, 'edge', 'a switches-only patch must not touch the selection');
+  // 互斥模型下"打开某个运行环境"本身就是选择它，所以单选执行端跟着变成 firefox。
+  assert.equal(web.provider, 'firefox', 'enabling a provider is selecting it');
   assert.equal(web.enabled, true);
 
   const snapshot = store.resolveForAgent({ id: 'a1' });
-  assert.deepEqual(snapshot.enabledProviders, ['chrome', 'edge', 'firefox']);
-  assert.equal(snapshot.provider, 'edge');
+  assert.deepEqual(snapshot.enabledProviders, ['firefox']);
+  assert.equal(snapshot.provider, 'firefox', '打开 firefox 就是选它（互斥）');
 });
 
 test('workspace provider patches are sparse and merge over global per provider', async (t) => {
@@ -486,7 +504,7 @@ test('workspace provider patches are sparse and merge over global per provider',
     expectedRevision: 0,
     scope: 'workspace',
     workspaceKey,
-    patch: { environments: { web: { provider: 'edge' } } },
+    patch: { view: 'web', environments: { web: { provider: 'edge' } } },
   });
   assert.deepEqual(store.getConfig().workspaces[workspaceKey].environments.web, { provider: 'edge' });
   assert.equal(store.getConfig().global.environments.web.provider, 'chrome', 'global is untouched');
@@ -509,13 +527,15 @@ test('workspace provider patches are sparse and merge over global per provider',
   });
   assert.deepEqual(
     store.getConfig().workspaces[workspaceKey].environments.web.providers,
-    { edge: { enabled: true }, chrome: { enabled: true } },
+    // 互斥：在工作区里打开 chrome，就把同一工作区的 edge 关掉（全局那份不受影响）。
+    { edge: { enabled: false }, chrome: { enabled: true } },
   );
 
   const agent = { id: 'a1', session: { header: { cwd: dir } } };
   const snapshot = store.resolveForAgent(agent);
-  assert.equal(snapshot.provider, 'edge');
-  assert.deepEqual(snapshot.enabledProviders, ['chrome', 'edge']);
+  // 工作区选择 chrome（互斥），执行端跟着它走。
+  assert.equal(snapshot.provider, 'chrome');
+  assert.deepEqual(snapshot.enabledProviders, ['chrome']);
   assert.equal(snapshot.providerConfig.enabled, true);
   assert.equal(snapshot.source.providerSource, 'workspace');
   assert.deepEqual(snapshot.environmentConfig.providers.chrome, { enabled: true });
@@ -573,6 +593,7 @@ test('a legacy config file on disk loads without CONFIG_INVALID and keeps revisi
     version: 1,
     revision: 7,
     global: {
+      view: 'web',
       environment: 'web',
       enabledEnvironments: ['web'],
       environments: { web: { enabled: true, targetId: null }, fake: { enabled: false, targetId: null } },
@@ -607,7 +628,7 @@ test('a legacy config file on disk loads without CONFIG_INVALID and keeps revisi
   assert.equal(onDisk.version, 1);
   assert.equal(onDisk.revision, 8);
   assert.deepEqual(onDisk.global.environments.web.providers, {
-    chrome: { enabled: true },
+    chrome: { enabled: false },
     edge: { enabled: true },
     firefox: { enabled: false },
   });
@@ -663,7 +684,7 @@ test('provider selection and switches survive a restart; no derived list is pers
   store.write({
     expectedRevision: 0,
     scope: 'global',
-    patch: { environments: { web: { provider: 'edge', providers: { edge: { enabled: true } } } } },
+    patch: { view: 'web', environments: { web: { provider: 'edge', providers: { edge: { enabled: true } } } } },
   });
 
   const text = await readFile(join(dir, 'config.json'), 'utf8');
@@ -679,7 +700,8 @@ test('provider selection and switches survive a restart; no derived list is pers
   assert.equal(reloaded.getConfig().revision, 1);
   const snapshot = reloaded.resolveForAgent({ id: 'a1' });
   assert.equal(snapshot.provider, 'edge');
-  assert.deepEqual(snapshot.enabledProviders, ['chrome', 'edge']);
+  // 运行环境互斥：打开 edge 就会关掉 chrome。
+  assert.deepEqual(snapshot.enabledProviders, ['edge']);
   assert.equal(snapshot.source.rejectedProvider, null);
 });
 
@@ -689,8 +711,8 @@ test('select() writes session webProvider and global/workspace provider selectio
   const workspaceKey = workspaceKeyOf({ cwd: dir });
   store.load();
 
-  store.select({ scope: 'session', agentId: 's1', webProvider: 'edge', expectedRevision: 0 });
-  assert.deepEqual(store.getConfig().sessions.s1, { webProvider: 'edge' });
+  store.select({ scope: 'session', agentId: 's1', view: 'web', webProvider: 'edge', expectedRevision: 0 });
+  assert.deepEqual(store.getConfig().sessions.s1, { view: 'web', webProvider: 'edge' });
   const sessionSnap = store.resolveForAgent({ id: 's1', session: { header: { cwd: dir } } });
   assert.equal(sessionSnap.provider, 'edge');
   assert.equal(sessionSnap.source.providerSource, 's1');
@@ -714,7 +736,7 @@ test('select() writes session webProvider and global/workspace provider selectio
     assertCode('CONFIG_INVALID'),
   );
   assert.equal(store.getConfig().revision, 3, 'the rejected session patch changed nothing');
-  assert.deepEqual(store.getConfig().sessions.s1, { webProvider: 'edge' });
+  assert.deepEqual(store.getConfig().sessions.s1, { view: 'web', webProvider: 'edge' });
   assert.throws(() => store.select({ scope: 'session', agentId: 's1' }), assertCode('CONFIG_INVALID'));
   assert.throws(
     () => validatePatch({ scope: 'session', patch: { webProvider: 'safari' } }),
@@ -728,7 +750,7 @@ test('select() writes session webProvider and global/workspace provider selectio
 
   // Clearing a session selection re-inherits the lower scopes instead of pinning "no provider".
   store.select({ scope: 'session', agentId: 's1', webProvider: null, expectedRevision: 3 });
-  assert.deepEqual(store.getConfig().sessions.s1, { webProvider: null });
+  assert.deepEqual(store.getConfig().sessions.s1, { view: 'web', webProvider: null });
   const cleared = store.resolveForAgent({ id: 's1', session: { header: { cwd: dir } } });
   assert.equal(cleared.provider, 'chrome', 'the workspace selection applies again');
   assert.equal(cleared.source.providerSource, 'workspace');

@@ -1,17 +1,30 @@
 # Blender 纯视口
 
-Linux 上可以在调试视图中打开 Blender 的 3D 视口。进入 **设置 → UI 测试**，启用「3D 视图」，然后在 **更多 → 调试视图** 或右侧的调试面板切换到「3D 视图」。按住画面拖动可旋转视角，滚轮可缩放。画面只包含 Blender 3D 视口，外围使用 DSH 公共调试组件。
+Linux 上可以在调试视图中打开 Blender 的 3D 视口。进入 **设置 → UI 测试**，启用「3D 视图」分组，确认「Blender」卡片的开关处于启用状态，然后在 **更多 → 调试视图** 或右侧的调试面板切换到「3D 视图」。按住画面拖动可旋转视角，滚轮可缩放。画面只包含 Blender 3D 视口，外围使用 DSH 公共调试组件。
 
 - 上方提示栏显示当前操作，提供「标注」和「尺寸调整」入口。底部状态栏显示实际图像分辨率、最近一帧从请求到加载的耗时，以及连接和出图状态。
 - 尺寸栏支持分辨率预设、手动宽高、适应窗口与显示缩放。宽高作用于 Blender 实际出图，单边为 200–4096 像素，总面积上限为 8,388,608 像素。显示缩放只改变面板中的呈现比例。
 - 标注使用公共绘图工具，保存在当前面板的 3D 画布中，与 Web 标注分开。截图将已提交的图形与当前 Blender 帧合成为 PNG，可加入当前会话的聊天框。
+
+## 启用条件
+
+取画面要同时满足两个开关，缺一个都返回 `409 ADAPTER_DISABLED`，面板直接把原因显示在视口上：
+
+| 开关 | 配置字段 | 关闭时的提示 |
+| --- | --- | --- |
+| 3D 视图总开关 | `environments.three-d.enabled` | 请先在设置中启用 3D 视图。 |
+| Blender 运行环境 | `environments.three-d.providers.blender.enabled` | 请先在设置中启用 Blender 运行环境。 |
+
+Blender 是 3D 视图的**运行环境**（provider），工程支持度为 `preview`：它提供纯视口，不提供 Agent 执行工具。第一次读取配置时 Blender 默认为开启，所以只打开 3D 总开关就能看画面；把它单独关掉不会停用整个 3D 分组。开关语义见[运行环境（provider）开关](../target-environments.md#运行环境provider开关)。
+
+配置保存在 `${DSH_HOME}/ui-testing/config.json`，改动立即生效，不需要重启 DSH。
 
 ## Host 依赖
 
 - Blender 和 Xvfb 安装在运行 DSH 的 Linux 主机。Blender 的安装方式见[运行时配置](blender-runtime.md)。Xvfb 可以通过发行版的 `xvfb` 包提供。
 - Host 在 `PATH` 和 `~/.local/bin` 查找可执行文件，Blender 还会查找 `~/opt/blender-*/blender`。可以通过 `DSH_UI_TESTING_BLENDER` 和 `DSH_UI_TESTING_XVFB` 分别指定两个可执行文件的绝对路径。
 - 默认加载 Blender 出厂场景。要查看现有工程，在启动 DSH 前将 `DSH_UI_TESTING_BLEND_FILE` 设为 Host 上一个可信 `.blend` 文件的绝对路径。这个工程由 Host 配置，供该 Host 的 3D 面板使用。Blender 禁用工程脚本自动运行。视口操作只更新临时视角，工程文件保持原样。
-- 修改 Host 的启动环境后，须重启 DSH 并刷新网页。
+- 修改 Host 的启动环境后，须重启 DSH 并刷新网页；只改设置页开关不需要重启。
 
 ## 视口行为
 

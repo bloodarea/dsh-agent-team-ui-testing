@@ -910,6 +910,11 @@ export function apply(ctx) {
           sendJson(res, 409, { ok: false, code: 'ADAPTER_DISABLED', error: '请先在设置中启用 3D 视图。' });
           return;
         }
+        // Blender 是 3D 的 provider：环境总开关开着、但这一运行环境被单独关掉时，画面也不能取。
+        if (!crossEnvironment.isProviderEnabled('three-d', 'blender')) {
+          sendJson(res, 409, { ok: false, code: 'ADAPTER_DISABLED', error: '请先在设置中启用 Blender 运行环境。' });
+          return;
+        }
         const controller = new AbortController();
         const onClose = () => controller.abort();
         res.once('close', onClose);

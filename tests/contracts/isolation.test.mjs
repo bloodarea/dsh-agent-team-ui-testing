@@ -27,7 +27,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -146,6 +146,10 @@ test('M5 A08/A09/A11/A15: real ToolsService + SkillRegistry environment isolatio
   const WEB_TOOLS = await webOperationNames();
 
   const configDir = await mkdtemp(join(tmpdir(), 'dsh-isolation-config-'));
+  // 显式的宿主默认视图：没有视图选择时面板与执行都是空态（默认视图），而本用例验证的是 web 工具面。
+  await writeFile(join(configDir, 'config.json'), JSON.stringify({
+    version: 1, revision: 0, global: { view: 'web', environment: 'web' },
+  }));
   const workspaceDir = await mkdtemp(join(tmpdir(), 'dsh-isolation-workspace-'));
   const previousConfigDir = process.env.DSH_UI_TESTING_CONFIG_DIR;
   const previousAllowTestEnv = process.env.DSH_UI_TESTING_ALLOW_TEST_ENV;

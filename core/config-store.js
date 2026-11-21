@@ -20,7 +20,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { DEFAULT_CONFIG, normalizeConfig, resolveSnapshot, validatePatch } from './config.js';
+import { DEFAULT_CONFIG, enforceSingleProvider, normalizeConfig, resolveSnapshot, validatePatch } from './config.js';
 import { ENVIRONMENTS, ERROR_CODES } from './contracts.js';
 import { AdapterError } from './errors.js';
 import { workspaceKeyOf } from './identity.js';
@@ -55,7 +55,7 @@ function requireString(value, field) {
  * provider id, so writing `{providers:{edge:{enabled:true}}}` never drops the sibling
  * `chrome`/`firefox` switches (a plain `{...existing, ...entry}` spread would).
  */
-function mergeEnvironmentEntry(existing, patchEntry) {
+function mergeEnvironmentEntry(environment, existing, patchEntry) {
   const base = isPlainObject(existing) ? existing : {};
   const next = { ...base, ...clone(patchEntry) };
   if (isPlainObject(patchEntry?.providers)) {
@@ -70,11 +70,21 @@ function mergeEnvironmentEntry(existing, patchEntry) {
       };
     }
     next.providers = providers;
+    // 运行环境互斥：本次打开的那个保留，同环境的其它运行环境一律关闭（含库里已存的）。
+    const justEnabled = Object.entries(patchEntry.providers)
+      .filter(([, value]) => value && value.enabled === true)
+      .map(([id]) => id);
+    const preferred = justEnabled[justEnabled.length - 1] ?? null;
+    const enforced = enforceSingleProvider(environment, next, { preferred });
+    // 打开的开关就是"要跑的那个"：web 的单选执行端跟着它走（显式改选时也一并同步）。
+    if (environment === ENVIRONMENTS.WEB && preferred) enforced.provider = preferred;
+    return enforced;
   }
-  return next;
+  return enforceSingleProvider(environment, next, { preferred: patchEntry?.provider ?? null });
 }
 
 function applyGlobalPatch(config, patch) {
+  if (patch.view !== undefined) config.global.view = patch.view;
   if (patch.environment !== undefined) config.global.environment = patch.environment;
   if (patch.enabledEnvironments !== undefined) {
     config.global.enabledEnvironments = [...patch.enabledEnvironments];
@@ -82,6 +92,7 @@ function applyGlobalPatch(config, patch) {
   if (patch.environments !== undefined) {
     for (const [environment, entry] of Object.entries(patch.environments)) {
       config.global.environments[environment] = mergeEnvironmentEntry(
+        environment,
         config.global.environments[environment],
         entry,
       );
@@ -90,6 +101,7 @@ function applyGlobalPatch(config, patch) {
   if (patch.targetId !== undefined) {
     const environment = patch.environment ?? config.global.environment;
     config.global.environments[environment] = mergeEnvironmentEntry(
+      environment,
       config.global.environments[environment],
       { targetId: patch.targetId },
     );
@@ -100,6 +112,7 @@ function applyWorkspacePatch(config, workspaceKey, patch) {
   const key = requireString(workspaceKey, 'workspaceKey');
   const workspace = config.workspaces[key] ?? {};
   config.workspaces[key] = workspace;
+  if (patch.view !== undefined) workspace.view = patch.view;
   if (patch.environment !== undefined) workspace.environment = patch.environment;
   if (patch.enabledEnvironments !== undefined) {
     workspace.enabledEnvironments = [...patch.enabledEnvironments];
@@ -108,6 +121,7 @@ function applyWorkspacePatch(config, workspaceKey, patch) {
     workspace.environments = workspace.environments ?? {};
     for (const [environment, entry] of Object.entries(patch.environments)) {
       workspace.environments[environment] = mergeEnvironmentEntry(
+        environment,
         workspace.environments[environment],
         entry,
       );
@@ -117,6 +131,7 @@ function applyWorkspacePatch(config, workspaceKey, patch) {
     const environment = patch.environment ?? workspace.environment ?? config.global.environment;
     workspace.environments = workspace.environments ?? {};
     workspace.environments[environment] = mergeEnvironmentEntry(
+      environment,
       workspace.environments[environment],
       { targetId: patch.targetId },
     );
@@ -127,6 +142,7 @@ function applySessionPatch(config, agentId, patch) {
   const key = requireString(agentId, 'agentId');
   const session = config.sessions[key] ?? {};
   config.sessions[key] = session;
+  if (patch.view !== undefined) session.view = patch.view;
   if (patch.environment !== undefined) session.environment = patch.environment;
   if (patch.targetId !== undefined) session.targetId = patch.targetId;
   // Session-scoped provider choice only; global/workspace enablement stays a global decision.
@@ -302,7 +318,7 @@ export class ConfigStore {
    *   workspaceKey?:string, agentId?:string}} input
    * @returns {{revision:number, config:object}}
    */
-  write({ expectedRevision, scope, patch, workspaceKey, agentId } = {}) {
+  write({ expectedRevision, scope, patch, workspaceKey, agentId, workspacePatch } = {}) {
     this.load();
     if (!this._writable) {
       throw new AdapterError(ERROR_CODES.OUTPUT_WRITE_FAILED, 'config directory is not writable; memory mode cannot persist', {
@@ -313,16 +329,31 @@ export class ConfigStore {
       { scope, patch },
       { allowTestEnvironments: this.allowTestEnvironments },
     );
+    // 同一 revision 里附带一条工作区补丁：会话的视图选择要同时记成"这个工作区最后一次选择"，
+    // 否则下一个新会话无处继承。两条补丁落一次写、一次 revision，不会出现"会话写了、工作区没写"
+    // 的半截状态。
+    const normalizedWorkspacePatch = workspacePatch === undefined || workspacePatch === null
+      ? null
+      : validatePatch(
+        { scope: 'workspace', patch: workspacePatch },
+        { allowTestEnvironments: this.allowTestEnvironments },
+      );
+    if (normalizedWorkspacePatch !== null && (typeof workspaceKey !== 'string' || workspaceKey.length === 0)) {
+      throw new AdapterError(ERROR_CODES.CONFIG_INVALID, 'workspacePatch requires workspaceKey', {
+        details: { field: 'workspaceKey' },
+      });
+    }
     return this._withLock(() => this._writeLocked({
       expectedRevision,
       scope,
       patch: normalizedPatch,
       workspaceKey,
       agentId,
+      workspacePatch: normalizedWorkspacePatch,
     }));
   }
 
-  _writeLocked({ expectedRevision, scope, patch, workspaceKey, agentId }) {
+  _writeLocked({ expectedRevision, scope, patch, workspaceKey, agentId, workspacePatch = null }) {
     this._refreshFromDisk();
     if (expectedRevision !== undefined && expectedRevision !== null) {
       if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
@@ -345,6 +376,7 @@ export class ConfigStore {
     } else {
       applySessionPatch(next, agentId, patch);
     }
+    if (workspacePatch) applyWorkspacePatch(next, workspaceKey, workspacePatch);
     next.revision = this._config.revision + 1;
 
     // normalizeConfig is the final structural gate; it may throw CONFIG_INVALID before any I/O.
@@ -453,6 +485,7 @@ export class ConfigStore {
    */
   select({
     scope = 'session',
+    view,
     environment,
     targetId,
     webProvider,
@@ -466,7 +499,15 @@ export class ConfigStore {
     this.load();
     const resolvedWorkspaceKey = workspaceKey ?? workspaceKeyOf({ agent, cwd, workspaceId });
     const patch = {};
-    if (environment !== undefined) patch.environment = environment;
+    // `view` 是面板的选择（环境 id 或默认视图）；会话记自己的一份，同时把这个工作区"最后一次
+    // 选择"一起记下，供同工作区的新会话继承。
+    if (view !== undefined) patch.view = view;
+    if (environment !== undefined) {
+      // 旧调用方只传 environment：它表达的正是"选择这个环境"，所以同步写成视图选择，
+      // 保证 `select({environment})` 与 `select({view})` 落到同一个事实字段上。
+      patch.environment = environment;
+      if (patch.view === undefined) patch.view = environment;
+    }
     if (targetId !== undefined) {
       if (scope === 'session') {
         patch.targetId = targetId;
@@ -488,11 +529,24 @@ export class ConfigStore {
       }
     }
     if (Object.keys(patch).length === 0) {
-      throw new AdapterError(ERROR_CODES.CONFIG_INVALID, 'select requires environment, targetId or webProvider', {
+      throw new AdapterError(ERROR_CODES.CONFIG_INVALID, 'select requires view, environment, targetId or webProvider', {
         details: { scope },
       });
     }
-    return this.write({ expectedRevision, scope, patch, workspaceKey: resolvedWorkspaceKey, agentId });
+    // 没有工作区身份（纯会话作用域）时跳过工作区继承记录：不能因为记不住"上一次选择"就拒绝
+    // 保存会话自己的选择。
+    const workspaceView = view ?? environment;
+    const workspacePatch = scope === 'session' && workspaceView !== undefined && resolvedWorkspaceKey
+      ? { view: workspaceView }
+      : undefined;
+    return this.write({
+      expectedRevision,
+      scope,
+      patch,
+      workspaceKey: resolvedWorkspaceKey,
+      agentId,
+      workspacePatch,
+    });
   }
 
   /**
@@ -536,10 +590,15 @@ export class ConfigStore {
       id: typeof sessionId === 'string' ? sessionId : null,
       session: { header: { cwd: typeof cwd === 'string' ? cwd : null } },
     };
-    const workspaceKey = workspaceKeyOf({ cwd, workspaceId: scope?.workspaceId });
-    return this._memoized(`scope:${String(sessionId)}:${String(cwd)}:${String(workspaceKey)}`, () => resolveSnapshot(
+    // 调用方也可以直接给出工作区键：GUI 会话作用域只有 sessionId，工作区身份由 Host 解析后传入。
+    const workspaceKey = typeof scope?.workspaceKey === 'string' && scope.workspaceKey
+      ? scope.workspaceKey
+      : workspaceKeyOf({ cwd, workspaceId: scope?.workspaceId });
+    // 显式环境覆盖（诊断用）：带上它进 memo key，否则同一会话的两次不同目标会命中同一个快照。
+    const environmentOverride = typeof scope?.environment === 'string' && scope.environment ? scope.environment : null;
+    return this._memoized(`scope:${String(sessionId)}:${String(cwd)}:${String(workspaceKey)}:${String(environmentOverride)}`, () => resolveSnapshot(
       this._config,
-      { agent, workspaceKey },
+      { agent, workspaceKey, environmentOverride },
       { allowTestEnvironments: this.allowTestEnvironments },
     ));
   }

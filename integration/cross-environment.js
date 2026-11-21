@@ -35,6 +35,7 @@ import {
   environmentCatalog,
   isPlannedEnvironment,
   resolveSnapshot,
+  workspaceKeyOf,
 } from '../core/index.js';
 import { createEnvironmentDirectory } from '../core/environments.js';
 
@@ -375,13 +376,15 @@ export function createCrossEnvironment({
     }
   }
 
-  function toolAdmitted(agent, name) {
+  function toolAdmitted(agent, name, snapshotOverride = null) {
     // Environment-neutral diagnostics answer "what is here / why was it refused"; they must stay
     // available in every environment, including a disabled one (they never start a target).
     if (isNeutralTool(name)) return true;
     const capability = capabilityForTool(name);
     if (capability === null) return false;
-    const snapshot = snapshotForAgent(agent);
+    // `snapshotOverride` 是诊断的用法：那次运行已经为"要诊断的环境"冻结了一份快照，
+    // 再按 agent 重新解析会得到面板的视图选择（可能是空态），把工具面判成不可用。
+    const snapshot = snapshotOverride ?? snapshotForAgent(agent);
     const environmentEnabled = Array.isArray(snapshot.enabledEnvironments)
       && snapshot.enabledEnvironments.includes(snapshot.environment);
     if (!environmentEnabled) return false;
@@ -401,6 +404,8 @@ export function createCrossEnvironment({
   function resolvedBlock(snapshot) {
     return {
       environment: snapshot.environment,
+      // 面板组合框显示的选择（环境 id 或默认视图）。environment 是它被接受后的结果。
+      view: snapshot.view ?? snapshot.environment,
       adapterId: snapshot.adapterId,
       provider: snapshot.provider ?? null,
       executionAdapterId: snapshot.executionAdapterId ?? snapshot.adapterId,
@@ -471,10 +476,10 @@ export function createCrossEnvironment({
    * Per-agent double-check of the declarable set (diagnostics, tests and the HTTP surface use it).
    * Omitted `agent` resolves the global selection, exactly like the settings page.
    */
-  function admissibleToolNames(agent = null) {
+  function admissibleToolNames(agent = null, snapshotOverride = null) {
     const names = new Set();
     for (const name of declarableToolNames()) {
-      if (toolAdmitted(agent, name)) names.add(name);
+      if (toolAdmitted(agent, name, snapshotOverride)) names.add(name);
     }
     return names;
   }
@@ -727,6 +732,38 @@ export function createCrossEnvironment({
     return null;
   }
 
+  /**
+   * 会话所属工作区的键（用于视图选择的继承与隔离）。
+   *
+   * GUI 的 scope 只有 sessionId，没有工作区身份；这里按宿主自己的服务问一次：工作区注册表里
+   * `sessionIds` 包含这个会话的那个工作区最直接，其次用会话头里的 cwd 归一到同一个键。
+   * 拿不到就返回 null——那就只按会话持久化，不猜一个工作区出来。
+   */
+  function sessionWorkspaceKey(sessionId) {
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    try {
+      const registryService = typeof ctx?.get === 'function' ? ctx.get('workspaceRegistry') : null;
+      if (registryService && typeof registryService.list === 'function') {
+        const list = registryService.list();
+        if (Array.isArray(list)) {
+          const match = list.find((workspace) => workspace && typeof workspace.id === 'string'
+            && Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(sessionId));
+          if (match) return `workspace:${match.id}`;
+        }
+      }
+    } catch { /* fall through to the cwd form */ }
+    try {
+      const sessions = typeof ctx?.get === 'function' ? ctx.get('sessions') : null;
+      const session = sessions && typeof sessions.get === 'function' ? sessions.get(sessionId) : null;
+      const cwd = session && session.header && typeof session.header.cwd === 'string' ? session.header.cwd : null;
+      if (cwd) {
+        const key = workspaceKeyOf({ cwd });
+        return typeof key === 'string' && key ? key : null;
+      }
+    } catch { /* no workspace identity available */ }
+    return null;
+  }
+
   function resolveRequestScope(scopeRequest) {
     if (!scopeRequest || scopeRequest.mode === 'legacy') return { id: 'legacy:default', kind: 'legacy', workspaceId: null };
     if (scopeRequest.mode === 'unassigned') return { id: 'unassigned:owner', kind: 'unassigned', workspaceId: null };
@@ -794,7 +831,8 @@ export function createCrossEnvironment({
       : null;
     const config = configStore.getConfig();
     const environments = [];
-    const known = Object.keys(KNOWN_ENVIRONMENTS);
+    // 视图行（默认视图）不是目标环境：就绪/诊断面不为它造一栏。
+    const known = Object.keys(KNOWN_ENVIRONMENTS).filter((id) => KNOWN_ENVIRONMENTS[id].kind !== 'view');
     for (const id of known) {
       const meta = KNOWN_ENVIRONMENTS[id] || {};
       const enabled = config.global.environments?.[id]?.enabled === true;
@@ -968,7 +1006,7 @@ export function createCrossEnvironment({
         const config = configStore.getConfig();
         const scope = resolveRequestScope(scopeRequest);
         const snapshot = scopeRequest?.mode === 'session'
-          ? configStore.resolveForScope(scope)
+          ? configStore.resolveForScope({ ...scope, workspaceKey: sessionWorkspaceKey(scope.id) })
           : resolveSnapshot(config, {}, { allowTestEnvironments });
         sendJson(res, 200, { ok: true, revision: config.revision, ...(await readinessFor(snapshot)) });
         return true;
@@ -994,9 +1032,9 @@ export function createCrossEnvironment({
             // `enabledEnvironments` 是**可执行环境集合**（保持严格：只收已实现的环境）；
             // 规划中的环境允许被"启用"（开关写进 environments 映射），但不混进执行集合——
             // 「启用 ≠ 可执行」，否则这里会用一个注定被执行侧拒绝的值污染 allow-list。
-            const planned = isPlannedEnvironment(environment);
+            const meta = KNOWN_ENVIRONMENTS[environment] || {};
             if (entry.enabled === false) nextEnabled.delete(environment);
-            else if (entry.enabled === true && !planned) nextEnabled.add(environment);
+            else if (entry.enabled === true && !meta.planned && meta.enableable !== false) nextEnabled.add(environment);
           }
           patch = { ...patch, enabledEnvironments: [...nextEnabled] };
         }
@@ -1025,17 +1063,28 @@ export function createCrossEnvironment({
           throw new AdapterError(ERROR_CODES.SCOPE_INVALID, 'session selection requires a session-scoped request');
         }
         const requestScope = resolveRequestScope(scopeRequest);
+        if (body.view !== undefined && (typeof body.view !== 'string' || body.view.length === 0)) {
+          throw new AdapterError(ERROR_CODES.CONFIG_INVALID, 'view must be a non-empty string', { field: 'view' });
+        }
+        if (body.view !== undefined && scope === 'global') {
+          throw new AdapterError(ERROR_CODES.CONFIG_INVALID, 'global selection cannot set a session/workspace view', {
+            field: 'view',
+          });
+        }
         const written = configStore.select({
           expectedRevision: body.expectedRevision,
           scope,
+          view: body.view,
           environment: body.environment,
           targetId: body.targetId,
           agentId: scope === 'session' ? requestScope.id : undefined,
-          workspaceKey: requestScope.workspaceId ? `workspace:${requestScope.workspaceId}` : undefined,
+          workspaceKey: requestScope.workspaceId
+            ? `workspace:${requestScope.workspaceId}`
+            : (scope === 'session' ? sessionWorkspaceKey(requestScope.id) : undefined) ?? undefined,
           cwd: requestScope.cwd,
         });
         const snapshot = scope === 'session'
-          ? configStore.resolveForScope(requestScope)
+          ? configStore.resolveForScope({ ...requestScope, workspaceKey: sessionWorkspaceKey(requestScope.id) })
           : resolveSnapshot(written.config, {}, { allowTestEnvironments });
         sendJson(res, 200, {
           ok: true,
@@ -1277,6 +1326,17 @@ export function createCrossEnvironment({
     snapshotForAgent,
     snapshotForScope,
     isViewEnabled: (id) => configStore.getConfig().global.environments[id]?.enabled === true,
+    /**
+     * Per-provider gate for a view-only surface (3D/Blender). The environment switch alone is not
+     * enough once an environment has a provider axis: the user can keep the master switch on and
+     * turn a single runtime off, so the frame route asks both questions.
+     */
+    isProviderEnabled: (id, provider) => {
+      const entry = configStore.getConfig().global.environments[id];
+      const providers = entry && typeof entry.providers === 'object' && entry.providers ? entry.providers : null;
+      const providerEntry = providers ? providers[provider] : null;
+      return Boolean(providerEntry && providerEntry.enabled === true);
+    },
     toolAdmitted,
     assertToolAllowed,
     executionClassFor,

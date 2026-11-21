@@ -97,28 +97,34 @@ test('无头/有头切换与 DevTools 由环境能力表决定，外壳不写环
     '外壳里还残留环境 id 比较');
 });
 
-test('组合框只列开关已打开的目标环境（没开的根本不出现）', () => {
-  // 选项 = 开关为 true 的环境过滤后的结果，不是全体 10 个
+test('组合框 = 空态视图 + 开关已打开的目标环境，选择一律先落 Host', () => {
+  // 选项 = 空态视图恒在 + 开关为 true 的环境过滤后的结果。
   assert.ok(clientSource.includes('const fromConfig = enabledFromConfig(hostConfig.state.config, option.id);'),
     '组合框没有读每个环境的总开关');
+  assert.ok(clientSource.includes("if (option.kind === 'view') return Object.assign({}, option, { enabled: true });"),
+    '默认视图必须恒在选项表里（它没有开关）');
   assert.ok(clientSource.includes('.filter((option) => option.enabled), [ENVIRONMENTS, hostConfig.state.config, allowedEnvironments]);'),
     '组合框没有把未启用的环境过滤掉');
   assert.ok(!clientSource.includes("option.label + '（未启用）'"),
     '还在用「（未启用）」占位，而不是直接不列出来');
-  // 当前选中项被关掉时要有兜底，不能出现空值
-  assert.ok(clientSource.includes('当前选中的环境被关掉时（用户在设置页关开关），退回宿主当前执行环境'),
-    '缺少"选中项被禁用"的兜底');
-  // 没有视图但已启用：切视图、显示空态，不写宿主配置
-  // The branch is a pure view switch (no Host config write); it also rotates the panel instance
-  // generation so in-flight writes of the previous view are dropped.
-  assert.ok(/if \(!hasExecutionView\(next\)\) \{[\s\S]{0,400}setEnv\(next\);/.test(clientSource),
-    'changeEnv 没有把“没有视图”走成纯视图切换');
-  assert.equal(/selectHostEnvironment\(next[\s\S]{0,120}\}\s*\n/.test(clientSource.slice(
-    clientSource.indexOf("if (!hasExecutionView(next)) {"),
-    clientSource.indexOf("if (!option.ready) return;"))), false,
-  '无视图分支不得提交宿主配置');
-  assert.ok(clientSource.includes("执行环境仍然是 ' + hostEnvLabel + '，这里只切换视图。"),
-    '空态没有说明执行环境没有变化');
+
+  // 选中项被关掉时落到空态，不出现空值，也不再"退回宿主执行环境"。
+  assert.ok(clientSource.includes('已存的选择被设置页关掉开关后，Host 会解析成默认视图'),
+    '缺少"选中项被禁用 → 默认视图"的兜底');
+
+  // 任何选择（含纯视口与空态）都必须先落 Host：不再有"只切本地、不写宿主"的分支。
+  const changeEnv = /function changeEnv\(next\) \{[\s\S]*?\n      \}/u.exec(clientSource);
+  assert.ok(changeEnv, '缺少 changeEnv');
+  assert.ok(changeEnv[0].includes('selectHostEnvironment(next, config.revision, scopeRef.current)'),
+    'changeEnv 必须把选择提交给 Host');
+  assert.equal(/if \(!hasExecutionView\(next\)\)/.test(changeEnv[0]), false,
+    'changeEnv 不应再按"有没有执行视图"分叉：选择要持久化');
+
+  // 空态视图有自己的文案与标记，并且说明它是正常状态。
+  assert.ok(clientSource.includes("'data-utb-default-view': 'true'"), '缺少默认视图的空态标记');
+  assert.ok(clientSource.includes("h('strong', null, '默认视图')"), '默认视图空态没有标题');
+  assert.ok(clientSource.includes('新会话、以及还没有存过选择的会话会落在这里；选择会按会话保存。'),
+    '空态没有说明何时会出现');
 });
 
 test('设置页总开关直接提交宿主（Host 允许启用 planned 环境）', () => {
@@ -217,7 +223,7 @@ test('面板实例代次在换视图时递增：换环境（有/无视图）与�
   const changeEnv = /function changeEnv\(next\) \{[\s\S]*?\n      \}/u.exec(clientSource);
   assert.ok(changeEnv, '缺少 changeEnv');
   const bumps = [...changeEnv[0].matchAll(/bumpPanelGeneration\(\)/gu)].length;
-  assert.ok(bumps >= 2, '两条切换分支（无视图 / 宿主确认）都必须递增代次');
+  assert.ok(bumps >= 1, '宿主确认后的视图切换必须递增代次');
   const scopeBlock = clientSource.slice(clientSource.indexOf('if (scopeTokenRef.current !== scopeKey) {'),
     clientSource.indexOf('const scopeEpoch = scopeEpochRef.current;'));
   assert.ok(scopeBlock.includes('bumpPanelGeneration()'), '作用域/绑定切换也要递增代次');

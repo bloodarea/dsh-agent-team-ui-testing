@@ -24,7 +24,7 @@
  * Everything is zero-dependency and read-only for the repository besides the evidence directory.
  */
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -605,6 +605,13 @@ export async function createHarness({
   const previousConfigDir = process.env.DSH_UI_TESTING_CONFIG_DIR;
   const previousAllowTest = process.env.DSH_UI_TESTING_ALLOW_TEST_ENV;
   const ownConfigDir = configDir || mkdtempSync(join(tmpdir(), 'dsh-utb-config-'));
+  // 新契约下"没有视图选择"就是默认视图（空态），没有 web 工具。绝大多数测试要验证的是 web
+  // 工具链本身，所以给夹具一个显式的宿主默认视图；要测空态的用例自己改配置。
+  if (!existsSync(join(ownConfigDir, 'config.json'))) {
+    writeFileSync(join(ownConfigDir, 'config.json'), JSON.stringify({
+      version: 1, revision: 0, global: { view: 'web', environment: 'web' },
+    }));
+  }
   process.env.DSH_UI_TESTING_CONFIG_DIR = ownConfigDir;
   if (allowTestEnvironments) process.env.DSH_UI_TESTING_ALLOW_TEST_ENV = '1';
   const ctx = createFakeCordisContext({
