@@ -23,7 +23,7 @@ Web 通过 CDP screencast 提供页面帧。`createFrameTransport(handlers, scop
 
 预览优先从 `/plugins/ui-testing/frames` WebSocket 收帧，HTTP `/frame` 轮询兜底，必要时用 Host 截图作 PNG seed。帧回调更新 `shot` 与几何元数据，Web `<img>` 使用这些数据渲染。状态另行通过 `/state` 轮询接收；`ingestHostState()`、`acceptRemote()` 处理作用域与状态版本，拒绝过时快照。
 
-点击预览使其获得焦点后，鼠标、滚轮与键盘事件经 `sendEvents()` 串行发送到 Host 输入接口。键盘支持修饰键组合、F1–F12、Home/End、PageUp/PageDown、Delete/Insert；按下与松开分别转发，离开焦点时释放仍按住的键。
+鼠标与滚轮事件经 `sendEvents()` 串行发送到 Host 输入接口。指针停在预览的页面内容上即可滚动，Chromium 按光标位置将滚轮交给页面，包括模态框内的可滚动区域。点击预览使其获得焦点后可输入键盘事件，支持修饰键组合、F1–F12、Home/End、PageUp/PageDown、Delete/Insert。按下与松开分别转发，离开焦点时释放仍按住的键。
 
 标注、选元素和尺寸调整有各自的输入规则。普通点击没有到达页面时，先检查当前模式、控制权与画面同步状态。坐标、缩放、拖拽、输入屏障与光标跟随见[视口、画布与标注（viewport-control.md）](viewport-control.md#面板交互)。
 

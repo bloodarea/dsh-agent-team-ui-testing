@@ -33,9 +33,13 @@ function check(label, pass, expected, actual) {
 /** Independent recorder (fixture-side) + an optional adversarial trap that erases the probe. */
 function pageHtml({ swallowProbe = false } = {}) {
   return `<!doctype html><title>input-delivery</title>
-<body style="margin:0">
+<body style="margin:0;min-height:3000px">
 <button id="btn" style="position:absolute;left:40px;top:40px;width:220px;height:90px">click me</button>
 <input id="field" style="position:absolute;left:40px;top:200px;width:220px;height:40px">
+<button id="open-dialog" style="position:fixed;top:20px;right:20px" onclick="document.querySelector('dialog').showModal()">Open dialog</button>
+<dialog><div id="dialog-scroll" style="width:250px;height:130px;overflow:auto;overscroll-behavior:contain">
+  <div style="height:1600px">Scrollable dialog content</div>
+</div></dialog>
 <script>
   window.__seen = [];
   for (const type of ['pointerdown','mousedown','pointerup','mouseup','click','keydown','keyup','input','mousemove']) {
@@ -162,6 +166,37 @@ try {
     const probeRemoved = (await call('browser_eval', { expression: '!("__utb_input_probe__" in window)' })).value?.value;
     check('D21 the settled read cleans up the page probe', probeRemoved === true, true, probeRemoved);
   }
+
+  const readPage = async (expression) => (await call('browser_eval', { expression })).value?.value;
+  const wheelReadback = `({ pageY: window.scrollY, dialogY: document.querySelector('#dialog-scroll').scrollTop })`;
+  const waitForScroll = (key, before) => readPage(`(async () => {
+    const end = performance.now() + 1000;
+    let state = ${wheelReadback};
+    while (state[${JSON.stringify(key)}] === ${before} && performance.now() < end) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      state = ${wheelReadback};
+    }
+    return state;
+  })()`);
+  const pageBefore = await readPage(wheelReadback);
+  const documentWheel = await call('browser_input', { events: [{ kind: 'wheel', x: 100, y: 300, deltaY: 180 }] });
+  const pageAfter = await waitForScroll('pageY', pageBefore.pageY);
+  check('D29 wheel scrolls the long document', documentWheel.value?.delivery?.delivered === true && pageAfter?.pageY > pageBefore.pageY,
+    { pageY: '> before' }, { before: pageBefore, after: pageAfter, delivery: documentWheel.value?.delivery });
+
+  const dialogOpened = await call('browser_click', { selector: '#open-dialog' });
+  const dialogPoint = await readPage(`(() => {
+    const el = document.querySelector('#dialog-scroll');
+    const { left, top, width, height } = el.getBoundingClientRect();
+    return { x: left + width / 2, y: top + height / 2, open: el.closest('dialog').open };
+  })()`);
+  const dialogBefore = await readPage(wheelReadback);
+  const dialogWheel = await call('browser_input', { events: [{ kind: 'wheel', x: dialogPoint.x, y: dialogPoint.y, deltaY: 180 }] });
+  const dialogAfter = await waitForScroll('dialogY', dialogBefore.dialogY);
+  check('D30 wheel scrolls the modal overflow without scrolling the document',
+    dialogOpened.ok && dialogPoint.open && dialogWheel.value?.delivery?.delivered === true
+      && dialogAfter?.dialogY > dialogBefore.dialogY && dialogAfter.pageY === dialogBefore.pageY,
+    { dialogY: '> before', pageY: 'unchanged' }, { before: dialogBefore, after: dialogAfter, delivery: dialogWheel.value?.delivery });
 
   // 3. The page really receives events but suppresses part of the probe evidence.
   const trap = await fixture({ swallowProbe: true });

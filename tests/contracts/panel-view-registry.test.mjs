@@ -313,6 +313,35 @@ test('按视图挂载的 effect 把 envHasView 放进依赖（否则闭包不会
     '最近绑定轮询也要按视图挂载');
 });
 
+test('Web 预览替换空白舞台后接收滚轮，卸载时释放监听', () => {
+  const stage = { current: null };
+  const stageWheelRef = { current: (event) => event.preventDefault() };
+  const React = { useMemo: (factory) => factory() };
+  assert.match(clientSource, /className: 'utb-stage', ref: setWebStage, onContextMenu: onFrameContextMenu/u);
+  const binding = clientSource.match(/const setWebStage = React\.useMemo\([\s\S]*?\n      \}, \[\]\);/u)?.[0];
+  assert.ok(binding, '找不到 Web 舞台的滚轮绑定');
+  const attach = new Function('React', 'stage', 'stageWheelRef', `${binding}\nreturn setWebStage;`)(
+    React, stage, stageWheelRef,
+  );
+  const wheel = (node) => node.dispatchEvent(new Event('wheel', { cancelable: true }));
+  const blank = new EventTarget();
+  stage.current = blank;
+  assert.equal(wheel(blank), true, '默认视图不应消费 Web 滚轮');
+  stage.current = null;
+  const preview = new EventTarget();
+  attach(preview);
+  assert.equal(wheel(preview), false, '当前 Web 舞台必须消费普通滚轮');
+  assert.equal(wheel(blank), true, '空白视图不应消费 Web 滚轮');
+  attach(null);
+  assert.equal(wheel(preview), true, '卸载后旧舞台不再消费滚轮');
+  const replacement = new EventTarget();
+  let events = 0;
+  stageWheelRef.current = (event) => { events += 1; event.preventDefault(); };
+  attach(replacement);
+  assert.equal(wheel(replacement), false);
+  assert.equal(events, 1, '重建后事件只传给最新处理器一次');
+});
+
 test('离开视图要松开按住的键：通道卸载时先发 keyUp 再断开传输', () => {
   const factory = /function createWebViewChannel\(deps = \{\}\) \{[\s\S]*?\n    \}/u.exec(clientSource);
   assert.ok(factory, '缺少 createWebViewChannel');

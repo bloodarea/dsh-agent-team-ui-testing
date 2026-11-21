@@ -8,7 +8,7 @@ const source = fs.readFileSync(new URL('../../client.js', import.meta.url), 'utf
 test('预览阻断宿主菜单，范围只在 stage', () => {
   assert.match(source, /function onFrameContextMenu\(event\) \{\s*event.preventDefault\(\);\s*event.stopPropagation\(\);/u);
   assert.equal((source.match(/onContextMenu: onFrameContextMenu/gu) || []).length, 1);
-  assert.match(source, /className: 'utb-stage', ref: stage, onContextMenu: onFrameContextMenu/u);
+  assert.match(source, /className: 'utb-stage',[^\n]*onContextMenu: onFrameContextMenu/u);
 });
 test('菜单走独立串行事务，物理抬起不会重复派发', () => {
   assert.match(source, /callHost\('context-menu'/u);

@@ -8477,16 +8477,17 @@ window.__ModuleLoader__.load({
         });
       }
 
-      // Native, non-passive wheel listeners: React's root `wheel` listener is passive, so a
-      // `preventDefault()` there cannot stop the host page/number input from scrolling or
-      // stepping. Both handlers are re-read from refs so a listener installed once never goes stale.
-      React.useEffect(() => {
-        const node = stage.current;
-        if (!node || typeof node.addEventListener !== 'function') return undefined;
-        const listener = (event) => { if (stageWheelRef.current) stageWheelRef.current(event); };
-        node.addEventListener('wheel', listener, { passive: false });
-        return () => node.removeEventListener('wheel', listener);
+      // React's delegated wheel listener is passive. Keep a native listener on the Web stage
+      // itself, including when switching from the default view replaces the stage DOM node.
+      const setWebStage = React.useMemo(() => {
+        const listener = (event) => stageWheelRef.current?.(event);
+        return (node) => {
+          stage.current?.removeEventListener('wheel', listener);
+          stage.current = node;
+          node?.addEventListener('wheel', listener, { passive: false });
+        };
       }, []);
+      // Number fields also need non-passive wheel listeners so the panel controls their step.
       React.useEffect(() => {
         const node = sizeBarRef.current;
         if (!sizing || !node || typeof node.addEventListener !== 'function') return undefined;
@@ -9753,7 +9754,7 @@ h('div', { className: 'utb-bar' },
         }, pickStatus ? pickStatus.text : '选元素模式：点击画面中的元素加入聊天框 · 滚轮可滚动页面 · Esc 退出'),
         // The whole preview area swallows the host context menu (page clicks only); see
         // onFrameContextMenu. Outside this element the host menu keeps its normal behaviour.
-        h('div', { className: 'utb-stage', ref: stage, onContextMenu: onFrameContextMenu },
+        h('div', { className: 'utb-stage', ref: setWebStage, onContextMenu: onFrameContextMenu },
           activeUrl
             ? (shot
               ? h('div', {
