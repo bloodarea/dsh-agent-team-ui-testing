@@ -6,6 +6,9 @@
 /tests/acceptance/evidence/
 /output/
 
+# Blind-run output (`tools/run-blind.mjs --out submission.json`): a run artifact, not source
+/submission.json
+
 # Local reference material
 /reference/
 
