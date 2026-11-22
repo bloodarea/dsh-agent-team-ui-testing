@@ -23,7 +23,7 @@ Give a single Agent or an Agent Team in [DeepSeekHarness (DSH)](https://github.c
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="Pre-release"></a>
 </p>
 
-> **Current progress: pre-release. The shared cross-environment foundation is implemented; Web / Chromium is the first real target integration.** Real adapters for the remaining nine target environments are pending. Available features and verification boundaries are documented in [capability tiers (capability-tiers.md)](docs/capability-tiers.md) and [verification (verification.md)](docs/verification.md).
+> **Current progress: pre-release. The shared cross-environment foundation is implemented; Web / Chromium is the first real target integration.** 3D is integrated as a viewport-only target; real adapters for the remaining environments are pending. Available features and verification boundaries are documented in [capability tiers (capability-tiers.md)](docs/capability-tiers.md) and [verification (verification.md)](docs/verification.md).
 
 ## Vision and target environments
 
@@ -67,7 +67,7 @@ flowchart TB
     A["DSH Agent / Agent Team"] --> I["integration · Configuration, registration and admission"]
     I --> C["core · Common contracts, models and evidence"]
     I --> W["Web adapter · Integrated"]
-    I -.-> N["Other nine target environments · Pending"]
+    I -.-> N["Other target environments · Pending (3D: viewport only)"]
     W --> R["Chrome / Chromium"]
     F["fake · Contract tests only"] -.-> I
 ```
@@ -120,7 +120,7 @@ For other installation sources and version pinning, see [Getting started](docs/g
 
 ## Next directions
 
-- Integrate real adapters for the other nine target environments, including their executors, observations and real acceptance tests.
+- Integrate real adapters for the remaining target environments, including their executors, observations and real acceptance tests; 3D still needs Agent execution tools on top of its viewport.
 - Continue separating Web-specific implementation from the Host entry point using the existing common contracts; expand `engines/` when a self-developed executor is needed.
 - Harden Web execution and extend dynamic, real-browser and long-running validation.
 - Build on existing team ownership and control mechanisms to improve multi-agent collaboration, human takeover and release quality.

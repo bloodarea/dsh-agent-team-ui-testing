@@ -23,7 +23,7 @@
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="预发布"></a>
 </p>
 
-> **当前进展：预发布。跨环境公共底座已落地，Web / Chromium 是首个已接入的真实目标环境。** 其余九个目标环境的真实适配器待接入；当前可用功能与验证范围见[能力分层（capability-tiers.md）](docs/capability-tiers.md)和[验证与贡献（verification.md）](docs/verification.md)。
+> **当前进展：预发布。跨环境公共底座已落地，Web / Chromium 是首个已接入的真实目标环境。** 3D 已作为纯视口目标接入，其余目标环境的真实适配器待接入；当前可用功能与验证范围见[能力分层（capability-tiers.md）](docs/capability-tiers.md)和[验证与贡献（verification.md）](docs/verification.md)。
 
 ## 项目愿景与目标环境
 
@@ -67,7 +67,7 @@ flowchart TB
     A["DSH Agent / Agent Team"] --> I["integration · 配置、注册与执行准入"]
     I --> C["core · 通用契约、模型与证据"]
     I --> W["Web 适配器 · 已接入"]
-    I -.-> N["其余九个目标环境 · 待接入"]
+    I -.-> N["其余目标环境 · 待接入（3D 仅纯视口）"]
     W --> R["Chrome / Chromium"]
     F["fake · 仅契约测试"] -.-> I
 ```
@@ -120,7 +120,7 @@ dsh plugin --profile web add dsh-agent-team-ui-testing
 
 ## 后续方向
 
-- 为其余九个目标环境逐步接入真实适配器，补齐各自的执行端、观察和真实验收。
+- 为其余目标环境逐步接入真实适配器，补齐各自的执行端、观察和真实验收；3D 在纯视口之外仍需 Agent 执行工具。
 - 在现有公共契约上继续拆分 Web 专属实现，减少 Host 入口中的平台耦合；需要自研执行端时再扩展 `engines/`。
 - 加固 Web 通道，补齐动态行为、真实浏览器和长期运行场景的验证。
 - 在现有团队页面归属和控制权机制上，完善多 Agent 协作、人类接管与发布质量。
