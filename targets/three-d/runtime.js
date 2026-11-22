@@ -1,9 +1,9 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 
@@ -14,6 +14,13 @@ const IDLE_MS = 45_000;
 const MAX_PIXELS = 8 * 1024 * 1024;
 const MAX_FRAME_BYTES = MAX_PIXELS * 3 + 32_768;
 
+/**
+ * Windows keeps the window off every desktop area. The 3D path cannot be headless (`gpu` is
+ * unavailable under `-b`), so the window must exist — but it must not steal focus or cover the
+ * user's screen. A large negative offset is accepted and the draw handler still fires (verified).
+ */
+const WINDOW_OFFSET = -10000;
+
 class ViewportError extends Error {
   constructor(code, message, status) {
     super(message);
@@ -21,16 +28,98 @@ class ViewportError extends Error {
   }
 }
 
-async function executable(override, name) {
-  const paths = (process.env.PATH || '').split(delimiter).filter(isAbsolute).map((path) => join(path, name));
-  paths.push(join(homedir(), '.local', 'bin', name));
-  if (name === 'blender' && !override) {
+/** Windows executable names carry a `.exe` suffix; the Linux names here never do. */
+function executableNames(name, platform) {
+  return platform === 'win32' ? [`${name}.exe`, name] : [name];
+}
+
+/**
+ * Ask the registry where Blender is installed, instead of walking the disk.
+ *
+ * Only the per-machine/per-user `Uninstall` keys carry this: this build registers no
+ * `SOFTWARE\\BlenderFoundation`, no `App Paths\\blender.exe` and no `blendfile` file association
+ * (all four verified empty on a real install). Each entry contributes `DisplayName`,
+ * `DisplayVersion` and `InstallLocation`; the newest version wins.
+ *
+ * @returns {Promise<{path:string, version:string, location:string}[]>} newest first
+ */
+async function windowsRegistryBlender() {
+  const roots = [
+    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  ];
+  const run = (args) => new Promise((resolve) => {
+    execFile('reg', args, { windowsHide: true, timeout: 10_000 }, (error, stdout) => {
+      resolve(error ? '' : String(stdout));
+    });
+  });
+
+  const found = [];
+  for (const root of roots) {
+    const listing = await run(['query', root, '/s', '/f', 'Blender', '/d']);
+    if (!listing) continue;
+    // A search hit prints the key first, then its matching values; read the key block by block.
+    for (const block of listing.split(/\r?\n(?=HKEY_)/)) {
+      if (!/^HKEY_/.test(block)) continue;
+      const key = block.split(/\r?\n/, 1)[0].trim();
+      if (!/\\Uninstall\\/i.test(key)) continue;
+      const value = await run(['query', key]);
+      if (!value) continue;
+      const read = (field) => {
+        const match = new RegExp(`^\\s*${field}\\s+REG_[A-Z_]+\\s+(.*)$`, 'mi').exec(value);
+        return match ? match[1].trim() : '';
+      };
+      const displayName = read('DisplayName');
+      if (!/^Blender$/i.test(displayName)) continue;
+      const location = read('InstallLocation');
+      if (!location) continue;
+      const path = join(location, 'blender.exe');
+      const info = await stat(path).catch(() => null);
+      if (!info?.isFile()) continue;
+      found.push({ path, version: read('DisplayVersion'), location });
+    }
+  }
+
+  // Newest first, so an installed 5.3 is preferred over a portable 2.79 sitting in PATH.
+  const order = new Intl.Collator('en', { numeric: true }).compare;
+  return found.sort((left, right) => order(right.version, left.version));
+}
+
+/**
+ * Resolve an executable path. `override` is authoritative: when it is unusable the caller reports
+ * it rather than silently running something else.
+ */
+async function executable(override, name, platform = process.platform) {
+  const names = executableNames(name, platform);
+  if (override) {
+    const info = await stat(override).catch(() => null);
+    if (info?.isFile() && await access(override, constants.X_OK).then(() => true, () => false)) {
+      return override;
+    }
+    throw new ViewportError('BLENDER_DEPENDENCY_MISSING', `找不到可执行文件 ${override}。`, 503);
+  }
+
+  const paths = [];
+  for (const dir of (process.env.PATH || '').split(platform === 'win32' ? ';' : delimiter)) {
+    if (!dir || !isAbsolute(dir)) continue;
+    for (const fileName of names) paths.push(join(dir, fileName));
+  }
+  for (const fileName of names) {
+    paths.push(join(homedir(), '.local', 'bin', fileName));
+  }
+  if (platform === 'win32') {
+    // Registry first: an installer build is what the user actually runs, and it is not on PATH.
+    for (const entry of await windowsRegistryBlender()) paths.unshift(entry.path);
+  } else if (name === 'blender') {
     const root = join(homedir(), 'opt');
     const dirs = await readdir(root).catch(() => []);
     paths.push(...dirs.filter((dir) => /^blender-\d/.test(dir))
-      .sort(new Intl.Collator('en', { numeric: true }).compare).reverse().map((dir) => join(root, dir, name)));
+      .sort(new Intl.Collator('en', { numeric: true }).compare).reverse()
+      .map((dir) => join(root, dir, name)));
   }
-  for (const path of override ? [override] : paths) {
+
+  for (const path of paths) {
     if (!isAbsolute(path)) continue;
     const info = await stat(path).catch(() => null);
     if (!info?.isFile()) continue;
@@ -94,7 +183,7 @@ export function parseViewportRequest(body) {
   return { camera, size };
 }
 
-export function createBlenderViewport() {
+export function createBlenderViewport({ platform = process.platform } = {}) {
   const lifetime = new AbortController();
   let runtime;
   let active;
@@ -124,28 +213,45 @@ export function createBlenderViewport() {
     if (runtime) return runtime;
     await stopping;
     signal.throwIfAborted();
-    if (process.platform !== 'linux') {
-      throw new ViewportError('BLENDER_PLATFORM_UNSUPPORTED', 'Blender 视口目前需要 Linux 与 Xvfb。', 503);
+    const windows = platform === 'win32';
+    if (!windows && platform !== 'linux') {
+      throw new ViewportError('BLENDER_PLATFORM_UNSUPPORTED', 'Blender 视口目前需要 Linux（Xvfb）或 Windows。', 503);
     }
+    // Windows draws into a real window, so there is no virtual display to start.
     const [xvfb, blender] = await Promise.all([
-      executable(process.env.DSH_UI_TESTING_XVFB, 'Xvfb'),
-      executable(process.env.DSH_UI_TESTING_BLENDER, 'blender'),
+      windows ? Promise.resolve(null) : executable(process.env.DSH_UI_TESTING_XVFB, 'Xvfb', platform),
+      executable(process.env.DSH_UI_TESTING_BLENDER, 'blender', platform),
     ]);
     const root = await mkdtemp(join(tmpdir(), 'dsh-blender-viewport-'));
     const frame = join(root, 'frame.png');
     const authority = join(root, 'authority');
     runtime = { root, frame };
-    const cookie = Buffer.concat([
-      Buffer.from([255, 255]), authField(''), authField(''),
-      authField('MIT-MAGIC-COOKIE-1'), authField(randomBytes(16)),
-    ]);
-    await writeFile(authority, cookie, { mode: 0o600 });
-    signal.throwIfAborted();
-    runtime.display = startProcess(xvfb, [
-      '-displayfd', '1', '-screen', '0', `${SIZE[0]}x${SIZE[1]}x24`, '-nolisten', 'tcp', '-auth', authority,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
-    const display = await lineFrom(runtime.display, (line) => /^\d+$/.test(line) ? line : undefined, signal);
-    const args = ['--factory-startup', '--disable-autoexec', '-noaudio', '-t', '4', '-p', '0', '0', ...SIZE.map(String)];
+
+    const env = { ...process.env, LIBGL_ALWAYS_SOFTWARE: process.env.LIBGL_ALWAYS_SOFTWARE || '1',
+      LP_NUM_THREADS: process.env.LP_NUM_THREADS || '4' };
+
+    if (windows) {
+      // Keep WAYLAND/display variables out of the way; the real desktop session is used.
+      delete env.XAUTHORITY;
+    } else {
+      const cookie = Buffer.concat([
+        Buffer.from([255, 255]), authField(''), authField(''),
+        authField('MIT-MAGIC-COOKIE-1'), authField(randomBytes(16)),
+      ]);
+      await writeFile(authority, cookie, { mode: 0o600 });
+      signal.throwIfAborted();
+      runtime.display = startProcess(xvfb, [
+        '-displayfd', '1', '-screen', '0', `${SIZE[0]}x${SIZE[1]}x24`, '-nolisten', 'tcp', '-auth', authority,
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const display = await lineFrom(runtime.display, (line) => /^\d+$/.test(line) ? line : undefined, signal);
+      env.DISPLAY = ':' + display;
+      env.XAUTHORITY = authority;
+      env.WAYLAND_DISPLAY = '';
+    }
+
+    const offset = windows ? WINDOW_OFFSET : 0;
+    const args = ['--factory-startup', '--disable-autoexec', '-noaudio', '-t', '4',
+      '-p', String(offset), String(offset), ...SIZE.map(String)];
     const project = process.env.DSH_UI_TESTING_BLEND_FILE;
     if (project) {
       const info = isAbsolute(project) && /\.blend$/i.test(project) && await stat(project).catch(() => null);
@@ -153,9 +259,6 @@ export function createBlenderViewport() {
       args.push(project);
     }
     signal.throwIfAborted();
-    const env = { ...process.env, DISPLAY: ':' + display, XAUTHORITY: authority, WAYLAND_DISPLAY: '',
-      LIBGL_ALWAYS_SOFTWARE: process.env.LIBGL_ALWAYS_SOFTWARE || '1',
-      LP_NUM_THREADS: process.env.LP_NUM_THREADS || '4' };
     runtime.blender = startProcess(blender, [...args, '--python', SCRIPT, '--', frame], {
       cwd: root, env, stdio: ['pipe', 'pipe', 'pipe'],
     });

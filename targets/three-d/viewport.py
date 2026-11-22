@@ -58,12 +58,16 @@ class Viewport:
             bpy.ops.screen.screen_full_area(use_hide_panels=True)
         self.area = next(area for area in self.window.screen.areas if area.type == 'VIEW_3D')
         self.space = self.area.spaces.active
-        self.space.show_gizmo = False
-        self.space.show_region_toolbar = False
-        self.space.show_region_ui = False
-        self.space.show_region_header = False
-        self.space.show_region_tool_header = False
-        self.space.show_region_asset_shelf = False
+        # Chrome is hidden so the capture contains the 3D editor alone. `show_region_asset_shelf`
+        # is read-only whenever the UI is actually running (every GUI-mode launch, which is the
+        # only mode where `gpu` exists) and writable in background mode; it is also absent before
+        # 3.0. Both are runtime facts, not version facts, so each write is attempted defensively.
+        for name in ('show_gizmo', 'show_region_toolbar', 'show_region_ui', 'show_region_header',
+                     'show_region_tool_header', 'show_region_asset_shelf'):
+            try:
+                setattr(self.space, name, False)
+            except (AttributeError, TypeError):
+                pass
         self.space.overlay.show_text = False
         self.space.overlay.show_extras = False
         self.space.shading.type = 'SOLID'

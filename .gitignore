@@ -14,3 +14,7 @@
 
 # Local package dependencies
 /node_modules/
+
+# Python bytecode from the Blender viewport script (syntax checks, local runs)
+__pycache__/
+*.pyc

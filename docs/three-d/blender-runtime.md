@@ -31,7 +31,23 @@ tar -xf blender-4.5.9-linux-x64.tar.xz && rm blender-4.5.9-linux-x64.tar.xz
 
 ### Windows
 
-下载 `.zip` 后解压到固定位置，例如 `%LOCALAPPDATA%\Programs\blender-4.5.9`，然后运行其中的 `blender.exe`。归档内是完整安装目录，不需要再跑安装程序；不要把这个目录和 Microsoft Store 分发版混用。
+两种安装形态都可用，发现方式不同：
+
+| 形态 | 发现方式 |
+| --- | --- |
+| 官方安装包（`.msi`） | 读注册表 `Uninstall` 项的 `InstallLocation` |
+| 便携归档（`.zip` 解压） | 放进 `PATH`，或用 `DSH_UI_TESTING_BLENDER` 指定 |
+
+安装包版不需要把它加进 `PATH`：适配器先查注册表，从
+`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`（含 `WOW6432Node`）与
+`HKCU` 对应项里按 `DisplayName` 匹配 `Blender`，取 `InstallLocation` 拼出 `blender.exe`，
+多个安装按 `DisplayVersion` 从新到旧取第一个。
+
+便携版解压到固定位置（例如 `%LOCALAPPDATA%\Programs\blender-5.3`）后，要么把该目录加入 `PATH`，
+要么用 `DSH_UI_TESTING_BLENDER` 指向 `blender.exe`。不要和 Microsoft Store 分发版混用。
+
+Windows 不需要 Xvfb，但**必须用 GUI 模式**：`gpu` 模块在 `-b` 下不可用。适配器把窗口放到
+`-p -10000 -10000`（屏幕外），绘制回调仍会触发，因此不会占用户桌面。
 
 ### macOS
 
@@ -222,7 +238,9 @@ for backend in ('CUDA', 'OPTIX', 'HIP', 'ONEAPI'):
 | 平台 | 安装 | 无头 Cycles | 无头 EEVEE | GUI |
 | --- | --- | --- | --- | --- |
 | Linux（Ubuntu 24.04，VMware 客户机） | 已实测 | 已实测 | 已实测（软件光栅化） | 已实测 |
-| Windows | 未实测 | 未实测 | 未实测 | 未实测 |
+| Windows 11（RTX 4070 Ti，Blender 5.3.0 MSI 安装） | 已实测 | 已实测 | 已实测 | 已实测 |
 | macOS | 未实测 | 未实测 | 未实测 | 未实测 |
 
-本文的 Linux 读数来自 Ubuntu 24.04、Blender 4.5.9 LTS、VMware SVGA II 虚拟显卡、Mesa 25.2.8。
+本文的 Linux 读数来自 Ubuntu 24.04、Blender 4.5.9 LTS、VMware SVGA II 虚拟显卡、Mesa 25.2.8。Windows 读数来自 Windows 11、Blender 5.3.0（MSI 安装包）、NVIDIA GeForce RTX 4070 Ti、驱动 591.86。
+
+GUI 模式下的视口出图（`viewport.py`）在 Windows 已实测：把窗口放到 `-p -10000 -10000` 后仍能正常绘制并导出 960×540 PNG。注意 Blender 5.3 的默认 `--gpu-backend` 已由 `opengl` 改为 `vulkan`，需要 OpenGL 时显式传参。
