@@ -46,8 +46,16 @@ tar -xf blender-4.5.9-linux-x64.tar.xz && rm blender-4.5.9-linux-x64.tar.xz
 便携版解压到固定位置（例如 `%LOCALAPPDATA%\Programs\blender-5.3`）后，要么把该目录加入 `PATH`，
 要么用 `DSH_UI_TESTING_BLENDER` 指向 `blender.exe`。不要和 Microsoft Store 分发版混用。
 
-Windows 不需要 Xvfb，但**必须用 GUI 模式**：`gpu` 模块在 `-b` 下不可用。适配器把窗口放到
-`-p -10000 -10000`（屏幕外），绘制回调仍会触发，因此不会占用户桌面。
+Windows 不需要 Xvfb，但**必须用 GUI 模式**：`gpu` 模块在 `-b` 下不可用，视口必须在一个真实的
+顶层窗口里绘制。为了让它不打扰桌面，适配器做两件事：
+
+1. `-p -10000 -10000` 把窗口放到屏幕外；
+2. 进程启动后把窗口标记为 `WS_EX_TOOLWINDOW`（并清掉 `WS_EX_APPWINDOW`），再从任务栏与
+   Alt-Tab 中移除——只放屏幕外的窗口仍会留下任务栏按钮。
+
+第 2 步不能改用 `SW_HIDE`：窗口真正隐藏后 Blender 不再派发 `POST_PIXEL` 绘制回调，帧就取不到。
+换样式后窗口保持 mapped，绘制照常（已实测）。换样式是尽力而为，失败时只退化成一个任务栏按钮，
+不影响出帧。首次运行若弹出 Windows 防火墙或 SmartScreen 对话框，需要先手工放行。
 
 ### macOS
 

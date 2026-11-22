@@ -6,6 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
+import { hideBlenderWindowWhenReadyWin32 } from './hidden-window.js';
 
 const SCRIPT = fileURLToPath(new URL('./viewport.py', import.meta.url));
 const SIZE = [960, 540];
@@ -262,6 +263,14 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
     runtime.blender = startProcess(blender, [...args, '--python', SCRIPT, '--', frame], {
       cwd: root, env, stdio: ['pipe', 'pipe', 'pipe'],
     });
+    if (windows) {
+      // Offscreen placement alone leaves a taskbar button and an Alt-Tab entry. Restyle the window
+      // as a tool window so the run is invisible; it stays mapped, so drawing keeps working.
+      // Fire and forget: a failed restyle only means the button remains.
+      void hideBlenderWindowWhenReadyWin32(runtime.blender.child.pid)
+        .then((hidden) => { runtime.windowHidden = hidden; })
+        .catch(() => {});
+    }
     return runtime;
   }
 
