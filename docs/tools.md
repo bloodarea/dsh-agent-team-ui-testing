@@ -1,6 +1,6 @@
 # 工具参考
 
-插件向 Agent 注册 **43 个执行工具 + 1 个发现入口 `browser_tools`（共 39 个）**。工具名即调用名，返回值统一以 `{ok:true,…}` 表示工具执行完成，失败抛类型化 `BrowserError`。
+插件向 Agent 注册 **43 个执行工具 + 1 个发现入口 `browser_tools`（共 44 个）**。工具名即调用名，返回值统一以 `{ok:true,…}` 表示工具执行完成，失败抛类型化 `BrowserError`。
 
 > 能力分层、支持/可用/执行/通过的区别，以及证据判读统一见[能力分层文档](capability-tiers.md#2-共同约束与选路)。`integrity` 报告采集完整性，业务结论仍需具体断言。
 
@@ -25,7 +25,7 @@
 | 面板里启用 | 注册面（可注册的插件工具；本步实际发送还需经过披露选择） |
 | --- | --- |
 | 只 Web | 43 个 Web 工具 + `browser_tools` = 44 |
-| Web + fake（测试环境） | 上述 39 个 + `browser_fake_probe` = 40 |
+| Web + fake（测试环境） | 上述 44 个 + `browser_fake_probe` = 45 |
 | 只 fake | `browser_tools` + `browser_fake_probe` + 两个诊断 = 4 |
 | 全关 | `browser_tools` + `browser_state` + `browser_capabilities` = 3 |
 

@@ -1,21 +1,21 @@
 # Web 工具参考
 
-插件向 Agent 注册 **37 个** `browser_*` 工具。工具名即调用名，返回值统一以 `{ok:true,…}` 表示工具执行完成，失败抛类型化 `BrowserError`。
+插件向 Agent 注册 **43 个执行工具 + 1 个发现入口 `browser_tools`，共 44 个**。工具名即调用名，返回值统一以 `{ok:true,…}` 表示工具执行完成，失败抛类型化 `BrowserError`。
 
 > 能力分层、支持/可用/执行/通过的区别，以及证据判读统一见[能力分层文档](../capability-tiers.md#2-共同约束与选路)。`integrity` 报告采集完整性，业务结论仍需具体断言。
 
-工具声明与执行由 Host 配置驱动：默认只暴露当前环境的专用 schema（Web 默认 37 个）；未启用/非当前环境的工具不会出现在模型请求中，旧调用与 GUI 旁路在执行时仍会被拒绝（`ADAPTER_DISABLED`，未注册的工具报 `unknown tool`）。`browser_state` 与 `browser_capabilities` 是**环境中立诊断**：任何环境（含被禁用）都保留，用于回答"支持什么/为什么被拒"，它们不启动目标；被禁用环境的六轴报告为 `support=supported` + `enabled=false`，不再退化成"未注册"或 `INTERNAL`。成功/失败 envelope 额外携带 `configRevision`、`environment`、`adapterId`，用于核对本次执行使用的配置版本；`browser_capabilities.adapter` 报告 adapter 契约版本、能力矩阵、P0 family 状态、六轴就绪，以及 `declaration`：`registeredTools`（当前注册面＝模型请求能看到的插件 schema）、`admittedTools`（逐 Agent 准入集合）、`isolated`（两者是否一致）。
+工具声明与执行由 Host 配置驱动：默认只暴露当前环境的专用 schema（Web 默认 44 个）；未启用/非当前环境的工具不会出现在模型请求中，旧调用与 GUI 旁路在执行时仍会被拒绝（`ADAPTER_DISABLED`，未注册的工具报 `unknown tool`）。`browser_state` 与 `browser_capabilities` 是**环境中立诊断**：任何环境（含被禁用）都保留，用于回答"支持什么/为什么被拒"，它们不启动目标；被禁用环境的六轴报告为 `support=supported` + `enabled=false`，不再退化成"未注册"或 `INTERNAL`。成功/失败 envelope 额外携带 `configRevision`、`environment`、`adapterId`，用于核对本次执行使用的配置版本；`browser_capabilities.adapter` 报告 adapter 契约版本、能力矩阵、P0 family 状态、六轴就绪，以及 `declaration`：`registeredTools`（当前注册面＝模型请求能看到的插件 schema）、`admittedTools`（逐 Agent 准入集合）、`isolated`（两者是否一致）。
 
 **工具布局由设置页的面板配置作为唯一权威**：启用了哪些环境，就只注册这些环境的工具，不会额外带入其它环境的 schema。
 
 | 面板里启用 | 注册面（模型请求可见的插件工具） |
 | --- | --- |
-| 只 Web | 37 个 `browser_*`（其中 `browser_state`/`browser_capabilities` 是两个环境无关诊断） |
-| Web + fake（测试环境） | 上述 37 个 + `browser_fake_probe` = 38 |
+| 只 Web | 44 个 `browser_*`（43 个执行工具 + `browser_tools`；其中 `browser_state`/`browser_capabilities` 是两个环境无关诊断） |
+| Web + fake（测试环境） | 上述 44 个 + `browser_fake_probe` = 45 |
 | 只 fake | `browser_fake_probe` + `browser_state` + `browser_capabilities` = 3 |
 | 全关 | `browser_state` + `browser_capabilities` = 2（诊断在任何环境都可用，用于回答“支持什么/为什么被拒”） |
 
-被禁用或不允许选择的环境，其工具**根本不注册**，因此不可能出现在任何模型请求里。`when(agent)` 仍是第二道闸门（会话级执行准入与 Skill 发现都按会话解析），但**声明面以注册范围为准**：实测本机 3080 的 `request/header` 按“已注册”构建请求，`when=false` 不会移除声明，所以 `declaration.surface=host-tool-registration`、`registration=enabled-union`；两者不一致时 `isolated=false` 并给出说明。三个环境的真实请求头实测：37 → 2 → 37（关闭/重开 Web）。`browser_fake_probe` 仅在 `DSH_UI_TESTING_TEST_HOOKS=1`/`DSH_UI_TESTING_ALLOW_TEST_ENV=1` 的测试配置中注册，不属于生产 37 工具面。
+被禁用或不允许选择的环境，其工具**根本不注册**，因此不可能出现在任何模型请求里。`when(agent)` 仍是第二道闸门（会话级执行准入与 Skill 发现都按会话解析），但**声明面以注册范围为准**：实测本机 3080 的 `request/header` 按“已注册”构建请求，`when=false` 不会移除声明，所以 `declaration.surface=host-tool-registration`、`registration=enabled-union`；两者不一致时 `isolated=false` 并给出说明。三个环境的真实请求头实测：44 → 2 → 44（关闭/重开 Web）。`browser_fake_probe` 仅在 `DSH_UI_TESTING_TEST_HOOKS=1`/`DSH_UI_TESTING_ALLOW_TEST_ENV=1` 的测试配置中注册，不属于生产 44 工具面。
 
 ## 总览
 
@@ -28,6 +28,7 @@
 | 静态视觉（T3） | 6 | `browser_vision_image` `browser_vision_find` `browser_vision_compare` `browser_vision_act` `browser_vision_baseline` `browser_vision_check` |
 | 动态行为（T4） | 5 | `browser_dynamic_session` `browser_motion_observe` `browser_motion_analyze` `browser_motion_control` `browser_dynamic_correlate` |
 | 网络（P0-B） | 7 | `browser_network_session` `browser_network_events` `browser_network_detail` `browser_network_trace` `browser_network_control` `browser_network_evidence` `browser_network_subscribe` |
+| 安全（security 组） | 6 | `browser_security_scope` `browser_cookies` `browser_surface` `browser_script` `browser_findings` `browser_biz` |
 
 ## 多标签（P0-E）
 

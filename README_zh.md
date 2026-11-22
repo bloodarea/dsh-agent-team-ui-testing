@@ -18,7 +18,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/bloodarea/dsh-agent-team-ui-testing?style=flat-square" alt="License: MIT"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="插件要求 Node.js >= 22"></a>
   <a href="docs/web/browser-runtime.md"><img src="https://img.shields.io/badge/Web%20host-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Web 适配器的宿主系统"></a>
-  <a href="docs/web/tools.md"><img src="https://img.shields.io/badge/Web%20tools-37-brightgreen?style=flat-square" alt="当前 Web 适配器的 37 个工具"></a>
+  <a href="docs/web/tools.md"><img src="https://img.shields.io/badge/Web%20tools-44-brightgreen?style=flat-square" alt="当前 Web 适配器的 44 个工具"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-plugin-4B32C3?style=flat-square" alt="DSH plugin"></a>
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="预发布"></a>
 </p>
@@ -40,7 +40,7 @@
 | HarmonyOS | 鸿蒙应用及相应容器 | 待接入 |
 | 小程序 | 各平台小程序容器 | 待接入 |
 | 游戏 | Unity、Unreal、Godot、Cocos 等 | 待接入 |
-| 3D | 三维应用与编辑工具 | 待接入 |
+| 3D | 三维应用与编辑工具 | 已接入 Blender 纯视口（可看画面、标注与截图；暂无 Agent 执行工具） |
 
 这里的 Linux、Windows、macOS 指原生桌面测试目标；当前 Web 适配器已经可以运行在这三类宿主系统上。Web 下已接入 Edge 驱动，真实 Edge 启动尚未验证。Firefox 尚未支持。详见[目标环境定义](docs/target-environments.md)和 [Web 目标环境配置](docs/web/browser-runtime.md)。
 

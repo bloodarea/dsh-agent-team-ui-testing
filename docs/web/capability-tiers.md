@@ -337,7 +337,7 @@ dynamic_session start → 执行被测操作（点击、拖拽或导航）
 
 [公共能力目录](../../core/contracts.js)登记 `web.t1 / web.t2 / web.t3 / web.t4`；[Web 适配器](../../targets/web/adapter.js)的 `WEB_TOOL_OPERATIONS` 把操作映射到能力 id，`WEB_TOOL_OPERATION_SPECS` 提供执行类别声明。网络、标签和标注分别使用 `web.network / web.tabs / web.p0.annotations`。
 
-工具总数为 **37**：10 T1 + 7 T2 + 6 T3 + 5 T4 + 7 网络 + 1 标签 + 1 标注。其中 `browser_state`、`browser_capabilities` 是常驻诊断；它们虽然列在 Web 的 T1 表中，注册与禁用环境诊断有专门分支。
+工具总数为 **44**：10 T1 + 7 T2 + 6 T3 + 5 T4 + 7 网络 + 1 标签 + 1 标注 + 6 安全组 + 1 发现入口（`browser_tools`）。其中 `browser_state`、`browser_capabilities` 是常驻诊断；它们虽然列在 Web 的 T1 表中，注册与禁用环境诊断有专门分支。
 
 ```text
 Host apply()

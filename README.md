@@ -18,7 +18,7 @@ Give a single Agent or an Agent Team in [DeepSeekHarness (DSH)](https://github.c
   <a href="LICENSE"><img src="https://img.shields.io/github/license/bloodarea/dsh-agent-team-ui-testing?style=flat-square" alt="License: MIT"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Plugin requires Node.js >= 22"></a>
   <a href="docs/web/browser-runtime.md"><img src="https://img.shields.io/badge/Web%20host-Linux%20%7C%20macOS%20%7C%20Windows-0078D6?style=flat-square" alt="Host systems for the Web adapter"></a>
-  <a href="docs/web/tools.md"><img src="https://img.shields.io/badge/Web%20tools-37-brightgreen?style=flat-square" alt="37 tools in the current Web adapter"></a>
+  <a href="docs/web/tools.md"><img src="https://img.shields.io/badge/Web%20tools-44-brightgreen?style=flat-square" alt="44 tools in the current Web adapter"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-plugin-4B32C3?style=flat-square" alt="DSH plugin"></a>
   <a href="https://github.com/bloodarea/dsh-agent-team-ui-testing/releases"><img src="https://img.shields.io/badge/status-pre--release-orange?style=flat-square" alt="Pre-release"></a>
 </p>
@@ -40,7 +40,7 @@ The project brings Web, desktop, mobile, terminal, mini program, game and 3D app
 | HarmonyOS | HarmonyOS applications and containers | Pending |
 | Mini programs | Platform-specific mini program containers | Pending |
 | Games | Unity, Unreal, Godot, Cocos and similar runtimes | Pending |
-| 3D | Three-dimensional applications and editing tools | Pending |
+| 3D | Three-dimensional applications and editing tools | Blender viewport integrated (picture, annotations and screenshots only; no Agent execution tools yet) |
 
 Linux, Windows and macOS here are native desktop testing targets. The current Web adapter already runs on all three host systems. Web has a wired Edge driver, and a real Edge launch remains unverified. Firefox is unsupported. See the [target environment definitions](docs/target-environments.md) and [Web target configuration](docs/web/browser-runtime.md).
 

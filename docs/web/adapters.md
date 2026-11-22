@@ -125,7 +125,7 @@ Chrome 的调用前提是：Web 环境已允许启用，`environments.web.enable
 | Skill 发现 | `registerSkills()` 按环境与启用状态过滤目录和正文；公共规则与 Web 扩展分别提供 |
 | GUI 写入 | 页面写路由校验相同的 Host 配置，不能绕过工具准入 |
 
-Web 的公开工具集合为 37 个 `browser_*`，其中 `browser_state`、`browser_capabilities` 按当前契约作为常驻诊断保留。注册范围控制模型能看到哪些 schema，会话准入控制该 Agent 能否执行；不能只用 `when=false` 代替注册隔离。完整工具契约见 [工具参考](tools.md)。
+Web 的公开工具集合为 44 个 `browser_*`，其中 `browser_state`、`browser_capabilities` 按当前契约作为常驻诊断保留。注册范围控制模型能看到哪些 schema，会话准入控制该 Agent 能否执行；不能只用 `when=false` 代替注册隔离。完整工具契约见 [工具参考](tools.md)。
 
 ### 4.3 一次普通页面操作：点击
 
