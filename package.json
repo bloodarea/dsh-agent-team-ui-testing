@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-team-ui-testing",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Frontend GUI debugging and testing for DeepSeekHarness agents: Web/Chromium is implemented with 44 browser_* tools (43 execution + a browser_tools discovery entry; progressive per-agent disclosure from 3 default definitions) for structured GUI automation, visual comparison, dynamic frame analysis, annotation read/write and network debugging; Windows/Linux/macOS desktop, Android, TUI, HarmonyOS, mini programs, games and 3D (nine environments) are planned.",
   "license": "MIT",
   "type": "module",

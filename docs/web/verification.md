@@ -7,6 +7,7 @@
 - Node.js 24.9 及以上（当前 DSH 发行版的 engines 要求；插件自身依赖原生 `WebSocket`）。
 - 本地 Chrome / Chromium（可用 `DSH_UI_TESTING_CHROME` 指定）。
 - 验收套件**自己启动**无头 Chromium 与本地靶机（只监听 `127.0.0.1`），不会驱动你正在使用的 DSH 实例。
+- 在 Agent 的文件沙箱里跑套件时，Chrome 建不了 setuid 命名空间也写不了 `/dev/shm`，启动会失败（`CDP_DISCONNECTED`，日志里是 `Zygote process exited prematurely`）。此时用 `DSH_UI_TESTING_CHROME=$PWD/tests/acceptance/chrome-wrapper.sh` 指定仓库自带的兼容包装：它把同一个真实二进制加上 `--no-sandbox`、`--disable-dev-shm-usage`、`--disable-crash-reporter` 三个参数后原样转发其余参数。这不是插件的运行要求——在非沙箱的普通 DSH 进程里默认二进制可以直接跑，`run.mjs` 也是先试真实默认路径、失败才回退到该包装并把它记进报告。
 
 ## 主机侧套件
 
