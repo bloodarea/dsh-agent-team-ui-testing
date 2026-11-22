@@ -21,6 +21,7 @@
 
 | 分组 | 数量 | 工具 |
 | --- | --- | --- |
+| 发现入口（discovery） | 1 | `browser_tools` |
 | P0-E 多标签（tabs） | 1 | `browser_tabs` |
 | P0-D 标注（annotations） | 1 | `browser_annotation` |
 | 程序化（T1） | 10 | `browser_navigate` `browser_eval` `browser_screenshot` `browser_input` `browser_network` `browser_computed_style` `browser_http_request` `browser_viewport` `browser_state` `browser_capabilities` |
