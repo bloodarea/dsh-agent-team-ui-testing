@@ -6,7 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
-import { hideBlenderWindowWhenReadyWin32 } from './hidden-window.js';
+import { blenderDesktopLaunch } from './hidden-window.js';
 
 const SCRIPT = fileURLToPath(new URL('./viewport.py', import.meta.url));
 const SIZE = [960, 540];
@@ -14,13 +14,6 @@ const TIMEOUT_MS = 20_000;
 const IDLE_MS = 45_000;
 const MAX_PIXELS = 8 * 1024 * 1024;
 const MAX_FRAME_BYTES = MAX_PIXELS * 3 + 32_768;
-
-/**
- * Windows keeps the window off every desktop area. The 3D path cannot be headless (`gpu` is
- * unavailable under `-b`), so the window must exist — but it must not steal focus or cover the
- * user's screen. A large negative offset is accepted and the draw handler still fires (verified).
- */
-const WINDOW_OFFSET = -10000;
 
 class ViewportError extends Error {
   constructor(code, message, status) {
@@ -169,17 +162,50 @@ function authField(value) {
   return Buffer.concat([length, data]);
 }
 
+const INPUT_TYPES = new Set(['move', 'down', 'up', 'wheel', 'cancel', 'escape']);
+
+function parseViewportInput(input) {
+  const invalid = () => new ViewportError('INVALID_ARGUMENT', 'Blender 鼠标事件无效。', 400);
+  if (!Array.isArray(input) || input.length > 32) throw invalid();
+  return input.map((event) => {
+    const { kind, x, y, button, delta, shift = false, ctrl = false, alt = false } = event || {};
+    if (!INPUT_TYPES.has(kind)) throw invalid();
+    if (kind === 'cancel' || kind === 'escape') return { kind };
+    if (![x, y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)
+        || ![shift, ctrl, alt].every((value) => typeof value === 'boolean')) throw invalid();
+    const result = { kind, x, y, shift, ctrl, alt };
+    if (kind === 'down' || kind === 'up') {
+      if (button !== 0 && button !== 1 && button !== 2) throw invalid();
+      result.button = button;
+    }
+    if (kind === 'wheel') {
+      if (!Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 8) throw invalid();
+      result.delta = delta;
+    }
+    return result;
+  });
+}
+
 export function parseViewportRequest(body) {
-  const camera = body?.camera;
-  if (!Array.isArray(camera) || camera.length !== 3 || !camera.every(Number.isFinite)
-      || Math.abs(camera[0]) > 180 || Math.abs(camera[1]) > 85 || camera[2] < 0.15 || camera[2] > 6) {
-    throw new ViewportError('INVALID_ARGUMENT', '3D 视角参数无效。', 400);
-  }
-  const size = body.size === undefined ? SIZE : body.size;
+  const size = body?.size === undefined ? SIZE : body.size;
   if (!Array.isArray(size) || size.length !== 2
       || !size.every((value) => Number.isInteger(value) && value >= 200 && value <= 4096)
       || size[0] * size[1] > MAX_PIXELS) {
     throw new ViewportError('INVALID_ARGUMENT', '3D 分辨率须为 200–4096 像素，总面积不超过 8,388,608 像素。', 400);
+  }
+  if (body?.input !== undefined) {
+    const input = parseViewportInput(body.input);
+    const generation = body.generation;
+    if (body.camera !== undefined || (input.length && generation === undefined)
+        || (generation !== undefined && (typeof generation !== 'string' || !/^[a-f0-9]{32}$/u.test(generation)))) {
+      throw new ViewportError('INVALID_ARGUMENT', 'Blender 视口会话参数无效。', 400);
+    }
+    return { input, generation, size };
+  }
+  const camera = body?.camera;
+  if (!Array.isArray(camera) || camera.length !== 3 || !camera.every(Number.isFinite)
+      || Math.abs(camera[0]) > 180 || Math.abs(camera[1]) > 85 || camera[2] < 0.15 || camera[2] > 6) {
+    throw new ViewportError('INVALID_ARGUMENT', '3D 视角参数无效。', 400);
   }
   return { camera, size };
 }
@@ -196,9 +222,13 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
     const current = runtime;
     runtime = undefined;
     stopping = (async () => {
-      current.blender?.child.kill('SIGKILL');
+      if (platform === 'win32') current.blender?.child.stdin.end();
+      else current.blender?.child.kill('SIGKILL');
       current.display?.child.kill();
-      const fallback = setTimeout(() => current.display?.child.kill('SIGKILL'), 1200);
+      const fallback = setTimeout(() => {
+        current.blender?.child.kill('SIGKILL');
+        current.display?.child.kill('SIGKILL');
+      }, 1200);
       try {
         await Promise.all([current.blender?.closed, current.display?.closed]);
         await rm(current.root, { recursive: true, force: true });
@@ -232,7 +262,7 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
       LP_NUM_THREADS: process.env.LP_NUM_THREADS || '4' };
 
     if (windows) {
-      // Keep WAYLAND/display variables out of the way; the real desktop session is used.
+      // The Windows launcher supplies a private Win32 desktop.
       delete env.XAUTHORITY;
     } else {
       const cookie = Buffer.concat([
@@ -250,9 +280,8 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
       env.WAYLAND_DISPLAY = '';
     }
 
-    const offset = windows ? WINDOW_OFFSET : 0;
-    const args = ['--factory-startup', '--disable-autoexec', '-noaudio', '-t', '4',
-      '-p', String(offset), String(offset), ...SIZE.map(String)];
+    const args = ['--factory-startup', '--disable-autoexec', '--enable-event-simulate', '-noaudio', '-t', '4',
+      '-p', '0', '0', ...SIZE.map(String)];
     const project = process.env.DSH_UI_TESTING_BLEND_FILE;
     if (project) {
       const info = isAbsolute(project) && /\.blend$/i.test(project) && await stat(project).catch(() => null);
@@ -260,27 +289,38 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
       args.push(project);
     }
     signal.throwIfAborted();
-    runtime.blender = startProcess(blender, [...args, '--python', SCRIPT, '--', frame], {
-      cwd: root, env, stdio: ['pipe', 'pipe', 'pipe'],
+    args.push('--python', SCRIPT, '--', frame);
+    const launch = windows ? blenderDesktopLaunch(blender, args, env) : { executable: blender, args, env };
+    runtime.blender = startProcess(launch.executable, launch.args, {
+      cwd: root, env: launch.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
-    if (windows) {
-      // Offscreen placement alone leaves a taskbar button and an Alt-Tab entry. Restyle the window
-      // as a tool window so the run is invisible; it stays mapped, so drawing keeps working.
-      // Fire and forget: a failed restyle only means the button remains.
-      void hideBlenderWindowWhenReadyWin32(runtime.blender.child.pid)
-        .then((hidden) => { runtime.windowHidden = hidden; })
-        .catch(() => {});
-    }
     return runtime;
   }
 
-  async function render(request, outerSignal) {
+  async function render(request, outerSignal, scopeKey) {
+    const interactive = request.input !== undefined;
+    if (interactive && request.generation !== undefined
+        && (runtime?.generation !== request.generation || runtime?.scopeKey !== scopeKey)) {
+      throw new ViewportError('BLENDER_STALE_FRAME', 'Blender 视口已重启或切换，请在新画面上操作。', 409);
+    }
     const signal = AbortSignal.any([outerSignal, lifetime.signal, AbortSignal.timeout(TIMEOUT_MS)]);
     try {
+      if (interactive && runtime && runtime.scopeKey !== scopeKey) await stop();
       const current = await ensure(signal);
-      const pending = lineFrom(current.blender, (line) => /^DSH_VIEWPORT (frame|error)$/.exec(line)?.[1], signal);
+      if (interactive && !current.generation) {
+        current.scopeKey = scopeKey;
+        current.generation = randomBytes(16).toString('hex');
+      }
+      const pending = lineFrom(current.blender, (line) => /^DSH_VIEWPORT (frame(?: \d+ \d+ \d+ \d+)?|error|isolation-error)$/u.exec(line)?.[1], signal);
       current.blender.child.stdin.write(JSON.stringify(request) + '\n');
-      if (await pending !== 'frame') throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 未能生成 3D 视口图像。', 502);
+      const result = await pending;
+      if (result === 'isolation-error') {
+        throw new ViewportError('BLENDER_DESKTOP_FAILED', '无法在独立的 Windows 桌面上启动 Blender 视口。', 502);
+      }
+      const [status, ...bounds] = result.split(' ');
+      if (status !== 'frame' || (interactive && bounds.length !== 4)) {
+        throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 未能生成 3D 视口图像。', 502);
+      }
       const size = (await stat(current.frame)).size;
       if (size > MAX_FRAME_BYTES) throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 视口图像超出大小限制。', 502);
       const png = await readFile(current.frame);
@@ -290,7 +330,13 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
       if (png.readUInt32BE(16) !== request.size[0] || png.readUInt32BE(20) !== request.size[1]) {
         throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 返回的实际分辨率与请求不符。', 502);
       }
-      return png;
+      if (!interactive) return png;
+      const content = bounds.map(Number);
+      const [x, y, width, height] = content;
+      if (!width || !height || x + width > request.size[0] || y + height > request.size[1]) {
+        throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 返回的视口范围无效。', 502);
+      }
+      return { png, content, generation: current.generation };
     } catch (error) {
       await stop();
       if (error instanceof ViewportError) throw error;
@@ -301,10 +347,10 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
   }
 
   return {
-    async frame(camera, signal) {
+    async frame(request, signal, scopeKey = 'recent') {
       if (active) throw new ViewportError('BLENDER_BUSY', 'Blender 视口正在生成画面。', 409);
       clearTimeout(idle);
-      active = render(camera, signal);
+      active = render(request, signal, scopeKey);
       try {
         return await active;
       } finally {

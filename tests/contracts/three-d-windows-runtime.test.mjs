@@ -54,10 +54,10 @@ test('Windows 不启动 Xvfb，Linux 仍启动', () => {
   assert.match(source, /const display = await lineFrom\(runtime\.display/u);
 });
 
-test('Windows 把 Blender 窗口移出可视区域，避免抢占桌面', () => {
-  assert.match(source, /const WINDOW_OFFSET = -10000;/u);
-  assert.match(source, /const offset = windows \? WINDOW_OFFSET : 0;/u);
-  assert.match(source, /'-p', String\(offset\), String\(offset\)/u);
+test('Windows 通过独立桌面启动 Blender，隔离失败直接返回视口错误', () => {
+  assert.match(source, /const launch = windows \? blenderDesktopLaunch\(blender, args, env\) : \{ executable: blender, args, env \};/u);
+  assert.match(source, /startProcess\(launch\.executable, launch\.args,/u);
+  assert.match(source, /result === 'isolation-error'[\s\S]*?BLENDER_DESKTOP_FAILED/u);
 });
 
 test('显式 override 不可用时报错，不回退到注册表安装', () => {

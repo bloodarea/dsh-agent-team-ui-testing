@@ -1,7 +1,7 @@
 {
   "name": "dsh-agent-team-ui-testing",
   "version": "0.1.6",
-  "description": "Frontend GUI debugging and testing for DeepSeekHarness agents: Web/Chromium ships 44 browser_* tools (43 execution + a discovery entry) for structured GUI automation, visual comparison, dynamic frames, annotations and network debugging; 3D has a Blender viewport (observation, annotation, screenshots); other targets are planned.",
+  "description": "Frontend GUI debugging and testing for DeepSeekHarness agents: Web/Chromium ships 44 browser_* tools (43 execution + a discovery entry) for structured GUI automation, visual comparison, dynamic frames, annotations and network debugging; 3D has a Blender viewport with mouse input, annotation and screenshots; other targets are planned.",
   "license": "MIT",
   "type": "module",
   "keywords": ["deepseek-harness", "dsh-plugin", "ui-testing", "gui-testing", "test-automation", "browser-automation", "visual-regression", "network-debugging"],

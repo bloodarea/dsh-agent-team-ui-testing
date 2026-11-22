@@ -2,7 +2,7 @@
 
 3D（`three-d`）目标的运行环境是 Blender。本文说明如何在 Linux、Windows、macOS 上安装和配置一个可被检测的 Blender 实例，以及怎样判断它的 GPU 路径是否真的可用。
 
-Linux 部分为**本机实测**；Windows 与 macOS 部分依据官方发布物和已知边界给出，**未经本机实测**，见[验证状态](#验证状态)。
+Linux 和 Windows 的验证范围见[验证状态](#验证状态)。macOS 安装方式依据官方发布物，尚未实测。
 
 ## 安装
 
@@ -46,16 +46,9 @@ tar -xf blender-4.5.9-linux-x64.tar.xz && rm blender-4.5.9-linux-x64.tar.xz
 便携版解压到固定位置（例如 `%LOCALAPPDATA%\Programs\blender-5.3`）后，要么把该目录加入 `PATH`，
 要么用 `DSH_UI_TESTING_BLENDER` 指向 `blender.exe`。不要和 Microsoft Store 分发版混用。
 
-Windows 不需要 Xvfb，但**必须用 GUI 模式**：`gpu` 模块在 `-b` 下不可用，视口必须在一个真实的
-顶层窗口里绘制。为了让它不打扰桌面，适配器做两件事：
+Windows 使用系统自带的 Windows PowerShell 启动 Blender GUI。Host 为每次运行创建独立的 Win32 桌面，并从进程创建时就将 Blender 绑定到该桌面。Blender 的窗口在该桌面上保持可绘制，当前用户桌面不会出现 Blender 窗口、任务栏按钮或 Alt-Tab 条目，打开视口也不会抢走前台焦点。
 
-1. `-p -10000 -10000` 把窗口放到屏幕外；
-2. 进程启动后把窗口标记为 `WS_EX_TOOLWINDOW`（并清掉 `WS_EX_APPWINDOW`），再从任务栏与
-   Alt-Tab 中移除——只放屏幕外的窗口仍会留下任务栏按钮。
-
-第 2 步不能改用 `SW_HIDE`：窗口真正隐藏后 Blender 不再派发 `POST_PIXEL` 绘制回调，帧就取不到。
-换样式后窗口保持 mapped，绘制照常（已实测）。换样式是尽力而为，失败时只退化成一个任务栏按钮，
-不影响出帧。首次运行若弹出 Windows 防火墙或 SmartScreen 对话框，需要先手工放行。
+隔离启动失败时，3D 面板显示 `BLENDER_DESKTOP_FAILED`。关闭运行实例会一并回收 Blender 及其子进程。
 
 ### macOS
 
@@ -251,4 +244,4 @@ for backend in ('CUDA', 'OPTIX', 'HIP', 'ONEAPI'):
 
 本文的 Linux 读数来自 Ubuntu 24.04、Blender 4.5.9 LTS、VMware SVGA II 虚拟显卡、Mesa 25.2.8。Windows 读数来自 Windows 11、Blender 5.3.0（MSI 安装包）、NVIDIA GeForce RTX 4070 Ti、驱动 591.86。
 
-GUI 模式下的视口出图（`viewport.py`）在 Windows 已实测：把窗口放到 `-p -10000 -10000` 后仍能正常绘制并导出 960×540 PNG。注意 Blender 5.3 的默认 `--gpu-backend` 已由 `opengl` 改为 `vulkan`，需要 OpenGL 时显式传参。
+Windows 上的独立桌面可运行 Blender 5.3.0 并导出视口 PNG。Blender 5.3 的默认 `--gpu-backend` 已由 `opengl` 改为 `vulkan`，需要 OpenGL 时显式传参。

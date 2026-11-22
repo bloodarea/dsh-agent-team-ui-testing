@@ -40,7 +40,7 @@ The project brings Web, desktop, mobile, terminal, mini program, game and 3D app
 | HarmonyOS | HarmonyOS applications and containers | Pending |
 | Mini programs | Platform-specific mini program containers | Pending |
 | Games | Unity, Unreal, Godot, Cocos and similar runtimes | Pending |
-| 3D | Three-dimensional applications and editing tools | Blender viewport integrated (picture, annotations and screenshots only; no Agent execution tools yet) |
+| 3D | Three-dimensional applications and editing tools | Blender viewport with mouse input, annotations and screenshots; no Agent execution tools yet |
 
 Linux, Windows and macOS here are native desktop testing targets. The current Web adapter already runs on all three host systems. Web has a wired Edge driver, and a real Edge launch remains unverified. Firefox is unsupported. See the [target environment definitions](docs/target-environments.md) and [Web target configuration](docs/web/browser-runtime.md).
 

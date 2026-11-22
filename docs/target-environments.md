@@ -29,7 +29,7 @@
 | HarmonyOS | `harmonyos` | 同上 | 暂无 |
 | 小程序 | `mini-program` | 同上 | 暂无 |
 | 游戏 | `game` | 同上 | 暂无 |
-| 3D | `three-d` | `status: view`：Blender 纯视口可看画面、标注与截图，无 Agent 执行适配器，因此可选中、工具面为空 | [Blender 纯视口与运行时配置](three-d/index.md) · [运行环境开关](#运行环境provider开关) |
+| 3D | `three-d` | `status: view`：Blender 视口提供鼠标操作、标注与截图，无 Agent 执行适配器，因此可选中、工具面为空 | [Blender 纯视口与运行时配置](three-d/index.md) · [运行环境开关](#运行环境provider开关) |
 
 「默认视图」（`default`，`status: empty`、`kind: view`）是一个**空态视图**，不是目标环境：它只出现在调试面板的组合框里，用来表示"当前没有选择目标环境"，不可启用、不出现在设置页分组。选择语义见[调试面板公共视图 · 视图选择](debug-panel.md#3-视图选择与默认视图)。
 

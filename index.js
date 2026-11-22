@@ -905,7 +905,7 @@ export function apply(ctx) {
       }
       if (action === '/blender/frame' && req.method === 'POST') {
         if (!scoped) { scopeAuthError(res, 401); return; }
-        parseHttpScope(req);
+        const viewportScope = parseHttpScope(req);
         if (!crossEnvironment.isViewEnabled('three-d')) {
           sendJson(res, 409, { ok: false, code: 'ADAPTER_DISABLED', error: '请先在设置中启用 3D 视图。' });
           return;
@@ -920,9 +920,16 @@ export function apply(ctx) {
         res.once('close', onClose);
         try {
           const frameRequest = parseViewportRequest(await readJson(req));
-          const png = await blenderViewport.frame(frameRequest, controller.signal);
+          const scopeKey = `${viewportScope.mode}:${viewportScope.sessionId || viewportScope.runtimeId || ''}`;
+          const result = await blenderViewport.frame(frameRequest, controller.signal, scopeKey);
           if (res.destroyed) return;
-          res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': 'no-store' });
+          const png = result.png || result;
+          const headers = { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': 'no-store' };
+          if (result.generation) {
+            headers['X-DSH-Blender-Generation'] = result.generation;
+            headers['X-DSH-Blender-Content'] = result.content.join(',');
+          }
+          res.writeHead(200, headers);
           res.end(png);
         } catch (error) {
           if (res.destroyed) return;

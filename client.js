@@ -1913,8 +1913,7 @@ window.__ModuleLoader__.load({
 .utb-blank-hint { max-width: calc(100% - 16px); padding: 12px; text-align: center; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
 .utb-stage.utb-blender-stage { position: relative; display: flex; min-height: 0; overflow: auto; }
 .utb-blender-box { position: relative; flex: none; margin: auto; }
-.utb-blender-box img { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; cursor: grab; }
-.utb-blender-box img:active { cursor: grabbing; }
+.utb-blender-box img { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; }
 .utb-blender-stage > .utb-blank-hint { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: max-content; z-index: 3; background: var(--dsw-alias-bg-shell); }
 .utb-blender-stage > .utb-blank-hint .utb-btn { padding-inline: 6px; width: auto; white-space: nowrap; }
 .utb-blender-hint { font-size: 12px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2741,16 +2740,45 @@ window.__ModuleLoader__.load({
       requestSize.current = size;
       const annotationMode = React.useRef(annotating);
       annotationMode.current = annotating;
-      const camera = React.useRef([0, 0, 1]);
-      const drag = React.useRef(null);
+      const geometry = React.useRef(null);
+      const gesture = React.useRef(null);
+      const sendInput = React.useRef(() => {});
       const redraw = React.useRef(() => {});
-      const [url, setUrl] = React.useState('');
+
+      function pointerPosition(event, clamp = false) {
+        const view = geometry.current;
+        const rect = imageRef.current?.getBoundingClientRect();
+        if (!view || !rect?.width || !rect.height) return null;
+        const [left, top, width, height] = view.content;
+        const x = ((event.clientX - rect.left) / rect.width * view.width - left) / width;
+        const y = ((event.clientY - rect.top) / rect.height * view.height - top) / height;
+        if (!clamp && (x < 0 || x >= 1 || y < 0 || y >= 1)) return null;
+        return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)),
+          shift: event.shiftKey, ctrl: event.ctrlKey, alt: event.altKey };
+      }
+
+      function releaseGesture() {
+        if (!gesture.current) return;
+        gesture.current = null;
+        sendInput.current({ kind: 'cancel' });
+      }
+
+      function handleEscape(event) {
+        if (annotating || event.isComposing || event.key !== 'Escape'
+            || event.target !== event.currentTarget || !geometry.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+        gesture.current = null;
+        sendInput.current({ kind: 'escape' });
+      }
+
+      const [presentation, setPresentation] = React.useState(null);
 
       React.useEffect(() => {
         if (!frame) return undefined;
-        const nextUrl = URL.createObjectURL(frame.image);
-        setUrl(nextUrl);
-        return () => URL.revokeObjectURL(nextUrl);
+        const url = URL.createObjectURL(frame.image);
+        setPresentation({ ...frame, url });
+        return () => URL.revokeObjectURL(url);
       }, [frame]);
 
       React.useEffect(() => {
@@ -2759,6 +2787,8 @@ window.__ModuleLoader__.load({
         let busy = false;
         let dirty = false;
         let retry;
+        let hoverRefresh;
+        let queue = [];
         async function refresh() {
           dirty = true;
           if (busy || retry || controller.signal.aborted) return;
@@ -2766,17 +2796,27 @@ window.__ModuleLoader__.load({
           busy = true;
           const started = performance.now();
           const requested = requestSize.current;
+          const generation = geometry.current?.generation;
+          const input = queue.splice(0, 32);
           onStatus((current) => ({ ...current, phase: 'rendering' }));
           try {
             const response = await fetch(HOST_BASE + '/blender/frame', {
               method: 'POST', credentials: 'same-origin', signal: controller.signal,
               headers: Object.assign({ 'content-type': 'application/json' }, scopeHeaders(scope)),
-              body: JSON.stringify({ camera: camera.current, size: [requested.width, requested.height] }),
+              body: JSON.stringify({ input, generation, size: [requested.width, requested.height] }),
             });
             if (response.status === 409) {
               const payload = await response.json();
               if (payload.code === 'BLENDER_BUSY') {
-                retry = setTimeout(() => { retry = undefined; void refresh(); }, 300);
+                queue.unshift(...input);
+                retry = setTimeout(() => { retry = undefined; void refresh(); }, 150);
+                return;
+              }
+              if (payload.code === 'BLENDER_STALE_FRAME') {
+                geometry.current = null;
+                gesture.current = null;
+                queue = [];
+                dirty = true;
                 return;
               }
               throw new Error(payload.error || 'Blender 视口不可用。');
@@ -2785,68 +2825,118 @@ window.__ModuleLoader__.load({
               const payload = await response.json().catch(() => ({}));
               throw new Error(payload.error || 'Blender 视口连接失败。');
             }
+            const frameGeneration = response.headers.get('X-DSH-Blender-Generation');
+            const content = response.headers.get('X-DSH-Blender-Content')?.split(',').map(Number);
+            if (!/^[a-f0-9]{32}$/u.test(frameGeneration || '') || content?.length !== 4
+                || !content.every((value) => Number.isInteger(value) && value >= 0) || !content[2] || !content[3]) {
+              throw new Error('Blender 交互视口未就绪，请确认 Host 和面板已重新加载。');
+            }
             const image = await response.blob();
             if (!controller.signal.aborted) {
-              setFrame({ image, started });
+              setFrame({ image, started, generation: frameGeneration, content });
               setFailure('');
             }
           } catch (error) {
             if (!controller.signal.aborted) {
+              geometry.current = null;
+              gesture.current = null;
+              queue = [];
+              clearTimeout(hoverRefresh);
               setFailure(error.message || 'Blender 视口连接失败。');
               onStatus((current) => ({ ...current, phase: 'error' }));
             }
           } finally {
             busy = false;
-            if (dirty && !retry && !controller.signal.aborted) void refresh();
+            if ((dirty || queue.length) && !retry && !controller.signal.aborted) void refresh();
           }
         }
-        function wheel(event) {
-          const direction = Math.sign(event.deltaY);
-          if (!direction || annotationMode.current || event.target !== imageRef.current) return;
-          event.preventDefault();
-          const [yaw, pitch, zoom] = camera.current;
-          camera.current = [yaw, pitch, Math.max(0.15, Math.min(6, zoom * (direction > 0 ? 1.12 : 1 / 1.12)))];
+        function enqueue(event) {
+          if (!geometry.current || controller.signal.aborted) return;
+          const last = queue.at(-1);
+          if (event.kind === 'move' && last?.kind === 'move') queue[queue.length - 1] = event;
+          else if (event.kind === 'wheel' && last?.kind === 'wheel' && last.x === event.x && last.y === event.y
+              && last.shift === event.shift && last.ctrl === event.ctrl && last.alt === event.alt
+              && Math.sign(last.delta) === event.delta && Math.abs(last.delta) < 8) last.delta += event.delta;
+          else queue.push(event);
+          clearTimeout(hoverRefresh);
+          if (event.kind === 'move' && !gesture.current) {
+            // Blender may open a submenu after its hover delay, even with the pointer stationary.
+            hoverRefresh = setTimeout(() => { void refresh(); }, 350);
+          }
           void refresh();
+        }
+        function wheel(event) {
+          const delta = Math.sign(event.deltaY);
+          if (!delta || annotationMode.current || event.target !== imageRef.current) return;
+          const point = pointerPosition(event);
+          if (!point) return;
+          event.preventDefault();
+          enqueue({ kind: 'wheel', delta, ...point });
         }
         const element = stage.current;
         element.addEventListener('wheel', wheel, { passive: false });
         redraw.current = refresh;
+        sendInput.current = enqueue;
         return () => {
           controller.abort();
           clearTimeout(retry);
+          clearTimeout(hoverRefresh);
           element.removeEventListener('wheel', wheel);
-          drag.current = null;
+          gesture.current = null;
+          geometry.current = null;
           redraw.current = () => {};
+          sendInput.current = () => {};
         };
       }, [scope, visible, stage, imageRef, onStatus]);
       React.useEffect(() => { void redraw.current(); }, [scope, size, visible]);
+      React.useEffect(() => { if (annotating) releaseGesture(); }, [annotating]);
 
       return h('div', {
         className: 'utb-stage utb-blender-stage', ref: stage, 'data-utb-blender-viewport': '',
+        tabIndex: 0, 'aria-label': 'Blender 3D 视口',
         onPointerDown: (event) => {
-          if (annotating || event.button !== 0 || event.target !== imageRef.current || drag.current) return;
+          if (annotating || event.target !== imageRef.current || gesture.current || ![0, 1, 2].includes(event.button)) return;
+          const point = pointerPosition(event);
+          if (!point) return;
+          event.preventDefault();
+          event.currentTarget.focus({ preventScroll: true });
           event.currentTarget.setPointerCapture(event.pointerId);
-          drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
+          gesture.current = { id: event.pointerId, button: event.button };
+          sendInput.current({ kind: 'down', button: event.button, ...point });
         },
         onPointerMove: (event) => {
-          const from = drag.current;
-          if (annotating || from?.id !== event.pointerId) return;
-          const [yaw, pitch, zoom] = camera.current;
-          const nextYaw = yaw - (event.clientX - from.x) * 0.5;
-          camera.current = [((nextYaw % 360 + 540) % 360) - 180,
-            Math.max(-85, Math.min(85, pitch - (event.clientY - from.y) * 0.5)), zoom];
-          from.x = event.clientX;
-          from.y = event.clientY;
-          void redraw.current();
+          const captured = gesture.current?.id === event.pointerId;
+          if (annotating || (!captured && event.target !== imageRef.current)) return;
+          const point = pointerPosition(event, captured);
+          if (point) sendInput.current({ kind: 'move', ...point });
         },
-        onLostPointerCapture: () => { drag.current = null; },
+        onPointerUp: (event) => {
+          const pressed = gesture.current;
+          if (pressed?.id !== event.pointerId) return;
+          const point = pointerPosition(event, true);
+          if (!point) { releaseGesture(); return; }
+          gesture.current = null;
+          sendInput.current({ kind: 'up', button: pressed.button, ...point });
+        },
+        onPointerCancel: releaseGesture,
+        onLostPointerCapture: releaseGesture,
+        onBlur: releaseGesture,
+        onAuxClick: (event) => {
+          if (!annotating && event.button === 1 && pointerPosition(event)) event.preventDefault();
+        },
+        onContextMenu: (event) => {
+          if (!annotating && pointerPosition(event)) event.preventDefault();
+        },
+        onKeyDown: handleEscape,
       }, h('div', { className: 'utb-blender-box', ref: box, style: display },
-        url && h('img', {
-          ref: imageRef, src: url, alt: 'Blender 3D 视口', title: '拖动旋转 · 滚轮缩放', draggable: false,
+        presentation && h('img', {
+          ref: imageRef, src: presentation.url, alt: 'Blender 3D 视口', draggable: false,
           onLoad: (event) => {
             const { naturalWidth, naturalHeight } = event.currentTarget;
+            geometry.current = { content: presentation.content, generation: presentation.generation,
+              width: naturalWidth, height: naturalHeight };
             onStatus({ phase: 'ready', width: naturalWidth, height: naturalHeight,
-              ms: Math.round(performance.now() - frame.started) });
+              ms: Math.round(performance.now() - presentation.started) });
           },
           onError: () => {
             setFailure('无法显示 Blender 视口图像。');
@@ -2857,7 +2947,7 @@ window.__ModuleLoader__.load({
         h('button', { type: 'button', className: 'utb-btn', onClick: () => {
           setFailure('');
           void redraw.current();
-        } }, '重试')) : !url && h('div', { role: 'status', className: 'utb-blank-hint' }, '正在连接 Blender…'));
+        } }, '重试')) : !presentation && h('div', { role: 'status', className: 'utb-blank-hint' }, '正在连接 Blender…'));
     }
 
     /** The debug view body, shared by the main column and the right sidebar. */
@@ -10677,7 +10767,7 @@ h('div', { className: 'utb-bar' },
         const frameHeight = blenderStatus.height || blenderSize.height;
         const displayScale = blenderFit ? blenderFitScale(frameWidth, frameHeight) : blenderZoom / 100;
         return [
-          shellBarPublic(blenderSizeError || (annotOn ? '在 Blender 画面上标注' : 'Blender · 拖动旋转，滚轮缩放')),
+          shellBarPublic(blenderSizeError || (annotOn ? '在 Blender 画面上标注' : '左键选择 · 右键菜单 · 中键旋转 · Shift + 中键平移 · 滚轮缩放')),
           shellAnnotBar(),
           shellSizeBar(),
           h(BlenderViewport, {
