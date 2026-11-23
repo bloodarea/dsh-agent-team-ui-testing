@@ -2212,11 +2212,11 @@ async function fileDigest(path) {
 
 async function buildState() {
   const indexJs = await fileDigest(join(REPO_ROOT, 'index.js'));
-  const clientJs = await fileDigest(join(REPO_ROOT, 'client.js'));
+  const clientJs = await fileDigest(join(REPO_ROOT, 'dist/client.js'));
   const startedAtMs = state.hostInfo && state.hostInfo.startedAt ? Date.parse(state.hostInfo.startedAt) : 0;
   const editedAfterStart = {};
   if (startedAtMs) {
-    for (const [name, digest] of [['index.js', indexJs], ['client.js', clientJs]]) {
+    for (const [name, digest] of [['index.js', indexJs], ['dist/client.js', clientJs]]) {
       if (digest && Date.parse(digest.mtime) > startedAtMs) editedAfterStart[name] = true;
     }
   }
@@ -2224,7 +2224,7 @@ async function buildState() {
     indexJs,
     clientJs,
     hostIndexLoadedAtStart: startedAtMs ? !editedAfterStart['index.js'] : null,
-    clientChangedAfterStart: startedAtMs ? Boolean(editedAfterStart['client.js']) : null,
+    clientChangedAfterStart: startedAtMs ? Boolean(editedAfterStart['dist/client.js']) : null,
     loadedBuildMatchesWorkspace: startedAtMs ? Object.keys(editedAfterStart).length === 0 : null,
     loadedBuildNote: !startedAtMs
       ? 'Listener start time could not be read; loadedBuildMatchesWorkspace is NOT VERIFIED.'

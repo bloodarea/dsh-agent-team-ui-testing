@@ -84,7 +84,7 @@ node tests/acceptance/pick-element-gui.mjs # 隔离 DSH + 无头 Chrome 的选�
 node tests/acceptance/verify-3081.mjs      # 隔离宿主 HTTP 集成
 ```
 
-`viewport-gui.mjs` 与 `verify-3081.mjs` 不会自己重启实例；改了 `index.js` 或 `client.js` 后必须先重启隔离实例再取证。
+`viewport-gui.mjs` 与 `verify-3081.mjs` 复用隔离实例。改 Host 后应先重启该实例。改客户端后按[客户端开发](../verification.md#客户端开发)构建，并在取证前刷新页面。
 
 `devtools.mjs` 在 fake ctx 上驱动真实无头 Chromium：验证 `ui.devtools` 的 scoped-only 投影、固定 loopback 端口与精确 allow-origin、DevTools 前端真实连接（shadow DOM 中出现目标标记）、screencast 与 T2 共存，以及端口冲突/端点身份不符时的有界重试。`devtools-gui.mjs` 自己启动私有隔离 DSH 与无头 Chrome，验证真实「更多 → 打开调试工具」点击、`opener=null`/无 Referer、弹窗被拦截时的本地提示、标注模式禁用与预览共存。它只证明弹窗 target 与内容，不证明真实桌面窗口外观；GUI 内 T2 与非 loopback GUI 按 `NOT_RUN` 原样报告，不要用推断补成通过。
 

@@ -357,7 +357,7 @@ try {
   // The Host contract above is proven end-to-end, but the *panel* half is what raises the claim.
   // These are source-level assertions on client.js: they cannot prove the GUI really sent it (that
   // needs a private isolated DSH), they only prevent the wiring from silently disappearing.
-  const clientSource = await readFile(new URL('../../client.js', import.meta.url), 'utf8');
+  const clientSource = await readFile(new URL('../../dist/client.js', import.meta.url), 'utf8');
   check('client.js：前台心跳头只在 guiForegroundActive() 为真时附加（不是无条件发送）',
     /if \(guiForegroundActive\(\)\) headers\['X-UI-Testing-Gui-Foreground'\] = '1';/u.test(clientSource),
     'header guarded', 'guarded');
@@ -394,7 +394,7 @@ try {
   // The Host contract above is proven end-to-end, but the *panel* half is what raises the claim.
   // These are source-level assertions on client.js: they cannot prove the GUI really sent it (that
   // needs a private isolated DSH), they only prevent the wiring from silently disappearing.
-  const clientSource = await readFile(new URL('../../client.js', import.meta.url), 'utf8');
+  const clientSource = await readFile(new URL('../../dist/client.js', import.meta.url), 'utf8');
   check('client.js：前台心跳头只在 guiForegroundActive() 为真时附加（不是无条件发送）',
     /if \(guiForegroundActive\(\)\) headers\['X-UI-Testing-Gui-Foreground'\] = '1';/u.test(clientSource),
     'header guarded', 'guarded');

@@ -8,13 +8,18 @@
   "repository": { "type": "git", "url": "https://github.com/bloodarea/dsh-agent-team-ui-testing.git" },
   "engines": { "node": ">=22" },
   "dependencies": { "x11": "4.4.0" },
+  "scripts": {
+    "build:client": "node scripts/build-client.mjs",
+    "check:client": "node scripts/build-client.mjs --check",
+    "prepack": "npm run check:client"
+  },
   "exports": {
     ".": "./index.js",
-    "./client": "./client.js",
+    "./client": "./dist/client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.png"
   },
-  "files": ["index.js", "client.js", "select-control.js", "context-menu.js", "frame-source.js", "frame-push.js", "browser-safety.js", "capture-p0.js", "annotation-capture.js", "vision-t3.js", "vision-baseline.js", "network-p0.js", "dynamic-t4.js", "cordis.patch.yml", "locale/*.json", "icon.png", "banner.png", "banner_zh.png", "docs/*.md", "docs/three-d/", "docs/images/", "docs/examples/", "core/", "targets/", "integration/", "skills/**"],
+  "files": ["index.js", "dist/client.js", "select-control.js", "context-menu.js", "frame-source.js", "frame-push.js", "browser-safety.js", "capture-p0.js", "annotation-capture.js", "vision-t3.js", "vision-baseline.js", "network-p0.js", "dynamic-t4.js", "cordis.patch.yml", "locale/*.json", "icon.png", "banner.png", "banner_zh.png", "docs/*.md", "docs/three-d/", "docs/images/", "docs/examples/", "core/", "targets/", "integration/", "skills/**"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": { "platform": "web", "immediately": true, "inject": [] }

@@ -118,6 +118,14 @@ class WorkspaceDeck:
         yield
         for area in self.window.screen.areas:
             hide_editor_chrome(area)
+            if area.type == 'VIEW_3D':
+                # Leave the native Gizmos popover enabled with the initial viewport uncluttered.
+                space = area.spaces.active
+                space.show_gizmo = True
+                space.show_gizmo_navigate = False
+                space.show_gizmo_tool = False
+                space.show_gizmo_modifier = False
+                space.show_gizmo_context = False
             area.tag_redraw()
         yield
 

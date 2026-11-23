@@ -5,7 +5,7 @@ import fs from 'node:fs';
 
 import { ENVIRONMENTS } from '../../core/contracts.js';
 
-const source = fs.readFileSync(new URL('../../client.js', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../../dist/client.js', import.meta.url), 'utf8');
 function functionSource(name) {
   const start = source.indexOf('      function ' + name + '(');
   assert.ok(start >= 0, 'missing ' + name);

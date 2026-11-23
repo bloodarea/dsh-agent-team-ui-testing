@@ -1,0 +1,82 @@
+    return {
+      inject: ['slots'],
+      apply(ctx) {
+        // 面板组件在模块作用域定义，这里把根 ctx 交给它按需读取 DSH 服务（聊天框追加）。
+        pluginContext = ctx;
+        // 选元素引用的 `@` 来源：候选=最近选取的元素；chip 显示紧凑标签，模型文本走 codec.serialize。
+        registerElementReferenceSource(ctx);
+        // 发送后的用户消息里，同样的元素块折叠成紧凑 chip（模型文本不变）。
+        registerUserTextElementReference(ctx);
+
+        ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: ID }, DebugView));
+
+        // 用户 2026-11-06：在 DSH 设置弹层里注册独立设置页（设置 → UI 测试 → 目标环境配置）。
+        // 只注册前端页面；本轮不探测环境、不写配置、不新增 Host 路由或工具。
+        ctx.slots.inject('settings.section', () => ctx.slots.register({
+          name: 'settings.section',
+          id: 'ui-testing',
+          order: 50,
+          label: () => 'UI 测试',
+        }, TargetEnvSettingsPage));
+
+        // 诊断页放在 frame-wide 覆盖层（`shell.overlay`）里：设置弹层太窄，横排五节点链路放不下。
+        // 该插槽层本身是 click-through，条目自己开 pointer-events（见 .uts-diag-modal-overlay）。
+        ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+          name: 'shell.overlay',
+          id: 'ui-testing.diagnostics',
+          order: 50,
+        }, DiagnosticsOverlay));
+
+        // 左侧「更多」下拉里的一行：打开调试视图，不再占用左侧图标栏
+        function MoreRow(props) {
+          return typeof props.useSessions === 'function'
+            ? h(MoreRowLive, props)
+            : h(MoreRowContent, Object.assign({}, props, { capture: MAIN_CAPTURE_NONE }));
+        }
+        function MoreRowLive(props) {
+          const capture = props.useSessions(mainViewCaptureSelector);
+          return h(MoreRowContent, { onDismiss: props.onDismiss, capture });
+        }
+        function MoreRowContent(props) {
+          const dismiss = props.onDismiss;
+          return h(React.Fragment, null,
+            h('style', null, CSS),
+            h('button', {
+              type: 'button',
+              className: 'utb-menu-row',
+              role: 'menuitem',
+              onClick: () => {
+                // Remember the workspace that owns the main view *before* opening the panel;
+                // the root-scoped main panel reads this memory and pins itself to that Session.
+                rememberMainCapture(props.capture);
+                const layout = ctx.get('layout');
+                if (!layout) { console.error('ui-testing: layout service unavailable'); return; }
+                layout.selectPanel(ID);
+                if (dismiss) dismiss();
+              },
+            }, h(IconBrowser, { size: 16 }), h('span', null, TITLE)));
+        }
+        ctx.slots.inject('sidebar.panellist.actions', () => ctx.slots.register({ name: 'sidebar.panellist.actions', id: ID, order: 20 }, MoreRow));
+
+        // 右侧边栏：一个页签类型 + 引导页入口 + 页签正文
+        ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({ name: 'sidebar.right.pane.tab', key: ID }, DebugView));
+        if (typeof ctx.inject === 'function') {
+          ctx.inject(['sidebarRightTabs'], (sub) => {
+            const tabs = sub.sidebarRightTabs || (sub.get && sub.get('sidebarRightTabs'));
+            if (!tabs) return;
+            const dispose = tabs.register({
+              id: ID,
+              kind: KIND,
+              multiple: true,
+              priority: 'builtin',
+              title: () => TITLE,
+              guide: [{ id: ID, order: 30, title: () => TITLE, description: () => '响应式预览网页并检查布局', icon: IconBrowser }],
+            });
+            if (typeof sub.effect === 'function') sub.effect(() => dispose, 'ui-testing: right sidebar tab type');
+            else if (typeof ctx.effect === 'function') ctx.effect(() => dispose, 'ui-testing: right sidebar tab type');
+          });
+        }
+      },
+    };
+  },
+});

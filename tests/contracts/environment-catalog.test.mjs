@@ -22,7 +22,7 @@ import {
 } from '../../core/index.js';
 import { createHarness, createFakeConnectionService } from '../acceptance/harness.mjs';
 
-const clientSource = fs.readFileSync(new URL('../../client.js', import.meta.url), 'utf8');
+const clientSource = fs.readFileSync(new URL('../../dist/client.js', import.meta.url), 'utf8');
 const catalogIds = environmentCatalog().map((row) => row.id);
 const ENV_IDS = Object.values(ENVIRONMENTS);
 

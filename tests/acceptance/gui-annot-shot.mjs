@@ -170,7 +170,7 @@ try {
   check('未通过 owner 鉴权 → 401，且不返回图片', unauth.statusCode === 401 && !unauth.json.image, unauth.statusCode, 401);
 
   /* ---------------------------------------------- 5. client wiring (source-level) */
-  const clientSource = await readFile(new URL('../../client.js', import.meta.url), 'utf8');
+  const clientSource = await readFile(new URL('../../dist/client.js', import.meta.url), 'utf8');
   check('client.js：「截图」按钮位于「粗细」之后、清除画布之前，并带 capture 动作标记',
     /utb-annot-shot[\s\S]{0,400}?data-utb-annot-action': 'capture'[\s\S]{0,3000}?utb-annot-clear/u.test(clientSource),
     'button order', 'after width, before clear');

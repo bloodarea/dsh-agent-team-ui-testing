@@ -137,7 +137,7 @@ test('已存的选择被设置页关掉后落到默认视图，并保留用户�
 });
 
 test('面板按 Host 解析的选择走，组合框含默认视图，选择一律先落 Host', async () => {
-  const clientSource = await readFile(new URL('../../client.js', import.meta.url), 'utf8');
+  const clientSource = await readFile(new URL('../../dist/client.js', import.meta.url), 'utf8');
   // 初始值就是空态，写死 'web' 会让"没选过"看起来像"选了 Web"。
   assert.match(clientSource, /const \[env, setEnv\] = React\.useState\('default'\);/u);
   // 组合框：视图行恒在，其余看开关。

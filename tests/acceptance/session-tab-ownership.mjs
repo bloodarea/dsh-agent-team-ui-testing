@@ -149,7 +149,7 @@ const QUIESCE_MIN_QUIET_MS = 300;
 const QUIESCE_MAX_MS = 2000;
 
 const PLAN_FINGERPRINT_FILES = Object.freeze([
-  'index.js', 'client.js', 'integration/cross-environment.js', 'integration/diagnose.js',
+  'index.js', 'dist/client.js', 'integration/cross-environment.js', 'integration/diagnose.js',
   'targets/web/adapter.js', 'targets/web/provider.js', 'core/identity.js', 'core/p0.js',
 ]);
 

@@ -157,7 +157,7 @@ try {
   check('全部 keyUp 后页面速度归零', passedIds(stopReport).includes('stop'), passedIds(stopReport), ['stop']);
 
   // The client half: one DOM keydown must produce exactly one keyDown, and keyup must be forwarded.
-  const clientSource = await readFile(join(import.meta.dirname, '..', '..', 'client.js'), 'utf8');
+  const clientSource = await readFile(join(import.meta.dirname, '..', '..', 'dist/client.js'), 'utf8');
   const keyDownFn = clientSource.slice(clientSource.indexOf('function panelKeyEvents('), clientSource.indexOf('function panelKeyReleaseEvents('));
   check('client.js：panelKeyEvents 不再凭空补 keyUp（一次按下只发一次 keyDown）',
     keyDownFn.length > 200 && !keyDownFn.includes("type: 'keyUp'"),

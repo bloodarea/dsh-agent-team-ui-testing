@@ -41,8 +41,9 @@ dynamic-t4.js          T4 纯核心：帧存储、事件日志与时钟锚点、
 context-menu.js        页面右键事务、最终取消状态观测、默认菜单投影与短期动作令牌
 frame-source.js        最新帧缓存与统计（与传输、UI 解耦）
 frame-push.js          同源 WebSocket 推帧：握手、合并推送、背压丢帧、鉴权
-client.js              公共视图外壳、环境正文/标注映射接点、共享尺寸与标注组件；
-                       Web 帧传输、输入与 DevTools（当前仍在同文件、组件闭包内接线）
+client/panel/          公共视图外壳、环境正文接点、共享尺寸与工具栏
+client/web/            Web 正文、帧传输、鼠标键盘输入与元素拾取
+client/annotations/    标注文档同步与画布交互
 skills/ui-testing-web/  Web 环境 Agent 操作手册
 skills/ui-testing-common/ 跨环境公共规则（证据、判定、报告、安全）
 skills/ui-testing-fake/    test-only 假环境说明（生产默认不可发现）

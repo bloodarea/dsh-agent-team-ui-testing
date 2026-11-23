@@ -26,6 +26,7 @@ import { createWebToolSurface } from './targets/web/tools.js';
 import { createWebInvoker } from './targets/web/invoke.js';
 import { createWebRoutes } from './targets/web/routes.js';
 import { createBlenderViewport, encodeViewportResponse, parseViewportRequest } from './targets/three-d/runtime.js';
+import { listBlenderProjects, resolveBlenderProject } from './targets/three-d/projects.js';
 import { createWebFramePush } from './targets/web/frame-transport.js';
 import { createWebTransition } from './targets/web/transition.js';
 import { BrowserError, Cdp, asBrowserError, checkAbort, abortable, redactUrl, redactText, validateTarget } from './browser-safety.js';
@@ -264,7 +265,7 @@ const NON_PAGE_ERROR_CODES = new Set([
   'RUNTIME_LIMIT', 'TARGET_NOT_BOUND', 'INVALID_ARGUMENT', 'SCOPE_FORBIDDEN', 'SCOPE_NOT_FOUND',
 ]);
 
-async function resolveSessionScope(ctx, sessionId, { cwd, signal } = {}) {
+async function readSessionDirectory(ctx, sessionId, { cwd, signal } = {}) {
   let dir = typeof cwd === 'string' && cwd ? cwd : undefined;
   let liveSession = false;
   if (!dir) {
@@ -299,6 +300,11 @@ async function resolveSessionScope(ctx, sessionId, { cwd, signal } = {}) {
       }
     }
   }
+  return dir;
+}
+
+async function resolveSessionScope(ctx, sessionId, options = {}) {
+  const dir = await readSessionDirectory(ctx, sessionId, options);
   const registryService = hostService(ctx, 'workspaceRegistry');
   const rescueBySession = () => {
     if (!registryService || typeof registryService.list !== 'function') return undefined;
@@ -349,6 +355,27 @@ async function resolveSessionScope(ctx, sessionId, { cwd, signal } = {}) {
   }
   if (!sessionId) return UNASSIGNED_SCOPE;
   return sessionScope(sessionId);
+}
+
+async function resolveBlenderWorkspace(ctx, scope, signal) {
+  const fallback = { key: `${scope.mode}:${scope.sessionId || scope.runtimeId || ''}`, root: null };
+  if (scope.mode !== 'session') return fallback;
+  const registry = hostService(ctx, 'workspaceRegistry');
+  const listed = registry?.list?.();
+  const workspaces = Array.isArray(listed) ? listed : [];
+  const matches = workspaces.filter((item) => Array.isArray(item?.sessionIds) && item.sessionIds.includes(scope.sessionId));
+  if (matches.length > 1) return fallback;
+  const directory = matches.length ? null : await readSessionDirectory(ctx, scope.sessionId, { signal });
+  const cwd = directory && isAbsolute(directory) ? await realpath(directory).catch((error) => {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+    throw error;
+  }) : null;
+  const resolved = cwd && await registry?.resolveByPath?.(cwd);
+  const workspace = matches[0] || (resolved && workspaces.find((item) => item?.id === resolved.id)) || resolved;
+  const directoryRoot = workspace?.path ?? workspace?.root ?? workspace?.cwd ?? workspace?.directory ?? cwd;
+  const root = typeof directoryRoot === 'string' && isAbsolute(directoryRoot) ? directoryRoot : null;
+  const key = workspace?.id ? `workspace:${workspace.id}` : cwd ? `path:${cwd}` : fallback.key;
+  return { key, root };
 }
 
 /**
@@ -682,7 +709,7 @@ export function apply(ctx) {
   // Panel page routes: the Web environment answers them; the Host keeps authentication, the
   // control plane and the error→status mapping.
   const webRoutes = createWebRoutes({ log, registry, BrowserError, asBrowserError });
-  const blenderViewport = createBlenderViewport();
+  const blenderViewport = createBlenderViewport({ configDirectory: crossEnvironment.configDirectory });
   ctx.effect(() => () => blenderViewport.dispose(), 'ui-testing: Blender viewport');
   ctx.effect(() => () => { httpClient.dispose(); }, 'ui-testing: http client');
   /**
@@ -903,7 +930,8 @@ export function apply(ctx) {
         const status = scopeAuthorization(req);
         if (status) { scopeAuthError(res, status); return; }
       }
-      if (action === '/blender/frame' && req.method === 'POST') {
+      const blenderProjects = action === '/blender/projects' && req.method === 'GET';
+      if (blenderProjects || (action === '/blender/frame' && req.method === 'POST')) {
         if (!scoped) { scopeAuthError(res, 401); return; }
         const viewportScope = parseHttpScope(req);
         if (!crossEnvironment.isViewEnabled('three-d')) {
@@ -919,9 +947,23 @@ export function apply(ctx) {
         const onClose = () => controller.abort();
         res.once('close', onClose);
         try {
-          const frameRequest = parseViewportRequest(await readJson(req));
-          const scopeKey = `${viewportScope.mode}:${viewportScope.sessionId || viewportScope.runtimeId || ''}`;
-          const result = await blenderViewport.frame(frameRequest, controller.signal, scopeKey);
+          const frameRequest = blenderProjects ? null : parseViewportRequest(await readJson(req));
+          const workspaceSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]);
+          const { key, root } = await resolveBlenderWorkspace(ctx, viewportScope, workspaceSignal);
+          if (blenderProjects) {
+            const value = await listBlenderProjects(root, workspaceSignal);
+            if (!res.destroyed) sendJson(res, 200, { ok: true, ...value });
+            return;
+          }
+          let projectPath;
+          if (frameRequest.project) {
+            projectPath = await resolveBlenderProject(root, frameRequest.project);
+            if (!projectPath) {
+              sendJson(res, 404, { ok: false, code: 'BLENDER_PROJECT_INVALID', error: '当前工作区找不到这个 .blend 工程。' });
+              return;
+            }
+          }
+          const result = await blenderViewport.frame(frameRequest, controller.signal, key, projectPath);
           if (res.destroyed) return;
           const { headers, body } = encodeViewportResponse(result);
           res.writeHead(200, headers);

@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const clientSource = fs.readFileSync(path.resolve(here, '../../client.js'), 'utf8');
+const clientSource = fs.readFileSync(path.resolve(here, '../../dist/client.js'), 'utf8');
 
 const codesSource = /const PANEL_KEY_CODES = \{[\s\S]*?\n      \};/u.exec(clientSource);
 assert.ok(codesSource, '缺少 PANEL_KEY_CODES');

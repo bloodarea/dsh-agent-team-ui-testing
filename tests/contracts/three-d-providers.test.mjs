@@ -212,7 +212,7 @@ test('3D is selectable as a view environment, planned ones are not, and the gate
 });
 
 test('the settings page lets a preview card be switched, and submits the provider field the Host accepts', async () => {
-  const clientSource = await readFile(new URL('../../client.js', import.meta.url), 'utf8');
+  const clientSource = await readFile(new URL('../../dist/client.js', import.meta.url), 'utf8');
   // 卡片可点判定必须包含 preview：只认 supported 会让 Blender 开关永远灰着。
   assert.match(
     clientSource,

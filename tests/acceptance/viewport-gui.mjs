@@ -3115,7 +3115,7 @@ async function main() {
   check('V0.4', 'launch token never appears in this run log', !logLines.join('\n').includes(state.token), 'no token in log', 'checked');
 
   state.servedClient = await servedClientEvidence();
-  const servedMatchesCheckout = Boolean(state.servedClient && state.servedClient.text.trim() === readFileSync(join(REPO_ROOT, 'client.js'), 'utf8').trim());
+  const servedMatchesCheckout = Boolean(state.servedClient && state.servedClient.text.trim() === readFileSync(join(REPO_ROOT, 'dist/client.js'), 'utf8').trim());
   const servedHasNewViewportCode = Boolean(state.servedClient && state.servedClient.text.includes('data-utb-field')
     && state.servedClient.text.includes('视口 X 坐标（像素）') && state.servedClient.text.includes('VIEW_LIMITS'));
   check('V0.5', 'GUI serves this checkout client.js (size-bar/X-Y code present in the loaded bundle)',
@@ -9325,7 +9325,7 @@ async function probeLetterbox() {
 
 function buildInfo() {
   const info = {};
-  for (const [name, key] of [['client.js', 'clientJs'], ['index.js', 'indexJs']]) {
+  for (const [name, key] of [['dist/client.js', 'clientJs'], ['index.js', 'indexJs']]) {
     const path = join(REPO_ROOT, name);
     if (!existsSync(path)) continue;
     try {

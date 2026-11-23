@@ -37,10 +37,25 @@
 
 | 改动 | 生效方式 |
 | --- | --- |
-| 面板 UI（`client.js`） | 更新客户端产物后刷新当前 DSH GUI |
+| 面板 UI（[`client/`](../client/)） | 构建客户端后刷新 DSH GUI。首次迁移产物入口时先重挂插件 |
 | Host 实现、工具 schema、Skill provider 或配置存储 | 重启 DSH 或重挂插件；旧会话中已经注入的 Skill 正文不会自动移除 |
 | 仅文档 | 重新打开或刷新文档预览，无需重启 DSH |
 | 设置页的环境启用配置 | 保存后生效，无需重启；会话准入与后续 Skill 发现按新配置执行 |
+
+## 客户端开发
+
+| 要改的部分 | 源码位置 |
+| --- | --- |
+| 插件注册和调试面板外壳 | [`client/factory/`](../client/factory/)、[`client/panel/`](../client/panel/) |
+| Web 画面、输入和元素拾取 | [`client/web/`](../client/web/) |
+| Blender 视口、工作区和原生浮窗 | [`client/blender/`](../client/blender/) |
+| 标注同步、选择和手势 | [`client/annotations/`](../client/annotations/) |
+| 环境设置和诊断 | [`client/settings/`](../client/settings/) |
+| Host 请求、图标、样式和公共辅助函数 | [`client/shared/`](../client/shared/) |
+
+编辑源码后，运行 `npm run build:client` 更新 [发布文件](../dist/client.js)，并将它与源码一起提交。`npm run check:client` 校验发布文件与源码一致，`npm pack` 也会做这项检查。仓库保留构建后的文件，以支持直接从 GitHub 安装。
+
+[构建脚本](../scripts/build-client.mjs) 按显式清单拼装 DSH 加载的单文件。清单同时定义插件工厂和 `DebugViewBody` 的拼装顺序。组件仍通过同一个闭包共享状态，新建源码文件时需要登记到清单，涉及 React Hook 的代码应保持现有调用顺序。
 
 ## 本地生成物
 

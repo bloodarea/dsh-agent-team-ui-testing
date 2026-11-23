@@ -32,7 +32,7 @@ function check(label, pass, expected, actual) {
   if (!pass) log(`  expected=${JSON.stringify(expected)} actual=${JSON.stringify(actual)}`);
 }
 
-const CLIENT_PATH = fileURLToPath(new URL('../../client.js', import.meta.url));
+const CLIENT_PATH = fileURLToPath(new URL('../../dist/client.js', import.meta.url));
 const CHROME_WRAPPER = fileURLToPath(new URL('./chrome-wrapper.sh', import.meta.url));
 
 /** Extract `function createPanelAudioPlayer(...) { ... }` verbatim from the shipped bundle. */

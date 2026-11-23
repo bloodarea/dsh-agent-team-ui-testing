@@ -108,7 +108,7 @@ try {
   check(rawT3.sha256 === raw.sha256, 'T3 live source remains raw');
 
   // Render the actual client SVG in the fixture solely as an independent pixel oracle.
-  const client = await readFile(new URL('../../client.js', import.meta.url), 'utf8');
+  const client = await readFile(new URL('../../dist/client.js', import.meta.url), 'utf8');
   const fn = name => {
     const start = client.indexOf(`function ${name}(`);
     const end = client.indexOf('\n      }', start) + '\n      }'.length;

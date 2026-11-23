@@ -1,10 +1,33 @@
 """Native Blender editor windows owned by the isolated viewport window."""
-import bpy
+import struct
+import zlib
 
+import bpy
+import numpy as np
+
+from display_settings import DisplaySettings, SETTINGS, sidebar_bounds
 from workspaces import hide_editor_chrome
 
 
-EDITOR_SIZES = {'outliner': (360, 300), 'properties': (380, 620)}
+PREFERENCES = 'preferences'
+TIMELINE = 'timeline'
+EDITOR_SIZES = {'outliner': (360, 300), 'properties': (380, 620), TIMELINE: (960, 84),
+                **{name: size for name, (size, _panel) in SETTINGS.items()}}
+
+
+def png_chunk(kind, data):
+    return (struct.pack('>I', len(data)) + kind + data
+            + struct.pack('>I', zlib.crc32(kind + data)))
+
+
+def write_png(path, rgb):
+    height, width, _ = rgb.shape
+    rows = np.zeros((height, width * 3 + 1), dtype=np.uint8)
+    rows[:, 1:] = rgb.reshape(height, width * 3)
+    header = struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)
+    path.write_bytes(b'\x89PNG\r\n\x1a\n' + png_chunk(b'IHDR', header)
+                     + png_chunk(b'IDAT', zlib.compress(rows.tobytes(), level=3))
+                     + png_chunk(b'IEND', b''))
 
 
 class WindowPointer:
@@ -12,6 +35,7 @@ class WindowPointer:
         self.window = window
         self.mouse = (0, 0)
         self.buttons = set()
+        self.bounds = None
 
     def dispatch(self, events):
         button_types = ('LEFTMOUSE', 'MIDDLEMOUSE', 'RIGHTMOUSE')
@@ -27,13 +51,15 @@ class WindowPointer:
                 self.buttons.clear()
                 continue
 
-            width, height = self.window.width, self.window.height
-            x = min(width - 1, int(event['x'] * width))
-            y = height - 1 - min(height - 1, int(event['y'] * height))
-            self.mouse = (x, y)
+            left, bottom, width, height = self.bounds or (0, 0, self.window.width, self.window.height)
+            x = left + min(width - 1, int(event['x'] * width))
+            y = bottom + height - 1 - min(height - 1, int(event['y'] * height))
             position = dict(x=x, y=y, shift=event['shift'], ctrl=event['ctrl'], alt=event['alt'])
-            # Native handlers use the cursor position for hit testing and popup placement.
-            self.window.event_simulate(type='MOUSEMOVE', value='NOTHING', **position)
+            # Native handlers use the cursor for hit testing. Replaying a stationary move
+            # on release can dismiss a nested color or thumbnail picker in the sidebar.
+            if self.bounds is None or kind == 'move' or self.mouse != (x, y):
+                self.window.event_simulate(type='MOUSEMOVE', value='NOTHING', **position)
+            self.mouse = (x, y)
             if kind in ('down', 'up'):
                 button = event['button']
                 if kind == 'down' and button not in self.buttons:
@@ -53,6 +79,23 @@ def screenshot(window, path):
     with bpy.context.temp_override(window=window):
         if 'FINISHED' not in bpy.ops.screen.screenshot(filepath=str(path)):
             raise RuntimeError('Blender could not capture its window')
+
+
+def screenshot_region(window, path, bounds):
+    native = path.with_name(f'native-{path.name}')
+    screenshot(window, native)
+    image = bpy.data.images.load(str(native), check_existing=False)
+    try:
+        left, bottom, width, height = bounds
+        source_width, source_height = image.size
+        pixels = np.empty(source_width * source_height * 4, dtype=np.float32)
+        image.pixels.foreach_get(pixels)
+        rgba = pixels.reshape(source_height, source_width, 4)
+        rgb = rgba[bottom:bottom + height, left:left + width, :3][::-1]
+        write_png(path, np.rint(rgb * 255).astype(np.uint8))
+    finally:
+        bpy.data.images.remove(image)
+        native.unlink()
 
 
 def open_child(window, area, prefer_full_window=False):
@@ -78,13 +121,24 @@ def split(window, area, direction, factor):
 class EditorWindows:
     def __init__(self, main):
         self.main = main
+        self.settings = DisplaySettings(main)
         self.pointers = {}
         self.visible = set()
+
+    def is_playing(self, name):
+        return name in self.visible and self.pointers[name].window.screen.is_animation_playing
+
+    def dismiss(self, name):
+        pointer = self.pointers[name]
+        if name == TIMELINE and self.is_playing(name):
+            with bpy.context.temp_override(window=pointer.window):
+                bpy.ops.screen.animation_cancel(restore_frame=False)
+        pointer.dispatch([{'kind': 'escape'}])
 
     def prepare(self, names):
         dismissed = self.visible.difference(names)
         for name in dismissed:
-            self.pointers[name].dispatch([{'kind': 'escape'}])
+            self.dismiss(name)
             self.visible.remove(name)
         if dismissed:
             yield
@@ -94,6 +148,20 @@ class EditorWindows:
             self.visible.add(name)
 
     def create(self, name):
+        if name == PREFERENCES:
+            windows = bpy.context.window_manager.windows
+            before = {item.as_pointer() for item in windows}
+            with bpy.context.temp_override(window=self.main):
+                if 'FINISHED' not in bpy.ops.screen.userpref_show():
+                    raise RuntimeError('Blender could not open its preferences window')
+            yield
+            window, = (item for item in windows if item.as_pointer() not in before
+                       and any(area.type == 'PREFERENCES' for area in item.screen.areas))
+            bpy.context.preferences.active_section = 'ADDONS'
+            self.pointers[name] = WindowPointer(window)
+            yield
+            return
+
         width, height = EDITOR_SIZES[name]
         source = max(self.main.screen.areas, key=lambda area: min(area.width / width, area.height / height))
         # Window dimensions are read-only in Blender. Size a disposable window, leaving
@@ -121,11 +189,28 @@ class EditorWindows:
         yield
 
         area, = window.screen.areas
-        area.type = name.upper()
+        if name == TIMELINE and area.height - height >= 64:
+            # The detached window can be taller than requested due to OS minimum sizing.
+            split(window, area, 'HORIZONTAL', height / area.height)
+            yield
+            area, spare = sorted(window.screen.areas, key=lambda item: item.y)
+            spare.type = 'IMAGE_EDITOR'
+        settings = name in SETTINGS
+        area.ui_type = 'VIEW_3D' if settings else name.upper()
         yield
         hide_editor_chrome(area)
+        if name == TIMELINE:
+            area.spaces.active.show_region_header = True
+        if settings:
+            yield from self.settings.prepare(name, window, area)
         self.pointers[name] = WindowPointer(window)
         yield
+
+    def dispatch(self, name, events):
+        pointer = self.pointers[name]
+        if name in SETTINGS and (self.settings.area is None or pointer.bounds is None):
+            return
+        pointer.dispatch(events)
 
     def sync(self, names):
         changed = False
@@ -146,4 +231,15 @@ class EditorWindows:
 
     def capture(self, names, output):
         for name in names:
-            screenshot(self.pointers[name].window, output.with_name(f'editor-{name}.png'))
+            pointer = self.pointers[name]
+            path = output.with_name(f'editor-{name}.png')
+            if name in SETTINGS:
+                area, = pointer.window.screen.areas
+                pointer.bounds = sidebar_bounds(area)
+                screenshot_region(pointer.window, path, pointer.bounds)
+            elif name == TIMELINE:
+                area = next(area for area in pointer.window.screen.areas if area.ui_type == 'TIMELINE')
+                pointer.bounds = (area.x, area.y, area.width, area.height)
+                screenshot_region(pointer.window, path, pointer.bounds)
+            else:
+                screenshot(pointer.window, path)

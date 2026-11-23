@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-const source = readFileSync(new URL('../../client.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../../dist/client.js', import.meta.url), 'utf8');
 
 // Component functions have a six-space closing brace. Fail loudly if extraction drifts;
 // no selection, ACK reconciliation, serialization, or normalization is reimplemented here.

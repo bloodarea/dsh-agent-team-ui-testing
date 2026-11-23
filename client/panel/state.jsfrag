@@ -1,0 +1,447 @@
+    /** The debug view body, shared by the main column and the right sidebar. */
+    function DebugViewBody(props) {
+      // `draft` is only the address-bar edit buffer: the navigation truth lives in `remote.ui`.
+      const [draft, setDraft] = React.useState('');
+      const [sizing, setSizing] = React.useState(false);
+      const [width, setWidth] = React.useState(String(envDefaultSize('web').width));
+      const [height, setHeight] = React.useState(String(envDefaultSize('web').height));
+      const [posX, setPosX] = React.useState('0');
+      const [posY, setPosY] = React.useState('0');
+      const [fit, setFit] = React.useState(true);
+      const [zoom, setZoom] = React.useState('100');
+      /** 用户 2026-11-02 要求：尺寸栏的「拖拽」模式（勾选时画面变抓取手势，拖动平移视口）。 */
+      const [panMode, setPanMode] = React.useState(false);
+      const [panDragging, setPanDragging] = React.useState(false);
+      const [room, setRoom] = React.useState({ w: 0, h: 0 });
+      const [error, setError] = React.useState('');
+      const [menu, setMenu] = React.useState(false);
+      /**
+       * 页面声音（docs/web/debug-panel.md）：一个面板共用一个播放器实例，切标签不必重建
+       * AudioContext；开关状态由用户在工具栏决定，默认静音（浏览器要求显式手势才能出声）。
+       */
+      const pageAudio = React.useMemo(() => createPanelAudioPlayer(), []);
+      const [audioState, setAudioState] = React.useState(() => pageAudio.snapshot());
+      // Local, panel-only result of the "open DevTools" click. Never written to Runtime lastError:
+      // a blocked popup is a browser decision, not a page failure.
+      const [devtoolsNotice, setDevtoolsNotice] = React.useState(null);
+      // Canvas sync (barrier) and input-failure feedback: panel-local only. `seedStatus` holds
+      // {reason} after a rejected/failed seed so the user gets a real retry entry.
+      const [syncMismatch, setSyncMismatch] = React.useState(false);
+      const [seedStatus, setSeedStatus] = React.useState(null);
+      const [blankHint, setBlankHint] = React.useState('');
+      /**
+       * 原生 <select> 的面板侧浮层。浏览器把弹层画在 UI 图层，帧里根本看不到，所以键盘可用、
+       * 鼠标不可用；这里用点击点向 Host 问命中，命中 select 就在点击点画自己的列表。
+       * 形状：{anchor:{x,y}, bounds:{width,height}, select:<projection>, reason:<不支持原因|null>, activeIndex}
+       */
+      const [selectPop, setSelectPop] = React.useState(null);
+      const selectPopRef = React.useRef(null);
+      selectPopRef.current = selectPop;
+      const selectPopSeqRef = React.useRef(0);
+      const selectPopElementRef = React.useRef(null);
+      const [pageContext, setPageContext] = React.useState(null);
+      const pageContextRef = React.useRef(null);
+      pageContextRef.current = pageContext;
+      const pageContextSeqRef = React.useRef(0);
+      const pageContextElementRef = React.useRef(null);
+      const inputQueueRef = React.useRef(Promise.resolve());
+      const [inputNotice, setInputNotice] = React.useState('');
+      const [tabNotice, setTabNotice] = React.useState('');
+      const [tabOpening, setTabOpening] = React.useState(false);
+      // The tab group list is cached in a ref (it must survive a transient remote=null): a local
+      // prune after a Host-confirmed close needs its own render bump.
+      const [, setTabsTick] = React.useState(0);
+      const [pending, setPending] = React.useState(false);
+      const [navBusy, setNavBusy] = React.useState(false);
+      const [mode, setMode] = React.useState('idle');
+      // 初始值就是空态：新会话/没有选择时落在默认视图（真正的选择由 Host 解析后回填，见下方
+      // adopt 效果）。写死 'web' 会让"没选过"看起来像"选了 Web"。
+      const [env, setEnv] = React.useState('default');
+      /**
+       * 环境视图注册表（提前声明）：外壳按它决定「这个环境有没有自己的视图」。
+       *
+       * 公共外壳只认这张表，不认 Web 的实现细节；`webViewBody` 是函数声明，可以提前引用。
+       * 无视图环境（空白画布）对外壳的语义是：**不对仍在运行的目标做任何宿主写入**——
+       * 视口不发布、不取页面截图、不轮询 Host 状态、不同步标注，只铺一张本地画布。
+       */
+      const ENV_VIEWS = { web: webViewBody, 'three-d': blenderViewBody };
+      const VIEW_ONLY = new Set(['three-d']);
+      const blenderView = VIEW_ONLY.has(env);
+      const [blenderSize, setBlenderSize] = React.useState(() => {
+        const { w, h } = BLENDER_PRESETS[0];
+        return { width: w, height: h };
+      });
+      const [blenderDraft, setBlenderDraft] = React.useState({});
+      const [blenderFit, setBlenderFit] = React.useState(true);
+      const [blenderZoom, setBlenderZoom] = React.useState(100);
+      const [blenderSizeError, setBlenderSizeError] = React.useState('');
+      const [blenderStatus, setBlenderStatus] = React.useState({ phase: 'idle' });
+      const blenderBoxRef = React.useRef(null);
+      const blenderImageRef = React.useRef(null);
+      const blenderViewportControl = React.useRef(null);
+      const [blenderWorkspacesVisible, setBlenderWorkspacesVisible] = React.useState(false);
+      const [blenderDisplaySettingsVisible, setBlenderDisplaySettingsVisible] = React.useState(false);
+      const [blenderEditors, setBlenderEditors] = React.useState({});
+      const [activeBlenderEditor, setActiveBlenderEditor] = React.useState(null);
+      const captureGenerationRef = React.useRef(0);
+      /**
+       * 环境能力表：外壳只查表，不再按环境 id 写条件分支。
+       *
+       * 新增一个环境时，外壳不需要任何条件分支——有视图就登记 `ENV_VIEWS`，有标签栏就登记
+       * `ENV_TABS`，有外壳级控件（运行模式、DevTools）就在 `ENV_FEATURES` 里声明。三张表都在
+       * 组件顶部提前声明（函数声明会提升，`webTabsProvider` 可以在这里被引用）。
+       */
+      const ENV_TABS = { web: webTabsProvider };
+      const ENV_FEATURES = { web: { devtools: true, displayMode: true } };
+      const envHasTabs = (id) => typeof ENV_TABS[id] === 'function';
+      const envHasFeature = (id, name) => Boolean(ENV_FEATURES[id] && ENV_FEATURES[id][name] === true);
+      /**
+       * 视图接点（公共外壳 ↔ 环境视图的唯一接口）。
+       *
+       * 外壳只问三件事：这个环境有没有视图（`has`）、把它的正文渲染出来（`render`）、以及在没有
+       * 视图时渲染公共空白画布（`renderOr`）。新增一个环境 = 往表里加自己的一项，外壳不改。
+       * 这是纯函数，可脱离浏览器单测（tests/contracts/panel-view-registry.test.mjs）。
+       */
+      const viewRegistry = createViewRegistry(ENV_VIEWS);
+      const hasEnvironmentView = (id) => viewRegistry.has(id);
+      // Only execution-backed views share the existing Web transport and viewport controls.
+      const hasExecutionView = (id) => hasEnvironmentView(id) && !VIEW_ONLY.has(id);
+      const envHasView = hasExecutionView(env);
+      const envHasViewRef = React.useRef(envHasView);
+      envHasViewRef.current = envHasView;
+      // Host-backed environment selection: busy while the POST /config/select is in flight, and a
+      // local failure notice that keeps the previous value (never a silent switch).
+      const [envBusy, setEnvBusy] = React.useState(false);
+      const [envNotice, setEnvNotice] = React.useState('');
+      const [displaySwitching, setDisplaySwitching] = React.useState(false);
+      const [shot, setShot] = React.useState('');
+      const [remote, setRemote] = React.useState({ mode: 'idle', activity: '', url: '', running: false });
+      const [transportKind, setTransportKind] = React.useState('poll');
+      const [fps, setFps] = React.useState(0);
+      const [frameMs, setFrameMs] = React.useState(0);
+      const [activity, setActivity] = React.useState('无进行中的操作');
+      const stage = React.useRef(null);
+      const humanTimer = React.useRef(0);
+      const shotUrlRef = React.useRef('');
+      const frameMetaRef = React.useRef(new Map());
+      const displayTimes = React.useRef([]);
+      const displayLatencies = React.useRef([]);
+      const displayedRef = React.useRef(0);
+      const perfRef = React.useRef({ fps: 0, frameMs: 0 });
+      const transportRef = React.useRef(null);
+      // Accepted runtime snapshot + address-bar edit state. Refs are read from effects and
+      // network callbacks, so a late poll can never resurrect a retired snapshot or a draft.
+      const remoteRef = React.useRef(null);
+      const focusedRef = React.useRef(false);
+      const dirtyRef = React.useRef(false);
+      const editVersionRef = React.useRef(0);
+      const requestGenerationRef = React.useRef(0);
+      /**
+       * 面板实例代次：每一次"换视图"（换环境、换作用域/运行时代次）都 +1。
+       *
+       * 迟到响应唯一能造成的伤害就是覆盖新视图：帧、状态和视口写入的回包在采纳前都要核对它。
+       * 与目标代次（`scopeEpoch` / 帧 `epoch`）分开，是因为同一目标也可能被重新挂载成新的面板
+       * 实例（A→B→A 切换），目标代次不变而实例已经换了。
+       */
+      const panelGenerationRef = React.useRef(0);
+      const bumpPanelGeneration = () => { panelGenerationRef.current += 1; };
+      const retiredRuntimeRef = React.useRef('');
+      const pendingRef = React.useRef({ active: false, editVersion: 0, address: '' });
+      // ---- Shared viewport state (Host `ui.view`) -------------------------------------------
+      // The Host view is authoritative; every input below is only an edit draft. `dirty` protects
+      // a field from being overwritten by the 500ms state poll while the user edits it.
+      const viewRef = React.useRef(null);
+      const viewMetaRef = React.useRef(null);
+      const observedRef = React.useRef(null);
+      // P0-C v2: the Host's canvas projection (`ui.canvas`). `canvasInfo` mirrors it into render so
+      // the box background/transform/input fields react to the capability appearing or vanishing.
+      const canvasRef = React.useRef(null);
+      const [canvasInfo, setCanvasInfo] = React.useState(null);
+      // A sustained canvas-barrier mismatch asks the transport for a fresh composed PNG seed; the
+      // attempt key prevents a screenshot loop for one shell state.
+      const seedRefreshTimerRef = React.useRef(0);
+      const seedCheckKeyRef = React.useRef('');
+      const seedAttemptKeyRef = React.useRef('');
+      // Local canvas sync / input status (never written to Runtime lastError).
+      const mismatchSinceRef = React.useRef(0);
+      const blankHintTimerRef = React.useRef(0);
+      const inputNoticeTimerRef = React.useRef(0);
+      const tabNoticeTimerRef = React.useRef(0);
+      const inputErrorAtRef = React.useRef(0);
+      // A frame's scroll metadata only lands in the ref on load; this bump re-renders the preview
+      // with the new displacement (the displayed frame itself is state-driven already).
+      const [, setFrameVersion] = React.useState(0);
+      // Shared-view presence drives the enabled/disabled X/Y + drag surfaces; a null→view (or the
+      // reverse) transition must re-render even when every displayed number happens to be equal.
+      const [, setViewVersion] = React.useState(0);
+      // The canvas barrier depends on S/view geometry held in refs: bump a render when they move so
+      // `data-utb-canvas-ready` / the composited blank state cannot go stale (input handlers always
+      // recompute, but the visible surface must agree with them).
+      const [, setBarrierVersion] = React.useState(0);
+      // Per-field edit state: `null` = follows the Host, a number = the user's own draft value
+      // (NaN for an illegible draft). Storing the value lets adoption clear the flag as soon as the
+      // Host has caught up, without ever comparing against a stale render closure.
+      const viewDirtyRef = React.useRef({ x: null, y: null, width: null, height: null, scale: null });
+      const viewEditRef = React.useRef({ x: 0, y: 0, width: 0, height: 0, scale: 0 });
+      // Edit version produced by a size-bar wheel notch per field. A rejected wheel patch must not
+      // freeze the input on a value the Host never accepted (a typed draft is still preserved).
+      const viewWheelRef = React.useRef({ x: 0, y: 0, width: 0, height: 0, scale: 0 });
+      // Which size-bar field currently holds the caret (used by blur/commit, not by the poll).
+      const viewFocusRef = React.useRef('');
+      const viewFirstBindRef = React.useRef({ epoch: -1, done: false });
+      const selfViewRevisionRef = React.useRef(0);
+      const viewQueueRef = React.useRef(null);
+      const viewTimerRef = React.useRef(0);
+      const viewInFlightRef = React.useRef(false);
+      const viewQueuedRef = React.useRef(null);
+      // Coordinate space captured when a patch is queued (canvas vs legacy scroll). This keeps a
+      // patch authored before a Host capability change from being reinterpreted at send time.
+      const viewQueueSpaceRef = React.useRef(null);
+      const viewQueuedSpaceRef = React.useRef(null);
+      // Displayed-frame geometry: the mapping and the post-resize input barrier both read it.
+      const frameGeomRef = React.useRef(null);
+      const pendingGeomRef = React.useRef(null);
+      const dragRef = React.useRef({ active: false, pointerId: -1, x: 0, y: 0 });
+      /** 最近一次 pointerdown 的面板坐标：用来区分"点击"与"拖拽"（只有点击才弹 select 浮层）。 */
+      const selectClickRef = React.useRef({ x: 0, y: 0, pointerId: -1, valid: false });
+      // Host dispatches a complete right-click in one queued operation, including release.
+      // P0-C「拖拽」模式：手势状态与共享 canvasX/canvasY 的节流写入（同一时刻最多一个 set 在途）。
+      const panDragRef = React.useRef({
+        active: false, pointerId: -1, startClientX: 0, startClientY: 0,
+        startX: 0, startY: 0, geom: null, viewW: 0, viewH: 0,
+      });
+      const panWriteRef = React.useRef({ timer: 0, latest: null });
+      const panModeRef = React.useRef(false);
+      // Pan-mode wheel zoom accumulator (cursor-anchored). Keeps a short burst continuous while the
+      // Host set is still in flight; a fresh window re-anchors from the accepted view/box.
+      const canvasZoomRef = React.useRef({ scale: null, x: null, y: null, at: 0 });
+      // A zoom patch is incremental: one revision conflict replays the same notch from the latest
+      // view instead of silently dropping it.
+      const zoomRetryRef = React.useRef(0);
+      // The last user zoom intent survives state polls that clear the transient accumulator; it is
+      // the source for burst accumulation and for the bounded CAS replay of the same notch.
+      const zoomIntentRef = React.useRef({ scale: null, x: null, y: null, w: null, h: null, at: 0 });
+      // Strict screen-space anchor bookkeeping: the canvas point under the cursor plus the cursor's
+      // screen position, checked once after layout (one bounded C-only correction at most).
+      const zoomAnchorIdRef = React.useRef(0);
+      const zoomAnchorRef = React.useRef({
+        id: 0, active: false, corrected: false, scheduled: false,
+        d: null, screen: null, scale: null, w: null, h: null,
+      });
+      const [zoomAnchor, setZoomAnchor] = React.useState('screen');
+      const [zoomAnchorState, setZoomAnchorState] = React.useState('idle');
+      const hoverAtRef = React.useRef(0);
+      const fitRef = React.useRef(true);
+      const stageWheelRef = React.useRef(null);
+      const sizeWheelRef = React.useRef(null);
+      const frameImgRef = React.useRef(null);
+      const frameBoxRef = React.useRef(null);
+      const sizeBarRef = React.useRef(null);
+      const annotBarRef = React.useRef(null);
+      const sizingRef = React.useRef(false);
+      const annotWidthWheelRef = React.useRef(null);
+      // ---- P0-D 标注模式（docs/viewport-control.md）------------------------------------------
+      // The synchronous truth lives in `annotRef` (mode + current style/tool); React state only
+      // mirrors it for rendering. Committed geometry is stored in canvas CSS px, so a C/scale change
+      // moves the drawing with the content instead of re-basing it.
+      const [annotOn, setAnnotOn] = React.useState(false);
+      const [annotTool, setAnnotTool] = React.useState(ANNOT_DEFAULT.tool);
+      const [annotColor, setAnnotColor] = React.useState(ANNOT_DEFAULT.color);
+      const [annotWidth, setAnnotWidth] = React.useState(ANNOT_DEFAULT.width);
+      const [annotStyleMode, setAnnotStyleMode] = React.useState('stroke');
+      // Bumped on every commit/clear: committed shapes are only copied into React on commit, never
+      // per pointer move (the live draft is an imperative SVG node updated by rAF).
+      const [annotVersion, setAnnotVersion] = React.useState(0);
+      const [annotText, setAnnotText] = React.useState(null);
+      const annotRef = React.useRef({
+        on: false,
+        tool: ANNOT_DEFAULT.tool,
+        color: ANNOT_DEFAULT.color,
+        width: ANNOT_DEFAULT.width,
+        mode: 'stroke',
+        fill: ANNOT_DEFAULT.fill,
+        stroke: ANNOT_DEFAULT.stroke,
+      });
+      const webAnnotShapesRef = React.useRef([]);
+      const blenderAnnotShapesRef = React.useRef([]);
+      const annotShapesRef = blenderView ? blenderAnnotShapesRef : webAnnotShapesRef;
+      const annotNextIdRef = React.useRef(0);
+      const annotGestureRef = React.useRef({
+        active: false, pointerId: -1, map: null, tool: '', style: null,
+        start: null, end: null, points: [], trace: [], pathLen: 0,
+        lastScreen: null, lastSampleScreen: null, lastPoint: null, nodes: null,
+      });
+      const annotDraftRef = React.useRef(null);
+      const annotSvgRef = React.useRef(null);
+      const annotInputRef = React.useRef(null);
+      const annotEditRef = React.useRef({ active: false, cancel: false, x: 0, y: 0, style: null });
+      const annotEditSeqRef = React.useRef(0);
+      const annotComposingRef = React.useRef(false);
+      const annotRafRef = React.useRef(0);
+      const annotEpochRef = React.useRef(null);
+      const annotButtonRef = React.useRef(null);
+      const annotPanelIdRef = React.useRef('');
+      const annotMapSigRef = React.useRef('');
+      // ---- P0-D v3 标注工作区文档（docs/viewport-control.md）--------------------------------
+      // `annotSync` is only the render mirror; the synchronous truth (queue, in-flight snapshot,
+      // identity, revisions) lives in module-level publishers keyed by scope/runtime/surface so an
+      // unmount cannot lose unacknowledged content.
+      const [annotSync, setAnnotSync] = React.useState({ state: 'idle', revision: 0 });
+      const [annotStaleState, setAnnotStaleState] = React.useState({ stale: false, staleReason: null });
+      // A live gesture/erase exists (drives the 清除画布 disabled state without per-move renders).
+      const [annotBusy, setAnnotBusy] = React.useState(false);
+      // 标注栏「截图」的状态：按钮进行态 + 就地提示（成功/失败原因都给具体文案）。
+      // 光标形状传递：预览层跟随页面命中元素的 computed cursor（手型/文本/抓取…），
+      // 而不是永远显示箭头。只接受 CSS 关键字白名单，`url(...)` 一律不落到样式上。
+      const [frameCursor, setFrameCursor] = React.useState('auto');
+      const [annotShotBusy, setAnnotShotBusy] = React.useState(false);
+      const [annotShotNotice, setAnnotShotNotice] = React.useState('');
+      const annotSyncRef = React.useRef({ state: 'idle', timer: 0 });
+      // Identity gate: no old shape is rendered or published before the new scope's first trusted
+      // state. `epoch` is the scope generation the gate belongs to; `key` is the D key.
+      const annotGateRef = React.useRef({ epoch: -1, open: false, key: '', revision: -1, context: null, d: null, scope: null, view: null });
+      const webAnnotContentSeqRef = React.useRef(0);
+      const webAnnotDirtyRef = React.useRef(false);
+      const blenderAnnotContentSeqRef = React.useRef(0);
+      const blenderAnnotDirtyRef = React.useRef(false);
+      const annotContentSeqRef = blenderView ? blenderAnnotContentSeqRef : webAnnotContentSeqRef;
+      const annotDirtyRef = blenderView ? blenderAnnotDirtyRef : webAnnotDirtyRef;
+      const annotCandidateRef = React.useRef(null);
+      const annotStaleRef = React.useRef({ stale: false, staleReason: null });
+      const annotShownRevisionRef = React.useRef(0);
+      const annotPublisherRef = React.useRef(null);
+      const annotUnsubRef = React.useRef(null);
+      const annotMountGenerationRef = React.useRef(0);
+      if (!annotMountGenerationRef.current) {
+        annotMountSerial += 1;
+        annotMountGenerationRef.current = annotMountSerial;
+      }
+      // Mirrors the capability fact for callbacks that must not read render closures.
+      const annotChannelRef = React.useRef(false);
+      const annotEraseRef = React.useRef({ active: false, pointerId: -1, map: null, last: null, changed: 0 });
+      // 选择/框选（v3）：选中集合只用图形 id 表达；框选与拖动各有一条互斥手势。
+      const annotSelectionRef = React.useRef(new Set());
+      const annotSelectionRafRef = React.useRef(0);
+      const annotMarqueeRef = React.useRef({ active: false, pointerId: -1, map: null, start: null, end: null, node: null });
+      const annotMoveRef = React.useRef({ active: false, pointerId: -1, map: null, start: null, last: null, origin: null, changed: false });
+      /** Hover cursor for the select tool: 'move' over a movable shape/selection box, else 'default'. */
+      const annotHoverRef = React.useRef('default');
+      const annotHitCtxRef = React.useRef(null);
+      // ---- 选元素发送到聊天框 ----------------------------------------------------------------
+      // 同步真值在 pickRef（模式闸），React 状态只镜像渲染；悬浮命中 80ms 节流 + 单飞，
+      // 过期响应按序号 + scopeEpoch 丢弃。页面输入由 sendEvents / pointer 处理器统一闸掉。
+      const [pickOn, setPickOn] = React.useState(false);
+      const [pickOverlay, setPickOverlay] = React.useState(null);
+      const [pickStatus, setPickStatus] = React.useState(null);
+      const pickRef = React.useRef({
+        on: false,
+        hoverSeq: 0,
+        hoverInflight: false,
+        hoverQueued: false,
+        timer: 0,
+        wheelTimer: 0,
+        lastClient: null,
+        lastAt: 0,
+        detailSeq: 0,
+        detailInflight: false,
+      });
+      const pickStatusTimerRef = React.useRef(0);
+      const pickButtonRef = React.useRef(null);
+
+      // Immutable scope/binding for this generation. A `recent` identity is pinned to the Host
+      // runtime id returned by the first /state (or /ensure); `binding` is empty until then.
+      const seatSessionId = props && typeof props.seatSessionId === 'string' ? props.seatSessionId : '';
+      const visible = !props || props.visible !== false;
+      // Human-foreground claim (P0-D `browser_annotation`): recycled by this mount lifetime, added
+      // while the seat is visible and withdrawn on unmount, so the Host's window can expire.
+      const foregroundClaimRef = React.useRef('');
+      if (!foregroundClaimRef.current) foregroundClaimRef.current = newGuiForegroundClaim();
+      React.useEffect(() => {
+        const claim = foregroundClaimRef.current;
+        if (visible) guiForegroundClaims.add(claim);
+        else guiForegroundClaims.delete(claim);
+        return () => guiForegroundClaims.delete(claim);
+      }, [visible]);
+      const capture = props && props.capture ? props.capture : { sessionId: '', resolution: 'none' };
+      // Internal browser tabs (one Runtime per tab): the Host group list is the only source.
+      const panelViews = remote && remote.ui && remote.ui.version === 1 && Array.isArray(remote.ui.views)
+        ? remote.ui : null;
+      const [activeViewId, setActiveViewId] = React.useState('primary');
+      const [tabsVisible, setTabsVisible] = React.useState(true);
+      // Web callbacks can outlive the row that created them; reject them after an environment switch.
+      const tabsEnvRef = React.useRef(env);
+      tabsEnvRef.current = env;
+      // A sibling tab switch is not a workspace retirement: do not poison retiredRuntimeRef.
+      const viewSwitchRef = React.useRef(false);
+      // The group list must survive the transient remote=null/idle snapshot while a child scope
+      // is being opened. Deriving it from the current scope's remote alone unmounts the strip and
+      // falls back to primary mid-switch (observed in the local smoke).
+      const stableViewsRef = React.useRef(null);
+      if (panelViews) {
+        stableViewsRef.current = {
+          views: panelViews.views, viewsRevision: panelViews.viewsRevision,
+          primaryRuntimeId: panelViews.primaryRuntimeId,
+          popupNotices: Array.isArray(panelViews.popupNotices) ? panelViews.popupNotices : [],
+        };
+      }
+      const stableViews = stableViewsRef.current;
+      const readyViewList = stableViews ? stableViews.views.filter((view) => view && view.status === 'ready') : [];
+      const activeView = readyViewList.find((view) => view.id === activeViewId)
+        || readyViewList.find((view) => view.kind === 'primary') || null;
+      const childBinding = activeView && activeView.kind === 'popup' ? String(activeView.runtimeId || '') : '';
+      const baseIdentity = resolvePanelIdentity(seatSessionId, capture, props && props.liveCapture);
+      // A child tab explicitly binds to its Runtime; primary keeps the original session/recent
+      // identity (never convert the session into the child, never re-resolve recent to it).
+      const identity = childBinding
+        ? { kind: 'recent', sessionId: '', key: 'view:' + childBinding, paused: false }
+        : baseIdentity;
+      const identityKey = identity.key;
+      const [bindingState, setBindingState] = React.useState({ identityKey: '', value: '' });
+      const [legacyState, setLegacyState] = React.useState({ identityKey: '', value: false });
+      const binding = bindingState.identityKey === identityKey ? bindingState.value : '';
+      const legacyHost = legacyState.identityKey === identityKey ? legacyState.value : false;
+      const activeBinding = childBinding || binding;
+      const ready = childBinding ? true : (identity.kind === 'session' || Boolean(binding) || legacyHost);
+      const scope = React.useMemo(
+        () => scopeSnapshot(childBinding ? 'recent' : identity.kind, childBinding ? '' : identity.sessionId, activeBinding, childBinding ? false : legacyHost),
+        [identity.kind, identity.sessionId, activeBinding, legacyHost, childBinding],
+      );
+      const blenderRecentScope = React.useMemo(() => scopeSnapshot('recent', '', '', false), []);
+      const blenderSessionScope = React.useMemo(
+        () => baseIdentity.sessionId ? scopeSnapshot('session', baseIdentity.sessionId, '', false) : null,
+        [baseIdentity.sessionId]);
+      const scopeKey = scope.kind + ':' + scope.sessionId + '|' + scope.binding + (scope.legacy ? '|legacy' : '');
+      // Every scope/binding transition (including a discarded binding that re-resolves to the
+      // same runtime id) must rebuild the transport/pollers even when the scope values repeat.
+      const scopeEpochRef = React.useRef(0);
+      const scopeTokenRef = React.useRef('');
+      if (scopeTokenRef.current !== scopeKey) {
+        scopeTokenRef.current = scopeKey;
+        scopeEpochRef.current += 1;
+        // A scope/binding transition is a new panel instance too: in-flight view writes for the
+        // previous instance must not be adopted either (panelGenerationRef is declared below with
+        // the other refs; this assignment runs after they exist on every render).
+        if (typeof bumpPanelGeneration === 'function') bumpPanelGeneration();
+      }
+      const scopeEpoch = scopeEpochRef.current;
+      React.useLayoutEffect(() => {
+        captureGenerationRef.current += 1;
+        blenderAnnotShapesRef.current = [];
+        blenderAnnotDirtyRef.current = false;
+        blenderAnnotContentSeqRef.current = 0;
+        setBlenderStatus({ phase: 'idle' });
+      }, [identityKey]);
+      React.useLayoutEffect(() => { captureGenerationRef.current += 1; }, [env]);
+      const scopeRef = React.useRef(scope);
+      scopeRef.current = scope;
+      // Host config for this panel scope: the selector's allowed environments and current
+      // resolution come from the Host, not from the static ENVIRONMENTS list.
+      const hostConfig = useHostConfig(scope, 'session');
+      // 设置页改完开关/选择后立刻同步过来：重读一次配置，组合框与视图跟着变，不用等刷新。
+      useHostConfigChange(() => {
+        if (hostConfig && typeof hostConfig.reload === 'function') hostConfig.reload();
+      });
+      const hostResolved = hostConfig.state.resolved || null;
+      const resolvedEnvironment = hostResolved && hostResolved.environment ? String(hostResolved.environment) : '';
+      const allowedEnvironments = hostResolved && Array.isArray(hostResolved.enabledEnvironments)
+        ? hostResolved.enabledEnvironments.map(String) : null;

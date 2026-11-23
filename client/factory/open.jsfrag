@@ -1,0 +1,9 @@
+window.__ModuleLoader__.load({
+  id: 'dsh-agent-team-ui-testing',
+  factory(require) {
+    const React = require('react');
+    const h = React.createElement;
+    // Portal target for the diagnostics overlay: the DSH settings modal is its own layer, so the
+    // overlay has to live at <body> level (with a high z-index) to win the stacking order.
+    let reactDom = null;
+    try { reactDom = require('react-dom'); } catch { reactDom = null; }

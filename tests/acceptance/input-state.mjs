@@ -201,7 +201,7 @@ try {
     { pageCount: harness.ctx.__internal.plugin.registry.pageCount }, 1);
 
   /* ------------------------------------------------- 7. client wiring (source-level) */
-  const clientSource = await readFile(new URL('../../client.js', import.meta.url), 'utf8');
+  const clientSource = await readFile(new URL('../../dist/client.js', import.meta.url), 'utf8');
   check('client.js：预览指针按节流询问 cursorOnly，并把结果写回 frameCursor',
     /probeFrameCursor\(/u.test(clientSource) && /cursorOnly: true/u.test(clientSource)
       && /setFrameCursor\(pageCursorKeyword\(/u.test(clientSource),

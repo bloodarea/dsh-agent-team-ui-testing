@@ -58,6 +58,20 @@ test('floating editor input targets only declared panels in the current generati
   assert.deepEqual(parseViewportRequest({ editors, input: [] }).editors, editors);
   assert.throws(() => parseViewportRequest({ editors, input }), invalid);
   assert.throws(() => parseViewportRequest({ editors: ['properties'], generation, input }), invalid);
+  const settings = ['select-visibility', 'gizmos', 'overlays', 'shading-settings'];
+  const settingInput = { kind: 'escape', editor: 'overlays' };
+  assert.deepEqual(parseViewportRequest({ editors: [...editors, ...settings], generation, input: [settingInput] }).input, [settingInput]);
+  assert.throws(() => parseViewportRequest({ editors: ['gizmos'], generation, input: [settingInput] }), invalid);
+  const preferencesInput = { kind: 'wheel', editor: 'preferences', x: 0.3, y: 0.7, delta: 1 };
+  const allEditors = [...editors, ...settings, 'preferences', 'timeline'];
+  assert.deepEqual(parseViewportRequest({ editors: allEditors, input: [] }).editors, allEditors);
+  assert.deepEqual(parseViewportRequest({ editors: allEditors, generation, input: [preferencesInput] }).input,
+    [{ ...preferencesInput, shift: false, ctrl: false, alt: false }]);
+  assert.throws(() => parseViewportRequest({ editors, generation, input: [preferencesInput] }), invalid);
+  const timelineInput = { ...middle, editor: 'timeline' };
+  assert.deepEqual(parseViewportRequest({ editors: allEditors, generation, input: [timelineInput] }).input,
+    [{ ...timelineInput, ctrl: false, alt: false }]);
+  assert.throws(() => parseViewportRequest({ editors, generation, input: [timelineInput] }), invalid);
   for (const editors of [['main'], ['outliner', 'outliner'], 'outliner', null]) {
     assert.throws(() => parseViewportRequest({ editors, input: [] }), invalid);
   }
@@ -69,6 +83,8 @@ test('viewport responses keep the single PNG API and describe each extra PNG in 
   const frame = { png, generation, content: [0, 0, 960, 540] };
   assert.deepEqual(encodeViewportResponse(png).body, png);
   assert.equal(encodeViewportResponse(frame).headers['Content-Type'], 'image/png');
+  assert.equal(encodeViewportResponse(frame).headers['X-DSH-Blender-Playing'], undefined);
+  assert.equal(encodeViewportResponse({ ...frame, playing: true }).headers['X-DSH-Blender-Playing'], '1');
   const bundle = encodeViewportResponse({ ...frame, editors: [editor] });
   assert.equal(bundle.headers['X-DSH-Blender-Generation'], generation);
   assert.equal(bundle.headers['Content-Type'], 'application/octet-stream');

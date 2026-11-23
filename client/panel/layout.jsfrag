@@ -1,0 +1,89 @@
+      // The root owns row placement: the provider supplies tabs, the view supplies toolbar/body,
+      // and a view-less environment falls back to the公共空白画布 (`renderOr`).
+      const envViewRows = viewRegistry.renderOr(env, shellNoViewRows);
+      return h('div', {
+        className: 'utb',
+        'data-utb-tabs-supported': tabsSupported ? 'true' : 'false',
+        'data-utb-tabs-visible': showTabs ? 'true' : 'false',
+        'data-utb-active-view': envTabs ? envTabs.activeId : '',
+        'data-utb-runtime-id': ui ? String(ui.runtimeId || '') : '',
+        'data-utb-scope-binding': String(scope.binding || ''),
+        'data-utb-views-count': tabsSupported && stableViews ? String(stableViews.views.length) : '0',
+        'data-utb-ready-views': envTabs ? String(envTabs.items.length) : '0',
+        'data-utb-tabs-pref': tabsVisible ? 'true' : 'false',
+        'data-utb-active-busy': activeBusy ? 'true' : 'false',
+        'data-utb-display-mode': displayMode,
+        // 组合框当前选中的目标环境，以及视图层是否已实现该环境
+        'data-utb-build': CLIENT_BUILD,
+        'data-utb-view': env,
+        'data-utb-view-supported': envViewSupported ? 'true' : 'false',
+        onPointerDown: markHuman,
+        onKeyDown: markHuman,
+        onWheel: markHuman,
+      },
+        h('style', null, CSS),
+        h('div', { className: 'utb-top' },
+          h('span', { className: 'utb-env-icon', 'aria-hidden': true }, h(IconWindow, null)),
+          h('div', { className: 'utb-env-text' },
+            h('span', { className: 'utb-env-title', 'data-utb-env-title': env }, envViewTitle)),
+          h('span', { className: 'utb-gap' }),
+          // Web-view-only run-mode switch: headless (default) vs headed (visible window + profile).
+          envHasFeature(env, 'displayMode') && envViewSupported && h('div', {
+            className: 'utb-seg utb-display-seg',
+            role: 'group',
+            'aria-label': '运行模式',
+            'data-utb-display-mode': displayMode,
+          },
+            [['headless', '无头'], ['headed', '有头']].map(([id, label]) => {
+              const description = id === 'headed'
+                ? '有头模式（离屏隐藏窗口 + 持久 profile）\n'
+                  + '· 真实有头 Chromium，较不易被反爬识别；需要登录/过风控的站点用它\n'
+                  + '· 登录态 / Cookie 跨重启保留\n'
+                  + '· 启动较慢；切换会关闭所有页面，需重新打开'
+                : '无头模式（默认）\n'
+                  + '· 不显示浏览器窗口，启动快、资源占用低\n'
+                  + '· 容易被反爬 / 风控识别（Cloudflare、Turnstile 等会持续挑战或 403）\n'
+                  + '· 每次启动使用临时 profile，不保留登录态';
+              return h('button', {
+                key: id,
+                type: 'button',
+                className: 'utb-seg-btn',
+                'aria-pressed': displayMode === id,
+                'aria-description': description,
+                'data-utb-display': id,
+                title: description,
+                disabled: displaySwitching,
+                onClick: () => changeDisplayMode(id),
+              }, segDot(displayMode === id, 'display'), label);
+            })),
+          h('label', { className: 'utb-env-pick' },
+            h('span', { className: 'utb-sr' }, '选择运行环境'),
+            h('select', {
+              className: 'utb-select',
+              value: env,
+              'aria-label': '选择运行环境',
+              disabled: annotOn || envBusy,
+              title: envBusy ? '正在提交到宿主…' : (hostConfig.state.error || undefined),
+              'data-utb-env-busy': envBusy ? 'true' : 'false',
+              onChange: (e) => changeEnv(e.target.value),
+              // 打开下拉时重读一次：另一个窗口改了开关，这里也能立刻看到最新的可选项
+              onFocus: () => { if (hostConfig && typeof hostConfig.reload === 'function') hostConfig.reload(); },
+            // 没有视图的环境也允许选：选中后渲染空态（只切视图，不写宿主配置）。
+            // 只有“有视图但宿主不允许执行”的环境才禁用。
+            }, envOptions.map((option) => h('option', {
+              key: option.id,
+              value: option.id,
+              'data-utb-env-enabled': 'true',
+            }, option.label))),
+            h('span', { className: 'utb-env-caret', 'aria-hidden': true }, h(IconChevron, null))),
+          (hostConfig.state.error || envNotice) ? h('span', {
+            className: 'utb-env-error',
+            role: 'alert',
+            'data-uts-config-error': hostConfig.state.error ? 'read' : 'select',
+            title: hostConfig.state.error || envNotice,
+          }, hostConfig.state.error || envNotice) : null),
+                  envViewRows[0],
+                  shellTabsBar(envTabs, tabsVisible),
+                  ...envViewRows.slice(1),
+                  shellStatusBar());
+    }

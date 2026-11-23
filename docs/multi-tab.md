@@ -56,7 +56,7 @@ request = { action, ...该动作的参数 }
 
 ### 公共标签栏
 
-[面板实现](../client.js) 的 `shellTabsBar(model, visible)` 消费中立展示模型和回调：
+[面板工具栏](../client/panel/toolbar-and-status.js) 的 `shellTabsBar(model, visible)` 消费中立展示模型和回调：
 
 ```text
 model = {

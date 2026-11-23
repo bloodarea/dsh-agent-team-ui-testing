@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { ERROR_TAXONOMY } from '../browser-safety.js';
 
 const SOURCES = [
-  'index.js', 'client.js', 'browser-safety.js', 'capture-p0.js', 'vision-t3.js',
+  'index.js', 'dist/client.js', 'browser-safety.js', 'capture-p0.js', 'vision-t3.js',
   'vision-baseline.js', 'network-p0.js', 'dynamic-t4.js', 'frame-source.js', 'frame-push.js',
 ];
 

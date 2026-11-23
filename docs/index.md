@@ -8,7 +8,7 @@
 | --- | --- |
 | [目标环境定义与配置入口](target-environments.md) | 目标环境、目标、执行端、宿主平台及接入状态 |
 | [Web 目标环境文档](web/index.md) | 浏览器配置、实操教程、能力、工具、运行时实现与验收 |
-| [3D 目标环境文档](three-d/index.md) | Blender 工作区、原生编辑器浮窗、视口着色与运行时配置 |
+| [3D 目标环境文档](three-d/index.md) | Blender 工程加载、工作区共享实例与生命周期、时间轴、原生浮窗、偏好设置与运行时配置 |
 
 ## 公共接口与机制
 
@@ -17,6 +17,7 @@
 | [快速开始](getting-started.md) | 插件安装及环境上手入口 |
 | [环境设置](settings.md) | 环境启用、配置保存及诊断流程 |
 | [架构](architecture.md) | 公共职责、模块与执行链路 |
+| [客户端开发](verification.md#客户端开发) | 客户端源码目录、构建及发布检查 |
 | [适配器接口与接入](adapters.md) | TargetAdapter、CapabilityAdapter、P0Provider 与接入步骤 |
 | [能力分层与接口](capability-tiers.md) | T1–T4 定义、证据要求及 P0 家族 |
 | [工具准入与参考索引](tools.md) | 工具准入和各环境工具参考 |

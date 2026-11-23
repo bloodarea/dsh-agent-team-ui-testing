@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { contextItems, contextProbeExpression, openPageContextMenu, applyPageContextAction } from '../../context-menu.js';
 
-const source = fs.readFileSync(new URL('../../client.js', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../../dist/client.js', import.meta.url), 'utf8');
 test('预览阻断宿主菜单，范围只在 stage', () => {
   assert.match(source, /function onFrameContextMenu\(event\) \{\s*event.preventDefault\(\);\s*event.stopPropagation\(\);/u);
   assert.equal((source.match(/onContextMenu: onFrameContextMenu/gu) || []).length, 1);

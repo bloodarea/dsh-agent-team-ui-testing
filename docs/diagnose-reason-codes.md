@@ -154,6 +154,6 @@
 
 ## 怎么维护
 
-1. 客户端词表在 [`client.js`](../client.js) 的 `DIAG_REASON_ZH`；
+1. 客户端词表位于[诊断模块](../client/settings/diagnosis.js) 的 `DIAG_REASON_ZH`。
 2. 本文件的表格必须逐条一致；
 3. `tests/contracts/diagnose-status-text.test.mjs` 会强制三件事：客户端表与本表相同、Host 侧能吐出的诊断原因码全部有中文、没有重复码。改词表就同时改这两处，否则测试失败。

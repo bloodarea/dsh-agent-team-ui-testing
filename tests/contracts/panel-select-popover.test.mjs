@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { SELECT_UNSUPPORTED_HINT } from '../../select-control.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const clientSource = fs.readFileSync(path.resolve(here, '../../client.js'), 'utf8');
+const clientSource = fs.readFileSync(path.resolve(here, '../../dist/client.js'), 'utf8');
 // The page-facing Host code (element picking, /select and /element handling) lives in the Web
 // environment's runtime module since the Host/runtime split; the plugin entry keeps only wiring.
 const hostSource = fs.readFileSync(path.resolve(here, '../../targets/web/host.js'), 'utf8')

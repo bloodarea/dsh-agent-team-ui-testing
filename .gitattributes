@@ -5,6 +5,8 @@
 # 明确声明为文本的源码与配置（避免自动判定把含中文的文件误判为二进制）
 *.js      text eol=lf
 *.mjs     text eol=lf
+*.jsfrag  text eol=lf
+/dist/client.js linguist-generated=true
 *.cjs     text eol=lf
 *.json    text eol=lf
 *.yml     text eol=lf

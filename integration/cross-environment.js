@@ -1369,6 +1369,7 @@ export function createCrossEnvironment({
     adapterRegistry,
     // Environment registration directory (diagnostics read it; tests assert laziness on it).
     environments: environmentDirectory,
+    configDirectory: configStore.dir,
     // Lazy Web faces: null until the Web environment is actually used (A14).
     get webTargetAdapter() { return webRecord()?.targetAdapter ?? null; },
     get webCapabilityAdapter() { return webRecord()?.capabilityAdapter ?? null; },

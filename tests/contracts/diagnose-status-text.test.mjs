@@ -51,7 +51,7 @@ function extractFunction(source, name) {
   throw new Error('unbalanced function ' + name);
 }
 
-const clientSource = read('client.js');
+const clientSource = read('dist/client.js');
 const tableSource = /const DIAG_REASON_ZH = \{[\s\S]*?\n    \};/.exec(clientSource);
 assert.ok(tableSource, 'client.js must declare DIAG_REASON_ZH');
 

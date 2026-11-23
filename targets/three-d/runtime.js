@@ -1,17 +1,17 @@
 import { spawn, execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { delimiter, dirname, isAbsolute, join } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { blenderDesktopLaunch } from './hidden-window.js';
+import { isBlenderProjectName } from './projects.js';
 
 const SCRIPT = fileURLToPath(new URL('./viewport.py', import.meta.url));
 const SIZE = [960, 540];
 const TIMEOUT_MS = 20_000;
-const IDLE_MS = 45_000;
 const MAX_PIXELS = 8 * 1024 * 1024;
 const MAX_FRAME_BYTES = MAX_PIXELS * 3 + 32_768;
 
@@ -163,7 +163,7 @@ function authField(value) {
 }
 
 const INPUT_TYPES = new Set(['move', 'down', 'up', 'wheel', 'cancel', 'escape']);
-const EDITORS = new Set(['outliner', 'properties']);
+const EDITORS = new Set(['outliner', 'properties', 'select-visibility', 'gizmos', 'overlays', 'shading-settings', 'preferences', 'timeline']);
 const SHADING_TYPES = new Set(['WIREFRAME', 'SOLID', 'MATERIAL', 'RENDERED']);
 const BLENDER_WORKSPACES = new Set(['layout', 'modeling', 'sculpting', 'uv-editing', 'texture-paint',
   'shading', 'animation', 'rendering', 'compositing']);
@@ -202,6 +202,15 @@ export function parseViewportRequest(body) {
   const workspace = body?.workspace;
   const shading = body?.shading;
   const editors = body?.editors;
+  const project = body?.project;
+  const reload = body?.reload;
+  if ((project !== undefined || reload !== undefined) && (body.input === undefined
+      || (project !== undefined && project !== null && !isBlenderProjectName(project))
+      || (reload !== undefined && (reload !== true || project === undefined))
+      || (reload !== true && body.generation !== undefined)
+      || workspace !== undefined || shading !== undefined)) {
+    throw new ViewportError('INVALID_ARGUMENT', 'Blender 工程参数无效。', 400);
+  }
   if (editors !== undefined && (body.input === undefined || !Array.isArray(editors)
       || editors.length > EDITORS.size || new Set(editors).size !== editors.length || !editors.every((id) => EDITORS.has(id)))) {
     throw new ViewportError('INVALID_ARGUMENT', 'Blender 编辑器面板参数无效。', 400);
@@ -215,7 +224,7 @@ export function parseViewportRequest(body) {
   if (body?.input !== undefined) {
     const input = parseViewportInput(body.input, editors);
     const generation = body.generation;
-    if (body.camera !== undefined || (workspace !== undefined && input.length)
+    if (body.camera !== undefined || ((workspace !== undefined || reload) && input.length)
         || ((input.length || shading !== undefined || workspace !== undefined) && generation === undefined)
         || (generation !== undefined && (typeof generation !== 'string' || !/^[a-f0-9]{32}$/u.test(generation)))) {
       throw new ViewportError('INVALID_ARGUMENT', 'Blender 视口会话参数无效。', 400);
@@ -224,6 +233,8 @@ export function parseViewportRequest(body) {
     if (shading !== undefined) request.shading = shading;
     if (workspace !== undefined) request.workspace = workspace;
     if (editors !== undefined) request.editors = editors;
+    if (project !== undefined) request.project = project;
+    if (reload) request.reload = true;
     return request;
   }
   const camera = body?.camera;
@@ -252,6 +263,8 @@ export function encodeViewportResponse(result) {
   headers['X-DSH-Blender-Content'] = result.content.join(',');
   if (result.shading) headers['X-DSH-Blender-Shading'] = result.shading;
   if (result.workspace) headers['X-DSH-Blender-Workspace'] = result.workspace;
+  if (result.playing) headers['X-DSH-Blender-Playing'] = '1';
+  if (result.project) headers['X-DSH-Blender-Project'] = encodeURIComponent(result.project);
   if (!result.editors?.length) return { headers, body: png };
   // The header gives byte lengths in body order. Each segment is a complete PNG.
   const body = Buffer.concat([png, ...result.editors.map((editor) => editor.png)]);
@@ -262,11 +275,39 @@ export function encodeViewportResponse(result) {
   return { headers, body };
 }
 
-export function createBlenderViewport({ platform = process.platform } = {}) {
+export function createBlenderViewport(options = {}) {
+  const instances = new Map();
   const lifetime = new AbortController();
+  let disposing;
+  return {
+    frame(request, signal, workspaceKey = 'recent', projectPath) {
+      if (lifetime.signal.aborted || signal.aborted) {
+        return Promise.reject(new ViewportError('ABORTED', 'Blender 视口请求已取消。', 499));
+      }
+      let instance = instances.get(workspaceKey);
+      if (!instance) {
+        instance = createBlenderInstance(options, lifetime.signal);
+        instances.set(workspaceKey, instance);
+      }
+      return instance.frame(request, projectPath);
+    },
+    dispose() {
+      if (disposing) return disposing;
+      lifetime.abort();
+      disposing = Promise.allSettled([...instances.values()].map((instance) => instance.dispose())).then((results) => {
+        instances.clear();
+        const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+        if (failures.length) throw new AggregateError(failures, 'Failed to dispose Blender workspace instances');
+      });
+      return disposing;
+    },
+  };
+}
+
+function createBlenderInstance({ platform = process.platform, configDirectory }, lifetimeSignal) {
+  const preferencesDirectory = configDirectory ? resolve(configDirectory, 'blender') : null;
   let runtime;
   let active;
-  let idle;
   let stopping;
 
   function stop() {
@@ -292,7 +333,7 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
     return stopping;
   }
 
-  async function ensure(signal) {
+  async function ensure(signal, projectPath) {
     if (runtime) return runtime;
     await stopping;
     signal.throwIfAborted();
@@ -305,6 +346,13 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
       windows ? Promise.resolve(null) : executable(process.env.DSH_UI_TESTING_XVFB, 'Xvfb', platform),
       executable(process.env.DSH_UI_TESTING_BLENDER, 'blender', platform),
     ]);
+    if (preferencesDirectory) {
+      try {
+        await mkdir(preferencesDirectory, { recursive: true, mode: 0o700 });
+      } catch {
+        throw new ViewportError('BLENDER_PREFERENCES_UNAVAILABLE', '无法创建 Blender 偏好设置目录，请检查 DSH 配置目录权限。', 503);
+      }
+    }
     const root = await mkdtemp(join(tmpdir(), 'dsh-blender-viewport-'));
     const frame = join(root, 'frame.png');
     const authority = join(root, 'authority');
@@ -312,6 +360,12 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
 
     const env = { ...process.env, LIBGL_ALWAYS_SOFTWARE: process.env.LIBGL_ALWAYS_SOFTWARE || '1',
       LP_NUM_THREADS: process.env.LP_NUM_THREADS || '4' };
+    // Keep Blender's desktop profile separate from the debug runtime.
+    for (const key of Object.keys(env)) {
+      if (/^BLENDER_USER_/i.test(key)) delete env[key];
+    }
+    env.BLENDER_USER_RESOURCES = root;
+    if (preferencesDirectory) env.BLENDER_USER_CONFIG = preferencesDirectory;
 
     if (windows) {
       // The Windows launcher supplies a private Win32 desktop.
@@ -334,14 +388,14 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
 
     const args = ['--factory-startup', '--disable-autoexec', '--enable-event-simulate', '-noaudio', '-t', '4',
       '-p', '0', '0', ...SIZE.map(String)];
-    const project = process.env.DSH_UI_TESTING_BLEND_FILE;
+    const project = projectPath || process.env.DSH_UI_TESTING_BLEND_FILE;
     if (project) {
       const info = isAbsolute(project) && /\.blend$/i.test(project) && await stat(project).catch(() => null);
       if (!info?.isFile()) throw new ViewportError('BLENDER_PROJECT_INVALID', 'Blender 工程须为可读的绝对 .blend 路径。', 503);
-      args.push(project);
     }
     signal.throwIfAborted();
     args.push('--python', SCRIPT, '--', frame);
+    if (project) args.push(project);
     const launch = windows ? blenderDesktopLaunch(blender, args, env) : { executable: blender, args, env };
     runtime.blender = startProcess(launch.executable, launch.args, {
       cwd: root, env: launch.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
@@ -349,27 +403,30 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
     return runtime;
   }
 
-  async function render(request, outerSignal, scopeKey) {
+  async function render(request, projectPath) {
     const interactive = request.input !== undefined;
-    if (interactive && request.generation !== undefined
-        && (runtime?.generation !== request.generation || runtime?.scopeKey !== scopeKey)) {
+    if (interactive && request.generation !== undefined && runtime?.generation !== request.generation) {
       throw new ViewportError('BLENDER_STALE_FRAME', 'Blender 视口已重启或切换，请在新画面上操作。', 409);
     }
-    const signal = AbortSignal.any([outerSignal, lifetime.signal, AbortSignal.timeout(TIMEOUT_MS)]);
+    // An HTTP disconnect must not interrupt an operation already sent to a shared instance.
+    const signal = AbortSignal.any([lifetimeSignal, AbortSignal.timeout(TIMEOUT_MS)]);
     try {
-      if (interactive && runtime && runtime.scopeKey !== scopeKey) await stop();
-      const current = await ensure(signal);
-      if (interactive && !current.generation) {
-        current.scopeKey = scopeKey;
+      if (request.reload) await stop();
+      const current = await ensure(signal, projectPath);
+      if (!current.generation) {
+        current.project = request.project ?? null;
         current.generation = randomBytes(16).toString('hex');
       }
-      const pending = lineFrom(current.blender, (line) => /^DSH_VIEWPORT (frame(?: \d+ \d+ \d+ \d+(?: [A-Z]+(?: [a-z-]+)?)?)?|error|isolation-error)$/u.exec(line)?.[1], signal);
+      const pending = lineFrom(current.blender, (line) => /^DSH_VIEWPORT (frame(?: \d+ \d+ \d+ \d+(?: [A-Z]+(?: [a-z-]+(?: playing)?)?)?)?|error|isolation-error|project-error)$/u.exec(line)?.[1], signal);
       current.blender.child.stdin.write(JSON.stringify(request) + '\n');
       const result = await pending;
       if (result === 'isolation-error') {
         throw new ViewportError('BLENDER_DESKTOP_FAILED', '无法在独立的 Windows 桌面上启动 Blender 视口。', 502);
       }
-      const [status, xValue, yValue, widthValue, heightValue, reportedShading, workspace] = result.split(' ');
+      if (result === 'project-error') {
+        throw new ViewportError('BLENDER_PROJECT_INVALID', 'Blender 无法加载这个 .blend 工程。', 422);
+      }
+      const [status, xValue, yValue, widthValue, heightValue, reportedShading, workspace, playback] = result.split(' ');
       const shading = reportedShading === 'NONE' ? undefined : reportedShading;
       if (status !== 'frame' || (interactive && (heightValue === undefined
           || (shading !== undefined && !SHADING_TYPES.has(shading)) || (request.shading && request.shading !== shading)
@@ -386,10 +443,12 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
       if (!width || !height || x + width > request.size[0] || y + height > request.size[1]) {
         throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 返回的视口范围无效。', 502);
       }
-      const editors = await Promise.all((request.editors || []).map(async (id) => ({
+      const names = (request.editors || []).filter((id) => id !== 'timeline' || workspace === 'layout');
+      const editors = await Promise.all(names.map(async (id) => ({
         id, png: await readViewportPng(join(current.root, `editor-${id}.png`)),
       })));
-      return { png, content, generation: current.generation, shading, workspace, editors };
+      return { png, content, generation: current.generation, shading, workspace, editors,
+        project: current.project, playing: playback === 'playing' };
     } catch (error) {
       await stop();
       if (error instanceof ViewportError) throw error;
@@ -400,24 +459,17 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
   }
 
   return {
-    async frame(request, signal, scopeKey = 'recent') {
-      if (active) throw new ViewportError('BLENDER_BUSY', 'Blender 视口正在生成画面。', 409);
-      clearTimeout(idle);
-      active = render(request, signal, scopeKey);
+    async frame(request, projectPath) {
+      if (active) throw new ViewportError('BLENDER_BUSY', '当前工作区的 Blender 视口正在生成画面。', 409);
+      active = render(request, projectPath);
       try {
         return await active;
       } finally {
         active = undefined;
-        if (runtime) {
-          idle = setTimeout(() => { void stop().catch(() => {}); }, IDLE_MS);
-          idle.unref();
-        }
       }
     },
     async dispose() {
-      lifetime.abort();
       await active?.catch(() => {});
-      clearTimeout(idle);
       await stop();
     },
   };
