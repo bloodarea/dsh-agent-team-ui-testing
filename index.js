@@ -25,7 +25,7 @@ import { resolveProviderExecutable, verifyProviderProduct } from './targets/web/
 import { createWebToolSurface } from './targets/web/tools.js';
 import { createWebInvoker } from './targets/web/invoke.js';
 import { createWebRoutes } from './targets/web/routes.js';
-import { createBlenderViewport, parseViewportRequest } from './targets/three-d/runtime.js';
+import { createBlenderViewport, encodeViewportResponse, parseViewportRequest } from './targets/three-d/runtime.js';
 import { createWebFramePush } from './targets/web/frame-transport.js';
 import { createWebTransition } from './targets/web/transition.js';
 import { BrowserError, Cdp, asBrowserError, checkAbort, abortable, redactUrl, redactText, validateTarget } from './browser-safety.js';
@@ -923,14 +923,9 @@ export function apply(ctx) {
           const scopeKey = `${viewportScope.mode}:${viewportScope.sessionId || viewportScope.runtimeId || ''}`;
           const result = await blenderViewport.frame(frameRequest, controller.signal, scopeKey);
           if (res.destroyed) return;
-          const png = result.png || result;
-          const headers = { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': 'no-store' };
-          if (result.generation) {
-            headers['X-DSH-Blender-Generation'] = result.generation;
-            headers['X-DSH-Blender-Content'] = result.content.join(',');
-          }
+          const { headers, body } = encodeViewportResponse(result);
           res.writeHead(200, headers);
-          res.end(png);
+          res.end(body);
         } catch (error) {
           if (res.destroyed) return;
           if (!error.status) throw error;

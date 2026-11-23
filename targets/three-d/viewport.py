@@ -1,4 +1,5 @@
 """Draw the real Blender 3D editor on the private display, one frame per request."""
+from itertools import groupby
 import json
 import math
 from pathlib import Path
@@ -13,6 +14,12 @@ import bpy
 import gpu
 from mathutils import Quaternion
 import numpy as np
+
+# The plugin directory is a source or installed bundle, not a bytecode cache.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).parent))
+from editor_windows import EditorWindows, WindowPointer, screenshot
+from workspaces import WorkspaceDeck
 
 
 output = Path(sys.argv[sys.argv.index('--') + 1])
@@ -47,37 +54,43 @@ def write_png(rgb):
 class Viewport:
     def __init__(self):
         self.window = bpy.context.window_manager.windows[0]
-        self.area = next((area for area in self.window.screen.areas if area.type == 'VIEW_3D'), None)
-        if self.area is None:
-            self.area = max(self.window.screen.areas, key=lambda area: area.width * area.height)
-            self.area.type = 'VIEW_3D'
-        with bpy.context.temp_override(window=self.window, area=self.area):
-            bpy.ops.screen.screen_full_area(use_hide_panels=True)
-        self.area = next(area for area in self.window.screen.areas if area.type == 'VIEW_3D')
-        self.space = self.area.spaces.active
-        # Chrome is hidden so the capture contains the 3D editor alone. `show_region_asset_shelf`
-        # is read-only whenever the UI is actually running (every GUI-mode launch, which is the
-        # only mode where `gpu` exists) and writable in background mode; it is also absent before
-        # 3.0. Both are runtime facts, not version facts, so each write is attempted defensively.
-        for name in ('show_gizmo', 'show_region_toolbar', 'show_region_ui', 'show_region_header',
-                     'show_region_tool_header', 'show_region_asset_shelf'):
-            try:
-                setattr(self.space, name, False)
-            except (AttributeError, TypeError):
-                pass
-        self.space.overlay.show_text = False
-        self.space.overlay.show_extras = False
+        self.workspaces = WorkspaceDeck(self.window)
+        self.setup = self.activate_workspace('layout')
+        self.area = None
+        self.space = None
+        self.pending = None
+        self.pointer = WindowPointer(self.window)
+        self.editors = EditorWindows(self.window)
+        self.drawn = False
+        self.offscreen = None
+        self.draw_handler = bpy.types.SpaceView3D.draw_handler_add(self.after_draw, (), 'WINDOW', 'POST_PIXEL')
+
+    def find_main_view(self):
+        areas = (area for area in self.window.screen.areas if area.type == 'VIEW_3D')
+        self.area = max(areas, key=lambda area: area.width * area.height, default=None)
+        self.space = self.area.spaces.active if self.area else None
+
+    def bind_workspace(self):
+        self.find_main_view()
+        if self.workspaces.current != 'layout' or self.space is None:
+            return
+        if hasattr(self, 'base_rotation'):
+            return
         self.space.shading.type = 'SOLID'
         self.space.region_3d.view_perspective = 'PERSP'
         self.base_rotation = self.space.region_3d.view_rotation.copy()
         self.base_distance = self.space.region_3d.view_distance
-        self.pending = None
-        self.waiting_for_events = False
-        self.mouse = (0, 0)
-        self.buttons = set()
+
+    def activate_workspace(self, workspace):
+        yield from self.workspaces.activate(workspace)
+        self.bind_workspace()
+
+    def redraw(self):
         self.drawn = False
-        self.offscreen = None
-        self.draw_handler = self.space.draw_handler_add(self.after_draw, (), 'WINDOW', 'POST_PIXEL')
+        for area in self.window.screen.areas:
+            area.tag_redraw()
+        if self.pending is not None:
+            self.editors.redraw(self.pending.get('editors', ()))
 
     def after_draw(self):
         if bpy.context.area == self.area:
@@ -108,47 +121,10 @@ class Viewport:
                 rgba = np.asarray(pixels, dtype=np.uint8).reshape(height, width, 4)
                 write_png(rgba[::-1, :, :3])
 
-    def dispatch_input(self, events):
-        button_types = ('LEFTMOUSE', 'MIDDLEMOUSE', 'RIGHTMOUSE')
-        for event in events:
-            kind = event['kind']
-            if kind in ('cancel', 'escape'):
-                x, y = self.mouse
-                if kind == 'escape':
-                    for value in ('PRESS', 'RELEASE'):
-                        self.window.event_simulate(type='ESC', value=value, x=x, y=y)
-                for button in sorted(self.buttons):
-                    self.window.event_simulate(type=button_types[button], value='RELEASE', x=x, y=y)
-                self.buttons.clear()
-                continue
-
-            x = min(self.window.width - 1, int(event['x'] * self.window.width))
-            y = self.window.height - 1 - min(self.window.height - 1, int(event['y'] * self.window.height))
-            self.mouse = (x, y)
-            position = dict(x=x, y=y, shift=event['shift'], ctrl=event['ctrl'], alt=event['alt'])
-            # Native UI handlers use the cursor position for hit testing and menu placement.
-            self.window.event_simulate(type='MOUSEMOVE', value='NOTHING', **position)
-            if kind in ('down', 'up'):
-                button = event['button']
-                if kind == 'down' and button not in self.buttons:
-                    self.buttons.add(button)
-                    self.window.event_simulate(type=button_types[button], value='PRESS', **position)
-                elif kind == 'up' and button in self.buttons:
-                    self.buttons.remove(button)
-                    self.window.event_simulate(type=button_types[button], value='RELEASE', **position)
-            elif kind == 'wheel':
-                delta = event['delta']
-                event_type = 'WHEELDOWNMOUSE' if delta > 0 else 'WHEELUPMOUSE'
-                for _ in range(abs(delta)):
-                    self.window.event_simulate(type=event_type, value='PRESS', **position)
-
     def capture_window(self, width, height):
         # Blender composites the popup and the 3D editor into the same native window.
         native = output.with_name('native.png')
-        with bpy.context.temp_override(window=self.window):
-            result = bpy.ops.screen.screenshot(filepath=str(native))
-        if 'FINISHED' not in result:
-            raise RuntimeError('Blender could not capture its window')
+        screenshot(self.window, native)
         with native.open('rb') as stream:
             source_width, source_height = struct.unpack('>II', stream.read(24)[16:24])
         if (source_width, source_height) == (width, height):
@@ -172,20 +148,73 @@ class Viewport:
             bpy.data.images.remove(image)
         return (left, top, fitted_width, fitted_height)
 
+    def apply_request(self, request):
+        interactive = 'input' in request
+        workspace = request.get('workspace') if interactive else 'layout'
+        if workspace and workspace != self.workspaces.current:
+            self.pointer.dispatch([{'kind': 'escape'}])
+            for name in self.editors.visible:
+                self.editors.pointers[name].dispatch([{'kind': 'escape'}])
+            yield
+            yield from self.activate_workspace(workspace)
+
+        if not interactive:
+            yaw, pitch, scale = request['camera']
+            view = self.space.region_3d
+            view.view_rotation = (Quaternion((0, 0, 1), math.radians(yaw)) @ self.base_rotation
+                                  @ Quaternion((1, 0, 0), math.radians(pitch)))
+            view.view_distance = self.base_distance * scale
+            return
+
+        names = request.get('editors', ())
+        yield from self.editors.prepare(names)
+        if self.editors.sync(names):
+            yield
+
+        shading = request.get('shading')
+        if shading is not None:
+            if self.space is None:
+                raise RuntimeError('This workspace has no 3D editor')
+            self.space.shading.type = shading
+
+        events = request['input']
+        if request.get('generation') is None:
+            if self.pointer.buttons:
+                events = [{'kind': 'cancel'}]
+            for name in names:
+                if self.editors.pointers[name].buttons:
+                    events = [*events, {'kind': 'cancel', 'editor': name}]
+        # Blender drains each window's queue separately. Yield between target changes
+        # so events still take effect in the request's order across windows.
+        for name, batch in groupby(events, key=lambda event: event.get('editor')):
+            pointer = self.pointer if name is None else self.editors.pointers[name]
+            pointer.dispatch(batch)
+            yield
+        if events:
+            self.find_main_view()
+            if self.editors.sync(names):
+                yield
+
+    def advance_setup(self):
+        try:
+            next(self.setup)
+        except StopIteration:
+            self.setup = None
+            self.redraw()
+
     def tick(self):
         try:
-            if self.waiting_for_events:
-                # Simulated input is handled by Blender's event loop after the timer returns.
-                self.waiting_for_events = False
-                self.drawn = False
-                self.area.tag_redraw()
+            if self.setup is not None:
+                self.advance_setup()
                 return 0.02
-            if self.pending is not None and self.drawn:
+            if self.pending is not None and (self.area is None or self.drawn):
                 request = self.pending
                 self.pending = None
                 if 'input' in request:
                     content = self.capture_window(*request['size'])
-                    reply('frame ' + ' '.join(map(str, content)))
+                    self.editors.capture(request.get('editors', ()), output)
+                    shading = self.space.shading.type if self.space else 'NONE'
+                    reply('frame ' + ' '.join(map(str, (*content, shading, self.workspaces.current))))
                 else:
                     self.render(*request['size'])
                     reply('frame')
@@ -196,26 +225,15 @@ class Viewport:
                     return None
                 if isinstance(request, list):
                     request = {'camera': request, 'size': (960, 540)}
-                if 'input' in request:
-                    events = request['input']
-                    if request.get('generation') is None and self.buttons:
-                        events = [{'kind': 'cancel'}]
-                    self.dispatch_input(events)
-                    self.waiting_for_events = bool(events)
-                else:
-                    yaw, pitch, scale = request['camera']
-                    view = self.space.region_3d
-                    view.view_rotation = (Quaternion((0, 0, 1), math.radians(yaw)) @ self.base_rotation
-                                          @ Quaternion((1, 0, 0), math.radians(pitch)))
-                    view.view_distance = self.base_distance * scale
-                self.drawn = False
                 self.pending = request
-                self.area.tag_redraw()
+                self.setup = self.apply_request(request)
+                self.advance_setup()
         except Empty:
             pass
         except Exception:
             traceback.print_exc()
             self.pending = None
+            self.setup = None
             reply('error')
         return 0.02
 

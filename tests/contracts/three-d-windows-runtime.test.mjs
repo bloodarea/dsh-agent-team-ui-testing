@@ -4,14 +4,14 @@
  * 这些测试钉住三件事，都是本机实测出来的运行时事实，不是版本断言：
  * 1. 平台准入：Linux（Xvfb）与 Windows 允许，其余平台仍返回 `BLENDER_PLATFORM_UNSUPPORTED`；
  * 2. 可执行发现：Windows 上先查注册表 `Uninstall` 项，且要找 `blender.exe`（Linux 名字没有后缀）；
- * 3. 视口脚本：`show_region_asset_shelf` 在 GUI 模式只读、后台模式可写、旧版本不存在，必须容错。
+ * 3. 编辑器区域：`show_region_asset_shelf` 的可写性随 Blender 编辑器和模式而变，必须容错。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../../targets/three-d/runtime.js', import.meta.url), 'utf8');
-const viewport = await readFile(new URL('../../targets/three-d/viewport.py', import.meta.url), 'utf8');
+const workspaces = await readFile(new URL('../../targets/three-d/workspaces.py', import.meta.url), 'utf8');
 
 test('平台准入：Linux 与 Windows 通过，其他平台仍是 503', () => {
   // The gate must name both supported platforms and keep rejecting everything else.
@@ -68,14 +68,9 @@ test('显式 override 不可用时报错，不回退到注册表安装', () => {
   assert.match(block, /throw new ViewportError/u);
 });
 
-test('视口脚本对只读属性容错，不按版本号分支', () => {
-  // show_region_asset_shelf is read-only in GUI mode (the only mode with a gpu module) and
-  // writable in background mode, so the write must be guarded rather than version-gated.
-  assert.match(viewport, /for name in \('show_gizmo', 'show_region_toolbar', 'show_region_ui', 'show_region_header',/u);
-  assert.match(viewport, /'show_region_tool_header', 'show_region_asset_shelf'\):/u);
-  assert.match(viewport, /except \(AttributeError, TypeError\):\s*\n\s*pass/u);
-  // No bare assignment to the read-only property may survive.
-  assert.doesNotMatch(viewport, /^\s*self\.space\.show_region_asset_shelf = /mu);
-  // Version-gating would break the next Blender release; it must not appear here.
-  assert.doesNotMatch(viewport, /bpy\.app\.version.*show_region_asset_shelf/u);
+test('工作区隐藏编辑器栏位时容忍只读或缺失的属性', () => {
+  const chrome = workspaces.match(/def hide_editor_chrome\(area\):[\s\S]*?(?=\ndef )/u)?.[0] ?? '';
+  assert.match(chrome, /for name in \([\s\S]*?'show_region_asset_shelf'[\s\S]*?try:\s+setattr\(space, name, False\)/u);
+  assert.match(chrome, /except \(AttributeError, TypeError\):\s+pass/u);
+  assert.doesNotMatch(chrome, /bpy\.app\.version/u);
 });

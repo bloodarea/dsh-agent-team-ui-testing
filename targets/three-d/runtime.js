@@ -163,17 +163,23 @@ function authField(value) {
 }
 
 const INPUT_TYPES = new Set(['move', 'down', 'up', 'wheel', 'cancel', 'escape']);
+const EDITORS = new Set(['outliner', 'properties']);
+const SHADING_TYPES = new Set(['WIREFRAME', 'SOLID', 'MATERIAL', 'RENDERED']);
+const BLENDER_WORKSPACES = new Set(['layout', 'modeling', 'sculpting', 'uv-editing', 'texture-paint',
+  'shading', 'animation', 'rendering', 'compositing']);
 
-function parseViewportInput(input) {
+function parseViewportInput(input, editors) {
   const invalid = () => new ViewportError('INVALID_ARGUMENT', 'Blender 鼠标事件无效。', 400);
   if (!Array.isArray(input) || input.length > 32) throw invalid();
   return input.map((event) => {
-    const { kind, x, y, button, delta, shift = false, ctrl = false, alt = false } = event || {};
-    if (!INPUT_TYPES.has(kind)) throw invalid();
-    if (kind === 'cancel' || kind === 'escape') return { kind };
+    const { kind, editor, x, y, button, delta, shift = false, ctrl = false, alt = false } = event || {};
+    if (!INPUT_TYPES.has(kind) || (editor !== undefined && !editors?.includes(editor))) throw invalid();
+    const result = { kind };
+    if (editor !== undefined) result.editor = editor;
+    if (kind === 'cancel' || kind === 'escape') return result;
     if (![x, y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)
         || ![shift, ctrl, alt].every((value) => typeof value === 'boolean')) throw invalid();
-    const result = { kind, x, y, shift, ctrl, alt };
+    Object.assign(result, { x, y, shift, ctrl, alt });
     if (kind === 'down' || kind === 'up') {
       if (button !== 0 && button !== 1 && button !== 2) throw invalid();
       result.button = button;
@@ -193,14 +199,32 @@ export function parseViewportRequest(body) {
       || size[0] * size[1] > MAX_PIXELS) {
     throw new ViewportError('INVALID_ARGUMENT', '3D 分辨率须为 200–4096 像素，总面积不超过 8,388,608 像素。', 400);
   }
+  const workspace = body?.workspace;
+  const shading = body?.shading;
+  const editors = body?.editors;
+  if (editors !== undefined && (body.input === undefined || !Array.isArray(editors)
+      || editors.length > EDITORS.size || new Set(editors).size !== editors.length || !editors.every((id) => EDITORS.has(id)))) {
+    throw new ViewportError('INVALID_ARGUMENT', 'Blender 编辑器面板参数无效。', 400);
+  }
+  if (workspace !== undefined && (!BLENDER_WORKSPACES.has(workspace) || body.input === undefined)) {
+    throw new ViewportError('INVALID_ARGUMENT', 'Blender 工作区无效。', 400);
+  }
+  if (shading !== undefined && (!SHADING_TYPES.has(shading) || body.input === undefined || workspace !== undefined)) {
+    throw new ViewportError('INVALID_ARGUMENT', 'Blender 视口着色模式无效。', 400);
+  }
   if (body?.input !== undefined) {
-    const input = parseViewportInput(body.input);
+    const input = parseViewportInput(body.input, editors);
     const generation = body.generation;
-    if (body.camera !== undefined || (input.length && generation === undefined)
+    if (body.camera !== undefined || (workspace !== undefined && input.length)
+        || ((input.length || shading !== undefined || workspace !== undefined) && generation === undefined)
         || (generation !== undefined && (typeof generation !== 'string' || !/^[a-f0-9]{32}$/u.test(generation)))) {
       throw new ViewportError('INVALID_ARGUMENT', 'Blender 视口会话参数无效。', 400);
     }
-    return { input, generation, size };
+    const request = { input, generation, size };
+    if (shading !== undefined) request.shading = shading;
+    if (workspace !== undefined) request.workspace = workspace;
+    if (editors !== undefined) request.editors = editors;
+    return request;
   }
   const camera = body?.camera;
   if (!Array.isArray(camera) || camera.length !== 3 || !camera.every(Number.isFinite)
@@ -208,6 +232,34 @@ export function parseViewportRequest(body) {
     throw new ViewportError('INVALID_ARGUMENT', '3D 视角参数无效。', 400);
   }
   return { camera, size };
+}
+
+async function readViewportPng(path) {
+  const { size } = await stat(path);
+  if (size > MAX_FRAME_BYTES) throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 视口图像超出大小限制。', 502);
+  const png = await readFile(path);
+  if (png.length < 33 || png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') {
+    throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 返回的视口图像无效。', 502);
+  }
+  return png;
+}
+
+export function encodeViewportResponse(result) {
+  const png = result.png || result;
+  const headers = { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': 'no-store' };
+  if (!result.generation) return { headers, body: png };
+  headers['X-DSH-Blender-Generation'] = result.generation;
+  headers['X-DSH-Blender-Content'] = result.content.join(',');
+  if (result.shading) headers['X-DSH-Blender-Shading'] = result.shading;
+  if (result.workspace) headers['X-DSH-Blender-Workspace'] = result.workspace;
+  if (!result.editors?.length) return { headers, body: png };
+  // The header gives byte lengths in body order. Each segment is a complete PNG.
+  const body = Buffer.concat([png, ...result.editors.map((editor) => editor.png)]);
+  headers['Content-Type'] = 'application/octet-stream';
+  headers['Content-Length'] = body.length;
+  headers['X-DSH-Blender-Images'] = JSON.stringify([['viewport', png.length],
+    ...result.editors.map((editor) => [editor.id, editor.png.length])]);
+  return { headers, body };
 }
 
 export function createBlenderViewport({ platform = process.platform } = {}) {
@@ -311,32 +363,33 @@ export function createBlenderViewport({ platform = process.platform } = {}) {
         current.scopeKey = scopeKey;
         current.generation = randomBytes(16).toString('hex');
       }
-      const pending = lineFrom(current.blender, (line) => /^DSH_VIEWPORT (frame(?: \d+ \d+ \d+ \d+)?|error|isolation-error)$/u.exec(line)?.[1], signal);
+      const pending = lineFrom(current.blender, (line) => /^DSH_VIEWPORT (frame(?: \d+ \d+ \d+ \d+(?: [A-Z]+(?: [a-z-]+)?)?)?|error|isolation-error)$/u.exec(line)?.[1], signal);
       current.blender.child.stdin.write(JSON.stringify(request) + '\n');
       const result = await pending;
       if (result === 'isolation-error') {
         throw new ViewportError('BLENDER_DESKTOP_FAILED', '无法在独立的 Windows 桌面上启动 Blender 视口。', 502);
       }
-      const [status, ...bounds] = result.split(' ');
-      if (status !== 'frame' || (interactive && bounds.length !== 4)) {
+      const [status, xValue, yValue, widthValue, heightValue, reportedShading, workspace] = result.split(' ');
+      const shading = reportedShading === 'NONE' ? undefined : reportedShading;
+      if (status !== 'frame' || (interactive && (heightValue === undefined
+          || (shading !== undefined && !SHADING_TYPES.has(shading)) || (request.shading && request.shading !== shading)
+          || (workspace !== undefined && !BLENDER_WORKSPACES.has(workspace)) || (request.workspace && request.workspace !== workspace)))) {
         throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 未能生成 3D 视口图像。', 502);
       }
-      const size = (await stat(current.frame)).size;
-      if (size > MAX_FRAME_BYTES) throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 视口图像超出大小限制。', 502);
-      const png = await readFile(current.frame);
-      if (png.length < 33 || png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') {
-        throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 返回的 3D 视口图像无效。', 502);
-      }
+      const png = await readViewportPng(current.frame);
       if (png.readUInt32BE(16) !== request.size[0] || png.readUInt32BE(20) !== request.size[1]) {
         throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 返回的实际分辨率与请求不符。', 502);
       }
       if (!interactive) return png;
-      const content = bounds.map(Number);
+      const content = [xValue, yValue, widthValue, heightValue].map(Number);
       const [x, y, width, height] = content;
       if (!width || !height || x + width > request.size[0] || y + height > request.size[1]) {
         throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 返回的视口范围无效。', 502);
       }
-      return { png, content, generation: current.generation };
+      const editors = await Promise.all((request.editors || []).map(async (id) => ({
+        id, png: await readViewportPng(join(current.root, `editor-${id}.png`)),
+      })));
+      return { png, content, generation: current.generation, shading, workspace, editors };
     } catch (error) {
       await stop();
       if (error instanceof ViewportError) throw error;

@@ -50,7 +50,7 @@ DebugView(props)
 | `shellSizeBar()` | 按当前环境显示分辨率、显示缩放及可用的坐标和适应选项 | Web、Blender 与无视图分支 |
 | `shellAnnotLayer()` | 返回共享 SVG 标注图层，绘制图形、选择状态与手势草稿 | Web、Blender 与公共空白画布 |
 | `shellStatusBar()` | 显示当前环境的视图状态和测得的数据，以及标注相关状态 | 外壳根部统一调用 |
-| `shellBarPublic(hint)` | 返回公共提示、标注和尺寸入口；标签无 provider 时禁用 | Blender 与 `shellNoViewRows()` |
+| `shellBarPublic(hint)` | 返回公共提示、标注和尺寸入口。Blender 提供原生大纲与属性浮窗、工作区切换和视口着色，空白视图显示禁用的标签按钮 | Blender 与 `shellNoViewRows()` |
 | `shellBlankStage()` | 返回按当前尺寸与显示比例铺设的空白画布 | `shellNoViewRows()` |
 | `shellNoViewRows()` | 返回公共工具栏、标注栏、尺寸栏与空白画布的行集合 | 环境无视图实现时的根分支 |
 
@@ -64,7 +64,7 @@ DebugView(props)
 
 `ENV_VIEWS` 是组件执行时创建的局部对象，不是 Host 的适配器注册表，也没有对外导出的 `registerView()` 方法。目标视图当前仍通过同一闭包读取状态和调用操作处理器。
 
-标签栏单独通过 `ENV_TABS` 获取展示模型。无 provider 或能力不可用时返回 `null`，公共标签入口禁用。字段与 Host 管理接口见[多目标管理接口](multi-tab.md#1-公共抽象)。
+标签栏单独通过 `ENV_TABS` 获取展示模型。无 provider 或能力不可用时返回 `null`。空白视图的公共标签入口禁用，Blender 使用该位置附近的工作区开关和视口着色按钮。字段与 Host 管理接口见[多目标管理接口](multi-tab.md#1-公共抽象)。
 
 ### 2.4 标注坐标映射接口
 
@@ -153,7 +153,7 @@ provider 返回映射对象或 `null`：
 
 这些环境启用后出现在下拉框；选中时根分支调用 `shellNoViewRows()`，显示公共工具栏、尺寸与标注入口以及空白视图窗，不显示 Web 地址栏和标签栏。视图能力同样按表判断：`ENV_VIEWS` 决定有没有正文，`ENV_TABS` 决定有没有标签栏，`ENV_FEATURES` 决定外壳级控件（运行模式、DevTools）——外壳里没有按环境 id 写的条件分支。
 
-默认逻辑尺寸由 `envDefaultSize()` 提供：Android、HarmonyOS、小程序为 393×852，游戏、3D 为 1920×1080，Web 与桌面／TUI 为 1024×768，并默认适应窗口。空白画布沿用公共缩放与标注渲染，不是该平台的实时画面。
+默认逻辑尺寸由 `envDefaultSize()` 提供。Android、HarmonyOS、小程序为 393×852，游戏为 1920×1080，Web 与桌面／TUI 为 1024×768，并默认适应窗口。空白画布沿用公共缩放与标注渲染。Blender 的输出尺寸由独立的[画质预设](three-d/debug-panel.md)决定，默认 960×540。
 
 这条回退路径的接线边界：
 

@@ -678,6 +678,11 @@ window.__ModuleLoader__.load({
       { id: 'tablet', label: '平板', w: 768, h: 1024 },
       { id: 'phone', label: '手机', w: 393, h: 852 },
     ];
+    const BLENDER_PRESETS = [
+      { id: 'performance', label: '性能', w: 960, h: 540 },
+      { id: 'hd', label: '高清', w: 1280, h: 720 },
+      { id: 'ultra', label: '极致', w: 1920, h: 1080 },
+    ];
     /**
      * 用户 2026-11-03 第 3 条：默认分辨率按运行环境确定。只引用现有 PRESETS，不引入新尺寸；
      * 非 ready 环境只占位（选项 disabled，handler 仍判 ready）。
@@ -1790,7 +1795,7 @@ window.__ModuleLoader__.load({
 /* 内部浏览器标签栏（同一个调试视图内，地址栏下方；仅由开关控制显隐，单标签也占行）。 */
 .utb-tabs { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 4px 6px; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); scrollbar-width: thin; }
 .utb-tab { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; max-width: 220px; padding: 3px 6px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font: 12px/1.5 inherit; white-space: nowrap; cursor: pointer; }
-.utb-tab[aria-selected="true"] { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-2)); }
+.utb-tab[aria-selected="true"], .utb-tab[aria-pressed="true"] { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-2)); }
 .utb-tab-label { overflow: hidden; text-overflow: ellipsis; }
 .utb-tab-close { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: 14px/18px inherit; cursor: pointer; }
 .utb-tab-close:hover { background: var(--dsw-alias-bg-layer-2); }
@@ -1917,6 +1922,14 @@ window.__ModuleLoader__.load({
 .utb-blender-stage > .utb-blank-hint { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: max-content; z-index: 3; background: var(--dsw-alias-bg-shell); }
 .utb-blender-stage > .utb-blank-hint .utb-btn { padding-inline: 6px; width: auto; white-space: nowrap; }
 .utb-blender-hint { font-size: 12px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.utb-blender-editor { position: fixed; width: min(380px, calc(100vw - 16px)); overflow: hidden; border: 1px solid var(--dsw-alias-border-l1, #454545); border-radius: 8px; background: var(--dsw-alias-bg-layer-2, #262626); color: var(--dsw-alias-label-primary, #eee); box-shadow: 0 10px 28px #0006; font: 13px/1.5 system-ui, sans-serif; }
+.utb-blender-editor-bar { display: flex; align-items: center; justify-content: space-between; min-height: 32px; padding-left: 10px; background: var(--dsw-alias-bg-layer-1, #303030); cursor: grab; touch-action: none; user-select: none; }
+.utb-blender-editor-bar:active { cursor: grabbing; }
+.utb-blender-editor-close { align-self: stretch; width: 32px; padding: 0; border: 0; background: transparent; color: inherit; font: 20px/1 system-ui, sans-serif; cursor: pointer; }
+.utb-blender-editor-close:hover, .utb-blender-editor-close:focus-visible { background: var(--dsw-alias-bg-layer-3, #454545); }
+.utb-blender-editor-frame { display: grid; justify-items: center; outline-offset: -2px; }
+.utb-blender-editor-frame img { display: block; max-width: 100%; max-height: calc(100dvh - 62px); touch-action: none; user-select: none; }
+.utb-blender-editor-loading { display: block; padding: 12px; }
 
 .utb-noview { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; }
 .utb-noview-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: var(--dsw-alias-label-tertiary); background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent); }
@@ -2733,15 +2746,190 @@ window.__ModuleLoader__.load({
       return h(DebugViewBody, Object.assign({}, props, { seatSessionId: '', visible, capture }));
     }
 
-    function BlenderViewport({ scope, visible, stage, box, imageRef, size, display, annotating, onStatus, children }) {
+    const BLENDER_WORKSPACES = [
+      { id: 'layout', label: '布局' },
+      { id: 'modeling', label: '建模' },
+      { id: 'sculpting', label: '雕刻' },
+      { id: 'uv-editing', label: 'UV 编辑' },
+      { id: 'texture-paint', label: '纹理绘制' },
+      { id: 'shading', label: '着色 / 材质' },
+      { id: 'animation', label: '动画' },
+      { id: 'rendering', label: '渲染' },
+      { id: 'compositing', label: '合成' },
+    ];
+
+    const BLENDER_SHADING = [
+      { id: 'WIREFRAME', label: '线框' },
+      { id: 'SOLID', label: '实体' },
+      { id: 'MATERIAL', label: '材质预览' },
+      { id: 'RENDERED', label: '渲染' },
+    ];
+
+    function BlenderShadingIcon({ mode }) {
+      const sphere = h('circle', { cx: 12, cy: 12, r: 8.5 });
+      const glyph = {
+        WIREFRAME: h('g', { fill: 'none', stroke: 'currentColor', strokeWidth: 1.3 }, sphere,
+          h('ellipse', { cx: 12, cy: 12, rx: 3.7, ry: 8.5 }),
+          h('path', { d: 'M3.5 12h17M5.6 6.8q6.4 3.4 12.8 0M5.6 17.2q6.4-3.4 12.8 0' })),
+        SOLID: h('g', { fill: 'currentColor' }, sphere),
+        MATERIAL: h('g', { fill: 'none', stroke: 'currentColor', strokeWidth: 1.4 }, sphere,
+          h('path', { fill: 'currentColor', stroke: 'none', d: 'M12 3.5a8.5 8.5 0 0 1 0 17c-3.6-4.6 3.6-12.4 0-17Z' })),
+        RENDERED: h('g', { fill: 'none', stroke: 'currentColor', strokeWidth: 1.4 }, sphere,
+          h('path', { fill: 'currentColor', stroke: 'none', d: 'M6 17.9 18.2 6.3a8.5 8.5 0 0 1-12.2 11.6Z' }),
+          h('path', { d: 'M6.8 11.1a5.2 5.2 0 0 1 4.3-4.3', strokeLinecap: 'round' })),
+      };
+      return h('svg', { width: 18, height: 18, viewBox: '0 0 24 24', 'aria-hidden': true, focusable: false }, glyph[mode]);
+    }
+
+    const BLENDER_EDITORS = {
+      outliner: { label: '大纲视图', path: 'M4 4h4v4H4z M8 6h11M6 8v10h5m0-7h8m-8 7h8' },
+      properties: { label: '属性编辑器', path: 'M4 6h16m-16 6h16m-16 6h16 M8 4v4m8 2v4m-6 2v4' },
+    };
+
+    async function readBlenderImages(response, editors) {
+      const type = response.headers.get('Content-Type');
+      if (type === 'image/png' && !editors.length) return { viewport: await response.blob() };
+      const ids = ['viewport', ...editors];
+      const parts = JSON.parse(response.headers.get('X-DSH-Blender-Images') || 'null');
+      if (type !== 'application/octet-stream' || !Array.isArray(parts) || parts.length !== ids.length
+          || !parts.every((part, index) => Array.isArray(part) && part.length === 2 && part[0] === ids[index]
+            && Number.isSafeInteger(part[1]) && part[1] >= 33)) {
+        throw new Error('Blender 编辑器画面格式无效，请确认 Host 已重新加载。');
+      }
+      const blob = await response.blob();
+      if (parts.reduce((sum, [, length]) => sum + length, 0) !== blob.size) {
+        throw new Error('Blender 编辑器画面不完整。');
+      }
+      let offset = 0;
+      return Object.fromEntries(parts.map(([id, length]) => {
+        const image = blob.slice(offset, offset + length, 'image/png');
+        offset += length;
+        return [id, image];
+      }));
+    }
+
+    function BlenderEditorWindow({ id, image, stage, active, onActivate, onClose, onInput }) {
+      const label = BLENDER_EDITORS[id].label;
+      const panel = React.useRef(null);
+      const frame = React.useRef(null);
+      const imageElement = React.useRef(null);
+      const drag = React.useRef(null);
+      const pressed = React.useRef(null);
+      const [position, setPosition] = React.useState(() => {
+        const top = stage.current?.getBoundingClientRect().top || 0;
+        const inset = id === 'outliner' ? 32 : Math.max(32, window.innerWidth - 412);
+        return { x: inset, y: Math.max(16, top + (id === 'outliner' ? 16 : 48)) };
+      });
+      const [height, setHeight] = React.useState(36);
+      React.useLayoutEffect(() => {
+        const element = panel.current;
+        const measure = () => setHeight(element.offsetHeight);
+        const observer = new ResizeObserver(measure);
+        observer.observe(element);
+        measure();
+        return () => observer.disconnect();
+      }, []);
+
+      function point(event, clamp = false) {
+        const img = imageElement.current;
+        const rect = img?.getBoundingClientRect();
+        if (!img?.complete || !img.naturalWidth || !rect?.width || !rect.height) return null;
+        const x = (event.clientX - rect.left) / rect.width;
+        const y = (event.clientY - rect.top) / rect.height;
+        if (!clamp && (x < 0 || x >= 1 || y < 0 || y >= 1)) return null;
+        return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)),
+          shift: event.shiftKey, ctrl: event.ctrlKey, alt: event.altKey };
+      }
+      function send(event) { onInput({ ...event, editor: id }, image?.generation); }
+      function cancel() {
+        if (!pressed.current) return;
+        pressed.current = null;
+        send({ kind: 'cancel' });
+      }
+      React.useEffect(() => {
+        const element = frame.current;
+        const wheel = (event) => {
+          const coordinates = point(event);
+          const delta = Math.sign(event.deltaY);
+          if (!coordinates || !delta) return;
+          event.preventDefault();
+          send({ kind: 'wheel', delta, ...coordinates });
+        };
+        element.addEventListener('wheel', wheel, { passive: false });
+        return () => element.removeEventListener('wheel', wheel);
+      }, [id, image?.generation, onInput]);
+
+      return h('section', { ref: panel, className: 'utb-blender-editor', role: 'dialog', 'aria-label': label,
+        'data-utb-blender-editor': id, onPointerDown: onActivate, onFocus: onActivate,
+        style: { left: `clamp(0px, ${position.x}px, max(0px, calc(100vw - 382px)))`,
+          top: `clamp(0px, ${position.y}px, max(0px, calc(100dvh - ${height}px)))`, zIndex: active ? 2901 : 2900 } },
+        h('div', { className: 'utb-blender-editor-bar',
+          onPointerDown: (event) => {
+            if (event.button !== 0 || event.target.closest('button')) return;
+            const rect = panel.current.getBoundingClientRect();
+            drag.current = { id: event.pointerId, x: event.clientX - rect.left, y: event.clientY - rect.top };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          },
+          onPointerMove: (event) => {
+            const start = drag.current;
+            if (start?.id !== event.pointerId) return;
+            setPosition({ x: event.clientX - start.x, y: event.clientY - start.y });
+          },
+          onLostPointerCapture: () => { drag.current = null; },
+        }, h('span', null, label),
+        h('button', { type: 'button', className: 'utb-blender-editor-close', 'aria-label': `关闭${label}`, onClick: onClose }, '×')),
+        h('div', { ref: frame, className: 'utb-blender-editor-frame', tabIndex: 0, 'aria-label': `${label}画布`,
+          onPointerDown: (event) => {
+            if (pressed.current || ![0, 1, 2].includes(event.button)) return;
+            const coordinates = point(event);
+            if (!coordinates) return;
+            event.preventDefault();
+            event.currentTarget.focus({ preventScroll: true });
+            event.currentTarget.setPointerCapture(event.pointerId);
+            pressed.current = { id: event.pointerId, button: event.button };
+            send({ kind: 'down', button: event.button, ...coordinates });
+          },
+          onPointerMove: (event) => {
+            const coordinates = point(event, pressed.current?.id === event.pointerId);
+            if (coordinates) send({ kind: 'move', ...coordinates });
+          },
+          onPointerUp: (event) => {
+            const hit = pressed.current;
+            if (hit?.id !== event.pointerId) return;
+            const coordinates = point(event, true);
+            if (!coordinates) { cancel(); return; }
+            pressed.current = null;
+            send({ kind: 'up', button: hit.button, ...coordinates });
+          },
+          onPointerCancel: cancel, onLostPointerCapture: cancel, onBlur: cancel,
+          onContextMenu: (event) => event.preventDefault(),
+          onKeyDown: (event) => {
+            if (event.key !== 'Escape' || !image) return;
+            event.preventDefault();
+            event.stopPropagation();
+            pressed.current = null;
+            send({ kind: 'escape' });
+          },
+        }, image ? h('img', { ref: imageElement, src: image.url, alt: `Blender ${label}`, draggable: false })
+          : h('span', { className: 'utb-blender-editor-loading', role: 'status' }, '正在连接 Blender…')));
+    }
+
+    function BlenderViewport({ scope, visible, stage, box, imageRef, size, display, annotating, onStatus, viewportControl,
+      editors, activeEditor, onActivateEditor, onCloseEditor, children }) {
       const [frame, setFrame] = React.useState(null);
       const [failure, setFailure] = React.useState('');
+      const editorIds = React.useRef([]);
+      editorIds.current = editors || [];
+      const editorKey = editorIds.current.join(',');
+      const frameTimes = React.useRef([]);
+      const framePaint = React.useRef(0);
       const requestSize = React.useRef(size);
       requestSize.current = size;
       const annotationMode = React.useRef(annotating);
       annotationMode.current = annotating;
       const geometry = React.useRef(null);
       const gesture = React.useRef(null);
+      const pendingChange = React.useRef(null);
       const sendInput = React.useRef(() => {});
       const redraw = React.useRef(() => {});
 
@@ -2776,9 +2964,9 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         if (!frame) return undefined;
-        const url = URL.createObjectURL(frame.image);
-        setPresentation({ ...frame, url });
-        return () => URL.revokeObjectURL(url);
+        const urls = Object.fromEntries(Object.entries(frame.images).map(([id, image]) => [id, URL.createObjectURL(image)]));
+        setPresentation({ ...frame, url: urls.viewport, editorUrls: urls });
+        return () => Object.values(urls).forEach((url) => URL.revokeObjectURL(url));
       }, [frame]);
 
       React.useEffect(() => {
@@ -2788,6 +2976,8 @@ window.__ModuleLoader__.load({
         let dirty = false;
         let retry;
         let hoverRefresh;
+        let shadingRefresh;
+        let queuedChange;
         let queue = [];
         async function refresh() {
           dirty = true;
@@ -2797,31 +2987,41 @@ window.__ModuleLoader__.load({
           const started = performance.now();
           const requested = requestSize.current;
           const generation = geometry.current?.generation;
-          const input = queue.splice(0, 32);
+          const change = queuedChange;
+          queuedChange = undefined;
+          const openEditors = editorIds.current;
+          const input = change?.workspace ? [] : queue.splice(0, 32)
+            .filter((event) => !event.editor || openEditors.includes(event.editor));
           onStatus((current) => ({ ...current, phase: 'rendering' }));
           try {
             const response = await fetch(HOST_BASE + '/blender/frame', {
               method: 'POST', credentials: 'same-origin', signal: controller.signal,
               headers: Object.assign({ 'content-type': 'application/json' }, scopeHeaders(scope)),
-              body: JSON.stringify({ input, generation, size: [requested.width, requested.height] }),
+              body: JSON.stringify({ input, generation, ...change, size: [requested.width, requested.height],
+                editors: openEditors.length ? openEditors : undefined }),
             });
             if (response.status === 409) {
               const payload = await response.json();
               if (payload.code === 'BLENDER_BUSY') {
                 queue.unshift(...input);
+                if (change) queuedChange = change;
                 retry = setTimeout(() => { retry = undefined; void refresh(); }, 150);
                 return;
               }
               if (payload.code === 'BLENDER_STALE_FRAME') {
                 geometry.current = null;
                 gesture.current = null;
+                pendingChange.current = null;
+                queuedChange = undefined;
+                clearTimeout(shadingRefresh);
                 queue = [];
+                onStatus((current) => ({ ...current, shading: null, workspace: null, changingViewport: false }));
                 dirty = true;
                 return;
               }
               throw new Error(payload.error || 'Blender 视口不可用。');
             }
-            if (!response.ok || response.headers.get('Content-Type') !== 'image/png') {
+            if (!response.ok) {
               const payload = await response.json().catch(() => ({}));
               throw new Error(payload.error || 'Blender 视口连接失败。');
             }
@@ -2831,30 +3031,42 @@ window.__ModuleLoader__.load({
                 || !content.every((value) => Number.isInteger(value) && value >= 0) || !content[2] || !content[3]) {
               throw new Error('Blender 交互视口未就绪，请确认 Host 和面板已重新加载。');
             }
-            const image = await response.blob();
+            const shading = response.headers.get('X-DSH-Blender-Shading');
+            const workspace = response.headers.get('X-DSH-Blender-Workspace');
+            if ((change?.shading && change.shading !== shading) || (change?.workspace && change.workspace !== workspace)) {
+              throw new Error('Blender 未确认视口切换。');
+            }
+            const images = await readBlenderImages(response, openEditors);
             if (!controller.signal.aborted) {
-              setFrame({ image, started, generation: frameGeneration, content });
+              setFrame({ images, started, generation: frameGeneration, content, shading, workspace });
               setFailure('');
+              if (change && (shading === 'MATERIAL' || shading === 'RENDERED')) {
+                shadingRefresh = setTimeout(() => { void refresh(); }, 500);
+              }
             }
           } catch (error) {
             if (!controller.signal.aborted) {
               geometry.current = null;
               gesture.current = null;
               queue = [];
+              queuedChange = undefined;
+              pendingChange.current = null;
               clearTimeout(hoverRefresh);
+              clearTimeout(shadingRefresh);
               setFailure(error.message || 'Blender 视口连接失败。');
-              onStatus((current) => ({ ...current, phase: 'error' }));
+              onStatus((current) => ({ ...current, phase: 'error', changingViewport: false }));
             }
           } finally {
             busy = false;
             if ((dirty || queue.length) && !retry && !controller.signal.aborted) void refresh();
           }
         }
-        function enqueue(event) {
-          if (!geometry.current || controller.signal.aborted) return;
+        function enqueue(event, editorGeneration) {
+          if (!geometry.current || pendingChange.current?.workspace || controller.signal.aborted) return;
+          if (event.editor && (geometry.current.generation !== editorGeneration || !editorIds.current.includes(event.editor))) return;
           const last = queue.at(-1);
-          if (event.kind === 'move' && last?.kind === 'move') queue[queue.length - 1] = event;
-          else if (event.kind === 'wheel' && last?.kind === 'wheel' && last.x === event.x && last.y === event.y
+          if (event.kind === 'move' && last?.kind === 'move' && last.editor === event.editor) queue[queue.length - 1] = event;
+          else if (event.kind === 'wheel' && last?.kind === 'wheel' && last.editor === event.editor && last.x === event.x && last.y === event.y
               && last.shift === event.shift && last.ctrl === event.ctrl && last.alt === event.alt
               && Math.sign(last.delta) === event.delta && Math.abs(last.delta) < 8) last.delta += event.delta;
           else queue.push(event);
@@ -2877,25 +3089,66 @@ window.__ModuleLoader__.load({
         element.addEventListener('wheel', wheel, { passive: false });
         redraw.current = refresh;
         sendInput.current = enqueue;
+        if (viewportControl) viewportControl.current = (change) => {
+          if (!geometry.current || pendingChange.current || controller.signal.aborted || annotationMode.current) return;
+          if (change.workspace) {
+            queue = [];
+            const pointerId = gesture.current?.id;
+            gesture.current = null;
+            if (pointerId !== undefined && element.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
+            clearTimeout(hoverRefresh);
+          }
+          pendingChange.current = change;
+          queuedChange = change;
+          clearTimeout(shadingRefresh);
+          onStatus((current) => ({ ...current, changingViewport: true }));
+          void refresh();
+        };
         return () => {
           controller.abort();
           clearTimeout(retry);
           clearTimeout(hoverRefresh);
+          clearTimeout(shadingRefresh);
           element.removeEventListener('wheel', wheel);
           gesture.current = null;
+          pendingChange.current = null;
           geometry.current = null;
           redraw.current = () => {};
           sendInput.current = () => {};
+          if (viewportControl) viewportControl.current = null;
         };
-      }, [scope, visible, stage, imageRef, onStatus]);
-      React.useEffect(() => { void redraw.current(); }, [scope, size, visible]);
+      }, [scope, visible, stage, imageRef, onStatus, viewportControl]);
+      React.useEffect(() => { void redraw.current(); }, [scope, size, visible, editorKey]);
       React.useEffect(() => { if (annotating) releaseGesture(); }, [annotating]);
+      React.useEffect(() => {
+        if (!visible) return undefined;
+        const sample = () => {
+          const earliest = performance.now() - 1000;
+          frameTimes.current = frameTimes.current.filter((time) => time > earliest);
+          const fps = frameTimes.current.length;
+          onStatus((current) => (current.fps === fps ? current : { ...current, fps }));
+        };
+        sample();
+        const timer = window.setInterval(sample, 250);
+        return () => {
+          window.clearInterval(timer);
+          window.cancelAnimationFrame(framePaint.current);
+          frameTimes.current = [];
+        };
+      }, [scope, size, visible, onStatus]);
 
-      return h('div', {
+      const floatingEditors = visible && editorKey && editorIds.current.map((id) => {
+        const url = presentation?.editorUrls[id];
+        return h(BlenderEditorWindow, { key: id, id, stage, active: activeEditor === id,
+          image: url ? { url, generation: presentation.generation } : null,
+          onActivate: () => onActivateEditor(id), onClose: () => onCloseEditor(id), onInput: sendInput.current });
+      });
+      return h(React.Fragment, null, h('div', {
         className: 'utb-stage utb-blender-stage', ref: stage, 'data-utb-blender-viewport': '',
         tabIndex: 0, 'aria-label': 'Blender 3D 视口',
         onPointerDown: (event) => {
-          if (annotating || event.target !== imageRef.current || gesture.current || ![0, 1, 2].includes(event.button)) return;
+          if (annotating || pendingChange.current?.workspace || event.target !== imageRef.current
+              || gesture.current || ![0, 1, 2].includes(event.button)) return;
           const point = pointerPosition(event);
           if (!point) return;
           event.preventDefault();
@@ -2932,22 +3185,42 @@ window.__ModuleLoader__.load({
         presentation && h('img', {
           ref: imageRef, src: presentation.url, alt: 'Blender 3D 视口', draggable: false,
           onLoad: (event) => {
-            const { naturalWidth, naturalHeight } = event.currentTarget;
-            geometry.current = { content: presentation.content, generation: presentation.generation,
+            const image = event.currentTarget;
+            const { naturalWidth, naturalHeight } = image;
+            const source = image.currentSrc || image.src;
+            if (!visible || source !== presentation.url || geometry.current?.source === source) return;
+            if (geometry.current?.generation !== presentation.generation) frameTimes.current = [];
+            geometry.current = { content: presentation.content, generation: presentation.generation, source,
               width: naturalWidth, height: naturalHeight };
-            onStatus({ phase: 'ready', width: naturalWidth, height: naturalHeight,
-              ms: Math.round(performance.now() - presentation.started) });
+            const ms = Math.round(performance.now() - presentation.started);
+            const { shading, workspace } = presentation;
+            const change = pendingChange.current;
+            if ((change?.workspace && change.workspace === workspace) || (change?.shading && change.shading === shading)) {
+              pendingChange.current = null;
+            }
+            const changingViewport = !!pendingChange.current;
+            onStatus((current) => ({ ...current, phase: 'ready', width: naturalWidth, height: naturalHeight, ms,
+              shading, workspace, changingViewport }));
+            window.cancelAnimationFrame(framePaint.current);
+            framePaint.current = window.requestAnimationFrame((time) => {
+              if (document.visibilityState === 'hidden' || !image.isConnected
+                  || (image.currentSrc || image.src) !== source
+                  || naturalWidth !== requestSize.current.width || naturalHeight !== requestSize.current.height) return;
+              frameTimes.current.push(time);
+            });
           },
           onError: () => {
+            pendingChange.current = null;
             setFailure('无法显示 Blender 视口图像。');
-            onStatus((current) => ({ ...current, phase: 'error' }));
+            onStatus((current) => ({ ...current, phase: 'error', changingViewport: false }));
           },
         }), children),
       failure ? h('div', { role: 'alert', className: 'utb-blank-hint' }, failure + ' ',
         h('button', { type: 'button', className: 'utb-btn', onClick: () => {
           setFailure('');
           void redraw.current();
-        } }, '重试')) : !presentation && h('div', { role: 'status', className: 'utb-blank-hint' }, '正在连接 Blender…'));
+        } }, '重试')) : !presentation && h('div', { role: 'status', className: 'utb-blank-hint' }, '正在连接 Blender…')),
+        floatingEditors && (reactDom?.createPortal ? reactDom.createPortal(floatingEditors, document.body) : floatingEditors));
     }
 
     /** The debug view body, shared by the main column and the right sidebar. */
@@ -3019,7 +3292,10 @@ window.__ModuleLoader__.load({
       const ENV_VIEWS = { web: webViewBody, 'three-d': blenderViewBody };
       const VIEW_ONLY = new Set(['three-d']);
       const blenderView = VIEW_ONLY.has(env);
-      const [blenderSize, setBlenderSize] = React.useState(() => envDefaultSize('three-d'));
+      const [blenderSize, setBlenderSize] = React.useState(() => {
+        const { w, h } = BLENDER_PRESETS[0];
+        return { width: w, height: h };
+      });
       const [blenderDraft, setBlenderDraft] = React.useState({});
       const [blenderFit, setBlenderFit] = React.useState(true);
       const [blenderZoom, setBlenderZoom] = React.useState(100);
@@ -3027,6 +3303,10 @@ window.__ModuleLoader__.load({
       const [blenderStatus, setBlenderStatus] = React.useState({ phase: 'idle' });
       const blenderBoxRef = React.useRef(null);
       const blenderImageRef = React.useRef(null);
+      const blenderViewportControl = React.useRef(null);
+      const [blenderWorkspacesVisible, setBlenderWorkspacesVisible] = React.useState(false);
+      const [blenderEditors, setBlenderEditors] = React.useState([]);
+      const [activeBlenderEditor, setActiveBlenderEditor] = React.useState(null);
       const captureGenerationRef = React.useRef(0);
       /**
        * 环境能力表：外壳只查表，不再按环境 id 写条件分支。
@@ -10399,14 +10679,16 @@ h('div', { className: 'utb-bar' },
       }
 
       function shellStatusBar() {
+        const blenderActivity = blenderStatus.phase === 'error' ? 'Blender · 视口不可用'
+          : blenderStatus.width ? 'Blender · 可操作' : 'Blender · 连接中';
         return h('div', { className: 'utb-status' },
           h('span', { className: 'utb-mode', 'data-mode': mode, title: '当前控制权归属' },
             h('span', { className: 'utb-dot', 'aria-hidden': true }),
             blenderView ? (annotOn ? '标注中' : '预览') : MODE_LABEL[remote.mode === 'agent' ? 'agent' : mode]),
           h('span', { className: 'utb-sep', 'aria-hidden': true }),
           blenderView
-            ? h('span', { className: 'utb-perf', title: '实际图像分辨率与最近一帧请求到图像加载的耗时' },
-              blenderStatus.width ? `${blenderStatus.width} × ${blenderStatus.height} ${blenderStatus.ms} ms` : '')
+            ? h('span', { className: 'utb-perf', title: '实际图像分辨率、最近一帧加载耗时及近一秒显示帧数' },
+              blenderStatus.width ? `${blenderStatus.width} × ${blenderStatus.height} ${blenderStatus.ms} ms ${blenderStatus.fps || 0} FPS` : '')
             : h('span', { className: 'utb-perf', title: `实际显示帧率与端到端显示延迟（测量值）；传输：${transportKind === 'ws' ? 'WebSocket 推送' : 'HTTP 轮询'}` }, `${fps} FPS ${frameMs} ms`),
           // 选中数量是状态信息：放在底部延迟之后，而不是标注栏里的按钮/胶囊。
           annotSelectionCount() > 0 && h('span', {
@@ -10430,8 +10712,7 @@ h('div', { className: 'utb-bar' },
           h('span', { className: 'utb-activity', role: blenderView ? 'status' : undefined,
             'data-utb-blender-state': blenderView ? blenderStatus.phase : undefined,
             title: !blenderView && remote.activity ? `运行时：${remote.activity}` : '视图状态' },
-            blenderView ? ({ idle: 'Blender · 连接中', rendering: blenderStatus.width ? 'Blender · 更新中' : 'Blender · 连接中',
-              ready: 'Blender · 视口就绪', error: 'Blender · 视口不可用' })[blenderStatus.phase] : remote.activity || activity));
+            blenderView ? blenderActivity : remote.activity || activity));
       }
 
       /**
@@ -10495,13 +10776,39 @@ h('div', { className: 'utb-bar' },
           }, '+'));
       }
 
-      /** 公共区：无视图环境的工具栏。未提供标签能力时显示禁用开关。 */
-      function shellBarPublic(hint) {
+      function blenderShadingButton() {
+        const index = BLENDER_SHADING.findIndex(({ id }) => id === blenderStatus.shading);
+        const current = BLENDER_SHADING[index];
+        const next = BLENDER_SHADING[(index + 1) % BLENDER_SHADING.length];
+        const label = current ? `视口着色：${current.label}，单击切换到${next.label}` : '视口着色';
+        return button(label, h(BlenderShadingIcon, { mode: current?.id || 'SOLID' }),
+          () => blenderViewportControl.current?.({ shading: next.id }),
+          !current || annotOn || blenderStatus.changingViewport || blenderStatus.phase === 'error', {
+            'data-utb-blender-shading': current?.id || '',
+            'aria-busy': !!blenderStatus.changingViewport,
+          });
+      }
+
+      function blenderWorkspaceTabs({ active, busy, onSelect }) {
+        return h('div', { className: 'utb-tabs', role: 'group', 'aria-label': 'Blender 工作区',
+          'aria-busy': busy, 'data-utb-blender-workspaces': '' },
+          BLENDER_WORKSPACES.map(({ id, label }) => h('button', {
+            key: id, type: 'button', className: 'utb-tab',
+            'aria-pressed': active === id, 'data-utb-blender-workspace': id,
+            disabled: !active || busy || annotOn || blenderStatus.phase === 'error',
+            onClick: () => { if (active !== id) onSelect({ workspace: id }); },
+          }, h('span', { className: 'utb-tab-label' }, label))));
+      }
+
+      /** 公共区：3D 视图与空白画布的工具栏。 */
+      function shellBarPublic(hint, beforeShading) {
         // 与 web 工具栏一致：动作按钮组靠右（左侧留弹性空隙），不占左侧导航位。
         return h('div', { className: 'utb-bar', 'data-utb-shell': 'public' },
           hint && h('span', { className: 'utb-blender-hint', role: 'status', title: hint }, hint),
           h('span', { className: 'utb-gap' }),
-          button('标签页', h('span', { className: 'utb-tabs-glyph', 'aria-hidden': true }, '▤'), tabsSupported ? () => setTabsVisible((value) => !value) : undefined, !tabsSupported, {
+          beforeShading,
+          blenderView ? blenderShadingButton() : button('标签页', h('span', { className: 'utb-tabs-glyph', 'aria-hidden': true }, '▤'),
+            tabsSupported ? () => setTabsVisible((value) => !value) : undefined, !tabsSupported, {
             'aria-pressed': tabsSupported && tabsVisible,
             'data-utb-tabs-toggle': tabsSupported ? (tabsVisible ? 'on' : 'off') : 'unsupported',
             title: tabsSupported ? (tabsVisible ? '隐藏标签页（页面保持）' : '显示标签页') : '该环境未提供标签页',
@@ -10568,16 +10875,14 @@ h('div', { className: 'utb-bar' },
           : fit ? String(Math.round(fitScale * 100)) : zoom;
         return sizing && h('div', { className: 'utb-size', ref: sizeBarRef },
           h('div', { className: 'utb-size-left' },
-            // 用户 2026-11-03 第 2 轮：左侧四个分辨率预设改为与「填充|外框」「拖拽|适应窗口|默认」
-            // 相同的分页选择器（绿色小球选中态）。选中 = 非拖拽且宽高精确匹配（零或一项选中）；
-            // 拖拽模式与预设互斥（pan 时四项全部 aria-pressed=false、小球隐藏）。
+            // The active preset matches the current output dimensions exactly.
             h('div', {
               className: 'utb-seg utb-presets',
               role: 'group',
-              'aria-label': '分辨率预设',
+              'aria-label': blenderView ? '画质预设' : '分辨率预设',
               'data-utb-preset': '',
             },
-              PRESETS.map((preset) => {
+              (blenderView ? BLENDER_PRESETS : PRESETS).map((preset) => {
                 const selected = !displayPan && (blenderView ? blenderSize.width : w) === preset.w
                   && (blenderView ? blenderSize.height : ht) === preset.h;
                 return h('button', {
@@ -10766,14 +11071,33 @@ h('div', { className: 'utb-bar' },
         const frameWidth = blenderStatus.width || blenderSize.width;
         const frameHeight = blenderStatus.height || blenderSize.height;
         const displayScale = blenderFit ? blenderFitScale(frameWidth, frameHeight) : blenderZoom / 100;
+        const editorButtons = Object.entries(BLENDER_EDITORS).map(([id, { label, path }]) =>
+          button(label, h('svg', { width: 18, height: 18, viewBox: '0 0 24 24', 'aria-hidden': true },
+            h('path', { d: path, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' })),
+          () => {
+            setBlenderEditors((open) => open.includes(id) ? open : [...open, id]);
+            setActiveBlenderEditor(id);
+          }, false, { key: id, 'aria-haspopup': 'dialog', 'aria-expanded': blenderEditors.includes(id),
+            'aria-pressed': blenderEditors.includes(id), 'data-utb-blender-editor-open': id }));
         return [
-          shellBarPublic(blenderSizeError || (annotOn ? '在 Blender 画面上标注' : '左键选择 · 右键菜单 · 中键旋转 · Shift + 中键平移 · 滚轮缩放')),
+          shellBarPublic(blenderSizeError || (annotOn ? '在 Blender 画面上标注' : '左键选择 · 右键菜单 · 中键旋转 · Shift + 中键平移 · 滚轮缩放'),
+            [...editorButtons, button('工作区切换', h('span', { className: 'utb-tabs-glyph', 'aria-hidden': true }, '▤'),
+              () => setBlenderWorkspacesVisible((value) => !value), false, {
+                key: 'workspaces',
+                'aria-expanded': blenderWorkspacesVisible,
+                'aria-pressed': blenderWorkspacesVisible,
+                'data-utb-blender-workspaces-toggle': '',
+              })]),
+          blenderWorkspacesVisible && blenderWorkspaceTabs({ active: blenderStatus.workspace,
+            busy: !!blenderStatus.changingViewport, onSelect: (change) => blenderViewportControl.current?.(change) }),
           shellAnnotBar(),
           shellSizeBar(),
           h(BlenderViewport, {
             key: identityKey, scope: viewportScope, visible, stage, box: blenderBoxRef, imageRef: blenderImageRef,
             size: blenderSize, display: { width: frameWidth * displayScale, height: frameHeight * displayScale },
-            annotating: annotOn, onStatus: setBlenderStatus,
+            annotating: annotOn, onStatus: setBlenderStatus, viewportControl: blenderViewportControl,
+            editors: blenderEditors, activeEditor: activeBlenderEditor, onActivateEditor: setActiveBlenderEditor,
+            onCloseEditor: (id) => setBlenderEditors((open) => open.filter((editor) => editor !== id)),
           }, shellAnnotLayer(), shellAnnotTextInput()),
         ];
       }

@@ -187,13 +187,19 @@ test('无 provider 的环境不继承 Web 缓存，公共标签开关禁用且�
       tabsSupported: state.tabsSupported, tabsVisible: true, setTabsVisible() { throw new Error('unsupported toggle'); },
       IconAnnot: 'annot', IconSize: 'size', IconMore: 'more', toggleAnnotMode() {}, annotReady: true, sizing: false, pickOn: false,
       annotOn: false, annotPanelId: 'annot', annotButtonRef: {}, toggleSizing() {},
-      blenderView: env === 'three-d', menu: false, setMenu() {},
+      blenderView: env === 'three-d', blenderShadingButton: () => h('button', { 'data-utb-blender-shading': 'SOLID' }),
+      menu: false, setMenu() {},
     })();
     const toggle = by(toolbar, 'data-utb-tabs-toggle')[0];
-    assert.equal(toggle.props.disabled, true);
-    assert.equal(toggle.props.onClick, undefined);
-    assert.equal(toggle.props['aria-pressed'], false);
-    assert.equal(toggle.props['data-utb-tabs-toggle'], 'unsupported');
+    if (env === 'three-d') {
+      assert.equal(toggle, undefined);
+      assert.equal(by(toolbar, 'data-utb-blender-shading').length, 1);
+    } else {
+      assert.equal(toggle.props.disabled, true);
+      assert.equal(toggle.props.onClick, undefined);
+      assert.equal(toggle.props['aria-pressed'], false);
+      assert.equal(toggle.props['data-utb-tabs-toggle'], 'unsupported');
+    }
     assert.equal(render(state.envTabs, true), null);
   }
 });
