@@ -83,6 +83,7 @@
       const [blenderDisplaySettingsVisible, setBlenderDisplaySettingsVisible] = React.useState(false);
       const [blenderEditors, setBlenderEditors] = React.useState({});
       const [activeBlenderEditor, setActiveBlenderEditor] = React.useState(null);
+      const [blenderReferenceAnchor, setBlenderReferenceAnchor] = React.useState(null);
       const captureGenerationRef = React.useRef(0);
       /**
        * 环境能力表：外壳只查表，不再按环境 id 写条件分支。
@@ -430,6 +431,7 @@
         blenderAnnotDirtyRef.current = false;
         blenderAnnotContentSeqRef.current = 0;
         setBlenderStatus({ phase: 'idle' });
+        setBlenderReferenceAnchor(null);
       }, [identityKey]);
       React.useLayoutEffect(() => { captureGenerationRef.current += 1; }, [env]);
       const scopeRef = React.useRef(scope);

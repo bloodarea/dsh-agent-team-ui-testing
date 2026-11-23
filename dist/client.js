@@ -1937,6 +1937,23 @@ window.__ModuleLoader__.load({
 .utb-blender-editor-frame { display: grid; justify-items: center; outline-offset: -2px; }
 .utb-blender-editor-frame img { display: block; max-width: 100%; max-height: calc(100dvh - max(62px, var(--utb-blender-editor-anchor-top, 0px) + 40px)); touch-action: none; user-select: none; }
 .utb-blender-editor-loading { display: block; padding: 12px; }
+.utb-blender-reference-body { display: flex; flex-direction: column; gap: 8px; padding: 10px; max-height: min(65dvh, calc(100dvh - max(60px, var(--utb-blender-editor-anchor-top, 0px) + 40px))); box-sizing: border-box; }
+.utb-blender-reference-list { display: grid; gap: 6px; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.utb-blender-reference-body > :not(.utb-blender-reference-list) { flex: none; }
+.utb-blender-reference-row { position: relative; min-width: 0; }
+.utb-blender-reference { min-width: 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; background: var(--dsw-alias-bg-layer-1); }
+.utb-blender-reference summary { padding: 7px 36px 7px 9px; cursor: pointer; }
+.utb-blender-reference-remove { position: absolute; top: 4px; right: 4px; width: 26px; height: 26px; border-radius: 4px; color: var(--dsw-alias-label-secondary); }
+.utb-blender-reference-remove:disabled { opacity: .5; cursor: default; }
+.utb-blender-reference summary:hover { background: var(--dsw-alias-bg-layer-3); }
+.utb-blender-reference small { display: block; margin-left: 14px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.utb-blender-reference img { display: block; width: auto; height: auto; max-width: calc(100% - 16px); max-height: 48dvh; object-fit: contain; margin: 0 auto 8px; }
+.utb-blender-reference > [role="status"] { display: block; padding: 0 9px 8px; color: var(--dsw-alias-label-secondary); }
+.utb-blender-reference-message { margin: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); }
+.utb-blender-reference-drop { min-height: 62px; padding: 8px; border: 1px dashed var(--dsw-alias-border-l2, var(--dsw-alias-border-l1)); border-radius: 6px; color: var(--dsw-alias-label-secondary); background: transparent; font: inherit; cursor: pointer; }
+.utb-blender-reference-drop:hover:not([aria-disabled="true"]), .utb-blender-reference-drop.is-dragging { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-3); border-color: var(--dsw-alias-brand-primary); }
+.utb-blender-reference-drop:focus-visible, .utb-blender-reference summary:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.utb-blender-reference-drop[aria-disabled="true"] { cursor: default; }
 
 .utb-noview { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; }
 .utb-noview-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: var(--dsw-alias-label-tertiary); background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent); }
@@ -2820,11 +2837,15 @@ window.__ModuleLoader__.load({
       }));
     }
 
-    function BlenderEditorWindow({ id, image, stage, anchor, active, onActivate, onClose, onInput }) {
+    function BlenderEditorWindow({ id, image, onInput, ...windowProps }) {
       const preferences = id === 'preferences';
       const displaySetting = BLENDER_DISPLAY_SETTINGS[id];
-      const contentSized = preferences || Boolean(displaySetting);
       const label = preferences ? BLENDER_PREFERENCES_LABEL : BLENDER_EDITORS[id]?.label || displaySetting;
+      return h(BlenderFloatingWindow, { ...windowProps, id, label, contentSized: preferences || Boolean(displaySetting) },
+        h(BlenderEditorFrame, { id, label, image, onInput, className: 'utb-blender-editor-frame' }));
+    }
+
+    function BlenderFloatingWindow({ id, label, contentSized, stage, anchor, active, onActivate, onClose, autoFocus, children }) {
       const panel = React.useRef(null);
       const drag = React.useRef(null);
       const [initialPosition] = React.useState(() => {
@@ -2835,7 +2856,8 @@ window.__ModuleLoader__.load({
       const [dragPosition, setDragPosition] = React.useState(null);
       const position = dragPosition ?? initialPosition;
       // Leave room for the title and some content even when the button is near the bottom edge.
-      const anchorTop = anchor ? `clamp(0px, ${anchor.y}px, max(0px, calc(100dvh - 88px)))` : undefined;
+      const minimumClearance = id === 'references' ? 160 : 88;
+      const anchorTop = anchor ? `clamp(0px, ${anchor.y}px, max(0px, calc(100dvh - ${minimumClearance}px)))` : undefined;
       const [bounds, setBounds] = React.useState({ width: 382, height: 36 });
       React.useLayoutEffect(() => {
         const element = panel.current;
@@ -2849,8 +2871,19 @@ window.__ModuleLoader__.load({
         return () => observer.disconnect();
       }, []);
 
+      React.useEffect(() => {
+        if (autoFocus) panel.current?.focus({ preventScroll: true });
+      }, [autoFocus, anchor]);
+
       return h('section', { ref: panel, className: `utb-blender-editor${contentSized ? ' is-content-sized' : ''}`,
         role: 'dialog', 'aria-label': label, 'data-utb-blender-editor': id, onPointerDown: onActivate, onFocus: onActivate,
+        tabIndex: autoFocus ? -1 : undefined,
+        onKeyDown: autoFocus ? (event) => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          event.stopPropagation();
+          onClose();
+        } : undefined,
         style: { '--utb-blender-editor-anchor-top': anchorTop,
           left: `clamp(0px, ${position.x}px, max(0px, calc(100vw - ${bounds.width}px)))`,
           top: !dragPosition && anchorTop ? anchorTop : `clamp(0px, ${position.y}px, max(0px, calc(100dvh - ${bounds.height}px)))`,
@@ -2870,7 +2903,7 @@ window.__ModuleLoader__.load({
           onLostPointerCapture: () => { drag.current = null; },
         }, h('span', null, label),
         h('button', { type: 'button', className: 'utb-blender-editor-close', 'aria-label': `关闭${label}`, onClick: onClose }, '×')),
-        h(BlenderEditorFrame, { id, label, image, onInput, className: 'utb-blender-editor-frame' }));
+        children);
     }
 
     function BlenderEditorFrame({ id, label, image, onInput, className }) {
@@ -3026,6 +3059,219 @@ window.__ModuleLoader__.load({
           listing?.truncated && h('div', { className: 'utb-addr-pop-empty' }, '仅显示扫描范围内的工程'))),
       h('button', { type: 'button', className: 'utb-btn', disabled, 'aria-label': '重载 Blender',
         title: '重载 Blender', onClick: () => load(project) }, h(IconReload, null)));
+    }
+    const BLENDER_REFERENCES_LABEL = '参考图设置';
+    const BLENDER_REFERENCES_ROUTE = '/blender/references';
+
+    async function requestBlenderReference(path, scope, generation, signal, { method = 'GET', file } = {}) {
+      const headers = { ...scopeHeaders(scope), 'X-DSH-Blender-Generation': generation };
+      if (file) {
+        let physicalPath = '';
+        try { physicalPath = window.__DSH_HOST_PATHS__?.pathFor(file) || ''; } catch { /* browser files can lack a path */ }
+        headers['Content-Type'] = 'application/octet-stream';
+        headers['X-DSH-Blender-Reference-Name'] = encodeURIComponent(file.name);
+        if (physicalPath) headers['X-DSH-Blender-Reference-Path'] = encodeURIComponent(physicalPath);
+      }
+      const response = await fetch(HOST_BASE + BLENDER_REFERENCES_ROUTE + path, {
+        method, credentials: 'same-origin', headers, body: file,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(file ? 65_000 : 15_000)]),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw Object.assign(new Error(payload.error || '无法读取或保存参考图。'), { code: payload.code });
+      }
+      return method === 'GET' ? response.blob() : response.json();
+    }
+
+    function BlenderReferencePreview({ scope, generation, item, label }) {
+      const [url, setUrl] = React.useState('');
+      const [failed, setFailed] = React.useState(false);
+      React.useEffect(() => {
+        const controller = new AbortController();
+        let previewUrl;
+        requestBlenderReference(`/${item.id}`, scope, generation, controller.signal).then((blob) => {
+          if (controller.signal.aborted) return;
+          previewUrl = URL.createObjectURL(blob);
+          setUrl(previewUrl);
+        }).catch(() => { if (!controller.signal.aborted) setFailed(true); });
+        return () => {
+          controller.abort();
+          if (previewUrl) URL.revokeObjectURL(previewUrl);
+        };
+      }, [scope, generation, item.id]);
+      if (failed) return h('span', { role: 'status' }, '无法显示这张参考图。');
+      if (!url) return h('span', { role: 'status' }, '正在加载参考图…');
+      return h('img', { src: url, alt: label, draggable: false, onError: () => setFailed(true) });
+    }
+
+    function BlenderReferenceRow({ scope, generation, item, number, canRemove, onRemove }) {
+      const [open, setOpen] = React.useState(false);
+      const label = `参考图-${number}`;
+      return h('div', { className: 'utb-blender-reference-row' },
+        h('details', { className: 'utb-blender-reference', onToggle: (event) => setOpen(event.currentTarget.open) },
+          h('summary', null, h('span', null, label),
+            h('small', { title: item.path || '浏览器仅提供文件名' }, item.path || item.name)),
+          open && h(BlenderReferencePreview, { scope, generation, item, label })),
+        h('button', { type: 'button', className: 'utb-blender-editor-close utb-blender-reference-remove',
+          'aria-label': `移除${label}`, title: `移除${label}`, disabled: !canRemove,
+          onClick: () => void onRemove(item.id),
+        }, '×'));
+    }
+
+    function BlenderReferencesWindow({ scope, viewportGeneration, viewportChanging, open, ...windowProps }) {
+      const [state, setState] = React.useState(null);
+      const [uploading, setUploading] = React.useState(false);
+      const [dragging, setDragging] = React.useState(false);
+      const [loadError, setLoadError] = React.useState('');
+      const [mutationError, setMutationError] = React.useState('');
+      const [removing, setRemoving] = React.useState(false);
+      const input = React.useRef(null);
+      const dropZone = React.useRef(null);
+      const mutation = React.useRef(null);
+      const revision = React.useRef(0);
+      React.useEffect(() => () => mutation.current?.abort(), []);
+      React.useLayoutEffect(() => {
+        setState((current) => current?.generation === viewportGeneration ? current : null);
+      }, [viewportGeneration]);
+      React.useEffect(() => {
+        if (!open) return undefined;
+        const controller = new AbortController();
+        let timer;
+        async function refresh() {
+          const checkpoint = revision.current;
+          if (!mutation.current) {
+            try {
+              const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);
+              const result = await getHost(BLENDER_REFERENCES_ROUTE, scope, signal);
+              if (controller.signal.aborted || checkpoint !== revision.current) return;
+              setState(result);
+              setLoadError('');
+            } catch (error) {
+              if (controller.signal.aborted || checkpoint !== revision.current) return;
+              if (['ADAPTER_DISABLED', 'SCOPE_NOT_FOUND', 'SCOPE_FORBIDDEN'].includes(error.code)) setState(null);
+              setLoadError(error.message || '无法读取参考图列表。');
+            } finally {
+              if (!controller.signal.aborted) timer = setTimeout(refresh, 2000);
+            }
+          } else {
+            timer = setTimeout(refresh, 2000);
+          }
+        }
+        void refresh();
+        return () => { controller.abort(); clearTimeout(timer); };
+      }, [open, scope, viewportGeneration]);
+
+      const generation = state?.generation;
+      const ready = Boolean(generation && !loadError && !viewportChanging);
+      const canEdit = ready && !uploading && !removing;
+      const addFiles = React.useCallback(async (files) => {
+        if (!ready || mutation.current || !files.length) return;
+        const controller = new AbortController();
+        mutation.current = controller;
+        revision.current++;
+        setUploading(true);
+        setMutationError('');
+        try {
+          for (const file of files) {
+            if (controller.signal.aborted) return;
+            if (file.size > 32 * 1024 * 1024) {
+              setMutationError(`${file.name}：参考图不能超过 32 MiB。`);
+              continue;
+            }
+            try {
+              const { item } = await requestBlenderReference('', scope, generation, controller.signal, { method: 'POST', file });
+              if (controller.signal.aborted) return;
+              setState((current) => current?.generation === generation ? { ...current, items: [...current.items, item] } : current);
+            } catch (error) {
+              if (controller.signal.aborted) return;
+              setMutationError(`${file.name}：${error.message}`);
+              if (['BLENDER_STALE_FRAME', 'ADAPTER_DISABLED', 'SCOPE_NOT_FOUND'].includes(error.code)) {
+                setState(null);
+                break;
+              }
+            }
+          }
+        } finally {
+          mutation.current = null;
+          if (!controller.signal.aborted) setUploading(false);
+        }
+      }, [generation, ready, scope]);
+
+      async function removeFile(id) {
+        if (!canEdit || mutation.current) return;
+        const controller = new AbortController();
+        mutation.current = controller;
+        revision.current++;
+        setRemoving(true);
+        setMutationError('');
+        try {
+          const result = await requestBlenderReference(`/${id}`, scope, generation, controller.signal, { method: 'DELETE' });
+          if (controller.signal.aborted) return;
+          setState((current) => current?.generation === generation ? result : current);
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          if (['BLENDER_STALE_FRAME', 'ADAPTER_DISABLED', 'SCOPE_NOT_FOUND'].includes(error.code)) setState(null);
+          setMutationError(error.message || '无法移除参考图。');
+        } finally {
+          mutation.current = null;
+          if (!controller.signal.aborted) setRemoving(false);
+        }
+      }
+
+      React.useLayoutEffect(() => {
+        if (!open) {
+          setDragging(false);
+          return undefined;
+        }
+        const zone = dropZone.current;
+        const events = ['dragenter', 'dragover', 'dragleave', 'drop'];
+        // DSH listens on document for attachment drops. Claim file drags at capture
+        // only when the reference drop zone is in the event path.
+        function handleFileDrag(event) {
+          const transfer = event.dataTransfer;
+          if (!transfer?.types.includes('Files') || !event.composedPath().includes(zone)) return;
+          event.stopPropagation();
+          if (event.type === 'dragleave') {
+            setDragging(false);
+            return;
+          }
+          event.preventDefault();
+          if (event.type === 'drop') {
+            setDragging(false);
+            if (canEdit) void addFiles(Array.from(transfer.files));
+            return;
+          }
+          transfer.dropEffect = canEdit ? 'copy' : 'none';
+          setDragging(canEdit);
+        }
+        for (const type of events) window.addEventListener(type, handleFileDrag, true);
+        return () => {
+          for (const type of events) window.removeEventListener(type, handleFileDrag, true);
+        };
+      }, [open, canEdit, addFiles]);
+
+      if (!open) return null;
+      const errors = loadError || mutationError;
+      return h(BlenderFloatingWindow, { ...windowProps, id: 'references', label: BLENDER_REFERENCES_LABEL, autoFocus: true },
+        h('div', { className: 'utb-blender-reference-body' },
+          state?.items.length > 0 && h('div', { className: 'utb-blender-reference-list' },
+            state.items.map((item, index) => h(BlenderReferenceRow, {
+              key: `${state.generation}:${item.id}`, scope, generation: state.generation, item,
+              number: index + 1, canRemove: canEdit, onRemove: removeFile,
+            }))),
+          errors && h('p', { className: 'utb-blender-reference-message', role: 'alert' }, errors),
+          h('input', { type: 'file', ref: input, hidden: true, multiple: true,
+            accept: 'image/png,image/jpeg,image/webp,image/gif,image/bmp,image/avif,.png,.jpg,.jpeg,.webp,.gif,.bmp,.avif',
+            onChange: (event) => {
+              const files = Array.from(event.currentTarget.files);
+              event.currentTarget.value = '';
+              void addFiles(files);
+            } }),
+          h('button', { type: 'button', ref: dropZone,
+            className: 'utb-blender-reference-drop' + (dragging && canEdit ? ' is-dragging' : ''),
+            'aria-disabled': !canEdit, onClick: () => { if (canEdit) input.current?.click(); },
+          }, uploading ? '正在添加参考图…' : ready ? '拖入图片，或点击选择文件'
+            : loadError ? '参考图暂不可用' : '等待 Blender 实例…')));
     }
     function BlenderViewport({ scope, visible, stage, box, imageRef, size, display, annotating, onStatus, viewportControl,
       editors, activeEditor, onActivateEditor, onCloseEditor, children }) {
@@ -3331,7 +3577,8 @@ window.__ModuleLoader__.load({
             }
             const changingViewport = !!pendingChange.current;
             onStatus((current) => ({ ...current, phase: 'ready', width: naturalWidth, height: naturalHeight, ms,
-              shading, workspace, project: presentation.project, projectScope: scope, changingViewport }));
+              shading, workspace, project: presentation.project, projectScope: scope,
+              generation: presentation.generation, changingViewport }));
             window.cancelAnimationFrame(framePaint.current);
             framePaint.current = window.requestAnimationFrame((time) => {
               if (document.visibilityState === 'hidden' || !image.isConnected
@@ -3440,6 +3687,7 @@ window.__ModuleLoader__.load({
       const [blenderDisplaySettingsVisible, setBlenderDisplaySettingsVisible] = React.useState(false);
       const [blenderEditors, setBlenderEditors] = React.useState({});
       const [activeBlenderEditor, setActiveBlenderEditor] = React.useState(null);
+      const [blenderReferenceAnchor, setBlenderReferenceAnchor] = React.useState(null);
       const captureGenerationRef = React.useRef(0);
       /**
        * 环境能力表：外壳只查表，不再按环境 id 写条件分支。
@@ -3787,6 +4035,7 @@ window.__ModuleLoader__.load({
         blenderAnnotDirtyRef.current = false;
         blenderAnnotContentSeqRef.current = 0;
         setBlenderStatus({ phase: 'idle' });
+        setBlenderReferenceAnchor(null);
       }, [identityKey]);
       React.useLayoutEffect(() => { captureGenerationRef.current += 1; }, [env]);
       const scopeRef = React.useRef(scope);
@@ -11220,6 +11469,26 @@ h('div', { className: 'utb-bar' },
             setMenu(false);
           },
         }, BLENDER_PREFERENCES_LABEL);
+        const referenceItem = h('button', {
+          type: 'button', className: 'utb-menu-item', role: 'menuitem',
+          'aria-haspopup': 'dialog', 'aria-expanded': Boolean(blenderReferenceAnchor?.open),
+          onClick: (event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            const trigger = event.currentTarget.closest('.utb-more')?.querySelector('button');
+            setBlenderReferenceAnchor({ x: rect.left, y: rect.bottom + 4, trigger, open: true });
+            setActiveBlenderEditor('references');
+            setMenu(false);
+          },
+        }, BLENDER_REFERENCES_LABEL);
+        const referenceWindow = visible && blenderReferenceAnchor && h(BlenderReferencesWindow, {
+          key: viewportKey, scope: viewportScope, viewportGeneration: blenderStatus.generation,
+          viewportChanging: !!blenderStatus.changingViewport, open: blenderReferenceAnchor.open,
+          stage, anchor: blenderReferenceAnchor, active: activeBlenderEditor === 'references',
+          onActivate: () => setActiveBlenderEditor('references'), onClose: () => {
+            setBlenderReferenceAnchor((current) => current && { ...current, open: false });
+            blenderReferenceAnchor.trigger?.focus({ preventScroll: true });
+          },
+        });
         const editorButtons = Object.entries(BLENDER_EDITORS).map(([id, { label, path }]) => openEditorButton(id, label, viewportIcon(path)));
         const displaySettingsToggle = button('显示设置', viewportIcon('M2.5 12s3.6-6 9.5-6 9.5 6 9.5 6-3.6 6-9.5 6-9.5-6-9.5-6Zm12 0a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z'),
           () => setBlenderDisplaySettingsVisible((visible) => !visible), false, {
@@ -11239,7 +11508,8 @@ h('div', { className: 'utb-bar' },
                 'aria-expanded': blenderWorkspacesVisible,
                 'aria-pressed': blenderWorkspacesVisible,
                 'data-utb-blender-workspaces-toggle': '',
-              })], preferencesItem),
+              })], h(React.Fragment, null, preferencesItem, referenceItem)),
+          referenceWindow && (reactDom?.createPortal ? reactDom.createPortal(referenceWindow, document.body, `references:${viewportKey}`) : referenceWindow),
           blenderDisplaySettingsVisible && h('div', { key: 'display-settings-bar', className: 'utb-tabs utb-blender-display-bar',
             role: 'group', 'aria-label': '显示设置', 'data-utb-blender-display-settings': '' },
           Object.entries(BLENDER_DISPLAY_SETTINGS).map(([id, label]) => openEditorButton(id, label, label,

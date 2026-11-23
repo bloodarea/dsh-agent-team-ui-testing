@@ -27,6 +27,7 @@ import { createWebInvoker } from './targets/web/invoke.js';
 import { createWebRoutes } from './targets/web/routes.js';
 import { createBlenderViewport, encodeViewportResponse, parseViewportRequest } from './targets/three-d/runtime.js';
 import { listBlenderProjects, resolveBlenderProject } from './targets/three-d/projects.js';
+import { readBlenderReference, referenceError } from './targets/three-d/references.js';
 import { createWebFramePush } from './targets/web/frame-transport.js';
 import { createWebTransition } from './targets/web/transition.js';
 import { BrowserError, Cdp, asBrowserError, checkAbort, abortable, redactUrl, redactText, validateTarget } from './browser-safety.js';
@@ -364,7 +365,7 @@ async function resolveBlenderWorkspace(ctx, scope, signal) {
   const listed = registry?.list?.();
   const workspaces = Array.isArray(listed) ? listed : [];
   const matches = workspaces.filter((item) => Array.isArray(item?.sessionIds) && item.sessionIds.includes(scope.sessionId));
-  if (matches.length > 1) return fallback;
+  if (matches.length > 1) return null;
   const directory = matches.length ? null : await readSessionDirectory(ctx, scope.sessionId, { signal });
   const cwd = directory && isAbsolute(directory) ? await realpath(directory).catch((error) => {
     if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
@@ -372,10 +373,20 @@ async function resolveBlenderWorkspace(ctx, scope, signal) {
   }) : null;
   const resolved = cwd && await registry?.resolveByPath?.(cwd);
   const workspace = matches[0] || (resolved && workspaces.find((item) => item?.id === resolved.id)) || resolved;
+  const workspaceId = workspace?.id;
+  if (!workspaceId && Array.isArray(listed)) return null;
   const directoryRoot = workspace?.path ?? workspace?.root ?? workspace?.cwd ?? workspace?.directory ?? cwd;
   const root = typeof directoryRoot === 'string' && isAbsolute(directoryRoot) ? directoryRoot : null;
-  const key = workspace?.id ? `workspace:${workspace.id}` : cwd ? `path:${cwd}` : fallback.key;
-  return { key, root };
+  const key = workspaceId ? `workspace:${workspaceId}` : cwd ? `path:${cwd}` : fallback.key;
+  return { key, root, workspaceId };
+}
+
+function blenderWorkspaceExists(ctx, workspaceId) {
+  if (!workspaceId) return true;
+  const registry = hostService(ctx, 'workspaceRegistry');
+  if (typeof registry?.get === 'function') return Boolean(registry.get(workspaceId));
+  const listed = registry?.list?.();
+  return !Array.isArray(listed) || listed.some((item) => item?.id === workspaceId);
 }
 
 /**
@@ -710,7 +721,37 @@ export function apply(ctx) {
   // control plane and the error→status mapping.
   const webRoutes = createWebRoutes({ log, registry, BrowserError, asBrowserError });
   const blenderViewport = createBlenderViewport({ configDirectory: crossEnvironment.configDirectory });
+  const blenderDisabledMessage = () => {
+    if (!crossEnvironment.isViewEnabled('three-d')) return '请先在设置中启用 3D 视图。';
+    if (!crossEnvironment.isProviderEnabled('three-d', 'blender')) return '请先在设置中启用 Blender 运行环境。';
+    return null;
+  };
+  const releaseBlender = (workspaceKey) => blenderViewport.release(workspaceKey).catch((error) => {
+    log('ui-testing: Blender instance cleanup failed: ' + String(error));
+  });
   ctx.effect(() => () => blenderViewport.dispose(), 'ui-testing: Blender viewport');
+  ctx.effect(() => crossEnvironment.onConfigChange(() => {
+    if (blenderDisabledMessage()) void releaseBlender();
+  }), 'ui-testing: Blender settings cleanup');
+  if (typeof ctx.on === 'function') ctx.on('domain/changed', (change) => {
+    if (change?.domain === 'workspace' && change.table === 'workspaces' && change.operation === 'deleted'
+        && typeof change.key === 'string' && change.key) {
+      void releaseBlender(`workspace:${change.key}`);
+    }
+  });
+
+  function rejectBlenderRequest(res, workspace) {
+    const disabled = blenderDisabledMessage();
+    if (disabled) {
+      sendJson(res, 409, { ok: false, code: 'ADAPTER_DISABLED', error: disabled });
+      return true;
+    }
+    if (workspace === null || !blenderWorkspaceExists(ctx, workspace?.workspaceId)) {
+      sendJson(res, 404, { ok: false, code: 'SCOPE_NOT_FOUND', error: '当前会话没有可用的 DSH 工作区。' });
+      return true;
+    }
+    return false;
+  }
   ctx.effect(() => () => { httpClient.dispose(); }, 'ui-testing: http client');
   /**
    * P0 capture staging root: one per plugin instance, created on first non-persistent capture and
@@ -931,39 +972,65 @@ export function apply(ctx) {
         if (status) { scopeAuthError(res, status); return; }
       }
       const blenderProjects = action === '/blender/projects' && req.method === 'GET';
-      if (blenderProjects || (action === '/blender/frame' && req.method === 'POST')) {
+      const blenderReferences = action === '/blender/references' && ['GET', 'POST'].includes(req.method);
+      const blenderReferenceImage = ['GET', 'DELETE'].includes(req.method) && /^\/blender\/references\/([1-9][0-9]{0,15})$/u.exec(action);
+      const blenderFrame = action === '/blender/frame' && req.method === 'POST';
+      if (blenderProjects || blenderReferences || blenderReferenceImage || blenderFrame) {
         if (!scoped) { scopeAuthError(res, 401); return; }
         const viewportScope = parseHttpScope(req);
-        if (!crossEnvironment.isViewEnabled('three-d')) {
-          sendJson(res, 409, { ok: false, code: 'ADAPTER_DISABLED', error: '请先在设置中启用 3D 视图。' });
-          return;
-        }
-        // Blender 是 3D 的 provider：环境总开关开着、但这一运行环境被单独关掉时，画面也不能取。
-        if (!crossEnvironment.isProviderEnabled('three-d', 'blender')) {
-          sendJson(res, 409, { ok: false, code: 'ADAPTER_DISABLED', error: '请先在设置中启用 Blender 运行环境。' });
-          return;
-        }
+        if (rejectBlenderRequest(res)) return;
         const controller = new AbortController();
         const onClose = () => controller.abort();
         res.once('close', onClose);
         try {
-          const frameRequest = blenderProjects ? null : parseViewportRequest(await readJson(req));
+          const frameRequest = blenderFrame ? parseViewportRequest(await readJson(req)) : null;
           const workspaceSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]);
-          const { key, root } = await resolveBlenderWorkspace(ctx, viewportScope, workspaceSignal);
+          const workspace = await resolveBlenderWorkspace(ctx, viewportScope, workspaceSignal);
+          if (res.destroyed || rejectBlenderRequest(res, workspace)) return;
+          if (blenderReferences || blenderReferenceImage) {
+            if (blenderReferences && req.method === 'GET') {
+              sendJson(res, 200, { ok: true, ...blenderViewport.listReferences(workspace.key) });
+              return;
+            }
+            const generation = headerValue(req.headers, 'x-dsh-blender-generation');
+            if (typeof generation !== 'string' || !/^[a-f0-9]{32}$/u.test(generation)) {
+              throw referenceError('INVALID_ARGUMENT', '参考图请求缺少 Blender 实例代次。', 400);
+            }
+            if (blenderReferenceImage) {
+              const id = Number(blenderReferenceImage[1]);
+              if (!Number.isSafeInteger(id)) throw referenceError('INVALID_ARGUMENT', '参考图编号无效。', 400);
+              if (req.method === 'DELETE') {
+                sendJson(res, 200, { ok: true, ...blenderViewport.removeReference(workspace.key, generation, id) });
+                return;
+              }
+              const image = blenderViewport.getReference(workspace.key, generation, id);
+              if (!image) throw referenceError('BLENDER_REFERENCE_NOT_FOUND', '找不到这张参考图。', 404);
+              res.writeHead(200, { 'Content-Type': image.contentType, 'Content-Length': image.bytes.length,
+                'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+              res.end(image.bytes);
+              return;
+            }
+            const reference = await readBlenderReference(req, AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]));
+            if (res.destroyed || rejectBlenderRequest(res, workspace)) return;
+            const item = blenderViewport.addReference(workspace.key, generation, reference);
+            sendJson(res, 201, { ok: true, generation, item });
+            return;
+          }
           if (blenderProjects) {
-            const value = await listBlenderProjects(root, workspaceSignal);
-            if (!res.destroyed) sendJson(res, 200, { ok: true, ...value });
+            const value = await listBlenderProjects(workspace.root, workspaceSignal);
+            if (!res.destroyed && !rejectBlenderRequest(res, workspace)) sendJson(res, 200, { ok: true, ...value });
             return;
           }
           let projectPath;
           if (frameRequest.project) {
-            projectPath = await resolveBlenderProject(root, frameRequest.project);
+            projectPath = await resolveBlenderProject(workspace.root, frameRequest.project);
+            if (res.destroyed || rejectBlenderRequest(res, workspace)) return;
             if (!projectPath) {
               sendJson(res, 404, { ok: false, code: 'BLENDER_PROJECT_INVALID', error: '当前工作区找不到这个 .blend 工程。' });
               return;
             }
           }
-          const result = await blenderViewport.frame(frameRequest, controller.signal, key, projectPath);
+          const result = await blenderViewport.frame(frameRequest, controller.signal, workspace.key, projectPath);
           if (res.destroyed) return;
           const { headers, body } = encodeViewportResponse(result);
           res.writeHead(200, headers);

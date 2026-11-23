@@ -55,7 +55,7 @@
 
 没有运行环境轴的环境（例如游戏、TUI）只存 `enabled`，写 `providers` 会被判 `CONFIG_INVALID`。关闭总开关不会改写各运行环境已保存的值，重新打开后恢复。
 
-3D 的 Blender 纯视口默认开启，因此「打开 3D 视图总开关」即可出画面；单独关掉 Blender 后，视口请求被拒绝，面板提示先在设置中启用 Blender 运行环境。门禁规则见 [Blender 纯视口](three-d/debug-panel.md#启用条件)。
+3D 的 Blender 纯视口默认开启，打开 3D 总开关即可出画面。任一开关关闭时，Host 拒绝视口请求并释放 Blender 调试实例。详见 [Blender 视口行为](three-d/debug-panel.md#视口行为)。
 
 环境 id 与显示名以 Host 目录为唯一来源：`core/config.js` 的 `environmentCatalog()`，经 `GET /config` 的 `catalog` 字段提供给面板与设置页。新增环境时先登记目录，再实现适配器；只在客户端加一个视图 id 不算接入。
 

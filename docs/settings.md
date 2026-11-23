@@ -33,6 +33,8 @@
 
 环境总开关写入 `environments.<env>.enabled`，卡片开关写入 `environments.<env>.providers.<id>.enabled`。哪些环境有运行环境轴、每个 id 的工程支持度，由 Host 的 provider 目录决定；没有该轴的环境不接受 `providers` 写入（`CONFIG_INVALID`），参见[运行环境（provider）开关](target-environments.md#运行环境provider开关)。执行端的**选择**字段仍由环境定义，参见[各目标环境的配置](target-environments.md#各目标环境的配置)。
 
+关闭 3D 总开关或 Blender 卡片开关会关闭全部 Blender 调试实例，实例中的未保存场景改动随之丢弃。重新启用后，Blender 按需启动。详见 [Blender 视口行为](three-d/debug-panel.md#视口行为)。
+
 配置默认保存在 `${DSH_HOME}/ui-testing/config.json`，可用 `DSH_UI_TESTING_CONFIG_DIR` 覆盖目录。配置快照与适配器准入见[适配器接口（adapters.md）](adapters.md#12-三者使用统一的配置快照结构)。
 
 启用配置决定工具的注册范围，当前会话的环境与能力决定执行准入；设置变更不需要重启 DSH。已注入对话历史的 Skill 正文不会自动移除，切换只影响后续轮次。完整规则见[架构（architecture.md）](architecture.md#配置驱动执行与上下文)。

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createFakeConnectionService, createHarness, startPluginHttpServer } from '../acceptance/harness.mjs';
+import { createFakeConnectionService, createFakeSessionsService, createHarness, startPluginHttpServer } from '../acceptance/harness.mjs';
 import { resolveBlenderProject } from '../../targets/three-d/projects.js';
 import { parseViewportRequest } from '../../targets/three-d/runtime.js';
 
@@ -26,9 +26,19 @@ test('the Blender project route lists the bound workspace, with relative paths a
   assert.equal(await resolveBlenderProject(root, 'linked/Outside.blend'), null);
   const peer = { id: 'owner' };
   const connection = createFakeConnectionService({ browserPeer: peer, admit: { peer } });
+  const entries = [{ id: 'workspace', path: root, sessionIds: ['project-session'] },
+    { id: 'other', path: other, sessionIds: ['other-session'] }];
+  const lookupStarted = Promise.withResolvers();
+  const lookupResult = Promise.withResolvers();
   const harness = await createHarness({ connection, configDir: config,
-    workspaceRegistry: { list: () => [{ id: 'workspace', path: root, sessionIds: ['project-session'] },
-      { id: 'other', path: other, sessionIds: ['other-session'] }] } });
+    sessions: createFakeSessionsService({ cwd: root }),
+    workspaceRegistry: {
+      list: () => entries,
+      async resolveByPath() {
+        lookupStarted.resolve();
+        return lookupResult.promise;
+      },
+    } });
   const server = await startPluginHttpServer(harness);
   try {
     const request = (identity = {}) => fetch(server.url + '/plugins/ui-testing/blender/projects', {
@@ -41,7 +51,20 @@ test('the Blender project route lists the bound workspace, with relative paths a
     assert.deepEqual(await recent.json(), { ok: true, projects: [], truncated: false });
     connection.setAdmit({ peer: { id: 'non-owner' } });
     assert.equal((await request({ 'X-UI-Testing-Session-Id': 'project-session' })).status, 403);
+    connection.setAdmit({ peer });
+    const pendingFrame = fetch(server.url + '/plugins/ui-testing/blender/frame', {
+      method: 'POST', signal: AbortSignal.timeout(5000), body: JSON.stringify({ input: [] }),
+      headers: { 'Content-Type': 'application/json', 'X-UI-Testing-Scope-Version': '1', 'X-UI-Testing-Session-Id': 'lookup-session' },
+    });
+    await Promise.race([lookupStarted.promise, pendingFrame.then(() => assert.fail('Frame returned before workspace lookup'))]);
+    const deletedWorkspace = entries.shift();
+    await harness.ctx.emit('domain/changed', { domain: 'workspace', table: 'workspaces', key: 'workspace', operation: 'deleted' });
+    lookupResult.resolve(deletedWorkspace);
+    const removed = await pendingFrame;
+    assert.equal(removed.status, 404);
+    assert.equal((await removed.json()).code, 'SCOPE_NOT_FOUND');
   } finally {
+    lookupResult.resolve(undefined);
     await server.close();
     await harness.dispose();
   }

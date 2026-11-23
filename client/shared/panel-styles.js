@@ -204,6 +204,23 @@
 .utb-blender-editor-frame { display: grid; justify-items: center; outline-offset: -2px; }
 .utb-blender-editor-frame img { display: block; max-width: 100%; max-height: calc(100dvh - max(62px, var(--utb-blender-editor-anchor-top, 0px) + 40px)); touch-action: none; user-select: none; }
 .utb-blender-editor-loading { display: block; padding: 12px; }
+.utb-blender-reference-body { display: flex; flex-direction: column; gap: 8px; padding: 10px; max-height: min(65dvh, calc(100dvh - max(60px, var(--utb-blender-editor-anchor-top, 0px) + 40px))); box-sizing: border-box; }
+.utb-blender-reference-list { display: grid; gap: 6px; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.utb-blender-reference-body > :not(.utb-blender-reference-list) { flex: none; }
+.utb-blender-reference-row { position: relative; min-width: 0; }
+.utb-blender-reference { min-width: 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; background: var(--dsw-alias-bg-layer-1); }
+.utb-blender-reference summary { padding: 7px 36px 7px 9px; cursor: pointer; }
+.utb-blender-reference-remove { position: absolute; top: 4px; right: 4px; width: 26px; height: 26px; border-radius: 4px; color: var(--dsw-alias-label-secondary); }
+.utb-blender-reference-remove:disabled { opacity: .5; cursor: default; }
+.utb-blender-reference summary:hover { background: var(--dsw-alias-bg-layer-3); }
+.utb-blender-reference small { display: block; margin-left: 14px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.utb-blender-reference img { display: block; width: auto; height: auto; max-width: calc(100% - 16px); max-height: 48dvh; object-fit: contain; margin: 0 auto 8px; }
+.utb-blender-reference > [role="status"] { display: block; padding: 0 9px 8px; color: var(--dsw-alias-label-secondary); }
+.utb-blender-reference-message { margin: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); }
+.utb-blender-reference-drop { min-height: 62px; padding: 8px; border: 1px dashed var(--dsw-alias-border-l2, var(--dsw-alias-border-l1)); border-radius: 6px; color: var(--dsw-alias-label-secondary); background: transparent; font: inherit; cursor: pointer; }
+.utb-blender-reference-drop:hover:not([aria-disabled="true"]), .utb-blender-reference-drop.is-dragging { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-3); border-color: var(--dsw-alias-brand-primary); }
+.utb-blender-reference-drop:focus-visible, .utb-blender-reference summary:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.utb-blender-reference-drop[aria-disabled="true"] { cursor: default; }
 
 .utb-noview { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; }
 .utb-noview-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: var(--dsw-alias-label-tertiary); background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent); }

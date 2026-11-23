@@ -302,7 +302,8 @@
             }
             const changingViewport = !!pendingChange.current;
             onStatus((current) => ({ ...current, phase: 'ready', width: naturalWidth, height: naturalHeight, ms,
-              shading, workspace, project: presentation.project, projectScope: scope, changingViewport }));
+              shading, workspace, project: presentation.project, projectScope: scope,
+              generation: presentation.generation, changingViewport }));
             window.cancelAnimationFrame(framePaint.current);
             framePaint.current = window.requestAnimationFrame((time) => {
               if (document.visibilityState === 'hidden' || !image.isConnected

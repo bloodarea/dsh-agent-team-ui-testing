@@ -28,6 +28,26 @@
             setMenu(false);
           },
         }, BLENDER_PREFERENCES_LABEL);
+        const referenceItem = h('button', {
+          type: 'button', className: 'utb-menu-item', role: 'menuitem',
+          'aria-haspopup': 'dialog', 'aria-expanded': Boolean(blenderReferenceAnchor?.open),
+          onClick: (event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            const trigger = event.currentTarget.closest('.utb-more')?.querySelector('button');
+            setBlenderReferenceAnchor({ x: rect.left, y: rect.bottom + 4, trigger, open: true });
+            setActiveBlenderEditor('references');
+            setMenu(false);
+          },
+        }, BLENDER_REFERENCES_LABEL);
+        const referenceWindow = visible && blenderReferenceAnchor && h(BlenderReferencesWindow, {
+          key: viewportKey, scope: viewportScope, viewportGeneration: blenderStatus.generation,
+          viewportChanging: !!blenderStatus.changingViewport, open: blenderReferenceAnchor.open,
+          stage, anchor: blenderReferenceAnchor, active: activeBlenderEditor === 'references',
+          onActivate: () => setActiveBlenderEditor('references'), onClose: () => {
+            setBlenderReferenceAnchor((current) => current && { ...current, open: false });
+            blenderReferenceAnchor.trigger?.focus({ preventScroll: true });
+          },
+        });
         const editorButtons = Object.entries(BLENDER_EDITORS).map(([id, { label, path }]) => openEditorButton(id, label, viewportIcon(path)));
         const displaySettingsToggle = button('显示设置', viewportIcon('M2.5 12s3.6-6 9.5-6 9.5 6 9.5 6-3.6 6-9.5 6-9.5-6-9.5-6Zm12 0a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z'),
           () => setBlenderDisplaySettingsVisible((visible) => !visible), false, {
@@ -47,7 +67,8 @@
                 'aria-expanded': blenderWorkspacesVisible,
                 'aria-pressed': blenderWorkspacesVisible,
                 'data-utb-blender-workspaces-toggle': '',
-              })], preferencesItem),
+              })], h(React.Fragment, null, preferencesItem, referenceItem)),
+          referenceWindow && (reactDom?.createPortal ? reactDom.createPortal(referenceWindow, document.body, `references:${viewportKey}`) : referenceWindow),
           blenderDisplaySettingsVisible && h('div', { key: 'display-settings-bar', className: 'utb-tabs utb-blender-display-bar',
             role: 'group', 'aria-label': '显示设置', 'data-utb-blender-display-settings': '' },
           Object.entries(BLENDER_DISPLAY_SETTINGS).map(([id, label]) => openEditorButton(id, label, label,

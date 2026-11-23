@@ -24,6 +24,7 @@ const sources = [
   'panel/session-binding.js',
   'blender/controls.js',
   'blender/projects.js',
+  'blender/references.js',
   'blender/viewport.js',
   'panel/state.jsfrag',
   'panel/target-and-address.js',

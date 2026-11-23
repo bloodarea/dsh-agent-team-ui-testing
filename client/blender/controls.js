@@ -68,11 +68,15 @@
       }));
     }
 
-    function BlenderEditorWindow({ id, image, stage, anchor, active, onActivate, onClose, onInput }) {
+    function BlenderEditorWindow({ id, image, onInput, ...windowProps }) {
       const preferences = id === 'preferences';
       const displaySetting = BLENDER_DISPLAY_SETTINGS[id];
-      const contentSized = preferences || Boolean(displaySetting);
       const label = preferences ? BLENDER_PREFERENCES_LABEL : BLENDER_EDITORS[id]?.label || displaySetting;
+      return h(BlenderFloatingWindow, { ...windowProps, id, label, contentSized: preferences || Boolean(displaySetting) },
+        h(BlenderEditorFrame, { id, label, image, onInput, className: 'utb-blender-editor-frame' }));
+    }
+
+    function BlenderFloatingWindow({ id, label, contentSized, stage, anchor, active, onActivate, onClose, autoFocus, children }) {
       const panel = React.useRef(null);
       const drag = React.useRef(null);
       const [initialPosition] = React.useState(() => {
@@ -83,7 +87,8 @@
       const [dragPosition, setDragPosition] = React.useState(null);
       const position = dragPosition ?? initialPosition;
       // Leave room for the title and some content even when the button is near the bottom edge.
-      const anchorTop = anchor ? `clamp(0px, ${anchor.y}px, max(0px, calc(100dvh - 88px)))` : undefined;
+      const minimumClearance = id === 'references' ? 160 : 88;
+      const anchorTop = anchor ? `clamp(0px, ${anchor.y}px, max(0px, calc(100dvh - ${minimumClearance}px)))` : undefined;
       const [bounds, setBounds] = React.useState({ width: 382, height: 36 });
       React.useLayoutEffect(() => {
         const element = panel.current;
@@ -97,8 +102,19 @@
         return () => observer.disconnect();
       }, []);
 
+      React.useEffect(() => {
+        if (autoFocus) panel.current?.focus({ preventScroll: true });
+      }, [autoFocus, anchor]);
+
       return h('section', { ref: panel, className: `utb-blender-editor${contentSized ? ' is-content-sized' : ''}`,
         role: 'dialog', 'aria-label': label, 'data-utb-blender-editor': id, onPointerDown: onActivate, onFocus: onActivate,
+        tabIndex: autoFocus ? -1 : undefined,
+        onKeyDown: autoFocus ? (event) => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          event.stopPropagation();
+          onClose();
+        } : undefined,
         style: { '--utb-blender-editor-anchor-top': anchorTop,
           left: `clamp(0px, ${position.x}px, max(0px, calc(100vw - ${bounds.width}px)))`,
           top: !dragPosition && anchorTop ? anchorTop : `clamp(0px, ${position.y}px, max(0px, calc(100dvh - ${bounds.height}px)))`,
@@ -118,7 +134,7 @@
           onLostPointerCapture: () => { drag.current = null; },
         }, h('span', null, label),
         h('button', { type: 'button', className: 'utb-blender-editor-close', 'aria-label': `关闭${label}`, onClick: onClose }, '×')),
-        h(BlenderEditorFrame, { id, label, image, onInput, className: 'utb-blender-editor-frame' }));
+        children);
     }
 
     function BlenderEditorFrame({ id, label, image, onInput, className }) {

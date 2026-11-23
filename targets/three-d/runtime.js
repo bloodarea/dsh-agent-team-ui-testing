@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { blenderDesktopLaunch } from './hidden-window.js';
 import { isBlenderProjectName } from './projects.js';
+import { createBlenderReferences, referenceError } from './references.js';
 
 const SCRIPT = fileURLToPath(new URL('./viewport.py', import.meta.url));
 const SIZE = [960, 540];
@@ -277,38 +278,70 @@ export function encodeViewportResponse(result) {
 
 export function createBlenderViewport(options = {}) {
   const instances = new Map();
-  const lifetime = new AbortController();
   let disposing;
+
+  async function release(workspaceKey) {
+    const keys = workspaceKey === undefined ? [...instances.keys()] : [workspaceKey];
+    const results = await Promise.allSettled(keys.map(async (key) => {
+      const instance = instances.get(key);
+      if (!instance) return;
+      try {
+        await instance.dispose();
+      } finally {
+        if (instances.get(key) === instance) instances.delete(key);
+      }
+    }));
+    const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+    if (failures.length) throw new AggregateError(failures, 'Failed to dispose Blender workspace instances');
+  }
+
+  function referencesFor(workspaceKey, generation) {
+    const references = instances.get(workspaceKey)?.references();
+    if (generation !== undefined && (!references || references.generation !== generation)) {
+      throw referenceError('BLENDER_STALE_FRAME', 'Blender 实例已更换，请重新选择参考图。', 409);
+    }
+    return references;
+  }
+
   return {
+    listReferences(workspaceKey) {
+      return referencesFor(workspaceKey)?.list() ?? { generation: null, items: [] };
+    },
+    addReference(workspaceKey, generation, reference) {
+      return referencesFor(workspaceKey, generation).add(reference);
+    },
+    getReference(workspaceKey, generation, id) {
+      return referencesFor(workspaceKey, generation).get(id);
+    },
+    removeReference(workspaceKey, generation, id) {
+      return referencesFor(workspaceKey, generation).remove(id);
+    },
     frame(request, signal, workspaceKey = 'recent', projectPath) {
-      if (lifetime.signal.aborted || signal.aborted) {
+      if (disposing || signal.aborted) {
         return Promise.reject(new ViewportError('ABORTED', 'Blender 视口请求已取消。', 499));
       }
       let instance = instances.get(workspaceKey);
       if (!instance) {
-        instance = createBlenderInstance(options, lifetime.signal);
+        instance = createBlenderInstance(options);
         instances.set(workspaceKey, instance);
       }
       return instance.frame(request, projectPath);
     },
+    release,
     dispose() {
-      if (disposing) return disposing;
-      lifetime.abort();
-      disposing = Promise.allSettled([...instances.values()].map((instance) => instance.dispose())).then((results) => {
-        instances.clear();
-        const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
-        if (failures.length) throw new AggregateError(failures, 'Failed to dispose Blender workspace instances');
-      });
+      disposing ??= release();
       return disposing;
     },
   };
 }
 
-function createBlenderInstance({ platform = process.platform, configDirectory }, lifetimeSignal) {
+function createBlenderInstance({ platform = process.platform, configDirectory }) {
   const preferencesDirectory = configDirectory ? resolve(configDirectory, 'blender') : null;
+  const lifetime = new AbortController();
   let runtime;
   let active;
   let stopping;
+  let disposing;
 
   function stop() {
     if (!runtime) return stopping;
@@ -346,6 +379,7 @@ function createBlenderInstance({ platform = process.platform, configDirectory },
       windows ? Promise.resolve(null) : executable(process.env.DSH_UI_TESTING_XVFB, 'Xvfb', platform),
       executable(process.env.DSH_UI_TESTING_BLENDER, 'blender', platform),
     ]);
+    signal.throwIfAborted();
     if (preferencesDirectory) {
       try {
         await mkdir(preferencesDirectory, { recursive: true, mode: 0o700 });
@@ -400,7 +434,9 @@ function createBlenderInstance({ platform = process.platform, configDirectory },
     runtime.blender = startProcess(launch.executable, launch.args, {
       cwd: root, env: launch.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
-    return runtime;
+    const current = runtime;
+    void current.blender.closed.then(() => { current.references = undefined; });
+    return current;
   }
 
   async function render(request, projectPath) {
@@ -409,7 +445,7 @@ function createBlenderInstance({ platform = process.platform, configDirectory },
       throw new ViewportError('BLENDER_STALE_FRAME', 'Blender 视口已重启或切换，请在新画面上操作。', 409);
     }
     // An HTTP disconnect must not interrupt an operation already sent to a shared instance.
-    const signal = AbortSignal.any([lifetimeSignal, AbortSignal.timeout(TIMEOUT_MS)]);
+    const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(TIMEOUT_MS)]);
     try {
       if (request.reload) await stop();
       const current = await ensure(signal, projectPath);
@@ -434,9 +470,11 @@ function createBlenderInstance({ platform = process.platform, configDirectory },
         throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 未能生成 3D 视口图像。', 502);
       }
       const png = await readViewportPng(current.frame);
+      signal.throwIfAborted();
       if (png.readUInt32BE(16) !== request.size[0] || png.readUInt32BE(20) !== request.size[1]) {
         throw new ViewportError('BLENDER_FRAME_FAILED', 'Blender 返回的实际分辨率与请求不符。', 502);
       }
+      current.references ??= createBlenderReferences(current.generation);
       if (!interactive) return png;
       const content = [xValue, yValue, widthValue, heightValue].map(Number);
       const [x, y, width, height] = content;
@@ -447,6 +485,7 @@ function createBlenderInstance({ platform = process.platform, configDirectory },
       const editors = await Promise.all(names.map(async (id) => ({
         id, png: await readViewportPng(join(current.root, `editor-${id}.png`)),
       })));
+      signal.throwIfAborted();
       return { png, content, generation: current.generation, shading, workspace, editors,
         project: current.project, playing: playback === 'playing' };
     } catch (error) {
@@ -459,8 +498,12 @@ function createBlenderInstance({ platform = process.platform, configDirectory },
   }
 
   return {
+    references() {
+      if (disposing || !runtime?.blender || runtime.blender.child.exitCode !== null || runtime.blender.child.signalCode !== null) return undefined;
+      return runtime.references;
+    },
     async frame(request, projectPath) {
-      if (active) throw new ViewportError('BLENDER_BUSY', '当前工作区的 Blender 视口正在生成画面。', 409);
+      if (disposing || active) throw new ViewportError('BLENDER_BUSY', '当前工作区的 Blender 视口正在处理请求。', 409);
       active = render(request, projectPath);
       try {
         return await active;
@@ -468,9 +511,13 @@ function createBlenderInstance({ platform = process.platform, configDirectory },
         active = undefined;
       }
     },
-    async dispose() {
-      await active?.catch(() => {});
-      await stop();
+    dispose() {
+      lifetime.abort();
+      disposing ??= (async () => {
+        await active?.catch(() => {});
+        await stop();
+      })();
+      return disposing;
     },
   };
 }
