@@ -1,0 +1,33 @@
+{
+  "type": "object",
+  "properties": {
+    "sceneId": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneId"
+    },
+    "childId": {
+      "type": "string",
+      "pattern": "^(obj|part)_[a-z][a-z0-9_]{0,47}$"
+    },
+    "parentId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(obj|part)_[a-z][a-z0-9_]{0,47}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "sceneId",
+    "childId",
+    "parentId"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:operation:object.parent:v1",
+  "title": "object.parent v1 args",
+  "description": "Closed operation arguments; contract unit is the Blender scene unit unless otherwise specified."
+}

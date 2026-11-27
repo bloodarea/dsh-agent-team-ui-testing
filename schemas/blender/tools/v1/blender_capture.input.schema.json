@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "capture"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "targetId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/targetId"
+        },
+        "generation": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/generation"
+        },
+        "source": {
+          "enum": [
+            "agentView",
+            "humanView",
+            "checkpoint"
+          ]
+        },
+        "editorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "checkpointId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "cameraId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "size": {
+          "type": "object",
+          "properties": {
+            "width": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8192
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8192
+            }
+          },
+          "required": [
+            "width",
+            "height"
+          ],
+          "additionalProperties": false
+        },
+        "expectViewRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "sequence": {
+          "type": "object",
+          "properties": {
+            "start": {
+              "type": "integer"
+            },
+            "end": {
+              "type": "integer"
+            },
+            "step": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "start",
+            "end",
+            "step"
+          ],
+          "additionalProperties": false
+        },
+        "budget": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/unitBudget"
+        },
+        "grantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "action",
+        "targetId",
+        "generation",
+        "source"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$id": "urn:dsh:blender:tool:blender_capture:input:v1",
+  "title": "blender_capture v1 input",
+  "$defs": {
+    "opStep": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneOp"
+    }
+  }
+}

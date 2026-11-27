@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:reference-analysis:request:v1",
+  "title": "Reference analysis request v1",
+  "allOf": [
+    {
+      "$ref": "urn:dsh:blender:tool:blender_reference_analyze:input:v1#/oneOf/0"
+    }
+  ]
+}

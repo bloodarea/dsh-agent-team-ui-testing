@@ -1,0 +1,450 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:common:1",
+  "title": "Blender shared closed schema primitives",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,95}$"
+    },
+    "targetId": {
+      "type": "string",
+      "pattern": "^target_[a-z][a-z0-9_]{0,47}$"
+    },
+    "sceneId": {
+      "type": "string",
+      "pattern": "^scn_[a-z][a-z0-9_]{0,47}$"
+    },
+    "objectId": {
+      "type": "string",
+      "pattern": "^obj_[a-z][a-z0-9_]{0,47}$"
+    },
+    "partId": {
+      "type": "string",
+      "pattern": "^part_[a-z][a-z0-9_]{0,47}$"
+    },
+    "materialId": {
+      "type": "string",
+      "pattern": "^mat_[a-z][a-z0-9_]{0,47}$"
+    },
+    "artifactId": {
+      "type": "string",
+      "pattern": "^art_[a-z][a-z0-9_]{0,47}$"
+    },
+    "evidenceId": {
+      "type": "string",
+      "pattern": "^ev_[a-z][a-z0-9_]{0,47}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "positiveInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "finiteNumber": {
+      "type": "number"
+    },
+    "vec3": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "positiveVec3": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "quatWxyz": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 4,
+      "maxItems": 4,
+      "unitQuaternion": true
+    },
+    "live": {
+      "type": "object",
+      "properties": {
+        "targetId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/targetId"
+        },
+        "generation": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/generation"
+        }
+      },
+      "required": [
+        "targetId",
+        "generation"
+      ],
+      "additionalProperties": false
+    },
+    "write": {
+      "type": "object",
+      "properties": {
+        "targetId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/targetId"
+        },
+        "generation": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/generation"
+        },
+        "expectSceneRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "leaseId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expectControlRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "idemKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "grantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "targetId",
+        "generation",
+        "expectSceneRevision",
+        "leaseId",
+        "expectControlRevision",
+        "idemKey",
+        "grantId"
+      ],
+      "additionalProperties": false
+    },
+    "viewWrite": {
+      "type": "object",
+      "properties": {
+        "targetId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/targetId"
+        },
+        "generation": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/generation"
+        },
+        "expectViewRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "leaseId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expectControlRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "idemKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "grantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "targetId",
+        "generation",
+        "expectViewRevision",
+        "leaseId",
+        "expectControlRevision",
+        "idemKey",
+        "grantId"
+      ],
+      "additionalProperties": false
+    },
+    "sceneOp": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "opId": {
+              "const": "collection.ensure"
+            },
+            "opVersion": {
+              "const": 1
+            },
+            "args": {
+              "$ref": "urn:dsh:blender:operation:collection.ensure:v1"
+            },
+            "stepId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            }
+          },
+          "required": [
+            "opId",
+            "opVersion",
+            "args",
+            "stepId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "opId": {
+              "const": "object.ensure"
+            },
+            "opVersion": {
+              "const": 1
+            },
+            "args": {
+              "$ref": "urn:dsh:blender:operation:object.ensure:v1"
+            },
+            "stepId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            }
+          },
+          "required": [
+            "opId",
+            "opVersion",
+            "args",
+            "stepId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "opId": {
+              "const": "object.parent"
+            },
+            "opVersion": {
+              "const": 1
+            },
+            "args": {
+              "$ref": "urn:dsh:blender:operation:object.parent:v1"
+            },
+            "stepId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            }
+          },
+          "required": [
+            "opId",
+            "opVersion",
+            "args",
+            "stepId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "opId": {
+              "const": "object.transform"
+            },
+            "opVersion": {
+              "const": 1
+            },
+            "args": {
+              "$ref": "urn:dsh:blender:operation:object.transform:v1"
+            },
+            "stepId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            }
+          },
+          "required": [
+            "opId",
+            "opVersion",
+            "args",
+            "stepId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "opId": {
+              "const": "mesh.primitive"
+            },
+            "opVersion": {
+              "const": 1
+            },
+            "args": {
+              "$ref": "urn:dsh:blender:operation:mesh.primitive:v1"
+            },
+            "stepId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            }
+          },
+          "required": [
+            "opId",
+            "opVersion",
+            "args",
+            "stepId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "opId": {
+              "const": "object.remove"
+            },
+            "opVersion": {
+              "const": 1
+            },
+            "args": {
+              "$ref": "urn:dsh:blender:operation:object.remove:v1"
+            },
+            "stepId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            }
+          },
+          "required": [
+            "opId",
+            "opVersion",
+            "args",
+            "stepId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "opId": {
+              "const": "material.ensure"
+            },
+            "opVersion": {
+              "const": 1
+            },
+            "args": {
+              "$ref": "urn:dsh:blender:operation:material.ensure:v1"
+            },
+            "stepId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            }
+          },
+          "required": [
+            "opId",
+            "opVersion",
+            "args",
+            "stepId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "opId": {
+              "const": "material.assign"
+            },
+            "opVersion": {
+              "const": 1
+            },
+            "args": {
+              "$ref": "urn:dsh:blender:operation:material.assign:v1"
+            },
+            "stepId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            }
+          },
+          "required": [
+            "opId",
+            "opVersion",
+            "args",
+            "stepId"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "envelope": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "data": {
+          "type": "object"
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:dsh:blender:common:1#/$defs/evidenceId"
+          },
+          "minItems": 0,
+          "maxItems": 128
+        },
+        "effectState": {
+          "enum": [
+            "none",
+            "partial",
+            "committed",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "ok",
+        "data",
+        "evidenceIds",
+        "effectState"
+      ],
+      "additionalProperties": false
+    },
+    "unitBudget": {
+      "type": "object",
+      "properties": {
+        "maxTotalPixels": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000000
+        },
+        "maxOutputBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        }
+      },
+      "required": [
+        "maxTotalPixels",
+        "maxOutputBytes"
+      ],
+      "additionalProperties": false
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 30000
+    }
+  }
+}

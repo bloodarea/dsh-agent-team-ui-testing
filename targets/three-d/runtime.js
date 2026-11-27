@@ -123,8 +123,22 @@ async function executable(override, name, platform = process.platform) {
   throw new ViewportError('BLENDER_DEPENDENCY_MISSING', `找不到可执行文件 ${name}。`, 503);
 }
 
-function startProcess(path, args, options) {
-  const child = spawn(path, args, options);
+async function probeBlender(options = {}) {
+  const path = await executable(options.blenderExecutable || process.env.DSH_UI_TESTING_BLENDER, 'blender', options.platform || process.platform);
+  const execute = options.execFile || execFile;
+  const result = await new Promise((resolve, reject) => {
+    execute(path, ['--version'], { windowsHide: true, timeout: 10_000, encoding: 'utf8' }, (error, stdout, stderr) => {
+      if (error) return reject(new ViewportError('BLENDER_PROBE_FAILED', '无法查询 Blender 版本。', 503));
+      resolve(`${stdout || ''}\n${stderr || ''}`);
+    });
+  });
+  const version = /Blender\s+(\d+\.\d+\.\d+)/u.exec(result)?.[1];
+  if (!version) throw new ViewportError('BLENDER_PROBE_FAILED', 'Blender --version 输出无法识别。', 503);
+  return { available: true, path, version, baseline: '5.3.0', compatible: versionAtLeast(version) };
+}
+
+function startProcess(path, args, options, spawnProcess = spawn) {
+  const child = spawnProcess(path, args, options);
   const closed = new Promise((resolve) => {
     child.once('close', resolve);
   });
@@ -168,6 +182,19 @@ const EDITORS = new Set(['outliner', 'properties', 'select-visibility', 'gizmos'
 const SHADING_TYPES = new Set(['WIREFRAME', 'SOLID', 'MATERIAL', 'RENDERED']);
 const BLENDER_WORKSPACES = new Set(['layout', 'modeling', 'sculpting', 'uv-editing', 'texture-paint',
   'shading', 'animation', 'rendering', 'compositing']);
+const COMMAND_OPS = new Set(['hello', 'scene.query', 'scene.apply', 'project.save', 'view.get', 'view.set']);
+const SCENE_OPS = new Set(['collection.ensure', 'object.ensure', 'object.parent', 'object.transform',
+  'mesh.primitive', 'object.remove', 'material.ensure', 'material.assign']);
+const BASELINE_VERSION = [5, 3, 0];
+
+function versionAtLeast(version, baseline = BASELINE_VERSION) {
+  const actual = String(version || '').split('.').slice(0, 3).map(Number);
+  if (actual.length !== 3 || actual.some((part) => !Number.isInteger(part))) return false;
+  for (let index = 0; index < baseline.length; index += 1) {
+    if (actual[index] !== baseline[index]) return actual[index] > baseline[index];
+  }
+  return true;
+}
 
 function parseViewportInput(input, editors) {
   const invalid = () => new ViewportError('INVALID_ARGUMENT', 'Blender 鼠标事件无效。', 400);
@@ -304,6 +331,13 @@ export function createBlenderViewport(options = {}) {
   }
 
   return {
+    // Read-only inventory: never creates an instance or exposes its internal token.
+    listRunning() {
+      return [...instances].map(([workspaceKey, instance]) => {
+        const current = instance.status(workspaceKey);
+        return { workspaceKey, pid: current.pid, connected: current.connection?.connected === true };
+      }).filter(instance => instance.connected);
+    },
     listReferences(workspaceKey) {
       return referencesFor(workspaceKey)?.list() ?? { generation: null, items: [] };
     },
@@ -327,6 +361,26 @@ export function createBlenderViewport(options = {}) {
       }
       return instance.frame(request, projectPath);
     },
+    command(request, signal, workspaceKey = 'recent', projectPath) {
+      if (disposing || signal?.aborted) {
+        return Promise.reject(new ViewportError('ABORTED', 'Blender 命令已取消。', 499));
+      }
+      let instance = instances.get(workspaceKey);
+      if (!instance) {
+        instance = createBlenderInstance(options);
+        instances.set(workspaceKey, instance);
+      }
+      return instance.command(request, signal, projectPath);
+    },
+    probe() {
+      return probeBlender(options);
+    },
+    status(workspaceKey = 'recent') {
+      return instances.get(workspaceKey)?.status(workspaceKey) ?? {
+        workspaceKey, state: 'cold', internalToken: null, pid: null,
+        connection: { connected: false, runtimeGeneration: null, hello: null, lastCommand: null }, busy: false,
+      };
+    },
     release,
     dispose() {
       disposing ??= release();
@@ -335,13 +389,16 @@ export function createBlenderViewport(options = {}) {
   };
 }
 
-function createBlenderInstance({ platform = process.platform, configDirectory }) {
+function createBlenderInstance(options = {}) {
+  const { platform = process.platform, configDirectory } = options;
   const preferencesDirectory = configDirectory ? resolve(configDirectory, 'blender') : null;
   const lifetime = new AbortController();
   let runtime;
   let active;
   let stopping;
   let disposing;
+  const internalToken = randomBytes(24).toString('hex');
+  let lastCommand = null;
 
   function stop() {
     if (!runtime) return stopping;
@@ -376,8 +433,8 @@ function createBlenderInstance({ platform = process.platform, configDirectory })
     }
     // Windows draws into a real window, so there is no virtual display to start.
     const [xvfb, blender] = await Promise.all([
-      windows ? Promise.resolve(null) : executable(process.env.DSH_UI_TESTING_XVFB, 'Xvfb', platform),
-      executable(process.env.DSH_UI_TESTING_BLENDER, 'blender', platform),
+      windows ? Promise.resolve(null) : executable(options.xvfbExecutable || process.env.DSH_UI_TESTING_XVFB, 'Xvfb', platform),
+      executable(options.blenderExecutable || process.env.DSH_UI_TESTING_BLENDER, 'blender', platform),
     ]);
     signal.throwIfAborted();
     if (preferencesDirectory) {
@@ -390,7 +447,7 @@ function createBlenderInstance({ platform = process.platform, configDirectory })
     const root = await mkdtemp(join(tmpdir(), 'dsh-blender-viewport-'));
     const frame = join(root, 'frame.png');
     const authority = join(root, 'authority');
-    runtime = { root, frame };
+    runtime = { root, frame, runtimeGeneration: randomBytes(16).toString('hex'), projectPath: projectPath || process.env.DSH_UI_TESTING_BLEND_FILE || null };
 
     const env = { ...process.env, LIBGL_ALWAYS_SOFTWARE: process.env.LIBGL_ALWAYS_SOFTWARE || '1',
       LP_NUM_THREADS: process.env.LP_NUM_THREADS || '4' };
@@ -413,7 +470,7 @@ function createBlenderInstance({ platform = process.platform, configDirectory })
       signal.throwIfAborted();
       runtime.display = startProcess(xvfb, [
         '-displayfd', '1', '-screen', '0', `${SIZE[0]}x${SIZE[1]}x24`, '-nolisten', 'tcp', '-auth', authority,
-      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      ], { stdio: ['ignore', 'pipe', 'pipe'] }, options.spawnProcess || spawn);
       const display = await lineFrom(runtime.display, (line) => /^\d+$/.test(line) ? line : undefined, signal);
       env.DISPLAY = ':' + display;
       env.XAUTHORITY = authority;
@@ -433,13 +490,23 @@ function createBlenderInstance({ platform = process.platform, configDirectory })
     const launch = windows ? blenderDesktopLaunch(blender, args, env) : { executable: blender, args, env };
     runtime.blender = startProcess(launch.executable, launch.args, {
       cwd: root, env: launch.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    }, options.spawnProcess || spawn);
     const current = runtime;
     void current.blender.closed.then(() => { current.references = undefined; });
     return current;
   }
 
   async function render(request, projectPath) {
+    // HTTP frames use [width, height]; agent capture uses the schema's named size.
+    const size = Array.isArray(request.size) ? request.size
+      : (request.size && Number.isInteger(request.size.width) && Number.isInteger(request.size.height)
+        ? [request.size.width, request.size.height] : request.size);
+    if (!Array.isArray(size) || size.length !== 2
+        || !size.every((value) => Number.isInteger(value) && value >= 200 && value <= 4096)
+        || size[0] * size[1] > MAX_PIXELS) {
+      throw new ViewportError('INVALID_ARGUMENT', '3D 分辨率须为 200–4096 像素，总面积不超过 8,388,608 像素。', 400);
+    }
+    request = { ...request, size };
     const interactive = request.input !== undefined;
     if (interactive && request.generation !== undefined && runtime?.generation !== request.generation) {
       throw new ViewportError('BLENDER_STALE_FRAME', 'Blender 视口已重启或切换，请在新画面上操作。', 409);
@@ -497,7 +564,127 @@ function createBlenderInstance({ platform = process.platform, configDirectory })
     }
   }
 
+  async function runCommand(request, projectPath, waitSignal) {
+    const bootSignal = lifetime.signal;
+    const current = await ensure(bootSignal, projectPath);
+    if (!current.hello && request.op !== 'hello') {
+      throw new ViewportError('BLENDER_HANDSHAKE_REQUIRED', '请先对当前 Blender 实例执行 hello 握手。', 409);
+    }
+    if (request.runtimeGeneration !== undefined && request.runtimeGeneration !== current.runtimeGeneration) {
+      throw new ViewportError('BLENDER_STALE_RUNTIME', 'Blender 实例已更换，请刷新运行时状态。', 409);
+    }
+    if (waitSignal.aborted) {
+      throw new ViewportError('BLENDER_COMMAND_NOT_SENT', '命令已在发送前取消。', 499);
+    }
+    const envelope = {
+      channel: 'command', id: request.id, targetId: request.targetId,
+      generation: request.generation, runtimeGeneration: current.runtimeGeneration,
+      op: request.op, payload: request.payload,
+    };
+    const pending = lineFrom(current.blender, (line) => {
+      const match = /^DSH_VIEWPORT command (.+)$/u.exec(line);
+      if (!match) return undefined;
+      try { return JSON.parse(match[1]); } catch { return { malformed: true }; }
+    }, bootSignal);
+    lastCommand = { id: request.id, op: request.op, state: 'sent' };
+    current.blender.child.stdin.write(JSON.stringify(envelope) + '\n');
+    const response = await pending;
+    const fields = ['id', 'targetId', 'generation', 'runtimeGeneration'];
+    if (response.malformed || response.channel !== 'command-reply'
+        || fields.some((key) => response[key] !== envelope[key])) {
+      lastCommand = { id: request.id, op: request.op, state: 'unknown', reason: 'identity-mismatch' };
+      throw new ViewportError('BLENDER_PROTOCOL_MISMATCH', 'Blender 命令回复身份不匹配，效果未知。', 502);
+    }
+    if (!response.ok) {
+      lastCommand = { id: request.id, op: request.op, state: 'failed' };
+      throw new ViewportError(response.error?.code || 'BLENDER_COMMAND_FAILED', response.error?.message || 'Blender 命令失败。', 422);
+    }
+    if (request.op === 'hello'
+        && (!versionAtLeast(response.result?.version)
+          || !Array.isArray(response.result?.supportedOps)
+          || response.result.supportedOps.length !== SCENE_OPS.size
+          || response.result.supportedOps.some((op) => !SCENE_OPS.has(op)))) {
+      lastCommand = { id: request.id, op: request.op, state: 'failed', reason: 'runtime-capability-mismatch' };
+      throw new ViewportError('BLENDER_VERSION_UNSUPPORTED', 'Blender 版本或受控 op 清单不兼容。', 503);
+    }
+    if (request.op === 'hello') {
+      current.hello = { version: response.result.version, supportedOps: [...response.result.supportedOps] };
+    }
+    lastCommand = { id: request.id, op: request.op, state: 'succeeded' };
+    return response.result;
+  }
+
+  function command(request, signal, projectPath) {
+    const fail = (code, message, status = 400) => Promise.reject(new ViewportError(code, message, status));
+    if (disposing || lifetime.signal.aborted) return fail('ABORTED', 'Blender 命令已取消。', 499);
+    if (active) return fail('BLENDER_BUSY', '当前工作区的 Blender 实例正在处理请求。', 409);
+    if (!request || typeof request !== 'object' || Array.isArray(request)
+        || Object.keys(request).some((key) => !['id', 'targetId', 'generation', 'runtimeGeneration', 'op', 'payload'].includes(key))
+        || !['id', 'targetId', 'generation', 'op', 'payload'].every((key) => key in request)
+        || typeof request.id !== 'string' || !request.id || request.id.length > 128
+        || typeof request.targetId !== 'string' || !request.targetId || request.targetId.length > 128
+        || !(typeof request.generation === 'string' && request.generation.length > 0 && request.generation.length <= 128)
+          && !(Number.isSafeInteger(request.generation) && request.generation > 0)
+        || (request.runtimeGeneration !== undefined && typeof request.runtimeGeneration !== 'string')
+        || !COMMAND_OPS.has(request.op) || !request.payload || typeof request.payload !== 'object' || Array.isArray(request.payload)
+        || Buffer.byteLength(JSON.stringify(request.payload)) > 1_048_576) {
+      return fail('INVALID_ARGUMENT', 'Blender 命令请求无效。');
+    }
+    if (request.op === 'scene.apply' && (!Array.isArray(request.payload.ops) || request.payload.ops.length > 32
+        || request.payload.ops.some((item) => !SCENE_OPS.has(item?.opId)))) {
+      return fail('INVALID_ARGUMENT', 'Blender 场景操作未注册或超出批次上限。');
+    }
+    if (signal?.aborted) return fail('ABORTED', 'Blender 命令在发送前已取消。', 499);
+    const timeout = AbortSignal.timeout(options.commandTimeoutMs || TIMEOUT_MS);
+    const waitSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    const operation = runCommand(request, projectPath, waitSignal);
+    active = operation;
+    void operation.finally(() => { if (active === operation) active = undefined; }).catch(() => {});
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        const timedOut = timeout.aborted;
+        const readOnly = ['hello', 'scene.query', 'view.get'].includes(request.op);
+        lastCommand = { id: request.id, op: request.op, state: 'unknown', effectState: readOnly ? 'none' : 'unknown', retryable: false };
+        const error = new ViewportError('BLENDER_COMMAND_UNKNOWN',
+          'Blender 命令等待已结束；共享进程未终止，写入效果未知，禁止自动重放。', timedOut ? 504 : 499);
+        error.effectState = readOnly ? 'none' : 'unknown';
+        error.retryable = false;
+        error.commandId = request.id;
+        reject(error);
+      };
+      waitSignal.addEventListener('abort', onAbort, { once: true });
+      if (waitSignal.aborted) onAbort();
+      operation.then((result) => {
+        if (settled) return;
+        settled = true;
+        waitSignal.removeEventListener('abort', onAbort);
+        resolve(result);
+      }, (error) => {
+        if (settled) return;
+        settled = true;
+        waitSignal.removeEventListener('abort', onAbort);
+        reject(error);
+      });
+    });
+  }
+
+  function status(workspaceKey) {
+    const current = runtime;
+    const connected = Boolean(current?.blender && current.blender.child.exitCode === null && current.blender.child.signalCode === null);
+    return { workspaceKey, state: connected ? 'running' : 'stopped', internalToken,
+      pid: connected ? current.blender.child.pid : null,
+      projectPath: connected ? current.projectPath ?? null : null,
+      connection: { connected, runtimeGeneration: connected ? current.runtimeGeneration : null,
+        hello: connected ? current.hello ?? null : null, lastCommand },
+      busy: Boolean(active) };
+  }
+
   return {
+    status,
+    command,
     references() {
       if (disposing || !runtime?.blender || runtime.blender.child.exitCode !== null || runtime.blender.child.signalCode !== null) return undefined;
       return runtime.references;

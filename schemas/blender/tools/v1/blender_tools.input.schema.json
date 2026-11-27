@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "status"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "activate"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "project",
+              "scene",
+              "view",
+              "reference",
+              "verify",
+              "jobs"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 6
+        }
+      },
+      "required": [
+        "action",
+        "groups"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$id": "urn:dsh:blender:tool:blender_tools:input:v1",
+  "title": "blender_tools v1 input",
+  "$defs": {
+    "opStep": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneOp"
+    }
+  }
+}

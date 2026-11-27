@@ -1,8 +1,8 @@
 /**
  * 3D（`three-d`）的 provider 轴契约。
  *
- * 3D 不是 web 的翻版：它只有一个运行环境（Blender），且只接到纯视口这一步。这些测试钉住三件事：
- * 1. 词表：Blender 的工程支持度是 `preview`，既能被读画面、又不是可执行的 provider；
+ * 3D 不是 web 的翻版：它只有一个运行环境（Blender），同时提供纯视口与 Agent 工具面。这些测试钉住三件事：
+ * 1. 词表：Blender 的工程支持度是 `supported`，既可执行、也可读画面；
  * 2. 配置：`environments['three-d'].providers.blender.enabled` 能存、能读、能跨重启保留，
  *    未知 provider 与非 provider 环境仍然被拒（不能因为开了口子就什么都收）；
  * 3. 默认值：3D 总开关打开即可用（Blender 默认开启），与纯视口接入前的行为一致。
@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import {
   ConfigStore,
   DEFAULT_CONFIG,
+  ENVIRONMENT_CAPABILITIES,
   ENVIRONMENT_PROVIDER_IDS,
   ENVIRONMENT_PROVIDER_SUPPORT,
   THREE_D_PROVIDERS,
@@ -43,12 +44,12 @@ function assertCode(code) {
   };
 }
 
-test('Blender is the only 3D provider and its support is preview, not executable', () => {
+test('Blender is the only 3D provider and its support is executable as well as viewable', () => {
   assert.deepEqual(environmentProviderIds('three-d'), [THREE_D_PROVIDERS.BLENDER]);
   assert.equal(environmentDeclaresProviders('three-d'), true);
-  assert.equal(environmentProviderSupport('three-d', 'blender'), 'preview');
-  assert.equal(isExecutingProvider('three-d', 'blender'), false, '纯视口不是执行适配器');
-  assert.equal(isViewableProvider('three-d', 'blender'), true, '纯视口仍可读画面');
+  assert.equal(environmentProviderSupport('three-d', 'blender'), 'supported');
+  assert.equal(isExecutingProvider('three-d', 'blender'), true, 'Blender 提供 Agent 执行适配器');
+  assert.equal(isViewableProvider('three-d', 'blender'), true, 'Blender 同时可读画面');
   // 目录与支持表必须描述同一组 id：多一个/少一个都是两套词表。
   assert.deepEqual(
     Object.keys(ENVIRONMENT_PROVIDER_SUPPORT['three-d']),
@@ -175,17 +176,19 @@ test('the Blender switch persists across a restart and never rewrites the enviro
   assert.equal(reloaded.getConfig().global.environments['three-d'].providers.blender.enabled, false);
 });
 
-test('3D is selectable as a view environment, planned ones are not, and the gate reads its two switches', async () => {
-  // 只有视图的环境可以被选中（面板要能停在 3D），但仍是"可选中 ≠ 可执行"：
-  // 它没有 Agent 执行适配器，工具面为空。
-  assert.equal(environmentProviderSupport('three-d', 'blender'), 'preview');
+test('3D is selectable as an executable environment, planned ones are not, and the gate reads its two switches', async () => {
+  // 3D 有 Agent 执行适配器，所以它既可以被选中，也带执行能力；总开关与 provider 开关仍是两道门。
+  assert.equal(environmentProviderSupport('three-d', 'blender'), 'supported');
   assert.equal(normalizeConfig({ global: { view: 'three-d', environments: { 'three-d': { enabled: true } } } })
     .global.view, 'three-d');
   const threeDSnap = resolveSnapshot(normalizeConfig({
     global: { view: 'three-d', environments: { 'three-d': { enabled: true } } },
   }), {});
   assert.equal(threeDSnap.environment, 'three-d');
-  assert.deepEqual(threeDSnap.capabilities, [], '3D 没有 Agent 执行能力');
+  assert.deepEqual([...threeDSnap.capabilities].sort(), [...ENVIRONMENT_CAPABILITIES['three-d']].sort(),
+    '3D 的能力目录必须随快照暴露');
+  assert.equal(threeDSnap.provider, THREE_D_PROVIDERS.BLENDER);
+  assert.equal(threeDSnap.providerConfig.support, 'supported');
 
   // planned 环境仍然只能"启用"，不能被选为当前视图。
   assert.throws(
@@ -208,7 +211,8 @@ test('3D is selectable as a view environment, planned ones are not, and the gate
   assert.match(hostSource, /crossEnvironment\.isViewEnabled\('three-d'\)/u, '环境总开关必须在门禁里');
   assert.match(hostSource, /crossEnvironment\.isProviderEnabled\('three-d', 'blender'\)/u, 'provider 开关必须在门禁里');
   const crossSource = await readFile(new URL('../../integration/cross-environment.js', import.meta.url), 'utf8');
-  assert.match(crossSource, /isProviderEnabled: \(id, provider\) =>/u);
+  assert.match(crossSource, /function isProviderEnabled\(id, provider\)/u, 'provider 门禁必须是一个具名实现');
+  assert.match(crossSource, /isProviderEnabled,/u, 'provider 门禁必须从 cross-environment 导出');
 });
 
 test('the settings page lets a preview card be switched, and submits the provider field the Host accepts', async () => {

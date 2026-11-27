@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "status"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "resource": {
+          "enum": [
+            "project",
+            "view",
+            "scene"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "resource"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "acquire"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "resource": {
+          "enum": [
+            "project",
+            "view",
+            "scene"
+          ]
+        },
+        "grantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "live": {
+          "anyOf": [
+            {
+              "$ref": "urn:dsh:blender:common:1#/$defs/live"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ttlMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 3600000
+        }
+      },
+      "required": [
+        "action",
+        "resource",
+        "grantId"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "renew"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "resource": {
+          "enum": [
+            "project",
+            "view",
+            "scene"
+          ]
+        },
+        "leaseId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expectControlRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "ttlMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 3600000
+        }
+      },
+      "required": [
+        "action",
+        "resource",
+        "leaseId",
+        "expectControlRevision"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "release"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "resource": {
+          "enum": [
+            "project",
+            "view",
+            "scene"
+          ]
+        },
+        "leaseId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expectControlRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        }
+      },
+      "required": [
+        "action",
+        "resource",
+        "leaseId",
+        "expectControlRevision"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$id": "urn:dsh:blender:tool:blender_control:input:v1",
+  "title": "blender_control v1 input",
+  "$defs": {
+    "opStep": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneOp"
+    }
+  }
+}

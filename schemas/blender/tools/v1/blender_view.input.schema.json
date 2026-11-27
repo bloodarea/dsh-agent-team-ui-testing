@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "get"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "live": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/live"
+        }
+      },
+      "required": [
+        "action",
+        "live"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "set"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "targetId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/targetId"
+        },
+        "generation": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/generation"
+        },
+        "expectViewRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "leaseId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expectControlRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "idemKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "grantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "changes": {
+          "type": "object",
+          "properties": {
+            "projection": {
+              "enum": [
+                "perspective",
+                "orthographic"
+              ]
+            },
+            "location": {
+              "$ref": "urn:dsh:blender:common:1#/$defs/vec3"
+            },
+            "rotation": {
+              "$ref": "urn:dsh:blender:common:1#/$defs/quatWxyz"
+            },
+            "distance": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "lens": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "cameraId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "action",
+        "targetId",
+        "generation",
+        "expectViewRevision",
+        "changes"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$id": "urn:dsh:blender:tool:blender_view:input:v1",
+  "title": "blender_view v1 input",
+  "$defs": {
+    "opStep": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneOp"
+    }
+  }
+}

@@ -18,6 +18,8 @@
 
 `browser_state` 与 `browser_capabilities` 是**环境中立诊断**：任何环境（含被禁用）都保留，用于回答"支持什么/为什么被拒"，它们不启动目标；被禁用环境的六轴报告为 `support=supported` + `enabled=false`，不再退化成"未注册"或 `INTERNAL`。成功/失败 envelope 额外携带 `configRevision`、`environment`、`adapterId`，用于核对本次执行使用的配置版本；`browser_capabilities.adapter` 报告 adapter 契约版本、能力矩阵、P0 family 状态、六轴就绪，以及 `declaration`：`registeredTools`（注册上限）、`admittedTools`（该作用域的环境准入）、`isolated`。`declaration` 的两份列表都**不是**本步实际发送内容；`browser_capabilities.disclosure` 给出本 Agent 的选择与下一请求候选。
 
+新增或修改工具时，按[工具参数声明与模型网关兼容性](tool-parameter-schemas.md)检查实际发送的 `parameters`。
+
 ## 注册面
 
 **工具布局由设置页的面板配置作为唯一权威**：启用了哪些环境，就只注册这些环境的工具，不会额外带入其它环境的 schema。

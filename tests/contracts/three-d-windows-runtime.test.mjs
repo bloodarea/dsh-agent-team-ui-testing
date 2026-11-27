@@ -47,7 +47,7 @@ test('注册表命中按版本号从新到旧排序', () => {
 });
 
 test('Windows 不启动 Xvfb，Linux 仍启动', () => {
-  assert.match(source, /windows \? Promise\.resolve\(null\) : executable\(process\.env\.DSH_UI_TESTING_XVFB, 'Xvfb', platform\)/u);
+  assert.match(source, /windows \? Promise\.resolve\(null\) : executable\(options\.xvfbExecutable \|\| process\.env\.DSH_UI_TESTING_XVFB, 'Xvfb', platform\)/u);
   // The virtual display must only be created on the Linux branch.
   const linuxBranch = source.match(/if \(windows\) \{[\s\S]*?\} else \{[\s\S]*?\n    \}/u)?.[0] ?? '';
   assert.match(linuxBranch, /-'displayfd'|'-displayfd'/u);

@@ -1,0 +1,101 @@
+{
+  "type": "object",
+  "properties": {
+    "sceneId": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneId"
+    },
+    "stableId": {
+      "type": "string",
+      "pattern": "^part_[a-z][a-z0-9_]{0,47}$"
+    },
+    "shape": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "cylinder"
+            },
+            "radius": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "height": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "segments": {
+              "type": "integer",
+              "minimum": 3,
+              "maximum": 256
+            }
+          },
+          "required": [
+            "kind",
+            "radius",
+            "height"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "frustum"
+            },
+            "bottomRadius": {
+              "type": "number",
+              "minimum": 0
+            },
+            "topRadius": {
+              "type": "number",
+              "minimum": 0
+            },
+            "height": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "segments": {
+              "type": "integer",
+              "minimum": 3,
+              "maximum": 256
+            }
+          },
+          "required": [
+            "kind",
+            "bottomRadius",
+            "topRadius",
+            "height"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "box"
+            },
+            "size": {
+              "$ref": "urn:dsh:blender:common:1#/$defs/positiveVec3"
+            }
+          },
+          "required": [
+            "kind",
+            "size"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "required": [
+    "sceneId",
+    "stableId",
+    "shape"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:operation:mesh.primitive:v1",
+  "title": "mesh.primitive v1 args",
+  "description": "Closed operation arguments; contract unit is the Blender scene unit unless otherwise specified."
+}

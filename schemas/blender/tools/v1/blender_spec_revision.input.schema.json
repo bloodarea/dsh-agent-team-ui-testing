@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "create"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "scene": {
+          "type": "object"
+        },
+        "sceneJson": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 16777216
+        },
+        "artifactId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/artifactId"
+        },
+        "grantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "action",
+        "grantId"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "get"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "sceneId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/sceneId"
+        },
+        "revision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/positiveInteger"
+        }
+      },
+      "required": [
+        "action",
+        "sceneId"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "commit"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "patch": {
+          "type": "object"
+        },
+        "patchJson": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 16777216
+        },
+        "grantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "action",
+        "grantId"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$id": "urn:dsh:blender:tool:blender_spec_revision:input:v1",
+  "title": "blender_spec_revision v1 input",
+  "$defs": {
+    "opStep": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneOp"
+    }
+  }
+}

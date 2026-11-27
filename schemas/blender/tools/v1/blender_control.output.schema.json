@@ -1,0 +1,115 @@
+{
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "blender_control"
+    },
+    "action": {
+      "enum": [
+        "status",
+        "acquire",
+        "renew",
+        "release"
+      ]
+    },
+    "ok": {
+      "const": true
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "enum": [
+            "project",
+            "view",
+            "scene"
+          ]
+        },
+        "leaseId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "controlRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "expiresAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "challenge": {
+          "type": "object",
+          "properties": {
+            "grantId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "resource": {
+              "enum": [
+                "project",
+                "view",
+                "scene"
+              ]
+            },
+            "expiresAt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "grantId",
+            "resource",
+            "expiresAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "resource",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dsh:blender:common:1#/$defs/evidenceId"
+      },
+      "minItems": 0,
+      "maxItems": 128
+    },
+    "effectState": {
+      "enum": [
+        "none",
+        "partial",
+        "committed",
+        "unknown"
+      ]
+    }
+  },
+  "required": [
+    "tool",
+    "action",
+    "ok",
+    "data",
+    "evidenceIds",
+    "effectState"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:tool:blender_control:output:v1",
+  "title": "blender_control v1 output"
+}

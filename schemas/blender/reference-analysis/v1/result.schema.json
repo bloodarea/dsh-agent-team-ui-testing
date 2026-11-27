@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:reference-analysis:result:v1",
+  "title": "Reference analysis result v1",
+  "type": "object",
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "contractVersion": {
+      "const": 1
+    },
+    "profile": {
+      "enum": [
+        "basic",
+        "spatial",
+        "multiview"
+      ]
+    },
+    "pipelineVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "configSha256": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/digest"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "minItems": 1,
+      "maxItems": 8
+    },
+    "products": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "minItems": 0,
+      "maxItems": 256
+    },
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "minItems": 0,
+      "maxItems": 256
+    },
+    "proposals": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "minItems": 0,
+      "maxItems": 1024
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "minItems": 0,
+      "maxItems": 1024
+    }
+  },
+  "required": [
+    "runId",
+    "contractVersion",
+    "profile",
+    "pipelineVersion",
+    "configSha256",
+    "inputs",
+    "products",
+    "stages",
+    "proposals",
+    "unresolved"
+  ],
+  "additionalProperties": false
+}

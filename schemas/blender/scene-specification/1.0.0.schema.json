@@ -1,0 +1,2950 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:scene-specification:1.0.0",
+  "title": "Blender Scene Specification 1.0.0",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/scene"
+    },
+    {
+      "$ref": "#/$defs/patch"
+    }
+  ],
+  "$defs": {
+    "srcId": {
+      "type": "string",
+      "pattern": "^src_[a-z][a-z0-9_]{0,47}$"
+    },
+    "evId": {
+      "type": "string",
+      "pattern": "^ev_[a-z][a-z0-9_]{0,47}$"
+    },
+    "objId": {
+      "type": "string",
+      "pattern": "^obj_[a-z][a-z0-9_]{0,47}$"
+    },
+    "partId": {
+      "type": "string",
+      "pattern": "^part_[a-z][a-z0-9_]{0,47}$"
+    },
+    "relId": {
+      "type": "string",
+      "pattern": "^rel_[a-z][a-z0-9_]{0,47}$"
+    },
+    "surfId": {
+      "type": "string",
+      "pattern": "^surf_[a-z][a-z0-9_]{0,47}$"
+    },
+    "depId": {
+      "type": "string",
+      "pattern": "^dep_[a-z][a-z0-9_]{0,47}$"
+    },
+    "camId": {
+      "type": "string",
+      "pattern": "^cam_[a-z][a-z0-9_]{0,47}$"
+    },
+    "matId": {
+      "type": "string",
+      "pattern": "^mat_[a-z][a-z0-9_]{0,47}$"
+    },
+    "conId": {
+      "type": "string",
+      "pattern": "^con_[a-z][a-z0-9_]{0,47}$"
+    },
+    "clmId": {
+      "type": "string",
+      "pattern": "^clm_[a-z][a-z0-9_]{0,47}$"
+    },
+    "scnId": {
+      "type": "string",
+      "pattern": "^scn_[a-z][a-z0-9_]{0,47}$"
+    },
+    "pchId": {
+      "type": "string",
+      "pattern": "^pch_[a-z][a-z0-9_]{0,47}$"
+    },
+    "artId": {
+      "type": "string",
+      "pattern": "^art_[a-z][a-z0-9_]{0,47}$"
+    },
+    "positive": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "unitInterval": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "vec3": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "vec3Positive": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "normal3": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "minimum": -1,
+        "maximum": 1
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "quatWxyz": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "minimum": -1,
+        "maximum": 1
+      },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "rectPx": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "integer",
+          "minimum": 1
+        }
+      ],
+      "items": false,
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "rgb8": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "origin": {
+      "enum": [
+        "observed",
+        "estimated",
+        "inferred",
+        "human"
+      ]
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evId"
+      },
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true
+    },
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "referenceImage"
+            },
+            "artifactId": {
+              "$ref": "#/$defs/artId"
+            },
+            "sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "widthPx": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "heightPx": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "kind",
+            "artifactId",
+            "sha256",
+            "widthPx",
+            "heightPx"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "humanNote"
+            },
+            "artifactId": {
+              "$ref": "#/$defs/artId"
+            },
+            "sha256": {
+              "$ref": "#/$defs/digest"
+            }
+          },
+          "required": [
+            "kind",
+            "artifactId",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "meshAsset"
+            },
+            "artifactId": {
+              "$ref": "#/$defs/artId"
+            },
+            "sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "encoding": {
+              "enum": [
+                "glb",
+                "ply"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "artifactId",
+            "sha256",
+            "encoding"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "rasterProduct"
+            },
+            "artifactId": {
+              "$ref": "#/$defs/artId"
+            },
+            "sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "widthPx": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "heightPx": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "channel": {
+              "enum": [
+                "mask",
+                "relativeDepth",
+                "metricDepth",
+                "cameraNormal"
+              ]
+            },
+            "encoding": {
+              "enum": [
+                "png",
+                "exr",
+                "npy"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "artifactId",
+            "sha256",
+            "widthPx",
+            "heightPx",
+            "channel",
+            "encoding"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "evidenceRecord": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "pixelReadout"
+            },
+            "sourceId": {
+              "$ref": "#/$defs/srcId"
+            },
+            "rectPx": {
+              "$ref": "#/$defs/rectPx"
+            },
+            "reader": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "required": [
+            "kind",
+            "sourceId",
+            "rectPx",
+            "reader",
+            "version"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "algorithmRun",
+                "modelRun"
+              ]
+            },
+            "producer": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "configSha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "inputs": {
+              "$ref": "#/$defs/evidenceIds"
+            },
+            "productId": {
+              "$ref": "#/$defs/srcId"
+            }
+          },
+          "required": [
+            "kind",
+            "producer",
+            "version",
+            "runId",
+            "configSha256",
+            "inputs"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "humanStatement"
+            },
+            "sourceId": {
+              "$ref": "#/$defs/srcId"
+            },
+            "actor": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "excerpt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "required": [
+            "kind",
+            "sourceId",
+            "actor",
+            "excerpt"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "scale": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "const": "relative"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "const": "metric"
+            },
+            "metersPerUnit": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "evidenceIds": {
+              "$ref": "#/$defs/evidenceIds"
+            }
+          },
+          "required": [
+            "mode",
+            "metersPerUnit",
+            "evidenceIds"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "frame": {
+      "type": "object",
+      "properties": {
+        "handedness": {
+          "const": "right"
+        },
+        "up": {
+          "const": "+Z"
+        },
+        "cameraForward": {
+          "const": "-Z"
+        },
+        "cameraUp": {
+          "const": "+Y"
+        },
+        "angle": {
+          "const": "rad"
+        },
+        "rotation": {
+          "const": "quaternionWXYZ"
+        },
+        "scale": {
+          "$ref": "#/$defs/scale"
+        }
+      },
+      "required": [
+        "handedness",
+        "up",
+        "cameraForward",
+        "cameraUp",
+        "angle",
+        "rotation",
+        "scale"
+      ],
+      "additionalProperties": false
+    },
+    "transform": {
+      "type": "object",
+      "properties": {
+        "translation": {
+          "$ref": "#/$defs/clmId"
+        },
+        "rotation": {
+          "$ref": "#/$defs/clmId"
+        },
+        "scale": {
+          "$ref": "#/$defs/clmId"
+        }
+      },
+      "required": [
+        "translation",
+        "rotation",
+        "scale"
+      ],
+      "additionalProperties": false
+    },
+    "imageFootprint": {
+      "type": "object",
+      "properties": {
+        "sourceId": {
+          "$ref": "#/$defs/srcId"
+        },
+        "bboxPx": {
+          "$ref": "#/$defs/clmId"
+        },
+        "mask": {
+          "$ref": "#/$defs/clmId"
+        }
+      },
+      "required": [
+        "sourceId",
+        "bboxPx"
+      ],
+      "additionalProperties": false
+    },
+    "objectRecord": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "parentId": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/objId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transform": {
+          "$ref": "#/$defs/transform"
+        },
+        "footprint": {
+          "$ref": "#/$defs/imageFootprint"
+        }
+      },
+      "required": [
+        "label",
+        "parentId",
+        "transform"
+      ],
+      "additionalProperties": false
+    },
+    "geometry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "box"
+            },
+            "classClaim": {
+              "$ref": "#/$defs/clmId"
+            },
+            "size": {
+              "$ref": "#/$defs/clmId"
+            }
+          },
+          "required": [
+            "kind",
+            "classClaim",
+            "size"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "cylinder"
+            },
+            "classClaim": {
+              "$ref": "#/$defs/clmId"
+            },
+            "radius": {
+              "$ref": "#/$defs/clmId"
+            },
+            "height": {
+              "$ref": "#/$defs/clmId"
+            }
+          },
+          "required": [
+            "kind",
+            "classClaim",
+            "radius",
+            "height"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "sphere"
+            },
+            "classClaim": {
+              "$ref": "#/$defs/clmId"
+            },
+            "radius": {
+              "$ref": "#/$defs/clmId"
+            }
+          },
+          "required": [
+            "kind",
+            "classClaim",
+            "radius"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "frustum"
+            },
+            "classClaim": {
+              "$ref": "#/$defs/clmId"
+            },
+            "bottomRadius": {
+              "$ref": "#/$defs/clmId"
+            },
+            "topRadius": {
+              "$ref": "#/$defs/clmId"
+            },
+            "height": {
+              "$ref": "#/$defs/clmId"
+            }
+          },
+          "required": [
+            "kind",
+            "classClaim",
+            "bottomRadius",
+            "topRadius",
+            "height"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "plane"
+            },
+            "classClaim": {
+              "$ref": "#/$defs/clmId"
+            },
+            "width": {
+              "$ref": "#/$defs/clmId"
+            },
+            "length": {
+              "$ref": "#/$defs/clmId"
+            }
+          },
+          "required": [
+            "kind",
+            "classClaim",
+            "width",
+            "length"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "meshAsset"
+            },
+            "classClaim": {
+              "$ref": "#/$defs/clmId"
+            },
+            "mesh": {
+              "$ref": "#/$defs/clmId"
+            }
+          },
+          "required": [
+            "kind",
+            "classClaim",
+            "mesh"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "undetermined"
+            },
+            "classClaim": {
+              "$ref": "#/$defs/clmId"
+            }
+          },
+          "required": [
+            "kind",
+            "classClaim"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "part": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "objectId": {
+          "$ref": "#/$defs/objId"
+        },
+        "parentId": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/partId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transform": {
+          "$ref": "#/$defs/transform"
+        },
+        "geometry": {
+          "$ref": "#/$defs/geometry"
+        },
+        "materialIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/matId"
+          },
+          "minItems": 0,
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "footprint": {
+          "$ref": "#/$defs/imageFootprint"
+        }
+      },
+      "required": [
+        "label",
+        "objectId",
+        "parentId",
+        "transform",
+        "geometry",
+        "materialIds"
+      ],
+      "additionalProperties": false
+    },
+    "relation": {
+      "type": "object",
+      "properties": {
+        "subjectId": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/objId"
+            },
+            {
+              "$ref": "#/$defs/partId"
+            }
+          ]
+        },
+        "objectId": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/objId"
+            },
+            {
+              "$ref": "#/$defs/partId"
+            }
+          ]
+        },
+        "referenceFrame": {
+          "enum": [
+            "world",
+            "camera"
+          ]
+        },
+        "predicate": {
+          "$ref": "#/$defs/clmId"
+        },
+        "cameraId": {
+          "$ref": "#/$defs/camId"
+        }
+      },
+      "required": [
+        "subjectId",
+        "objectId",
+        "referenceFrame",
+        "predicate"
+      ],
+      "additionalProperties": false
+    },
+    "surface": {
+      "type": "object",
+      "properties": {
+        "partId": {
+          "$ref": "#/$defs/partId"
+        },
+        "frame": {
+          "enum": [
+            "partLocal",
+            "camera"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/clmId"
+        },
+        "normal": {
+          "$ref": "#/$defs/clmId"
+        },
+        "radius": {
+          "$ref": "#/$defs/clmId"
+        },
+        "normalMap": {
+          "$ref": "#/$defs/clmId"
+        },
+        "cameraId": {
+          "$ref": "#/$defs/camId"
+        },
+        "sample": {
+          "$ref": "#/$defs/imageFootprint"
+        }
+      },
+      "required": [
+        "partId",
+        "frame",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "depth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "relative"
+            },
+            "cameraId": {
+              "$ref": "#/$defs/camId"
+            },
+            "subjectId": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/objId"
+                },
+                {
+                  "$ref": "#/$defs/partId"
+                }
+              ]
+            },
+            "normalization": {
+              "const": "near0Far1"
+            },
+            "range": {
+              "$ref": "#/$defs/clmId"
+            },
+            "map": {
+              "$ref": "#/$defs/clmId"
+            }
+          },
+          "required": [
+            "kind",
+            "cameraId",
+            "subjectId",
+            "normalization",
+            "range"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "metric"
+            },
+            "cameraId": {
+              "$ref": "#/$defs/camId"
+            },
+            "subjectId": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/objId"
+                },
+                {
+                  "$ref": "#/$defs/partId"
+                }
+              ]
+            },
+            "unit": {
+              "const": "m"
+            },
+            "axis": {
+              "const": "forwardZ"
+            },
+            "rangeM": {
+              "$ref": "#/$defs/clmId"
+            },
+            "calibrationEvidenceIds": {
+              "$ref": "#/$defs/evidenceIds"
+            },
+            "map": {
+              "$ref": "#/$defs/clmId"
+            }
+          },
+          "required": [
+            "kind",
+            "cameraId",
+            "subjectId",
+            "unit",
+            "axis",
+            "rangeM",
+            "calibrationEvidenceIds"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "camera": {
+      "type": "object",
+      "properties": {
+        "sourceId": {
+          "$ref": "#/$defs/srcId"
+        },
+        "translation": {
+          "$ref": "#/$defs/clmId"
+        },
+        "rotation": {
+          "$ref": "#/$defs/clmId"
+        },
+        "projection": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "perspective"
+                },
+                "fxPx": {
+                  "$ref": "#/$defs/clmId"
+                },
+                "fyPx": {
+                  "$ref": "#/$defs/clmId"
+                },
+                "cxPx": {
+                  "$ref": "#/$defs/clmId"
+                },
+                "cyPx": {
+                  "$ref": "#/$defs/clmId"
+                }
+              },
+              "required": [
+                "kind",
+                "fxPx",
+                "fyPx",
+                "cxPx",
+                "cyPx"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "orthographic"
+                },
+                "width": {
+                  "$ref": "#/$defs/clmId"
+                }
+              },
+              "required": [
+                "kind",
+                "width"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "undetermined"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "projectionEvidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        }
+      },
+      "required": [
+        "sourceId",
+        "translation",
+        "rotation",
+        "projection"
+      ],
+      "additionalProperties": false
+    },
+    "material": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "family": {
+          "$ref": "#/$defs/clmId"
+        },
+        "roughness": {
+          "$ref": "#/$defs/clmId"
+        },
+        "metallic": {
+          "$ref": "#/$defs/clmId"
+        },
+        "opacity": {
+          "$ref": "#/$defs/clmId"
+        },
+        "baseColorLinear": {
+          "$ref": "#/$defs/clmId"
+        },
+        "sampleSrgb8": {
+          "$ref": "#/$defs/clmId"
+        }
+      },
+      "required": [
+        "label",
+        "family",
+        "roughness",
+        "metallic",
+        "opacity"
+      ],
+      "additionalProperties": false
+    },
+    "constraint": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "dimension"
+            },
+            "partId": {
+              "$ref": "#/$defs/partId"
+            },
+            "parameter": {
+              "enum": [
+                "width",
+                "length",
+                "height",
+                "radius",
+                "bottomRadius",
+                "topRadius",
+                "sizeX",
+                "sizeY",
+                "sizeZ"
+              ]
+            },
+            "targetLength": {
+              "$ref": "#/$defs/clmId"
+            },
+            "tolerance": {
+              "$ref": "#/$defs/clmId"
+            },
+            "severity": {
+              "enum": [
+                "hard",
+                "soft"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "partId",
+            "parameter",
+            "targetLength",
+            "tolerance",
+            "severity"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "preserveRelation"
+            },
+            "relationId": {
+              "$ref": "#/$defs/relId"
+            },
+            "severity": {
+              "enum": [
+                "hard",
+                "soft"
+              ]
+            },
+            "evidenceIds": {
+              "$ref": "#/$defs/evidenceIds"
+            }
+          },
+          "required": [
+            "kind",
+            "relationId",
+            "severity",
+            "evidenceIds"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "properties": {
+        "value": {},
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "evidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        }
+      },
+      "required": [
+        "value",
+        "confidence",
+        "evidenceIds"
+      ],
+      "additionalProperties": false
+    },
+    "claim": {
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "review": {
+                  "enum": [
+                    "pending",
+                    "confirmed",
+                    "rejected"
+                  ]
+                },
+                "status": {
+                  "const": "known"
+                },
+                "value": {},
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "origin": {
+                  "$ref": "#/$defs/origin"
+                },
+                "evidenceIds": {
+                  "$ref": "#/$defs/evidenceIds"
+                },
+                "reviewEvidenceId": {
+                  "$ref": "#/$defs/evId"
+                }
+              },
+              "required": [
+                "target",
+                "review",
+                "status",
+                "value",
+                "confidence",
+                "origin",
+                "evidenceIds"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "review": {
+                  "enum": [
+                    "pending",
+                    "confirmed",
+                    "rejected"
+                  ]
+                },
+                "status": {
+                  "const": "candidates"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/candidate"
+                  },
+                  "minItems": 2,
+                  "maxItems": 12,
+                  "uniqueItems": true
+                },
+                "origin": {
+                  "$ref": "#/$defs/origin"
+                },
+                "evidenceIds": {
+                  "$ref": "#/$defs/evidenceIds"
+                },
+                "reviewEvidenceId": {
+                  "$ref": "#/$defs/evId"
+                }
+              },
+              "required": [
+                "target",
+                "review",
+                "status",
+                "candidates",
+                "origin",
+                "evidenceIds"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "review": {
+                  "enum": [
+                    "pending",
+                    "confirmed",
+                    "rejected"
+                  ]
+                },
+                "status": {
+                  "const": "unknown"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "reviewEvidenceId": {
+                  "$ref": "#/$defs/evId"
+                }
+              },
+              "required": [
+                "target",
+                "review",
+                "status",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/(?:(?:objects/obj_[a-z][a-z0-9_]{0,47}|parts/part_[a-z][a-z0-9_]{0,47})/transform/|cameras/cam_[a-z][a-z0-9_]{0,47}/)translation$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/vec3"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "$ref": "#/$defs/vec3"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/(?:(?:objects/obj_[a-z][a-z0-9_]{0,47}|parts/part_[a-z][a-z0-9_]{0,47})/transform/|cameras/cam_[a-z][a-z0-9_]{0,47}/)rotation$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/quatWxyz"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "$ref": "#/$defs/quatWxyz"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/(?:objects/obj_[a-z][a-z0-9_]{0,47}|parts/part_[a-z][a-z0-9_]{0,47})/transform/scale$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/vec3Positive"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "$ref": "#/$defs/vec3Positive"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/(?:(?:objects/obj_[a-z][a-z0-9_]{0,47}|parts/part_[a-z][a-z0-9_]{0,47})/footprint|surfaces/surf_[a-z][a-z0-9_]{0,47}/sample)/bboxPx$"
+                },
+                "origin": {
+                  "enum": [
+                    "observed",
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/rectPx"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "$ref": "#/$defs/rectPx"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/(?:(?:objects/obj_[a-z][a-z0-9_]{0,47}|parts/part_[a-z][a-z0-9_]{0,47})/footprint|surfaces/surf_[a-z][a-z0-9_]{0,47}/sample)/mask$"
+                },
+                "origin": {
+                  "enum": [
+                    "observed",
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/srcId"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "$ref": "#/$defs/srcId"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/parts/part_[a-z][a-z0-9_]{0,47}/geometry/classClaim$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "enum": [
+                    "box",
+                    "cylinder",
+                    "sphere",
+                    "frustum",
+                    "plane",
+                    "meshAsset"
+                  ]
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "enum": [
+                          "box",
+                          "cylinder",
+                          "sphere",
+                          "frustum",
+                          "plane",
+                          "meshAsset"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/parts/part_[a-z][a-z0-9_]{0,47}/geometry/size$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/vec3Positive"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "$ref": "#/$defs/vec3Positive"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/parts/part_[a-z][a-z0-9_]{0,47}/geometry/(?:radius|height|width|length)$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/parts/part_[a-z][a-z0-9_]{0,47}/geometry/(?:bottomRadius|topRadius)$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/parts/part_[a-z][a-z0-9_]{0,47}/geometry/mesh$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/srcId"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "$ref": "#/$defs/srcId"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/relations/rel_[a-z][a-z0-9_]{0,47}/predicate$"
+                },
+                "origin": {
+                  "enum": [
+                    "observed",
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "enum": [
+                    "above",
+                    "below",
+                    "inFrontOf",
+                    "behind",
+                    "inside",
+                    "contains",
+                    "touches",
+                    "supports",
+                    "connectedTo",
+                    "occludes",
+                    "leftOf",
+                    "rightOf"
+                  ]
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "enum": [
+                          "above",
+                          "below",
+                          "inFrontOf",
+                          "behind",
+                          "inside",
+                          "contains",
+                          "touches",
+                          "supports",
+                          "connectedTo",
+                          "occludes",
+                          "leftOf",
+                          "rightOf"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/surfaces/surf_[a-z][a-z0-9_]{0,47}/type$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "enum": [
+                    "planar",
+                    "cylindrical",
+                    "spherical",
+                    "conical",
+                    "freeform"
+                  ]
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "enum": [
+                          "planar",
+                          "cylindrical",
+                          "spherical",
+                          "conical",
+                          "freeform"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/surfaces/surf_[a-z][a-z0-9_]{0,47}/normal$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/normal3"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "$ref": "#/$defs/normal3"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/surfaces/surf_[a-z][a-z0-9_]{0,47}/radius$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/surfaces/surf_[a-z][a-z0-9_]{0,47}/normalMap$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/srcId"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "$ref": "#/$defs/srcId"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/depths/dep_[a-z][a-z0-9_]{0,47}/range$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "array",
+                        "items": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1
+                        },
+                        "minItems": 2,
+                        "maxItems": 2
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/depths/dep_[a-z][a-z0-9_]{0,47}/rangeM$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "array",
+                        "items": {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        "minItems": 2,
+                        "maxItems": 2
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/depths/dep_[a-z][a-z0-9_]{0,47}/map$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/srcId"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "$ref": "#/$defs/srcId"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/cameras/cam_[a-z][a-z0-9_]{0,47}/projection/(?:fxPx|fyPx|width)$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/cameras/cam_[a-z][a-z0-9_]{0,47}/projection/(?:cxPx|cyPx)$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "type": "number"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/materials/mat_[a-z][a-z0-9_]{0,47}/family$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "enum": [
+                    "metal",
+                    "paint",
+                    "plastic",
+                    "wood",
+                    "glass",
+                    "ceramic",
+                    "fabric",
+                    "stone",
+                    "other"
+                  ]
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "enum": [
+                          "metal",
+                          "paint",
+                          "plastic",
+                          "wood",
+                          "glass",
+                          "ceramic",
+                          "fabric",
+                          "stone",
+                          "other"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/materials/mat_[a-z][a-z0-9_]{0,47}/(?:roughness|metallic|opacity)$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/materials/mat_[a-z][a-z0-9_]{0,47}/baseColorLinear$"
+                },
+                "origin": {
+                  "enum": [
+                    "estimated",
+                    "inferred",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "array",
+                        "items": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1
+                        },
+                        "minItems": 3,
+                        "maxItems": 3
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/materials/mat_[a-z][a-z0-9_]{0,47}/sampleSrgb8$"
+                },
+                "origin": {
+                  "enum": [
+                    "observed",
+                    "human"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/rgb8"
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "$ref": "#/$defs/rgb8"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/constraints/con_[a-z][a-z0-9_]{0,47}/targetLength$"
+                },
+                "origin": {
+                  "enum": [
+                    "human"
+                  ]
+                },
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "pattern": "^/constraints/con_[a-z][a-z0-9_]{0,47}/tolerance$"
+                },
+                "origin": {
+                  "enum": [
+                    "human"
+                  ]
+                },
+                "value": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "review": {
+                "enum": [
+                  "confirmed",
+                  "rejected"
+                ]
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "reviewEvidenceId": {
+                "$ref": "#/$defs/evId"
+              }
+            },
+            "required": [
+              "reviewEvidenceId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "review": {
+                "const": "pending"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sourcesMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/srcId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "evidenceMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/evId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/evidenceRecord"
+      }
+    },
+    "objectsMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/objId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/objectRecord"
+      }
+    },
+    "partsMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/partId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/part"
+      }
+    },
+    "relationsMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/relId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/relation"
+      }
+    },
+    "surfacesMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/surfId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/surface"
+      }
+    },
+    "depthsMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/depId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/depth"
+      }
+    },
+    "camerasMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/camId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/camera"
+      }
+    },
+    "materialsMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/matId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/material"
+      }
+    },
+    "constraintsMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/conId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/constraint"
+      }
+    },
+    "claimsMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/clmId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/claim"
+      }
+    },
+    "scene": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "scene"
+        },
+        "schemaVersion": {
+          "const": "1.0.0"
+        },
+        "sceneId": {
+          "$ref": "#/$defs/scnId"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frame": {
+          "$ref": "#/$defs/frame"
+        },
+        "sources": {
+          "$ref": "#/$defs/sourcesMap"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidenceMap"
+        },
+        "objects": {
+          "$ref": "#/$defs/objectsMap"
+        },
+        "parts": {
+          "$ref": "#/$defs/partsMap"
+        },
+        "relations": {
+          "$ref": "#/$defs/relationsMap"
+        },
+        "surfaces": {
+          "$ref": "#/$defs/surfacesMap"
+        },
+        "depths": {
+          "$ref": "#/$defs/depthsMap"
+        },
+        "cameras": {
+          "$ref": "#/$defs/camerasMap"
+        },
+        "materials": {
+          "$ref": "#/$defs/materialsMap"
+        },
+        "constraints": {
+          "$ref": "#/$defs/constraintsMap"
+        },
+        "claims": {
+          "$ref": "#/$defs/claimsMap"
+        }
+      },
+      "required": [
+        "kind",
+        "schemaVersion",
+        "sceneId",
+        "revision",
+        "frame",
+        "sources",
+        "evidence",
+        "objects",
+        "parts",
+        "relations",
+        "surfaces",
+        "depths",
+        "cameras",
+        "materials",
+        "constraints",
+        "claims"
+      ],
+      "additionalProperties": false
+    },
+    "op": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "add"
+            },
+            "collection": {
+              "const": "sources"
+            },
+            "id": {
+              "$ref": "#/$defs/srcId"
+            },
+            "value": {
+              "$ref": "#/$defs/source"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "add"
+            },
+            "collection": {
+              "const": "evidence"
+            },
+            "id": {
+              "$ref": "#/$defs/evId"
+            },
+            "value": {
+              "$ref": "#/$defs/evidenceRecord"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "replace"
+              ]
+            },
+            "collection": {
+              "const": "objects"
+            },
+            "id": {
+              "$ref": "#/$defs/objId"
+            },
+            "value": {
+              "$ref": "#/$defs/objectRecord"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "replace"
+              ]
+            },
+            "collection": {
+              "const": "parts"
+            },
+            "id": {
+              "$ref": "#/$defs/partId"
+            },
+            "value": {
+              "$ref": "#/$defs/part"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "replace"
+              ]
+            },
+            "collection": {
+              "const": "relations"
+            },
+            "id": {
+              "$ref": "#/$defs/relId"
+            },
+            "value": {
+              "$ref": "#/$defs/relation"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "replace"
+              ]
+            },
+            "collection": {
+              "const": "surfaces"
+            },
+            "id": {
+              "$ref": "#/$defs/surfId"
+            },
+            "value": {
+              "$ref": "#/$defs/surface"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "replace"
+              ]
+            },
+            "collection": {
+              "const": "depths"
+            },
+            "id": {
+              "$ref": "#/$defs/depId"
+            },
+            "value": {
+              "$ref": "#/$defs/depth"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "replace"
+              ]
+            },
+            "collection": {
+              "const": "cameras"
+            },
+            "id": {
+              "$ref": "#/$defs/camId"
+            },
+            "value": {
+              "$ref": "#/$defs/camera"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "replace"
+              ]
+            },
+            "collection": {
+              "const": "materials"
+            },
+            "id": {
+              "$ref": "#/$defs/matId"
+            },
+            "value": {
+              "$ref": "#/$defs/material"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "replace"
+              ]
+            },
+            "collection": {
+              "const": "constraints"
+            },
+            "id": {
+              "$ref": "#/$defs/conId"
+            },
+            "value": {
+              "$ref": "#/$defs/constraint"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "replace"
+              ]
+            },
+            "collection": {
+              "const": "claims"
+            },
+            "id": {
+              "$ref": "#/$defs/clmId"
+            },
+            "value": {
+              "$ref": "#/$defs/claim"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "remove"
+            },
+            "collection": {
+              "const": "objects"
+            },
+            "id": {
+              "$ref": "#/$defs/objId"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "remove"
+            },
+            "collection": {
+              "const": "parts"
+            },
+            "id": {
+              "$ref": "#/$defs/partId"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "remove"
+            },
+            "collection": {
+              "const": "relations"
+            },
+            "id": {
+              "$ref": "#/$defs/relId"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "remove"
+            },
+            "collection": {
+              "const": "surfaces"
+            },
+            "id": {
+              "$ref": "#/$defs/surfId"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "remove"
+            },
+            "collection": {
+              "const": "depths"
+            },
+            "id": {
+              "$ref": "#/$defs/depId"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "remove"
+            },
+            "collection": {
+              "const": "cameras"
+            },
+            "id": {
+              "$ref": "#/$defs/camId"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "remove"
+            },
+            "collection": {
+              "const": "materials"
+            },
+            "id": {
+              "$ref": "#/$defs/matId"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "remove"
+            },
+            "collection": {
+              "const": "constraints"
+            },
+            "id": {
+              "$ref": "#/$defs/conId"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "remove"
+            },
+            "collection": {
+              "const": "claims"
+            },
+            "id": {
+              "$ref": "#/$defs/clmId"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "replace"
+            },
+            "collection": {
+              "const": "frame"
+            },
+            "value": {
+              "$ref": "#/$defs/frame"
+            }
+          },
+          "required": [
+            "op",
+            "collection",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "patch": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "patch"
+        },
+        "schemaVersion": {
+          "const": "1.0.0"
+        },
+        "sceneId": {
+          "$ref": "#/$defs/scnId"
+        },
+        "patchId": {
+          "$ref": "#/$defs/pchId"
+        },
+        "baseRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "author": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "ops": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/op"
+          },
+          "minItems": 1,
+          "maxItems": 1024
+        }
+      },
+      "required": [
+        "kind",
+        "schemaVersion",
+        "sceneId",
+        "patchId",
+        "baseRevision",
+        "revision",
+        "author",
+        "reason",
+        "ops"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

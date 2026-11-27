@@ -1,0 +1,77 @@
+{
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "blender_verify"
+    },
+    "action": {
+      "enum": [
+        "verify"
+      ]
+    },
+    "ok": {
+      "const": true
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "reportArtifactId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/artifactId"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "inconclusive"
+          ]
+        },
+        "assertions": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "minItems": 1,
+          "maxItems": 64
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      },
+      "required": [
+        "status",
+        "assertions"
+      ],
+      "additionalProperties": false
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dsh:blender:common:1#/$defs/evidenceId"
+      },
+      "minItems": 0,
+      "maxItems": 128
+    },
+    "effectState": {
+      "enum": [
+        "none",
+        "partial",
+        "committed",
+        "unknown"
+      ]
+    }
+  },
+  "required": [
+    "tool",
+    "action",
+    "ok",
+    "data",
+    "evidenceIds",
+    "effectState"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:tool:blender_verify:output:v1",
+  "title": "blender_verify v1 output"
+}

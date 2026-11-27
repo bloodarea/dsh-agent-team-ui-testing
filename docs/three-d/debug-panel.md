@@ -66,7 +66,7 @@ Linux 和 Windows 上可以在调试视图中打开 Blender 的 3D 视口。进�
 | 3D 视图总开关 | `environments.three-d.enabled` | 请先在设置中启用 3D 视图。 |
 | Blender 运行环境 | `environments.three-d.providers.blender.enabled` | 请先在设置中启用 Blender 运行环境。 |
 
-Blender 是 3D 视图的**运行环境**（provider），工程支持度为 `preview`：它提供纯视口，不提供 Agent 执行工具。第一次读取配置时 Blender 默认为开启，所以只打开 3D 总开关就能看画面；把它单独关掉不会停用整个 3D 分组。开关语义见[运行环境（provider）开关](../target-environments.md#运行环境provider开关)。
+Blender 是 3D 视图的**运行环境**（provider），工程支持度为 `supported`：它同时提供视口画面与 Agent 执行适配器。第一次读取配置时 Blender 默认为开启，所以只打开 3D 总开关就能看画面；把它单独关掉不会停用整个 3D 分组，但会让 `blender_*` 工具退出准入。开关语义见[运行环境（provider）开关](../target-environments.md#运行环境provider开关)。
 
 配置保存在 `${DSH_HOME}/ui-testing/config.json`，改动立即生效，不需要重启 DSH。
 

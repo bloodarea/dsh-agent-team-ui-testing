@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "list"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "status"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "live": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/live"
+        }
+      },
+      "required": [
+        "action",
+        "live"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "open"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "expectGeneration": {
+          "anyOf": [
+            {
+              "$ref": "urn:dsh:blender:common:1#/$defs/generation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "leaseId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expectControlRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "idemKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "grantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "targetId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/targetId"
+        },
+        "generation": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/generation"
+        },
+        "expectSceneRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        }
+      },
+      "required": [
+        "action",
+        "path",
+        "expectGeneration",
+        "leaseId",
+        "expectControlRevision",
+        "idemKey",
+        "grantId"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "reload"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "write": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/write"
+        },
+        "discardGrantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "action",
+        "write"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "save"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "write": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/write"
+        },
+        "expectedFileHash": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/digest"
+        },
+        "overwriteGrantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "action",
+        "write"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "saveAs"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "write": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/write"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "expectedFileHash": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/digest"
+        },
+        "overwriteGrantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "action",
+        "write",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "close"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "write": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/write"
+        },
+        "discardGrantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "action",
+        "write"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$id": "urn:dsh:blender:tool:blender_project:input:v1",
+  "title": "blender_project v1 input",
+  "$defs": {
+    "opStep": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneOp"
+    }
+  }
+}

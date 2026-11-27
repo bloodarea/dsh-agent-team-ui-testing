@@ -1,0 +1,81 @@
+{
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "blender_scene_query"
+    },
+    "action": {
+      "enum": [
+        "query"
+      ]
+    },
+    "ok": {
+      "const": true
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "sceneRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "minItems": 0,
+          "maxItems": 1000
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sceneRevision",
+        "items",
+        "truncated"
+      ],
+      "additionalProperties": false
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dsh:blender:common:1#/$defs/evidenceId"
+      },
+      "minItems": 0,
+      "maxItems": 128
+    },
+    "effectState": {
+      "enum": [
+        "none",
+        "partial",
+        "committed",
+        "unknown"
+      ]
+    }
+  },
+  "required": [
+    "tool",
+    "action",
+    "ok",
+    "data",
+    "evidenceIds",
+    "effectState"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:tool:blender_scene_query:output:v1",
+  "title": "blender_scene_query v1 output"
+}

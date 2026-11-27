@@ -80,10 +80,9 @@ test('每行都带显示名、短名与实现状态，且 planned 与 isPlannedE
   assert.deepEqual(environmentCatalog().filter((row) => row.testOnly).map((row) => row.id), [ENVIRONMENTS.FAKE]);
   // 有执行适配器的环境。
   assert.deepEqual(environmentCatalog().filter((row) => row.status === 'supported').map((row) => row.id).sort(),
-    [ENVIRONMENTS.FAKE, ENVIRONMENTS.WEB].sort());
-  // 只有视图的环境：3D 的 Blender 纯视口。
-  assert.deepEqual(environmentCatalog().filter((row) => row.status === 'view').map((row) => row.id),
-    [ENVIRONMENTS.THREE_D]);
+    [ENVIRONMENTS.FAKE, ENVIRONMENTS.THREE_D, ENVIRONMENTS.WEB].sort());
+  // 3D 已接入 Agent 执行适配器，不再有"只有视图"的目标环境。
+  assert.deepEqual(environmentCatalog().filter((row) => row.status === 'view').map((row) => row.id), []);
   // 空态视图是目录的第一行，且只有它一个。
   assert.deepEqual(environmentCatalog().filter((row) => row.kind === 'view').map((row) => row.id),
     [ENVIRONMENTS.DEFAULT]);
@@ -221,7 +220,7 @@ test('面板必须原样保留 catalog 的 kind/status：丢字段会让默认�
   assert.equal(viewRow.kind, 'view', '默认视图的 kind 被丢掉了');
   assert.equal(viewRow.status, 'empty', '默认视图的 status 被降级了');
   const threeDRow = normalize(environmentCatalog().find((row) => row.id === ENVIRONMENTS.THREE_D));
-  assert.equal(threeDRow.status, 'view', '3D 的 view 状态被降级了');
+  assert.equal(threeDRow.status, 'supported', '3D 的执行适配器状态被降级了');
 
   // 未知状态仍然降级为 planned（不猜成 supported）。
   assert.equal(normalize({ id: 'future', status: 'experimental' }).status, 'planned');

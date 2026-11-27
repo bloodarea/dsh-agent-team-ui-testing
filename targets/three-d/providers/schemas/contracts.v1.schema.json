@@ -1,0 +1,2605 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "contracts.v1.schema.json",
+  "$defs": {
+    "budget": {
+      "type": "object",
+      "properties": {
+        "maxRemoteRequests": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxInputTokens": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxOutputTokens": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxMoney": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxRamBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxVramBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxDiskBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxCpuMs": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxGpuMs": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxWallMs": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxOutputBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxConcurrentProviders": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "requestCount": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputTokens": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputTokens": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actualMoney": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "estimatedMoney": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ramPeakBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "vramPeakBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diskBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cpuMs": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gpuMs": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wallMs": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cacheBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "downloadBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "installedBytes": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coldStartMs": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metering": {
+          "enum": [
+            "measured",
+            "partial",
+            "not-metered"
+          ]
+        },
+        "deviceId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "costEstimate": {
+      "type": "object",
+      "properties": {
+        "values": {
+          "$ref": "contracts.v1.schema.json#/$defs/usage"
+        },
+        "estimateSource": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidenceRange": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "measuredAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unknowns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "values",
+        "estimateSource",
+        "confidenceRange",
+        "measuredAt",
+        "unknowns"
+      ],
+      "additionalProperties": false
+    },
+    "privacy": {
+      "type": "object",
+      "properties": {
+        "allowLocalInference": {
+          "type": "boolean"
+        },
+        "allowRemoteInference": {
+          "type": "boolean"
+        },
+        "allowImageUploadToAgent": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "allowLocalInference",
+        "allowRemoteInference",
+        "allowImageUploadToAgent"
+      ],
+      "additionalProperties": false
+    },
+    "proposal": {
+      "type": "object",
+      "properties": {
+        "targetHint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {},
+        "units": {
+          "type": "string",
+          "minLength": 1
+        },
+        "origin": {
+          "enum": [
+            "inferred",
+            "estimated",
+            "observed"
+          ]
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uncertainty": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "productIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "targetHint",
+        "field",
+        "value",
+        "units",
+        "origin",
+        "confidence",
+        "uncertainty",
+        "productIds",
+        "evidenceIds"
+      ],
+      "additionalProperties": false
+    },
+    "inputRef": {
+      "type": "object",
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "frameIndex": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "regionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "artifactId",
+        "sha256",
+        "frameIndex",
+        "regionId"
+      ],
+      "additionalProperties": false
+    },
+    "route": {
+      "type": "object",
+      "properties": {
+        "operationTier": {
+          "enum": [
+            "P0",
+            "T1",
+            "T2",
+            "T3",
+            "T4"
+          ]
+        },
+        "toolId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "opId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "evidenceProduced": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "sideEffectClass": {
+          "enum": [
+            "read",
+            "artifact-write",
+            "scene-write"
+          ]
+        },
+        "riskClass": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "fallbacks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "operationTier",
+        "toolId",
+        "opId",
+        "preconditions",
+        "evidenceProduced",
+        "sideEffectClass",
+        "riskClass",
+        "fallbacks"
+      ],
+      "additionalProperties": false
+    },
+    "capabilityDescriptor": {
+      "type": "object",
+      "properties": {
+        "capabilityId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+        },
+        "contractVersion": {
+          "const": 1
+        },
+        "inputSchemaRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outputSchemaRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "executionMode": {
+          "enum": [
+            "local-worker",
+            "remote-service",
+            "agent-adapter",
+            "host-readback"
+          ]
+        },
+        "qualityTags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+          }
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/route"
+          },
+          "minItems": 1
+        },
+        "resourceEstimate": {
+          "$ref": "contracts.v1.schema.json#/$defs/costEstimate"
+        },
+        "dataSensitivity": {
+          "enum": [
+            "public",
+            "workspace",
+            "sensitive"
+          ]
+        },
+        "verifiableMetrics": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "capabilityId",
+        "contractVersion",
+        "inputSchemaRef",
+        "outputSchemaRef",
+        "executionMode",
+        "qualityTags",
+        "limitations",
+        "dependsOn",
+        "routes",
+        "resourceEstimate",
+        "dataSensitivity",
+        "verifiableMetrics"
+      ],
+      "additionalProperties": false
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "suiteVersion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dataset": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "number",
+                "minimum": 0
+              },
+              "threshold": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "value",
+              "threshold"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "checkedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "not-run"
+          ]
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "suiteVersion",
+        "dataset",
+        "metrics",
+        "checkedAt",
+        "status",
+        "evidenceRefs"
+      ],
+      "additionalProperties": false
+    },
+    "providerManifest": {
+      "type": "object",
+      "properties": {
+        "manifestVersion": {
+          "const": "1.0.0"
+        },
+        "providerId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+        },
+        "providerType": {
+          "enum": [
+            "vision",
+            "agent",
+            "geometry",
+            "verification"
+          ]
+        },
+        "implementationVersion": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[a-z0-9.-]+)?$"
+        },
+        "contractVersion": {
+          "const": 1
+        },
+        "support": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "planned",
+            "deprecated"
+          ]
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/capabilityDescriptor"
+          },
+          "minItems": 1
+        },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "enum": [
+                "local",
+                "remote",
+                "hybrid"
+              ]
+            },
+            "platforms": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "devices": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "entrypoint": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dependencyLockSha256": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "dependencies": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "maxConcurrency": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "mode",
+            "platforms",
+            "devices",
+            "entrypoint",
+            "dependencyLockSha256",
+            "dependencies",
+            "maxConcurrency"
+          ],
+          "additionalProperties": false
+        },
+        "modelAssets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "assetId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "modelVersion": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "downloadBytes": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "installedBytes": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "sha256": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "licenseId": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "assetId",
+              "required",
+              "modelVersion",
+              "downloadBytes",
+              "installedBytes",
+              "sha256",
+              "licenseId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "minRamBytes": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "estimatedPeakRamBytes": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "minVramBytes": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "estimatedPeakVramBytes": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "requiredDiskBytes": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "minRamBytes",
+            "estimatedPeakRamBytes",
+            "minVramBytes",
+            "estimatedPeakVramBytes",
+            "requiredDiskBytes"
+          ],
+          "additionalProperties": false
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "runtimeNetwork": {
+              "enum": [
+                "none",
+                "disabled-by-default",
+                "required"
+              ]
+            },
+            "downloadRequiresUserApproval": {
+              "const": true
+            }
+          },
+          "required": [
+            "runtimeNetwork",
+            "downloadRequiresUserApproval"
+          ],
+          "additionalProperties": false
+        },
+        "privacy": {
+          "type": "object",
+          "properties": {
+            "inputsLeaveMachine": {
+              "type": "boolean"
+            },
+            "serviceRegion": {
+              "type": "string",
+              "minLength": 1
+            },
+            "retention": {
+              "type": "string",
+              "minLength": 1
+            },
+            "trainingUse": {
+              "type": "string",
+              "minLength": 1
+            },
+            "logRedaction": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "inputsLeaveMachine",
+            "serviceRegion",
+            "retention",
+            "trainingUse",
+            "logRedaction"
+          ],
+          "additionalProperties": false
+        },
+        "costModel": {
+          "type": "object",
+          "properties": {
+            "localCompute": {
+              "type": "string",
+              "minLength": 1
+            },
+            "remoteRequests": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "meteredFields": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": [
+            "localCompute",
+            "remoteRequests",
+            "meteredFields"
+          ],
+          "additionalProperties": false
+        },
+        "lifecycle": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "discover",
+              "check",
+              "install",
+              "enable",
+              "disable",
+              "health",
+              "execute",
+              "cancel",
+              "dispose"
+            ]
+          }
+        },
+        "verification": {
+          "type": "object",
+          "properties": {
+            "smoke": {
+              "$ref": "contracts.v1.schema.json#/$defs/verification"
+            },
+            "conformance": {
+              "$ref": "contracts.v1.schema.json#/$defs/verification"
+            }
+          },
+          "required": [
+            "smoke",
+            "conformance"
+          ],
+          "additionalProperties": false
+        },
+        "extensions": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1
+            },
+            "schemaRef": {
+              "type": "string",
+              "minLength": 1
+            },
+            "data": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "version",
+            "schemaRef",
+            "data"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "manifestVersion",
+        "providerId",
+        "providerType",
+        "implementationVersion",
+        "contractVersion",
+        "support",
+        "capabilities",
+        "runtime",
+        "modelAssets",
+        "resources",
+        "network",
+        "privacy",
+        "costModel",
+        "lifecycle",
+        "verification"
+      ],
+      "additionalProperties": false
+    },
+    "capabilityProfile": {
+      "type": "object",
+      "properties": {
+        "profileId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profileRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "enabledProviderIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+          }
+        },
+        "disabledProviderIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+          }
+        },
+        "providerPriority": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+          }
+        },
+        "providerPins": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "capabilityId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+              },
+              "providerId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+              }
+            },
+            "required": [
+              "capabilityId",
+              "providerId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "agentRoleBindings": {
+          "type": "object",
+          "properties": {
+            "modeling_executor": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "vision_analyst": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "vision_reviewer": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "modeling_executor",
+            "vision_analyst",
+            "vision_reviewer"
+          ],
+          "additionalProperties": false
+        },
+        "operationTierPolicy": {
+          "type": "object",
+          "properties": {
+            "allowedTiers": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "P0",
+                  "T1",
+                  "T2",
+                  "T3",
+                  "T4"
+                ]
+              }
+            },
+            "preferredTiers": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "P0",
+                  "T1",
+                  "T2",
+                  "T3",
+                  "T4"
+                ]
+              }
+            },
+            "allowSkip": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "allowedTiers",
+            "preferredTiers",
+            "allowSkip"
+          ],
+          "additionalProperties": false
+        },
+        "expertEscalation": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "enum": [
+                "never",
+                "on-demand",
+                "required-for-risky",
+                "always"
+              ]
+            },
+            "triggers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": [
+            "mode",
+            "triggers"
+          ],
+          "additionalProperties": false
+        },
+        "privacy": {
+          "$ref": "contracts.v1.schema.json#/$defs/privacy"
+        },
+        "budget": {
+          "$ref": "contracts.v1.schema.json#/$defs/budget"
+        },
+        "fallbackPolicy": {
+          "enum": [
+            "none",
+            "degrade-optional",
+            "ask-user"
+          ]
+        }
+      },
+      "required": [
+        "profileId",
+        "profileRevision",
+        "enabledProviderIds",
+        "disabledProviderIds",
+        "providerPriority",
+        "providerPins",
+        "agentRoleBindings",
+        "operationTierPolicy",
+        "expertEscalation",
+        "privacy",
+        "budget",
+        "fallbackPolicy"
+      ],
+      "additionalProperties": false
+    },
+    "taskCapabilityRequest": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requiredCapabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+          }
+        },
+        "preferredCapabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+          }
+        },
+        "optionalCapabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+          }
+        },
+        "qualityTarget": {
+          "enum": [
+            "standard",
+            "verified"
+          ]
+        },
+        "inputArtifactIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "acceptanceProfileId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "budget": {
+          "$ref": "contracts.v1.schema.json#/$defs/budget"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "capabilityId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+              },
+              "operationTier": {
+                "enum": [
+                  "P0",
+                  "T1",
+                  "T2",
+                  "T3",
+                  "T4"
+                ]
+              }
+            },
+            "required": [
+              "capabilityId",
+              "operationTier"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "stageId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "capabilityId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+              },
+              "dependencies": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "inputRefs": {
+                "type": "array",
+                "items": {
+                  "$ref": "contracts.v1.schema.json#/$defs/inputRef"
+                }
+              },
+              "configSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "stageId",
+              "capabilityId",
+              "dependencies",
+              "inputRefs",
+              "configSha256"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "requiresIndependentReview": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "taskId",
+        "requiredCapabilities",
+        "preferredCapabilities",
+        "optionalCapabilities",
+        "qualityTarget",
+        "inputArtifactIds",
+        "acceptanceProfileId"
+      ],
+      "additionalProperties": false
+    },
+    "selectedProvider": {
+      "type": "object",
+      "properties": {
+        "providerId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+        },
+        "capabilityId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+        },
+        "implementationVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "modelVersions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "weightsSha256": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "manifestSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "selectionReason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "providerId",
+        "capabilityId",
+        "implementationVersion",
+        "modelVersions",
+        "weightsSha256",
+        "manifestSha256",
+        "selectionReason"
+      ],
+      "additionalProperties": false
+    },
+    "planStage": {
+      "type": "object",
+      "properties": {
+        "stageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilityId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+        },
+        "providerId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+        },
+        "operationTier": {
+          "enum": [
+            "P0",
+            "T1",
+            "T2",
+            "T3",
+            "T4"
+          ]
+        },
+        "toolId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "opId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "inputRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/inputRef"
+          }
+        },
+        "inputSchemaRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outputSchemaRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "configSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "budget": {
+          "$ref": "contracts.v1.schema.json#/$defs/budget"
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "evidenceProduced": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "sideEffectClass": {
+          "type": "string",
+          "minLength": 1
+        },
+        "riskClass": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallbacks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "requirement": {
+          "enum": [
+            "required",
+            "preferred",
+            "optional"
+          ]
+        }
+      },
+      "required": [
+        "stageId",
+        "capabilityId",
+        "providerId",
+        "operationTier",
+        "toolId",
+        "opId",
+        "dependencies",
+        "inputRefs",
+        "inputSchemaRef",
+        "outputSchemaRef",
+        "configSha256",
+        "budget",
+        "preconditions",
+        "evidenceProduced",
+        "sideEffectClass",
+        "riskClass",
+        "fallbacks",
+        "requirement"
+      ],
+      "additionalProperties": false
+    },
+    "unresolved": {
+      "type": "object",
+      "properties": {
+        "capabilityId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requirement": {
+          "enum": [
+            "required",
+            "preferred",
+            "optional"
+          ]
+        }
+      },
+      "required": [
+        "capabilityId",
+        "reason",
+        "requirement"
+      ],
+      "additionalProperties": false
+    },
+    "capabilityExecutionPlan": {
+      "type": "object",
+      "properties": {
+        "contractVersion": {
+          "const": 1
+        },
+        "planId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "previousPlanHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revisionReason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profileId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profileRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "requestHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "selectedProviders": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/selectedProvider"
+          }
+        },
+        "stageGraph": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/planStage"
+          }
+        },
+        "budgetSnapshot": {
+          "$ref": "contracts.v1.schema.json#/$defs/budget"
+        },
+        "privacySnapshot": {
+          "$ref": "contracts.v1.schema.json#/$defs/privacy"
+        },
+        "estimatedCost": {
+          "$ref": "contracts.v1.schema.json#/$defs/costEstimate"
+        },
+        "unresolved": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/unresolved"
+          }
+        },
+        "status": {
+          "enum": [
+            "ready",
+            "blocked",
+            "awaiting-user"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "planHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "contractVersion",
+        "planId",
+        "revision",
+        "previousPlanHash",
+        "revisionReason",
+        "taskId",
+        "profileId",
+        "profileRevision",
+        "requestHash",
+        "selectedProviders",
+        "stageGraph",
+        "budgetSnapshot",
+        "privacySnapshot",
+        "estimatedCost",
+        "unresolved",
+        "status",
+        "createdAt",
+        "expiresAt",
+        "planHash"
+      ],
+      "additionalProperties": false
+    },
+    "providerHealthReport": {
+      "type": "object",
+      "properties": {
+        "providerId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+        },
+        "support": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "planned",
+            "deprecated"
+          ]
+        },
+        "installation": {
+          "enum": [
+            "bundled",
+            "installed",
+            "not-installed",
+            "failed"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "availability": {
+          "enum": [
+            "available",
+            "unavailable",
+            "not-probed"
+          ]
+        },
+        "quality": {
+          "enum": [
+            "verified",
+            "unverified"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "retryAfter": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runningCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lifecycle": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "providerId",
+        "support",
+        "installation",
+        "enabled",
+        "availability",
+        "quality",
+        "reason",
+        "checkedAt",
+        "retryAfter",
+        "runningCount",
+        "lifecycle"
+      ],
+      "additionalProperties": false
+    },
+    "product": {
+      "type": "object",
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "kind": {
+          "enum": [
+            "maskRaster",
+            "relativeDepthRaster",
+            "metricDepthRaster",
+            "normalRaster",
+            "cameraModel",
+            "pointCloud",
+            "mesh",
+            "gaussianSplat",
+            "spatialGraph",
+            "bbox3d",
+            "report"
+          ]
+        },
+        "encoding": {
+          "type": "string",
+          "minLength": 1
+        },
+        "width": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "height": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "channels": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validityMaskArtifactId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "artifactId",
+        "sha256",
+        "kind",
+        "encoding",
+        "width",
+        "height",
+        "channels",
+        "validityMaskArtifactId"
+      ],
+      "additionalProperties": false
+    },
+    "visionObservation": {
+      "type": "object",
+      "properties": {
+        "contractVersion": {
+          "const": 1
+        },
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "object",
+          "properties": {
+            "providerId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+            },
+            "implementationVersion": {
+              "type": "string",
+              "minLength": 1
+            },
+            "modelVersion": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "weightsSha256": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "providerId",
+            "implementationVersion",
+            "modelVersion",
+            "weightsSha256"
+          ],
+          "additionalProperties": false
+        },
+        "capabilityId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+        },
+        "status": {
+          "enum": [
+            "complete",
+            "partial",
+            "failed"
+          ]
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/inputRef"
+          }
+        },
+        "coordinateFrame": {
+          "type": "string",
+          "minLength": 1
+        },
+        "units": {
+          "type": "string",
+          "minLength": 1
+        },
+        "products": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/product"
+          }
+        },
+        "proposals": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/proposal"
+          }
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "name",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "resourceUsage": {
+          "$ref": "contracts.v1.schema.json#/$defs/usage"
+        },
+        "costActual": {
+          "$ref": "contracts.v1.schema.json#/$defs/usage"
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "unresolved": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "contractVersion",
+        "observationId",
+        "taskId",
+        "runId",
+        "provider",
+        "capabilityId",
+        "status",
+        "inputs",
+        "coordinateFrame",
+        "units",
+        "products",
+        "proposals",
+        "metrics",
+        "resourceUsage",
+        "costActual",
+        "limitations",
+        "unresolved",
+        "createdAt"
+      ],
+      "additionalProperties": false
+    },
+    "visionArtifactManifest": {
+      "type": "object",
+      "properties": {
+        "contractVersion": {
+          "const": 1
+        },
+        "artifactId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "maskRaster",
+            "relativeDepthRaster",
+            "metricDepthRaster",
+            "normalRaster",
+            "cameraModel",
+            "pointCloud",
+            "mesh",
+            "gaussianSplat",
+            "spatialGraph",
+            "bbox3d",
+            "report"
+          ]
+        },
+        "mime": {
+          "type": "string",
+          "minLength": 1
+        },
+        "encoding": {
+          "type": "string",
+          "minLength": 1
+        },
+        "byteLength": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "height": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "channels": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coordinateFrame": {
+          "type": "string",
+          "minLength": 1
+        },
+        "units": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transformChain": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string",
+                "minLength": 1
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1
+              },
+              "matrix": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "method": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "matrix",
+              "method"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "validityMaskArtifactId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceDigests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "providerId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "access": {
+          "type": "object",
+          "properties": {
+            "workspaceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "taskId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "principalIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "expiresAt": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "workspaceId",
+            "taskId",
+            "principalIds",
+            "expiresAt"
+          ],
+          "additionalProperties": false
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "contractVersion",
+        "artifactId",
+        "kind",
+        "mime",
+        "encoding",
+        "byteLength",
+        "sha256",
+        "width",
+        "height",
+        "channels",
+        "coordinateFrame",
+        "units",
+        "transformChain",
+        "validityMaskArtifactId",
+        "sourceDigests",
+        "providerId",
+        "runId",
+        "access",
+        "createdAt"
+      ],
+      "additionalProperties": false
+    },
+    "agentRoleRequest": {
+      "type": "object",
+      "properties": {
+        "contractVersion": {
+          "const": 1
+        },
+        "roleId": {
+          "enum": [
+            "vision_analyst",
+            "vision_reviewer",
+            "modeling_executor"
+          ]
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "inputArtifactRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/inputRef"
+          }
+        },
+        "sourceArtifactRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/inputRef"
+          }
+        },
+        "whiteboxObservationHashes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "structuredContext": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "field",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "responseSchemaRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "budget": {
+          "$ref": "contracts.v1.schema.json#/$defs/budget"
+        },
+        "privacyGrantRef": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "peerResults": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "contractVersion",
+        "roleId",
+        "taskId",
+        "goal",
+        "constraints",
+        "inputArtifactRefs",
+        "sourceArtifactRefs",
+        "whiteboxObservationHashes",
+        "structuredContext",
+        "responseSchemaRef",
+        "budget",
+        "privacyGrantRef",
+        "round",
+        "peerResults"
+      ],
+      "additionalProperties": false
+    },
+    "agentRoleResult": {
+      "type": "object",
+      "properties": {
+        "contractVersion": {
+          "const": 1
+        },
+        "roleId": {
+          "enum": [
+            "vision_analyst",
+            "vision_reviewer",
+            "modeling_executor"
+          ]
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "complete",
+            "partial",
+            "failed"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proposals": {
+          "type": "array",
+          "items": {
+            "$ref": "contracts.v1.schema.json#/$defs/proposal"
+          }
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "unknowns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "usage": {
+          "$ref": "contracts.v1.schema.json#/$defs/usage"
+        }
+      },
+      "required": [
+        "contractVersion",
+        "roleId",
+        "taskId",
+        "status",
+        "summary",
+        "proposals",
+        "evidenceRefs",
+        "unknowns",
+        "limitations",
+        "usage"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

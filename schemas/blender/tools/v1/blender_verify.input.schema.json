@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "verify"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "targetId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/targetId"
+        },
+        "generation": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/generation"
+        },
+        "source": {
+          "enum": [
+            "live",
+            "checkpoint",
+            "artifact"
+          ]
+        },
+        "checkpointId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "artifactId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/artifactId"
+        },
+        "sha256": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/digest"
+        },
+        "assertions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+              },
+              "kind": {
+                "enum": [
+                  "exists",
+                  "transform",
+                  "dimension",
+                  "material",
+                  "relation",
+                  "pixel"
+                ]
+              },
+              "subject": {
+                "$ref": "urn:dsh:blender:common:1#/$defs/id"
+              },
+              "expected": {},
+              "tolerance": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "unit": {
+                    "enum": [
+                      "m",
+                      "cm",
+                      "mm",
+                      "rad",
+                      "deg",
+                      "px",
+                      "ratio"
+                    ]
+                  }
+                },
+                "required": [
+                  "value",
+                  "unit"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "subject",
+              "expected"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 64
+        },
+        "grantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "action",
+        "source",
+        "assertions"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$id": "urn:dsh:blender:tool:blender_verify:input:v1",
+  "title": "blender_verify v1 input",
+  "$defs": {
+    "opStep": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneOp"
+    }
+  }
+}

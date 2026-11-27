@@ -1,0 +1,86 @@
+{
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "blender_capture"
+    },
+    "action": {
+      "enum": [
+        "capture"
+      ]
+    },
+    "ok": {
+      "const": true
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "artifactId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/artifactId"
+        },
+        "sha256": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/digest"
+        },
+        "mediaType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "checkpointId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "frame": {
+          "type": "integer"
+        },
+        "capturedAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "artifactId",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dsh:blender:common:1#/$defs/evidenceId"
+      },
+      "minItems": 0,
+      "maxItems": 128
+    },
+    "effectState": {
+      "enum": [
+        "none",
+        "partial",
+        "committed",
+        "unknown"
+      ]
+    }
+  },
+  "required": [
+    "tool",
+    "action",
+    "ok",
+    "data",
+    "evidenceIds",
+    "effectState"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:tool:blender_capture:output:v1",
+  "title": "blender_capture v1 output"
+}

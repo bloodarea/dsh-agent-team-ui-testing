@@ -19,6 +19,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parent))
 from editor_windows import EditorWindows, TIMELINE, WindowPointer, screenshot, write_png
 from workspaces import WorkspaceDeck
+from agent_runtime import AgentRuntime
 
 
 arguments = sys.argv[sys.argv.index('--') + 1:]
@@ -46,6 +47,8 @@ class Viewport:
         self.pending = None
         self.pointer = WindowPointer(self.window)
         self.editors = EditorWindows(self.window)
+        self.agent_runtime = AgentRuntime(self)
+        self.project_path = str(bpy.data.filepath) if bpy.data.filepath else None
         self.drawn = False
         self.offscreen = None
         self.draw_handler = bpy.types.SpaceView3D.draw_handler_add(self.after_draw, (), 'WINDOW', 'POST_PIXEL')
@@ -219,6 +222,19 @@ class Viewport:
                 if request is None:
                     bpy.ops.wm.quit_blender()
                     return None
+                if isinstance(request, dict) and request.get('channel') == 'command':
+                    fields = ('id', 'targetId', 'generation', 'runtimeGeneration')
+                    response = {key: request.get(key) for key in fields}
+                    try:
+                        if any(not isinstance(response[key], (str, int)) or isinstance(response[key], bool) for key in fields):
+                            raise ValueError('invalid command identity')
+                        result = self.agent_runtime.execute(request)
+                        response.update({'channel': 'command-reply', 'ok': True, 'result': result})
+                    except Exception as error:
+                        response.update({'channel': 'command-reply', 'ok': False,
+                                         'error': {'code': 'BLENDER_COMMAND_FAILED', 'message': str(error)[:512]}})
+                    reply('command ' + json.dumps(response, separators=(',', ':'), ensure_ascii=True))
+                    return 0.02
                 if isinstance(request, list):
                     request = {'camera': request, 'size': (960, 540)}
                 self.pending = request

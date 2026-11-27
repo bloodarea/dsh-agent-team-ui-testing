@@ -86,7 +86,7 @@ const ENVIRONMENT_META = [
   { id: ENVIRONMENTS.TUI, label: 'TUI 视图', short: 'TUI', status: 'planned' },
   { id: ENVIRONMENTS.HARMONYOS, label: 'HarmonyOS 视图', short: 'HarmonyOS', status: 'planned' },
   { id: ENVIRONMENTS.GAME, label: '游戏视图', short: '游戏', status: 'planned' },
-  { id: ENVIRONMENTS.THREE_D, label: '3D 视图', short: '3D', status: 'view' },
+  { id: ENVIRONMENTS.THREE_D, label: '3D 视图', short: '3D', status: 'supported' },
   { id: ENVIRONMENTS.MINIPROGRAM, label: '小程序视图', short: '小程序', status: 'planned' },
   { id: ENVIRONMENTS.FAKE, label: '测试夹具环境', short: 'Fake', status: 'supported', testOnly: true },
 ];
@@ -1033,15 +1033,15 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null, env
     ? null
     : selection.providerSource;
 
-  // Web provider facts. `enabledProviders` is always derived from `providers.*.enabled` (no second
-  // stored list); `provider` / `executionAdapterId` / `providerConfig` only exist for web. A planned
-  // environment that declares providers (3D/Blender) is not selectable, so it never reaches here.
-  const enabledProviders = WEB_PROVIDER_IDS.filter(
+  // Provider switches are read from the selected environment's own catalogue. Web keeps its
+  // explicit provider selection; Blender is the sole declared three-d provider.
+  const enabledProviders = environmentProviderIds(environment).filter(
     (id) => environmentConfig.providers?.[id]?.enabled === true,
   );
   const isWeb = environment === ENVIRONMENTS.WEB;
-  const provider = isWeb ? selection.provider : null;
-  const providerEntry = isWeb ? (environmentConfig.providers?.[provider] ?? {}) : {};
+  const isBlender = environment === ENVIRONMENTS.THREE_D;
+  const provider = isWeb ? selection.provider : isBlender ? THREE_D_PROVIDERS.BLENDER : null;
+  const providerEntry = isWeb || isBlender ? (environmentConfig.providers?.[provider] ?? {}) : {};
   // Precedence: total gate -> unknown provider name -> per-provider switch. Every non-null value
   // blocks execution; an unknown name is kept so nothing is silently swapped for chrome.
   const providerKnown = provider !== null && WEB_PROVIDER_IDS.includes(provider);
@@ -1065,7 +1065,12 @@ export function resolveSnapshot(config, { agent = null, workspaceKey = null, env
         ?? (provider === WEB_PROVIDERS.CHROME ? legacyConnection : null),
       implemented: isImplementedWebProvider(provider),
     }
-    : null;
+    : isBlender ? { provider, support: 'supported', enabled: providerEntry.enabled === true,
+      executable: providerEntry.executable ?? null, connection: null, implemented: true } : null;
+  if (isBlender) {
+    if (environmentConfig.enabled !== true) rejectedProviderReason = 'environment-disabled';
+    else if (providerEntry.enabled !== true) rejectedProviderReason = 'provider-disabled';
+  }
 
   // A snapshot is a *step input*: it must be immutable, because admission, schema declaration,
   // Skill discovery and execution all read the same object (A11). Freezing here — not at each

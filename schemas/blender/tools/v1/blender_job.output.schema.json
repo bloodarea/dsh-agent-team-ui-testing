@@ -1,0 +1,89 @@
+{
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "blender_job"
+    },
+    "action": {
+      "enum": [
+        "status",
+        "result",
+        "cancel"
+      ]
+    },
+    "ok": {
+      "const": true
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "state": {
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "progress": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "result": {
+          "type": "object"
+        },
+        "error": {
+          "type": "object"
+        },
+        "effectState": {
+          "enum": [
+            "none",
+            "partial",
+            "committed",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "jobId",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dsh:blender:common:1#/$defs/evidenceId"
+      },
+      "minItems": 0,
+      "maxItems": 128
+    },
+    "effectState": {
+      "enum": [
+        "none",
+        "partial",
+        "committed",
+        "unknown"
+      ]
+    }
+  },
+  "required": [
+    "tool",
+    "action",
+    "ok",
+    "data",
+    "evidenceIds",
+    "effectState"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:tool:blender_job:output:v1",
+  "title": "blender_job v1 output"
+}

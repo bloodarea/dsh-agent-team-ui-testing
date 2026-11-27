@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "errorCodes": [
+    {
+      "code": "AUTHORIZATION_REQUIRED",
+      "category": "authorization",
+      "retryable": false,
+      "recovery": "Request a human grant for the required scope."
+    },
+    {
+      "code": "GRANT_INVALID",
+      "category": "authorization",
+      "retryable": false,
+      "recovery": "Obtain a grant bound to the current principal, workspace, target, and plan."
+    },
+    {
+      "code": "GRANT_EXPIRED",
+      "category": "authorization",
+      "retryable": false,
+      "recovery": "Obtain a fresh grant."
+    },
+    {
+      "code": "GRANT_SCOPE_MISMATCH",
+      "category": "authorization",
+      "retryable": false,
+      "recovery": "Obtain a grant with the required scope."
+    },
+    {
+      "code": "LEASE_REQUIRED",
+      "category": "authorization",
+      "retryable": false,
+      "recovery": "Acquire the required resource lease."
+    },
+    {
+      "code": "LEASE_LOST",
+      "category": "state",
+      "retryable": false,
+      "recovery": "Stop writes, read current state, and create a new plan."
+    },
+    {
+      "code": "BUSY",
+      "category": "state",
+      "retryable": true,
+      "recovery": "Inspect current job or lease, wait, then retry."
+    },
+    {
+      "code": "REVISION_CONFLICT",
+      "category": "state",
+      "retryable": false,
+      "recovery": "Read the current revision and rebuild the patch."
+    },
+    {
+      "code": "PLAN_STALE",
+      "category": "state",
+      "retryable": false,
+      "recovery": "Read current scene/spec state and re-plan."
+    },
+    {
+      "code": "IDEMPOTENCY_CONFLICT",
+      "category": "state",
+      "retryable": false,
+      "recovery": "Check the prior result and use a new idempotency key for a different request."
+    },
+    {
+      "code": "PROJECT_DIRTY",
+      "category": "state",
+      "retryable": false,
+      "recovery": "Save, or explicitly authorize discarding the dirty project."
+    },
+    {
+      "code": "PROJECT_CONFLICT",
+      "category": "state",
+      "retryable": false,
+      "recovery": "Resolve the on-disk hash conflict."
+    },
+    {
+      "code": "SCHEMA_INVALID",
+      "category": "input",
+      "retryable": false,
+      "recovery": "Correct input using the reported instancePath."
+    },
+    {
+      "code": "SEMANTIC_INVALID",
+      "category": "input",
+      "retryable": false,
+      "recovery": "Correct related references and semantic violations."
+    },
+    {
+      "code": "UNSUPPORTED_SCHEMA_VERSION",
+      "category": "capability",
+      "retryable": false,
+      "recovery": "Preserve the payload and use a supported decoder or explicit migration."
+    },
+    {
+      "code": "PATCH_ID_CONFLICT",
+      "category": "state",
+      "retryable": false,
+      "recovery": "Query the receipt using the original patchId; use a new ID for different content."
+    },
+    {
+      "code": "PATH_OUTSIDE_WORKSPACE",
+      "category": "authorization",
+      "retryable": false,
+      "recovery": "Choose a path inside the authorized workspace."
+    },
+    {
+      "code": "OUTPUT_LIMIT",
+      "category": "resource",
+      "retryable": false,
+      "recovery": "Reduce output size, frames, or declared budget."
+    },
+    {
+      "code": "OPERATION_TIMEOUT",
+      "category": "state",
+      "retryable": false,
+      "recovery": "Reconcile using effectState; do not replay if the effect is unknown."
+    },
+    {
+      "code": "WORKER_LOST",
+      "category": "state",
+      "retryable": false,
+      "recovery": "Reconcile the operation and effectState before recovery."
+    },
+    {
+      "code": "ASSET_DIGEST_MISMATCH",
+      "category": "evidence",
+      "retryable": false,
+      "recovery": "Freeze and verify the original asset again."
+    },
+    {
+      "code": "GENERATION_MISMATCH",
+      "category": "state",
+      "retryable": false,
+      "recovery": "Rebind to the current target generation."
+    },
+    {
+      "code": "DEPENDENCY_MISSING",
+      "category": "dependency",
+      "retryable": false,
+      "recovery": "Install or configure the declared dependency."
+    },
+    {
+      "code": "CAPABILITY_UNAVAILABLE",
+      "category": "capability",
+      "retryable": false,
+      "recovery": "Use an available operation or wait for capability support."
+    },
+    {
+      "code": "EVIDENCE_INCOMPLETE",
+      "category": "evidence",
+      "retryable": false,
+      "recovery": "Capture the missing evidence and verify again."
+    },
+    {
+      "code": "CONFIG_STALE",
+      "category": "state",
+      "retryable": false,
+      "recovery": "Refresh the config snapshot and retry discovery."
+    }
+  ]
+}

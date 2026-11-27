@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "properties": {
+    "sceneId": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneId"
+    },
+    "stableId": {
+      "type": "string",
+      "pattern": "^(obj|part)_[a-z][a-z0-9_]{0,47}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "kind": {
+      "enum": [
+        "empty",
+        "mesh"
+      ]
+    }
+  },
+  "required": [
+    "sceneId",
+    "stableId",
+    "label",
+    "kind"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:operation:object.ensure:v1",
+  "title": "object.ensure v1 args",
+  "description": "Closed operation arguments; contract unit is the Blender scene unit unless otherwise specified."
+}

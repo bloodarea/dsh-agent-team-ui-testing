@@ -1,0 +1,77 @@
+{
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "blender_tools"
+    },
+    "action": {
+      "enum": [
+        "status",
+        "activate"
+      ]
+    },
+    "ok": {
+      "const": true
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "enabledGroups": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "project",
+              "scene",
+              "view",
+              "reference",
+              "verify",
+              "jobs"
+            ]
+          },
+          "minItems": 0,
+          "maxItems": 6
+        },
+        "availableTools": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "minItems": 0,
+          "maxItems": 32
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dsh:blender:common:1#/$defs/evidenceId"
+      },
+      "minItems": 0,
+      "maxItems": 128
+    },
+    "effectState": {
+      "enum": [
+        "none",
+        "partial",
+        "committed",
+        "unknown"
+      ]
+    }
+  },
+  "required": [
+    "tool",
+    "action",
+    "ok",
+    "data",
+    "evidenceIds",
+    "effectState"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:tool:blender_tools:output:v1",
+  "title": "blender_tools v1 output"
+}

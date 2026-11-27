@@ -51,6 +51,7 @@ const SKILL_DEFINITIONS = Object.freeze([
   Object.freeze({ dir: 'ui-testing-common', name: 'ui-testing-common', environment: null, testOnly: false }),
   Object.freeze({ dir: 'ui-testing-web', name: 'ui-testing-web', environment: ENVIRONMENTS.WEB, testOnly: false }),
   Object.freeze({ dir: 'ui-testing-fake', name: 'ui-testing-fake', environment: ENVIRONMENTS.FAKE, testOnly: true }),
+  Object.freeze({ dir: 'blender-director', name: 'blender-director', environment: ENVIRONMENTS.THREE_D, provider: 'blender', testOnly: false }),
 ]);
 
 function isPlainObject(value) {
@@ -1351,7 +1352,14 @@ export function createCrossEnvironment({
     if (!snapshot || snapshot.environment !== entry.environment) return false;
     const enabled = Array.isArray(snapshot.enabledEnvironments)
       && snapshot.enabledEnvironments.includes(entry.environment);
-    return enabled;
+    return enabled && (!entry.provider || isProviderEnabled(entry.environment, entry.provider));
+  }
+
+  function isProviderEnabled(id, provider) {
+    const entry = configStore.getConfig().global.environments[id];
+    const providers = entry && typeof entry.providers === 'object' && entry.providers ? entry.providers : null;
+    const providerEntry = providers ? providers[provider] : null;
+    return Boolean(providerEntry && providerEntry.enabled === true);
   }
 
   async function dispose() {
@@ -1387,12 +1395,7 @@ export function createCrossEnvironment({
      * enough once an environment has a provider axis: the user can keep the master switch on and
      * turn a single runtime off, so the frame route asks both questions.
      */
-    isProviderEnabled: (id, provider) => {
-      const entry = configStore.getConfig().global.environments[id];
-      const providers = entry && typeof entry.providers === 'object' && entry.providers ? entry.providers : null;
-      const providerEntry = providers ? providers[provider] : null;
-      return Boolean(providerEntry && providerEntry.enabled === true);
-    },
+    isProviderEnabled,
     toolAdmitted,
     assertToolAllowed,
     executionClassFor,

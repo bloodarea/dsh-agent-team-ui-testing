@@ -1,0 +1,74 @@
+{
+  "version": "1.0.0",
+  "entries": [
+    {
+      "id": "blender-director", "kind": "director", "path": "SKILL.md",
+      "requires": [], "optional": ["character", "environment", "prop"],
+      "pipelineIds": ["character", "environment", "prop"], "requiredOps": []
+    },
+    {
+      "id": "modeling-topology", "kind": "system", "path": "systems/modeling-topology.md",
+      "requires": [], "optional": ["modifiers-geometry-nodes"],
+      "pipelineIds": ["character", "environment", "prop"],
+      "requiredOps": [
+        {"opId": "collection.ensure", "minOpVersion": 1},
+        {"opId": "object.ensure", "minOpVersion": 1},
+        {"opId": "object.parent", "minOpVersion": 1},
+        {"opId": "object.transform", "minOpVersion": 1},
+        {"opId": "mesh.primitive", "minOpVersion": 1}
+      ]
+    },
+    {
+      "id": "modifiers-geometry-nodes", "kind": "system", "path": "systems/modifiers-geometry-nodes.md",
+      "requires": ["modeling-topology"], "optional": [],
+      "pipelineIds": ["character", "environment", "prop"], "requiredOps": []
+    },
+    {
+      "id": "uv-material-texture", "kind": "system", "path": "systems/uv-material-texture.md",
+      "requires": ["modeling-topology"], "optional": [],
+      "pipelineIds": ["character", "environment", "prop"],
+      "requiredOps": [
+        {"opId": "material.ensure", "minOpVersion": 1},
+        {"opId": "material.assign", "minOpVersion": 1}
+      ]
+    },
+    {
+      "id": "rig-skin-animation", "kind": "system", "path": "systems/rig-skin-animation.md",
+      "requires": ["modeling-topology"], "optional": ["physics"],
+      "pipelineIds": ["character", "prop"], "requiredOps": []
+    },
+    {
+      "id": "physics", "kind": "system", "path": "systems/physics.md",
+      "requires": ["modeling-topology"], "optional": ["rig-skin-animation"],
+      "pipelineIds": ["character", "environment", "prop"], "requiredOps": []
+    },
+    {
+      "id": "lighting-camera-render", "kind": "system", "path": "systems/lighting-camera-render.md",
+      "requires": ["modeling-topology"], "optional": ["uv-material-texture"],
+      "pipelineIds": ["character", "environment", "prop"], "requiredOps": []
+    },
+    {
+      "id": "optimization-export-qa", "kind": "system", "path": "systems/optimization-export-qa.md",
+      "requires": ["modeling-topology"], "optional": ["uv-material-texture", "lighting-camera-render"],
+      "pipelineIds": ["character", "environment", "prop"], "requiredOps": []
+    },
+    {
+      "id": "character", "kind": "workflow", "path": "workflows/character.md",
+      "requires": ["modeling-topology", "uv-material-texture", "optimization-export-qa"],
+      "optional": ["modifiers-geometry-nodes", "rig-skin-animation", "physics", "lighting-camera-render"],
+      "pipelineIds": ["character"], "requiredOps": []
+    },
+    {
+      "id": "environment", "kind": "workflow", "path": "workflows/environment.md",
+      "requires": ["modeling-topology", "uv-material-texture", "optimization-export-qa"],
+      "optional": ["modifiers-geometry-nodes", "physics", "lighting-camera-render"],
+      "pipelineIds": ["environment"], "requiredOps": []
+    },
+    {
+      "id": "prop", "kind": "workflow", "path": "workflows/prop.md",
+      "requires": ["modeling-topology", "uv-material-texture", "optimization-export-qa"],
+      "optional": ["modifiers-geometry-nodes", "rig-skin-animation", "physics", "lighting-camera-render"],
+      "pipelineIds": ["prop"], "requiredOps": []
+    }
+  ]
+}

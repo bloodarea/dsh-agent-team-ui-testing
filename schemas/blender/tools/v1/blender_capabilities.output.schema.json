@@ -1,0 +1,94 @@
+{
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "blender_capabilities"
+    },
+    "action": {
+      "enum": [
+        "status"
+      ]
+    },
+    "ok": {
+      "const": true
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "catalogVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "blenderBaseline": {
+          "const": "5.3.0"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "minItems": 0,
+          "maxItems": 64
+        },
+        "declaration": {
+          "type": "object"
+        },
+        "readiness": {
+          "type": "object"
+        },
+        "limits": {
+          "type": "object"
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "catalogVersion",
+        "blenderBaseline",
+        "operations",
+        "declaration",
+        "readiness",
+        "limits",
+        "observed"
+      ],
+      "additionalProperties": false
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dsh:blender:common:1#/$defs/evidenceId"
+      },
+      "minItems": 0,
+      "maxItems": 128
+    },
+    "effectState": {
+      "enum": [
+        "none",
+        "partial",
+        "committed",
+        "unknown"
+      ]
+    }
+  },
+  "required": [
+    "tool",
+    "action",
+    "ok",
+    "data",
+    "evidenceIds",
+    "effectState"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:tool:blender_capabilities:output:v1",
+  "title": "blender_capabilities v1 output"
+}

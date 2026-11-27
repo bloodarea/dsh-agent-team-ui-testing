@@ -50,8 +50,16 @@ export const TOOL_GROUPS = Object.freeze({
   }),
 });
 
-const GROUP_FOR_TOOL = new Map(Object.entries(TOOL_GROUPS)
-  .flatMap(([id, group]) => group.tools.map((name) => [name, id])));
+export const BLENDER_DISCOVERY_TOOLS = Object.freeze(['blender_tools', 'blender_capabilities']);
+export const BLENDER_TOOL_GROUPS = Object.freeze(Object.fromEntries(Object.entries({
+  project: ['blender_project', 'blender_control', 'blender_job'],
+  scene: ['blender_scene_query', 'blender_scene_apply', 'blender_spec_apply', 'blender_control', 'blender_job'],
+  view: ['blender_view', 'blender_capture', 'blender_control', 'blender_job'],
+  reference: ['blender_reference_analyze', 'blender_spec_revision', 'blender_job'],
+  verify: ['blender_verify', 'blender_capture', 'blender_job'],
+  jobs: ['blender_job'],
+}).map(([id, tools]) => [id, Object.freeze({ description: `Blender ${id}`, requires: Object.freeze([]), tools: Object.freeze(tools) })])));
+const catalogFor = (snapshot) => snapshot?.environment === 'three-d' ? BLENDER_TOOL_GROUPS : TOOL_GROUPS;
 const objectAgent = (agent) => agent !== null && typeof agent === 'object';
 
 export function createToolDisclosure({ snapshotForAgent, environmentAdmitted, scopeVisible, ErrorClass = Error }) {
@@ -87,29 +95,34 @@ export function createToolDisclosure({ snapshotForAgent, environmentAdmitted, sc
     return state;
   }
 
-  function selectedTools(state) {
-    const tools = new Set([DISCOVERY_TOOL, ...DIAGNOSTIC_TOOLS]);
-    for (const id of state?.selected ?? []) for (const name of TOOL_GROUPS[id].tools) tools.add(name);
+  function selectedTools(state, snapshot) {
+    const catalog = catalogFor(snapshot);
+    const tools = new Set(snapshot?.environment === 'three-d'
+      ? BLENDER_DISCOVERY_TOOLS : [DISCOVERY_TOOL, ...DIAGNOSTIC_TOOLS]);
+    for (const id of state?.selected ?? []) for (const name of catalog[id]?.tools ?? []) tools.add(name);
     return tools;
   }
 
   function disclosed(agent, name) {
     if (name === DISCOVERY_TOOL || DIAGNOSTIC_TOOLS.includes(name)) return true;
-    // The fake adapter's single test operation has no deferred group.
     if (name === 'browser_fake_probe') return true;
-    const group = GROUP_FOR_TOOL.get(name);
-    return group !== undefined && stateOf(agent)?.selected.has(group) === true;
+    const snapshot = snapshotForAgent(agent);
+    if (BLENDER_DISCOVERY_TOOLS.includes(name)) return snapshot.environment === 'three-d';
+    const catalog = catalogFor(snapshot);
+    return Object.entries(catalog).some(([id, group]) => group.tools.includes(name)
+      && stateOf(agent)?.selected.has(id) === true);
   }
 
   function status(agent) {
     const state = stateOf(agent);
     const snapshot = snapshotForAgent(agent);
-    const selected = Object.keys(TOOL_GROUPS).filter((id) => state?.selected.has(id));
-    const wanted = selectedTools(state);
+    const catalog = catalogFor(snapshot);
+    const selected = Object.keys(catalog).filter((id) => state?.selected.has(id));
+    const wanted = selectedTools(state, snapshot);
     return {
       ok: true, environment: snapshot.environment, provider: snapshot.provider ?? null,
       selected,
-      catalog: Object.entries(TOOL_GROUPS).map(([id, group]) => ({
+      catalog: Object.entries(catalog).map(([id, group]) => ({
         id, description: group.description, requires: [...group.requires], count: group.tools.length,
         available: group.tools.some((name) => environmentAdmitted(agent, name) && scopeVisible(agent, name)),
       })),
@@ -124,6 +137,7 @@ export function createToolDisclosure({ snapshotForAgent, environmentAdmitted, sc
       || Object.keys(args).some((key) => !['action', 'groups'].includes(key))) {
       fail('INVALID_ARGUMENT', 'browser_tools 只接受 action 和 groups');
     }
+    const catalog = catalogFor(snapshotForAgent(agent));
     const action = args.action;
     if (!['status', 'activate', 'reset'].includes(action)) fail('INVALID_ARGUMENT', '未知的 browser_tools action');
     if (action !== 'activate' && args.groups !== undefined) fail('INVALID_ARGUMENT', 'groups 仅适用于 activate');
@@ -131,20 +145,20 @@ export function createToolDisclosure({ snapshotForAgent, environmentAdmitted, sc
       if (!objectAgent(agent) || typeof agent.id !== 'string' || !agent.id) {
         fail('TOOL_DISCLOSURE_AGENT_REQUIRED', '激活工具需要当前 Agent 身份');
       }
-      if (!Array.isArray(args.groups) || args.groups.length === 0 || args.groups.length > Object.keys(TOOL_GROUPS).length
-        || args.groups.some((id) => typeof id !== 'string' || !Object.hasOwn(TOOL_GROUPS, id))) {
-        fail('TOOL_DISCLOSURE_UNKNOWN_GROUP', 'groups 必须是 basic、network、security、vision、dynamic 的非空数组');
+      if (!Array.isArray(args.groups) || args.groups.length === 0 || args.groups.length > Object.keys(catalog).length
+        || args.groups.some((id) => typeof id !== 'string' || !Object.hasOwn(catalog, id))) {
+        fail('TOOL_DISCLOSURE_UNKNOWN_GROUP', `groups 必须是 ${Object.keys(catalog).join('、')} 的非空数组`);
       }
       const requested = new Set();
       const add = (id) => {
-        for (const dependency of TOOL_GROUPS[id].requires) add(dependency);
+        for (const dependency of catalog[id].requires) add(dependency);
         requested.add(id);
       };
       for (const id of args.groups) add(id);
       // Validate the entire request before changing state. A whitelist may expose only part of
       // a group; selecting it never adds the missing definitions or disposes a restriction.
       for (const id of requested) {
-        if (!TOOL_GROUPS[id].tools.some((name) => environmentAdmitted(agent, name) && scopeVisible(agent, name))) {
+        if (!catalog[id].tools.some((name) => environmentAdmitted(agent, name) && scopeVisible(agent, name))) {
           fail('TOOL_DISCLOSURE_UNAVAILABLE', `能力组 ${id} 在当前环境或工具作用域不可用`, { group: id });
         }
       }

@@ -88,7 +88,7 @@
 | `blocked-by-provider-mismatch` | 上游运行环境不一致，这一段没执行 | 阶段 5 |
 | `blocked-by-stage-1` | 第 1 段未通过，这一段没执行 | 阶段 2–5（前一段失败时） |
 | `blocked-by-stage-2` | 第 2 段未通过，这一段没执行 | 阶段 3–5（目标环境没有执行适配器时） |
-| `environment-has-no-execution-adapter` | 该环境只有视图（如 3D 纯视口），没有 Agent 执行适配器 | 阶段 1、2 |
+| `environment-has-no-execution-adapter` | 该环境只有视图（`status: view`），没有 Agent 执行适配器 | 阶段 1、2 |
 | `blocked-by-stage-3` | 第 3 段未通过，这一段没执行 | 阶段 5 |
 | `stage-timeout` | 这一段超时，没拿到结果 | 全部阶段（该段超时） |
 | `target-list-failed` | 读取标签页列表失败 | 阶段 5 |

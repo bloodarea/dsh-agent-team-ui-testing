@@ -196,7 +196,7 @@ export const ENVIRONMENT_PROVIDER_IDS = Object.freeze({
 export const ENVIRONMENT_PROVIDER_SUPPORT = Object.freeze({
   [ENVIRONMENTS.WEB]: WEB_PROVIDER_SUPPORT,
   [ENVIRONMENTS.THREE_D]: Object.freeze({
-    [THREE_D_PROVIDERS.BLENDER]: 'preview',
+    [THREE_D_PROVIDERS.BLENDER]: 'supported',
   }),
 });
 
@@ -271,6 +271,11 @@ export const ENVIRONMENT_CAPABILITIES = Object.freeze({
     'fake.p0.canvas',
     'fake.p0.targets',
   ]),
+  [ENVIRONMENTS.THREE_D]: Object.freeze([
+    'three-d.project', 'three-d.scene.query', 'three-d.scene.apply', 'three-d.view',
+    'three-d.capture', 'three-d.verify', 'three-d.reference.basic', 'three-d.spec.read',
+    'three-d.spec.write', 'three-d.jobs', 'three-d.targets',
+  ]),
 });
 
 /** Named capability ids used by tools/readiness. `p0.network` is part of the adapter catalog. */
@@ -303,6 +308,12 @@ export const CAPABILITY_IDS = Object.freeze({
     DISPLAY: 'fake.p0.display',
     CANVAS: 'fake.p0.canvas',
     TARGETS: 'fake.p0.targets',
+  }),
+  THREE_D: Object.freeze({
+    PROJECT: 'three-d.project', SCENE_QUERY: 'three-d.scene.query', SCENE_APPLY: 'three-d.scene.apply',
+    VIEW: 'three-d.view', CAPTURE: 'three-d.capture', VERIFY: 'three-d.verify',
+    REFERENCE_BASIC: 'three-d.reference.basic', SPEC_READ: 'three-d.spec.read',
+    SPEC_WRITE: 'three-d.spec.write', JOBS: 'three-d.jobs', TARGETS: 'three-d.targets',
   }),
 });
 

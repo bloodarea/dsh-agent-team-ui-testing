@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "sceneId": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneId"
+    }
+  },
+  "required": [
+    "sceneId"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:operation:collection.ensure:v1",
+  "title": "collection.ensure v1 args",
+  "description": "Closed operation arguments; contract unit is the Blender scene unit unless otherwise specified."
+}

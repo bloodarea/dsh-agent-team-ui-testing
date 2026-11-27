@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "properties": {
+    "sceneId": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneId"
+    },
+    "targetStableId": {
+      "type": "string",
+      "pattern": "^part_[a-z][a-z0-9_]{0,47}$"
+    },
+    "materialId": {
+      "type": "string",
+      "pattern": "^mat_[a-z][a-z0-9_]{0,47}$"
+    },
+    "slot": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 63
+    }
+  },
+  "required": [
+    "sceneId",
+    "targetStableId",
+    "materialId",
+    "slot"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:operation:material.assign:v1",
+  "title": "material.assign v1 args",
+  "description": "Closed operation arguments; contract unit is the Blender scene unit unless otherwise specified."
+}

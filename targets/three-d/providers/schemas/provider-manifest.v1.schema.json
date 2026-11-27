@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "provider-manifest.v1.schema.json",
+  "$ref": "contracts.v1.schema.json#/$defs/providerManifest"
+}

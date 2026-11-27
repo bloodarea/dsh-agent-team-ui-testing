@@ -10,7 +10,7 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { accessSync, constants as fsConstants, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, extname, isAbsolute, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +40,10 @@ import { createCrossEnvironment } from './integration/cross-environment.js';
 import { createDiagnose } from './integration/diagnose.js';
 import { createEnvironmentDirectory } from './core/environments.js';
 import { createWebEnvironmentEntry } from './targets/web/environment.js';
+import { createBlenderEnvironmentEntry } from './targets/three-d/environment.js';
+import { createBlenderCapture } from './targets/three-d/tools.js';
+import { ArtifactStore, SpecStore } from './targets/three-d/spec/index.js';
+import { safeDirectory } from './targets/three-d/spec/disk.js';
 import { createFakeEnvironmentEntry } from './targets/fake/environment.js';
 import { createToolDisclosure, DISCOVERY_TOOL, DIAGNOSTIC_TOOLS as DISCLOSURE_DIAGNOSTIC_TOOLS } from './integration/tool-disclosure.js';
 import { nowMonoMs } from './core/clock.js';
@@ -678,6 +682,39 @@ export function apply(ctx) {
   const environments = createEnvironmentDirectory({ log });
   environments.register(createWebEnvironmentEntry({ log, BrowserError, registry, webTabsLimits }));
   environments.register(createFakeEnvironmentEntry({ log }));
+  environments.register(createBlenderEnvironmentEntry({
+    log, getViewport: () => blenderViewport, getDisclosure: () => disclosure,
+    getArtifactStore: () => blenderArtifactStore, getSpecStore: () => blenderSpecStore,
+    capture: createBlenderCapture({ getViewport: () => blenderViewport, getArtifactStore: () => blenderArtifactStore }),
+    resolveContext: async (exec = {}) => {
+      if (!exec.agent?.id) return null;
+      if (exec.meta?.tool) crossEnvironment.assertToolAllowed(exec.agent, exec.meta.tool);
+      const principal = exec.principal ?? resolveToolPrincipal(ctx, exec);
+      const workspace = await resolveBlenderWorkspace(ctx, { mode: 'session', sessionId: principal.actorSessionId }, exec.signal);
+      if (!workspace || !blenderWorkspaceExists(ctx, workspace.workspaceId)) return null;
+      // Scene/view/control access needs a proven workspace identity, not a disk root.
+      // File operations validate workspaceRoot separately and remain fail-closed.
+      return { workspaceKey: workspace.key, workspaceRoot: workspace.root, workspaceId: workspace.workspaceId, owner: principal.actorSessionId };
+    },
+    resolveInstanceWorkspace: async (workspaceKey) => {
+      const registry = hostService(ctx, 'workspaceRegistry');
+      let workspaceId;
+      if (workspaceKey.startsWith('workspace:')) workspaceId = workspaceKey.slice('workspace:'.length);
+      else if (workspaceKey.startsWith('session:')) {
+        const workspace = await resolveBlenderWorkspace(ctx, { mode: 'session', sessionId: workspaceKey.slice('session:'.length) });
+        workspaceId = workspace?.workspaceId;
+      } else if (workspaceKey.startsWith('path:')) {
+        const directory = workspaceKey.slice('path:'.length);
+        if (!isAbsolute(directory)) return null;
+        const canonical = await realpath(directory).catch(error => {
+          if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+          throw error;
+        });
+        if (canonical) workspaceId = (await registry?.resolveByPath?.(canonical))?.id;
+      }
+      return workspaceId && blenderWorkspaceExists(ctx, workspaceId) ? { workspaceId } : null;
+    },
+  }));
   // Cross-environment composition root (M2/M3): authoritative config, adapter registry, tool
   // admission, per-execution adapter dispatch, readiness and Skill discovery. It resolves the
   // environment implementations from `environments`; the Web runtime stays in this bundle.
@@ -721,6 +758,16 @@ export function apply(ctx) {
   // control plane and the error→status mapping.
   const webRoutes = createWebRoutes({ log, registry, BrowserError, asBrowserError });
   const blenderViewport = createBlenderViewport({ configDirectory: crossEnvironment.configDirectory });
+  const blenderStorageRoot = join(crossEnvironment.configDirectory, 'blender', 'spec');
+  const authorizeBlenderStore = async request => {
+    // Only tool-created closures carry the proven Host caller and current grant checks.
+    if (typeof request.authorizeStore !== 'function' || await request.authorizeStore(request) !== true) return false;
+    const directory = await safeDirectory(crossEnvironment.configDirectory, 'blender', 'spec');
+    await chmod(directory, 0o700);
+    return true;
+  };
+  const blenderArtifactStore = new ArtifactStore({ rootDir: join(blenderStorageRoot, 'artifacts'), authorize: authorizeBlenderStore });
+  const blenderSpecStore = new SpecStore({ rootDir: blenderStorageRoot, artifactStore: blenderArtifactStore, authorize: authorizeBlenderStore });
   const blenderDisabledMessage = () => {
     if (!crossEnvironment.isViewEnabled('three-d')) return '请先在设置中启用 3D 视图。';
     if (!crossEnvironment.isProviderEnabled('three-d', 'blender')) return '请先在设置中启用 Blender 运行环境。';
@@ -1171,6 +1218,23 @@ export function apply(ctx) {
         // principal binding. It must answer even on a host whose Web environment is disabled.
         return disclosure.execute(args, exec.agent);
       }
+      // Environment-owned tools bypass the Web module chain, principals and page dispatch.
+      // Their entry owns workspace identity, leases, transport and the SSOT result envelope.
+      if (toolOwnerEnvironment.get(definition.name) !== 'web') {
+        const snapshot = crossEnvironment.snapshotForAgent(exec.agent);
+        crossEnvironment.prepareEnvironment(snapshot);
+        const meta = { actionId: randomUUID(), sessionId: String(exec.agent?.id || 'anonymous'),
+          startedAt: Date.now(), tool: definition.name, configRevision: snapshot.revision,
+          environment: snapshot.environment, adapterId: snapshot.adapterId };
+        const value = await crossEnvironment.invokeTool({
+          name: definition.name, args, exec, meta,
+          thunk: () => execute(args, { ...exec, meta, sessionId: meta.sessionId }),
+          executionClass: crossEnvironment.executionClassFor(definition.name, args),
+          resolvedScope: null, runtime: null, entry: null, selection: null,
+        });
+        const ownsEnvelope = value && Array.isArray(value.evidenceIds) && typeof value.effectState === 'string';
+        return losslessJson(ownsEnvelope ? value : { ...value, ...meta, finishedAt: Date.now(), target: '' }, definition.name, []);
+      }
       if (definition.name !== 'browser_fake_probe') {
         if (DISCLOSURE_DIAGNOSTIC_TOOLS.includes(definition.name)) {
           try { await ensureWebHostModules(); } catch { /* diagnostics keep answering */ }
@@ -1252,26 +1316,6 @@ export function apply(ctx) {
         if (notes.length > 0) clean.sanitized = notes;
         return clean;
       };
-      // A tool owned by a non-Web environment has no page runtime, no queue and no lease: its
-      // handler is dispatched through its own adapter only. This is what makes the public dispatch
-      // usable with a plain contract fixture (plan §1 完成条件). Web-operated tools still take the
-      // Web pipeline even when the resolved environment is not Web (their diagnostics must answer).
-      const ownerEnvironment = toolOwnerEnvironment.get(definition.name) ?? 'web';
-      if (ownerEnvironment !== 'web') {
-        const value = await crossEnvironment.invokeTool({
-          name: definition.name,
-          args,
-          exec,
-          thunk: () => execute(args, { ...exec, meta, sessionId, principal, httpClient }),
-          executionClass: crossEnvironment.executionClassFor(definition.name, args) || 'page',
-          resolvedScope: null,
-          runtime: null,
-          entry: null,
-          selection: null,
-          meta,
-        });
-        return finish(value, meta.target || '', {});
-      }
       try {
         const outcome = await webInvoker.invoke({
           operation: definition.name,

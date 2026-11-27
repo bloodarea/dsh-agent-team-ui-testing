@@ -1,0 +1,52 @@
+{
+  "type": "object",
+  "properties": {
+    "sceneId": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneId"
+    },
+    "stableId": {
+      "type": "string",
+      "pattern": "^mat_[a-z][a-z0-9_]{0,47}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "roughness": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "metallic": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "opacity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "baseColorLinear": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "minItems": 3,
+      "maxItems": 3
+    }
+  },
+  "required": [
+    "sceneId",
+    "stableId",
+    "label"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:operation:material.ensure:v1",
+  "title": "material.ensure v1 args",
+  "description": "Closed operation arguments; contract unit is the Blender scene unit unless otherwise specified."
+}

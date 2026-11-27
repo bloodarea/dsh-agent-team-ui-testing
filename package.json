@@ -7,7 +7,7 @@
   "keywords": ["deepseek-harness", "dsh-plugin", "ui-testing", "gui-testing", "test-automation", "browser-automation", "visual-regression", "network-debugging"],
   "repository": { "type": "git", "url": "https://github.com/bloodarea/dsh-agent-team-ui-testing.git" },
   "engines": { "node": ">=22" },
-  "dependencies": { "x11": "4.4.0" },
+  "dependencies": { "x11": "4.4.0", "ajv": "^8.17.1" },
   "scripts": {
     "build:client": "node scripts/build-client.mjs",
     "check:client": "node scripts/build-client.mjs --check",
@@ -19,7 +19,7 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.png"
   },
-  "files": ["index.js", "dist/client.js", "select-control.js", "context-menu.js", "frame-source.js", "frame-push.js", "browser-safety.js", "capture-p0.js", "annotation-capture.js", "vision-t3.js", "vision-baseline.js", "network-p0.js", "dynamic-t4.js", "cordis.patch.yml", "locale/*.json", "icon.png", "banner.png", "banner_zh.png", "docs/*.md", "docs/three-d/", "docs/images/", "docs/examples/", "core/", "targets/", "integration/", "skills/**"],
+  "files": ["index.js", "dist/client.js", "select-control.js", "context-menu.js", "frame-source.js", "frame-push.js", "browser-safety.js", "capture-p0.js", "annotation-capture.js", "vision-t3.js", "vision-baseline.js", "network-p0.js", "dynamic-t4.js", "cordis.patch.yml", "locale/*.json", "icon.png", "banner.png", "banner_zh.png", "docs/*.md", "docs/three-d/", "docs/images/", "docs/examples/", "core/", "targets/", "integration/", "schemas/blender/", "tools/blender/", "skills/**"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": { "platform": "web", "immediately": true, "inject": [] }

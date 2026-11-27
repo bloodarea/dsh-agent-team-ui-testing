@@ -1,0 +1,76 @@
+{
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "blender_spec_revision"
+    },
+    "action": {
+      "enum": [
+        "create",
+        "get",
+        "commit"
+      ]
+    },
+    "ok": {
+      "const": true
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "sceneId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/sceneId"
+        },
+        "revision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/positiveInteger"
+        },
+        "artifactId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/artifactId"
+        },
+        "sha256": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/digest"
+        },
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "scene": {
+          "type": "object"
+        },
+        "patch": {
+          "type": "object"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dsh:blender:common:1#/$defs/evidenceId"
+      },
+      "minItems": 0,
+      "maxItems": 128
+    },
+    "effectState": {
+      "enum": [
+        "none",
+        "partial",
+        "committed",
+        "unknown"
+      ]
+    }
+  },
+  "required": [
+    "tool",
+    "action",
+    "ok",
+    "data",
+    "evidenceIds",
+    "effectState"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:tool:blender_spec_revision:output:v1",
+  "title": "blender_spec_revision v1 output"
+}

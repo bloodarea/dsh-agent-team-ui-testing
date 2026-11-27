@@ -1,0 +1,35 @@
+{
+  "type": "object",
+  "properties": {
+    "sceneId": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneId"
+    },
+    "stableId": {
+      "type": "string",
+      "pattern": "^(obj|part)_[a-z][a-z0-9_]{0,47}$"
+    },
+    "expectedManagedHash": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/digest"
+    },
+    "cascadeIds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(obj|part)_[a-z][a-z0-9_]{0,47}$"
+      },
+      "minItems": 0,
+      "maxItems": 1024
+    }
+  },
+  "required": [
+    "sceneId",
+    "stableId",
+    "expectedManagedHash",
+    "cascadeIds"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:operation:object.remove:v1",
+  "title": "object.remove v1 args",
+  "description": "Closed operation arguments; contract unit is the Blender scene unit unless otherwise specified."
+}

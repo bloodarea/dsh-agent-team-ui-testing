@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "analyze"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sourceId": {
+                "type": "string",
+                "pattern": "^src_[a-z][a-z0-9_]{0,47}$"
+              },
+              "artifactId": {
+                "$ref": "urn:dsh:blender:common:1#/$defs/artifactId"
+              },
+              "sha256": {
+                "$ref": "urn:dsh:blender:common:1#/$defs/digest"
+              },
+              "frameIndex": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gallery": {
+                "type": "object",
+                "properties": {
+                  "runtimeGeneration": {
+                    "$ref": "urn:dsh:blender:common:1#/$defs/generation"
+                  },
+                  "itemId": {
+                    "$ref": "urn:dsh:blender:common:1#/$defs/positiveInteger"
+                  }
+                },
+                "required": [
+                  "runtimeGeneration",
+                  "itemId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "sourceId"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "profile": {
+          "enum": [
+            "basic",
+            "spatial",
+            "multiview"
+          ]
+        },
+        "pipelineVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "regions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sourceId": {
+                "type": "string",
+                "pattern": "^src_[a-z][a-z0-9_]{0,47}$"
+              },
+              "regionId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+              },
+              "rectPx": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                ],
+                "items": false,
+                "minItems": 4,
+                "maxItems": 4
+              }
+            },
+            "required": [
+              "sourceId",
+              "regionId",
+              "rectPx"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 64
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sourceId": {
+                "type": "string",
+                "pattern": "^src_[a-z][a-z0-9_]{0,47}$"
+              },
+              "pointsPx": {
+                "type": "array",
+                "items": {
+                  "$ref": "urn:dsh:blender:common:1#/$defs/vec3"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "distanceM": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "toleranceM": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "sourceNoteArtifactId": {
+                "$ref": "urn:dsh:blender:common:1#/$defs/artifactId"
+              }
+            },
+            "required": [
+              "sourceId",
+              "pointsPx",
+              "distanceM",
+              "toleranceM",
+              "sourceNoteArtifactId"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 32
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "wallMs": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 300000
+            },
+            "maxOutputBytes": {
+              "type": "integer",
+              "minimum": 1048576,
+              "maximum": 134217728
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "grantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "action",
+        "references",
+        "grantId"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$id": "urn:dsh:blender:tool:blender_reference_analyze:input:v1",
+  "title": "blender_reference_analyze v1 input",
+  "$defs": {
+    "opStep": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneOp"
+    }
+  }
+}

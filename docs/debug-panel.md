@@ -98,7 +98,7 @@ provider 返回映射对象或 `null`：
 
 ## 3. 视图选择与默认视图
 
-侧边栏右上角的组合框选择的是**本会话的视图**，由 Host 持久化。选择本身就是"这个会话对着什么调试"的答案：执行环境跟着它走，所以选 3D 的会话里 Web 工具面为空（3D 没有 Agent 执行适配器），选默认视图的会话没有任何目标环境。
+侧边栏右上角的组合框选择的是**本会话的视图**，由 Host 持久化。选择本身就是"这个会话对着什么调试"的答案：执行环境跟着它走，所以选 3D 的会话里 Web 工具面为空、Blender 工具面生效；选默认视图的会话没有任何目标环境。
 
 ### 3.1 解析顺序
 
@@ -138,7 +138,7 @@ provider 返回映射对象或 `null`：
 
 ### 4.2 其他目标环境与公共空白画布
 
-环境 id **不在面板里定义**：面板从 Host `GET /config` 响应的 `catalog` 字段取 id、显示名与实现状态（Host 侧由 `core/config.js` 的 `environmentCatalog()` 生成），因此下拉框、设置页分组和下文表格是同一份词表。环境状态分四类：`supported`（有执行适配器，可启用可选中）、`view`（只有视图，可启用可选中，无执行适配器——3D 的 Blender 属于这一类）、`planned`（可启用、**不可选中**，Host 以 `environment … is planned and cannot be selected in v1` 拒绝）、`empty`（默认视图，不可启用、可选中）。
+环境 id **不在面板里定义**：面板从 Host `GET /config` 响应的 `catalog` 字段取 id、显示名与实现状态（Host 侧由 `core/config.js` 的 `environmentCatalog()` 生成），因此下拉框、设置页分组和下文表格是同一份词表。环境状态分四类：`supported`（有执行适配器，可启用可选中——Web 与 3D 的 Blender 属于这一类）、`view`（只有视图，可启用可选中，无执行适配器，目前没有目标环境属于这一类）、`planned`（可启用、**不可选中**，Host 以 `environment … is planned and cannot be selected in v1` 拒绝）、`empty`（默认视图，不可启用、可选中）。
 
 | 目标环境 | 环境 id | 当前正文与映射 |
 | --- | --- | --- |

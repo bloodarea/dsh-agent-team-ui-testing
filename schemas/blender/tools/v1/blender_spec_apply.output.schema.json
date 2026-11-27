@@ -1,0 +1,88 @@
+{
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "blender_spec_apply"
+    },
+    "action": {
+      "enum": [
+        "apply"
+      ]
+    },
+    "ok": {
+      "const": true
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "planId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "planHash": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/digest"
+        },
+        "sceneId": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/sceneId"
+        },
+        "specRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/positiveInteger"
+        },
+        "sceneRevision": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/revision"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "minItems": 0,
+          "maxItems": 1000
+        },
+        "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "status": {
+          "enum": [
+            "planned",
+            "committed",
+            "running"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dsh:blender:common:1#/$defs/evidenceId"
+      },
+      "minItems": 0,
+      "maxItems": 128
+    },
+    "effectState": {
+      "enum": [
+        "none",
+        "partial",
+        "committed",
+        "unknown"
+      ]
+    }
+  },
+  "required": [
+    "tool",
+    "action",
+    "ok",
+    "data",
+    "evidenceIds",
+    "effectState"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh:blender:tool:blender_spec_apply:output:v1",
+  "title": "blender_spec_apply v1 output"
+}

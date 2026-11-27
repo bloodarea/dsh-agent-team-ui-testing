@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "query"
+        },
+        "timeoutMs": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/timeoutMs"
+        },
+        "live": {
+          "$ref": "urn:dsh:blender:common:1#/$defs/live"
+        },
+        "kind": {
+          "enum": [
+            "scene",
+            "hierarchy",
+            "object",
+            "mesh",
+            "material"
+          ]
+        },
+        "ids": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:dsh:blender:common:1#/$defs/id"
+          },
+          "minItems": 0,
+          "maxItems": 256
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "minItems": 0,
+          "maxItems": 128
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "meshSource": {
+          "enum": [
+            "original",
+            "evaluated"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "live",
+        "kind"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$id": "urn:dsh:blender:tool:blender_scene_query:input:v1",
+  "title": "blender_scene_query v1 input",
+  "$defs": {
+    "opStep": {
+      "$ref": "urn:dsh:blender:common:1#/$defs/sceneOp"
+    }
+  }
+}
